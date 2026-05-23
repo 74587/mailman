@@ -13,17 +13,19 @@ import (
 
 // AuthHandler handles authentication-related requests
 type AuthHandler struct {
-	authService    *services.AuthService
-	userRepo       *repository.UserRepository
-	activityLogger *services.ActivityLogger
+	authService      *services.AuthService
+	userRepo         *repository.UserRepository
+	activityLogger   *services.ActivityLogger
+	LoginRateLimiter *services.RateLimiter
 }
 
 // NewAuthHandler creates a new auth handler
 func NewAuthHandler(authService *services.AuthService, userRepo *repository.UserRepository) *AuthHandler {
 	return &AuthHandler{
-		authService:    authService,
-		userRepo:       userRepo,
-		activityLogger: services.GetActivityLogger(),
+		authService:      authService,
+		userRepo:         userRepo,
+		activityLogger:   services.GetActivityLogger(),
+		LoginRateLimiter: services.NewRateLimiter(5, 15*time.Minute),
 	}
 }
 
@@ -72,6 +74,14 @@ func (h *AuthHandler) LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	if count == 0 {
 		// First user - perform silent registration
+		// Validate password length
+		if len(req.Password) < 8 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Password must be at least 8 characters long"})
+			return
+		}
+
 		// Use username as email if it looks like an email
 		email := req.Username
 		username := req.Username
@@ -191,8 +201,28 @@ func (h *AuthHandler) CurrentUserHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// 构建增强的响应，包含组织和角色信息
+	response := map[string]interface{}{
+		"user": user,
+	}
+
+	// 添加当前组织信息
+	if org := GetCurrentOrg(r); org != nil {
+		response["currentOrganization"] = org
+	}
+
+	// 添加当前角色信息
+	if role := GetCurrentUserRole(r); role != nil {
+		response["currentRole"] = role
+	}
+
+	// 添加权限列表
+	if permissions, ok := r.Context().Value(PermissionsContextKey).([]models.Permission); ok {
+		response["permissions"] = permissions
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(user)
+	json.NewEncoder(w).Encode(response)
 }
 
 // UpdateUserRequest 表示用户信息更新请求
@@ -276,6 +306,13 @@ func (h *AuthHandler) UpdateUserHandler(w http.ResponseWriter, r *http.Request) 
 		// 验证旧密码
 		if !user.CheckPassword(req.OldPassword) {
 			http.Error(w, "旧密码不正确", http.StatusBadRequest)
+			return
+		}
+		// Validate password length
+		if len(req.NewPassword) < 8 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Password must be at least 8 characters long"})
 			return
 		}
 		// 设置新密码

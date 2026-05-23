@@ -7,8 +7,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
-import { EmailTrigger, TriggerConditionConfig, TriggerActionConfig, TriggerStatus } from '@/types'
-import { triggerService } from '@/services/trigger.service'
+import { EmailTrigger, TriggerConditionConfig, TriggerActionConfig, TriggerStatus, TriggerExpression } from '@/types'
+import { optimizedTriggerService as triggerService } from '@/services/optimized-trigger.service'
 import { useRouter } from 'next/navigation'
 import { ConditionBuilder } from './condition-builder'
 import { ActionConfig } from './action-config'
@@ -26,42 +26,50 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  
+
   // 表单状态
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [enabled, setEnabled] = useState(false)
   const [checkInterval, setCheckInterval] = useState(300) // 默认5分钟
+  const [expressions, setExpressions] = useState<TriggerExpression[]>([])
+  // 保留 legacy condition 状态以防万一，但主要使用 expressions
   const [condition, setCondition] = useState<TriggerConditionConfig>({
-    type: 'js',
-    script: '// 返回 true 表示触发条件满足\nreturn email.subject.includes("重要");'
+    type: 'structural',
+    script: ''
   })
   const [actions, setActions] = useState<TriggerActionConfig[]>([])
   const [enableLogging, setEnableLogging] = useState(true)
-  
+
   // 动作编辑状态
   const [editingActionIndex, setEditingActionIndex] = useState<number | null>(null)
   const [isActionDialogOpen, setIsActionDialogOpen] = useState(false)
-  
+
   // 加载触发器数据
   useEffect(() => {
     if (triggerId) {
       loadTrigger(triggerId)
     }
   }, [triggerId])
-  
+
   const loadTrigger = async (id: number) => {
     try {
       setIsLoading(true)
       setError(null)
-      
+
       const trigger = await triggerService.getTrigger(id)
-      
+
       // 填充表单数据
       setName(trigger.name)
       setDescription(trigger.description || '')
       setEnabled(trigger.status === 'enabled')
       setCheckInterval(trigger.check_interval)
+      // 如果触发器有 expressions，使用它们；否则保留为空（可以通过后续逻辑从 legacy condition 转换，但这里暂略）
+      if (trigger.expressions) {
+        setExpressions(trigger.expressions)
+      } else {
+        // 尝试解析 legacy condition 或者保持为空
+      }
       setCondition(trigger.condition)
       setActions(trigger.actions)
       setEnableLogging(trigger.enable_logging)
@@ -72,20 +80,20 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
       setIsLoading(false)
     }
   }
-  
+
   // 保存触发器
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     try {
       setIsSaving(true)
       setError(null)
-      
+
       // 构建触发器数据
       const status: TriggerStatus = enabled ? 'enabled' : 'disabled'
-      
+
       let savedTrigger: EmailTrigger
-      
+
       if (triggerId) {
         // 更新现有触发器
         savedTrigger = await triggerService.updateTrigger(triggerId, {
@@ -95,6 +103,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
           status,
           check_interval: checkInterval,
           condition,
+          expressions, // V2 support
           actions,
           enable_logging: enableLogging
         })
@@ -106,11 +115,12 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
           status,
           check_interval: checkInterval,
           condition,
+          expressions, // V2 support
           actions,
           enable_logging: enableLogging
         })
       }
-      
+
       // 调用保存回调
       if (onSave) {
         onSave(savedTrigger)
@@ -125,7 +135,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
       setIsSaving(false)
     }
   }
-  
+
   // 添加新动作
   const addAction = () => {
     const newAction: TriggerActionConfig = {
@@ -136,23 +146,23 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
       enabled: true,
       order: actions.length
     }
-    
+
     setActions([...actions, newAction])
   }
-  
+
   // 更新动作
   const updateAction = (index: number, updatedAction: TriggerActionConfig) => {
     const newActions = [...actions]
     newActions[index] = updatedAction
     setActions(newActions)
   }
-  
+
   // 删除动作
   const removeAction = (index: number) => {
     const newActions = actions.filter((_, i) => i !== index)
     setActions(newActions)
   }
-  
+
   // 处理取消
   const handleCancel = () => {
     if (onCancel) {
@@ -161,7 +171,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
       router.push('/triggers')
     }
   }
-  
+
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       {error && (
@@ -169,7 +179,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
           {error}
         </div>
       )}
-      
+
       {/* 基本信息 */}
       <Card>
         <CardHeader>
@@ -187,7 +197,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
                 required
               />
             </div>
-            
+
             <div className="space-y-2">
               <Label htmlFor="description">描述</Label>
               <Textarea
@@ -198,7 +208,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
                 rows={3}
               />
             </div>
-            
+
             <div className="flex items-center justify-between">
               <Label htmlFor="enabled">启用状态</Label>
               <Switch
@@ -207,7 +217,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
                 onCheckedChange={setEnabled}
               />
             </div>
-            
+
             <div className="space-y-2">
               <Label htmlFor="checkInterval">检查间隔（秒）</Label>
               <Input
@@ -225,43 +235,35 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
           </div>
         </CardContent>
       </Card>
-      
+
       {/* 触发条件 */}
       <Card>
         <CardHeader>
           <CardTitle>触发条件</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="conditionType">条件类型</Label>
-            <select
-              id="conditionType"
-              className="w-full p-2 border rounded"
-              value={condition.type}
-              onChange={(e) => setCondition({ ...condition, type: e.target.value as 'js' | 'gotemplate' })}
-            >
-              <option value="js">JavaScript</option>
-              <option value="gotemplate">Go Template</option>
-            </select>
+          <div className="space-y-2 mb-4">
+            <Label>条件构建器 (V2)</Label>
           </div>
-          
+
           <ConditionBuilder
-            onChange={(expressions) => {
-              // 将表达式��换为脚本格式（这里简化处理）
-              const script = JSON.stringify(expressions)
-              setCondition({ ...condition, script })
+            initialExpressions={expressions}
+            onChange={(newExpressions) => {
+              setExpressions(newExpressions)
+              // Sync for legacy compatibility if needed
+              setCondition({ ...condition, script: JSON.stringify(newExpressions) })
             }}
           />
         </CardContent>
       </Card>
-      
+
       {/* 触发动作 */}
       <Card>
         <CardHeader>
           <CardTitle>触发动作</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <ActionList 
+          <ActionList
             actions={actions}
             onChange={setActions}
             onEditAction={(index) => {
@@ -269,7 +271,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
               setIsActionDialogOpen(true)
             }}
           />
-          
+
           {/* 动作配置对话框 */}
           {editingActionIndex !== null && (
             <ActionConfigDialog
@@ -288,7 +290,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
           )}
         </CardContent>
       </Card>
-      
+
       {/* 日志设置 */}
       <Card>
         <CardHeader>
@@ -308,7 +310,7 @@ export function TriggerForm({ triggerId, onSave, onCancel }: TriggerFormProps) {
           </p>
         </CardContent>
       </Card>
-      
+
       {/* 表单操作 */}
       <div className="flex justify-end gap-4">
         <Button type="button" variant="outline" onClick={handleCancel} disabled={isSaving}>

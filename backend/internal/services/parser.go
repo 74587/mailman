@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"mailman/internal/models"
 	"mime"
 	"mime/multipart"
@@ -85,7 +84,7 @@ func (s *ParserService) ParseEmail(rawEmail []byte) (*models.Email, error) {
 		case *mail.InlineHeader:
 			// This is the message body
 			contentType, _, _ := h.ContentType()
-			b, err := ioutil.ReadAll(p.Body)
+			b, err := io.ReadAll(p.Body)
 			if err != nil {
 				continue
 			}
@@ -102,7 +101,7 @@ func (s *ParserService) ParseEmail(rawEmail []byte) (*models.Email, error) {
 			filename, _ := h.Filename()
 			contentType, _, _ := h.ContentType()
 
-			b, err := ioutil.ReadAll(p.Body)
+			b, err := io.ReadAll(p.Body)
 			if err != nil {
 				continue
 			}
@@ -120,6 +119,7 @@ func (s *ParserService) ParseEmail(rawEmail []byte) (*models.Email, error) {
 	email.Body = textBody.String()
 	email.HTMLBody = htmlBody.String()
 	email.Attachments = attachments
+	email.HasAttachments = len(attachments) > 0
 
 	return email, nil
 }
@@ -137,7 +137,7 @@ func (s *ParserService) ParseMultipartEmail(header message.Header, body io.Reade
 
 	if !strings.HasPrefix(mediaType, "multipart/") {
 		// Not a multipart message
-		b, err := ioutil.ReadAll(body)
+		b, err := io.ReadAll(body)
 		if err != nil {
 			return nil, err
 		}
@@ -173,7 +173,7 @@ func (s *ParserService) ParseMultipartEmail(header message.Header, body io.Reade
 		disposition := part.Header.Get("Content-Disposition")
 		if strings.HasPrefix(disposition, "attachment") {
 			filename := part.FileName()
-			b, err := ioutil.ReadAll(part)
+			b, err := io.ReadAll(part)
 			if err != nil {
 				continue
 			}
@@ -195,7 +195,7 @@ func (s *ParserService) ParseMultipartEmail(header message.Header, body io.Reade
 			attachments = append(attachments, attachment)
 		} else {
 			// It's part of the body
-			b, err := ioutil.ReadAll(part)
+			b, err := io.ReadAll(part)
 			if err != nil {
 				continue
 			}
@@ -220,6 +220,7 @@ func (s *ParserService) ParseMultipartEmail(header message.Header, body io.Reade
 	email.Body = textBody.String()
 	email.HTMLBody = htmlBody.String()
 	email.Attachments = attachments
+	email.HasAttachments = len(attachments) > 0
 
 	return email, nil
 }

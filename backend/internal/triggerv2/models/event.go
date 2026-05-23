@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"time"
-	
+
 	mainModels "mailman/internal/models"
 )
 
@@ -40,48 +40,74 @@ const (
 	EventStatusFailed     EventStatus = "failed"
 )
 
+// VariableMetadata 变量元数据
+type VariableMetadata struct {
+	Name        string      `json:"name"`                  // 变量名
+	Type        string      `json:"type"`                  // 类型: string, number, boolean, object, array
+	Required    bool        `json:"required"`              // 是否必定存在
+	Description string      `json:"description,omitempty"` // 描述
+	Example     interface{} `json:"example,omitempty"`     // 示例值
+}
+
+// StepResult 步骤执行结果（用于 $step 访问）
+type StepResult struct {
+	Index        int                    `json:"index"`                   // 步骤索引
+	Alias        string                 `json:"alias,omitempty"`         // 步骤别名
+	PluginID     string                 `json:"plugin_id"`               // 插件ID
+	PluginName   string                 `json:"plugin_name"`             // 插件名称
+	Input        interface{}            `json:"input,omitempty"`         // 输入数据
+	Output       interface{}            `json:"output,omitempty"`        // 输出数据
+	Info         map[string]interface{} `json:"info,omitempty"`          // 动作元信息
+	InternalVars map[string]interface{} `json:"internal_vars,omitempty"` // 内部变量
+	Success      bool                   `json:"success"`                 // 是否成功
+	Error        string                 `json:"error,omitempty"`         // 错误信息
+}
+
 // Event 事件模型
 type Event struct {
-	ID          string            `json:"id"`
-	Type        EventType         `json:"type"`
-	Status      EventStatus       `json:"status"`
-	Source      string            `json:"source"`
-	Subject     string            `json:"subject"`
-	Data        json.RawMessage   `json:"data"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	Priority    int               `json:"priority"`
-	RetryCount  int               `json:"retry_count"`
-	MaxRetries  int               `json:"max_retries"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	ProcessedAt *time.Time        `json:"processed_at,omitempty"`
+	ID          string                 `json:"id"`
+	Type        EventType              `json:"type"`
+	Status      EventStatus            `json:"status"`
+	Source      string                 `json:"source"`
+	Subject     string                 `json:"subject"`
+	Data        json.RawMessage        `json:"data"`
+	Metadata    map[string]string      `json:"metadata,omitempty"`
+	Variables   map[string]interface{} `json:"variables,omitempty"` // 全局变量池
+	Steps       map[string]*StepResult `json:"steps,omitempty"`     // 步骤结果（key: 索引或别名）
+	Priority    int                    `json:"priority"`
+	RetryCount  int                    `json:"retry_count"`
+	MaxRetries  int                    `json:"max_retries"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at"`
+	ProcessedAt *time.Time             `json:"processed_at,omitempty"`
 }
 
 // EmailEventData 邮件事件数据
+// 注意：JSON 标签使用 PascalCase 以匹配 Email 模型和前端代码示例
 type EmailEventData struct {
-	// 原有字段（保持向后兼容）
-	EmailID       uint      `json:"email_id"`
-	AccountID     uint      `json:"account_id"`
-	MailboxID     uint      `json:"mailbox_id"`
-	Subject       string    `json:"subject"`
-	From          string    `json:"from"`
-	To            string    `json:"to"`
-	MessageID     string    `json:"message_id"`
-	ThreadID      string    `json:"thread_id"`
-	IsRead        bool      `json:"is_read"`
-	HasAttachment bool      `json:"has_attachment"`
-	Labels        []string  `json:"labels"`
-	ReceivedAt    time.Time `json:"received_at"`
-	
+	// 原有字段（使用大写以匹配前端 $.Subject 等语法）
+	EmailID       uint      `json:"EmailID"`
+	AccountID     uint      `json:"AccountID"`
+	MailboxID     uint      `json:"MailboxID"`
+	Subject       string    `json:"Subject"`
+	From          string    `json:"From"`
+	To            string    `json:"To"`
+	MessageID     string    `json:"MessageID"`
+	ThreadID      string    `json:"ThreadID"`
+	IsRead        bool      `json:"IsRead"`
+	HasAttachment bool      `json:"HasAttachment"`
+	Labels        []string  `json:"Labels"`
+	ReceivedAt    time.Time `json:"ReceivedAt"`
+
 	// 新增字段 - 完整的邮件对象（可选）
-	Email         *mainModels.Email    `json:"email,omitempty"`
-	
+	Email *mainModels.Email `json:"Email,omitempty"`
+
 	// 事件元数据（新增）
-	EventType     string    `json:"event_type,omitempty"`   // "received", "updated", "deleted"
-	MailboxName   string    `json:"mailbox_name,omitempty"`
-	Changes       map[string]interface{} `json:"changes,omitempty"`
-	TriggerID     uint      `json:"trigger_id,omitempty"`
-	ExecutionID   string    `json:"execution_id,omitempty"`
+	EventType   string                 `json:"EventType,omitempty"` // "received", "updated", "deleted"
+	MailboxName string                 `json:"MailboxName,omitempty"`
+	Changes     map[string]interface{} `json:"Changes,omitempty"`
+	TriggerID   uint                   `json:"TriggerID,omitempty"`
+	ExecutionID string                 `json:"ExecutionID,omitempty"`
 }
 
 // TriggerEventData 触发器事件数据
@@ -167,6 +193,110 @@ func (e *Event) MarkFailed() {
 	e.Status = EventStatusFailed
 	e.UpdatedAt = now
 	e.ProcessedAt = &now
+}
+
+// SetVariable 设置变量
+func (e *Event) SetVariable(name string, value interface{}) {
+	if e.Variables == nil {
+		e.Variables = make(map[string]interface{})
+	}
+	e.Variables[name] = value
+	e.UpdatedAt = time.Now()
+}
+
+// GetVariable 获取变量，返回值和是否存在
+func (e *Event) GetVariable(name string) (interface{}, bool) {
+	if e.Variables == nil {
+		return nil, false
+	}
+	value, exists := e.Variables[name]
+	return value, exists
+}
+
+// GetVariableOrError 获取变量，不存在时返回错误
+func (e *Event) GetVariableOrError(name string) (interface{}, error) {
+	value, exists := e.GetVariable(name)
+	if !exists {
+		return nil, fmt.Errorf("variable '%s' not found", name)
+	}
+	return value, nil
+}
+
+// GetAllVariables 获取所有变量（只读副本）
+func (e *Event) GetAllVariables() map[string]interface{} {
+	if e.Variables == nil {
+		return make(map[string]interface{})
+	}
+	// 返回副本以避免外部修改
+	result := make(map[string]interface{}, len(e.Variables))
+	for k, v := range e.Variables {
+		result[k] = v
+	}
+	return result
+}
+
+// HasVariable 检查变量是否存在
+func (e *Event) HasVariable(name string) bool {
+	if e.Variables == nil {
+		return false
+	}
+	_, exists := e.Variables[name]
+	return exists
+}
+
+// DeleteVariable 删除变量
+func (e *Event) DeleteVariable(name string) {
+	if e.Variables != nil {
+		delete(e.Variables, name)
+		e.UpdatedAt = time.Now()
+	}
+}
+
+// ClearVariables 清空所有变量
+func (e *Event) ClearVariables() {
+	e.Variables = make(map[string]interface{})
+	e.UpdatedAt = time.Now()
+}
+
+// SetStep 设置步骤结果
+func (e *Event) SetStep(index int, alias string, step *StepResult) {
+	if e.Steps == nil {
+		e.Steps = make(map[string]*StepResult)
+	}
+	// 按索引存储
+	indexKey := fmt.Sprintf("%d", index)
+	e.Steps[indexKey] = step
+	// 如果有别名，也按别名存储
+	if alias != "" {
+		e.Steps[alias] = step
+	}
+	e.UpdatedAt = time.Now()
+}
+
+// GetStep 获取步骤结果（按索引或别名）
+func (e *Event) GetStep(key string) (*StepResult, bool) {
+	if e.Steps == nil {
+		return nil, false
+	}
+	step, exists := e.Steps[key]
+	return step, exists
+}
+
+// GetStepByIndex 按索引获取步骤结果
+func (e *Event) GetStepByIndex(index int) (*StepResult, bool) {
+	return e.GetStep(fmt.Sprintf("%d", index))
+}
+
+// GetAllSteps 获取所有步骤（只读副本）
+func (e *Event) GetAllSteps() map[string]*StepResult {
+	if e.Steps == nil {
+		return make(map[string]*StepResult)
+	}
+	result := make(map[string]*StepResult, len(e.Steps))
+	for k, v := range e.Steps {
+		result[k] = v
+	}
+	return result
 }
 
 // generateEventID 生成事件ID

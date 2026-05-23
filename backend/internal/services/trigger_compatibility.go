@@ -31,7 +31,7 @@ func (s *TriggerCompatibilityService) MigrateAllTriggers() (int, error) {
 	log.Println("[TriggerCompatibilityService] Starting migration of all triggers")
 
 	// Get all old triggers
-	oldTriggers, err := s.oldTriggerRepo.GetAll()
+	oldTriggers, err := s.oldTriggerRepo.GetAll(0)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get old triggers: %w", err)
 	}
@@ -47,7 +47,7 @@ func (s *TriggerCompatibilityService) MigrateAllTriggers() (int, error) {
 
 		// Check if this trigger has already been migrated
 		// Note: GetByName method might not exist, using GetAll and filtering
-		allNewTriggers, err := s.newTriggerRepo.GetAll()
+		allNewTriggers, err := s.newTriggerRepo.GetAll(0)
 		if err == nil {
 			for _, t := range allNewTriggers {
 				if t.Name == oldTrigger.Name {
@@ -90,7 +90,7 @@ func (s *TriggerCompatibilityService) MigrateTrigger(oldTriggerID uint) (*models
 	}
 
 	// Check if this trigger has already been migrated
-	allNewTriggers, err := s.newTriggerRepo.GetAll()
+	allNewTriggers, err := s.newTriggerRepo.GetAll(0)
 	if err == nil {
 		for _, t := range allNewTriggers {
 			if t.Name == oldTrigger.Name {

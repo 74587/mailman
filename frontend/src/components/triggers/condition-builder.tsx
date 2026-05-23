@@ -1,34 +1,39 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import { useState, useEffect } from 'react'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Code } from 'lucide-react'
 import { v4 as uuidv4 } from 'uuid'
-import { ConditionGroup, Expression } from './condition-group'
+import { ConditionGroup } from './condition-group'
+import { TriggerExpression } from '@/types'
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 
 // 条件类型
 type ConditionType = 'simple' | 'advanced'
 
 interface ConditionBuilderProps {
-  initialExpressions?: Expression[]
-  onChange: (expressions: Expression[]) => void
-  onTest?: (expressions: Expression[]) => Promise<any>
+  initialExpressions?: TriggerExpression[]
+  onChange: (expressions: TriggerExpression[]) => void
+  onTest?: (expressions: TriggerExpression[]) => Promise<any>
 }
 
 export function ConditionBuilder({ initialExpressions, onChange, onTest }: ConditionBuilderProps) {
+  const { confirm } = useConfirmDialog()
   const [conditionType, setConditionType] = useState<ConditionType>('simple')
-  const [expressions, setExpressions] = useState<Expression[]>([])
+  const [expressions, setExpressions] = useState<TriggerExpression[]>([])
   const [advancedScript, setAdvancedScript] = useState('')
-  
+
   // 初始化
   useEffect(() => {
     if (initialExpressions && initialExpressions.length > 0) {
       setExpressions(initialExpressions)
     } else {
       // 创建默认的根条件组
-      const rootGroup: Expression = {
+      const rootGroup: TriggerExpression = {
         id: uuidv4(),
         type: 'group',
         operator: 'and',
@@ -37,9 +42,9 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
       setExpressions([rootGroup])
     }
   }, [initialExpressions])
-  
+
   // 创建默认条件
-  const createDefaultCondition = (): Expression => {
+  const createDefaultCondition = (): TriggerExpression => {
     return {
       id: uuidv4(),
       type: 'condition',
@@ -47,11 +52,11 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
       operator: 'contains',
       value: '',
       not: false
-    } as Expression
+    } as TriggerExpression
   }
-  
+
   // 创建默认条件组
-  const createDefaultGroup = (): Expression => {
+  const createDefaultGroup = (): TriggerExpression => {
     return {
       id: uuidv4(),
       type: 'group',
@@ -60,10 +65,10 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
       not: false
     }
   }
-  
+
   // 更新表达式
-  const updateExpression = (updatedExpression: Expression) => {
-    const findAndUpdate = (expressions: Expression[]): Expression[] => {
+  const updateExpression = (updatedExpression: TriggerExpression) => {
+    const findAndUpdate = (expressions: TriggerExpression[]): TriggerExpression[] => {
       return expressions.map(expr => {
         if (expr.id === updatedExpression.id) {
           return updatedExpression
@@ -76,15 +81,15 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
         return expr
       })
     }
-    
+
     const newExpressions = findAndUpdate(expressions)
     setExpressions(newExpressions)
     onChange(newExpressions)
   }
-  
+
   // 添加条件到组
   const addConditionToGroup = (groupId: string) => {
-    const findAndAddCondition = (expressions: Expression[]): Expression[] => {
+    const findAndAddCondition = (expressions: TriggerExpression[]): TriggerExpression[] => {
       return expressions.map(expr => {
         if (expr.id === groupId && expr.type === 'group') {
           return {
@@ -100,15 +105,15 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
         return expr
       })
     }
-    
+
     const newExpressions = findAndAddCondition(expressions)
     setExpressions(newExpressions)
     onChange(newExpressions)
   }
-  
+
   // 添加条件组到组
   const addGroupToGroup = (groupId: string) => {
-    const findAndAddGroup = (expressions: Expression[]): Expression[] => {
+    const findAndAddGroup = (expressions: TriggerExpression[]): TriggerExpression[] => {
       return expressions.map(expr => {
         if (expr.id === groupId && expr.type === 'group') {
           return {
@@ -124,15 +129,15 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
         return expr
       })
     }
-    
+
     const newExpressions = findAndAddGroup(expressions)
     setExpressions(newExpressions)
     onChange(newExpressions)
   }
-  
+
   // 从组中删除表达式
   const removeExpressionFromGroup = (expressionId: string, groupId: string) => {
-    const findAndRemove = (expressions: Expression[]): Expression[] => {
+    const findAndRemove = (expressions: TriggerExpression[]): TriggerExpression[] => {
       return expressions.map(expr => {
         if (expr.id === groupId && expr.type === 'group') {
           // 确保组中至少保留一个条件
@@ -152,14 +157,14 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
         return expr
       })
     }
-    
+
     const newExpressions = findAndRemove(expressions)
     setExpressions(newExpressions)
     onChange(newExpressions)
   }
-  
+
   // 切换条件类型
-  const toggleConditionType = () => {
+  const toggleConditionType = async () => {
     if (conditionType === 'simple') {
       // 从简单模式切换到高级模式
       setConditionType('advanced')
@@ -167,10 +172,16 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
       setAdvancedScript(JSON.stringify(expressions, null, 2))
     } else {
       // 从高级模式切换到简单模式
-      if (confirm('切换到简单模式将丢失高级编辑内容，确定继续吗？')) {
+      const confirmed = await confirm({
+        title: '切换确认',
+        description: '切换到简单模式将丢失高级编辑内容，确定继续吗？',
+        confirmText: '确定',
+        cancelText: '取消'
+      })
+      if (confirmed) {
         setConditionType('simple')
         // 重置为默认表达式
-        const rootGroup: Expression = {
+        const rootGroup: TriggerExpression = {
           id: uuidv4(),
           type: 'group',
           operator: 'and',
@@ -181,7 +192,7 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
       }
     }
   }
-  
+
   // 测试条件
   const handleTestCondition = async () => {
     if (onTest) {
@@ -193,25 +204,29 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
           to: ["recipient@example.com"],
           body: "这是一封测试邮件"
         }
-        
+
         const result = await onTest(expressions)
         // 处理测试结果
-        console.log('测试结果:', result)
-        
+        logger.debug('测试结果:', result)
+
         // 显示测试结果
-        alert(result.result ? '条件满足！' : '条件不满足！')
+        if (result.result) {
+          toast.success('条件满足！')
+        } else {
+          toast.info('条件不满足！')
+        }
       } catch (error) {
         console.error('测试条件失败:', error)
-        alert('测试失败: ' + (error instanceof Error ? error.message : '未知错误'))
+        toast.error('测试失败: ' + (error instanceof Error ? error.message : '未知错误'))
       }
     }
   }
-  
+
   // 处理高级脚本变更
   const handleAdvancedScriptChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const script = e.target.value
     setAdvancedScript(script)
-    
+
     // 尝试解析JSON
     try {
       const parsedExpressions = JSON.parse(script)
@@ -223,26 +238,26 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
       console.error('解析JSON失败:', error)
     }
   }
-  
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h3 className="text-lg font-medium">触发条件</h3>
         <div className="flex gap-2">
           {onTest && (
-            <Button 
-              type="button" 
-              variant="outline" 
+            <Button
+              type="button"
+              variant="outline"
               size="sm"
               onClick={handleTestCondition}
             >
               测试条件
             </Button>
           )}
-          
-          <Button 
-            type="button" 
-            variant="outline" 
+
+          <Button
+            type="button"
+            variant="outline"
             size="sm"
             onClick={toggleConditionType}
           >
@@ -251,7 +266,7 @@ export function ConditionBuilder({ initialExpressions, onChange, onTest }: Condi
           </Button>
         </div>
       </div>
-      
+
       {conditionType === 'simple' ? (
         <div className="space-y-4">
           {expressions.map(expr => (

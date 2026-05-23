@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Plus, Edit, Trash2, Copy, RefreshCw, AlertCircle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { toast } from 'sonner'
 
 // 创建会话模态框
 const CreateSessionModal = ({ isOpen, onClose, onSubmit }: {
@@ -255,10 +256,11 @@ export default function UserSessionsTab() {
         navigator.clipboard.writeText(token)
             .then(() => {
                 // 可以添加一个提示
-                alert('令牌已复制到剪贴板')
+                toast.success('令牌已复制到剪贴板')
             })
             .catch(err => {
                 console.error('复制失败:', err)
+                toast.error('复制失败')
             })
     }
 

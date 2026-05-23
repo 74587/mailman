@@ -1,10 +1,21 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import { useState, useEffect } from 'react'
-import { X, Copy, Check, AlertCircle, Loader2, ArrowRight, ArrowLeft, Shield, Eye, EyeOff, Info, ExternalLink, Mail, Settings } from 'lucide-react'
+import { Copy, Check, AlertCircle, Loader2, ArrowRight, ArrowLeft, Shield, Eye, EyeOff, Info, ExternalLink, Mail, Settings } from 'lucide-react'
 import { oauth2Service } from '@/services/oauth2.service'
 import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalFooter,
+    ModalTitle,
+    ModalDescription
+} from '@/components/ui/modal'
+import { Button } from '@/components/ui/button'
 
 interface OutlookThunderbirdModalProps {
     isOpen: boolean
@@ -215,7 +226,7 @@ export default function OutlookThunderbirdModal({
             fromThunderbird: true
         }
 
-        console.log('[Thunderbird Modal] 触发triggerOutlookTokenModal事件，数据:', eventData)
+        logger.debug('[Thunderbird Modal] 触发triggerOutlookTokenModal事件，数据:', eventData)
 
         const event = new CustomEvent('triggerOutlookTokenModal', {
             detail: eventData
@@ -226,69 +237,55 @@ export default function OutlookThunderbirdModal({
         handleClose()
     }
 
-    if (!isOpen) return null
-
     return (
-        <>
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl mx-4 dark:bg-gray-800 max-h-[90vh] overflow-y-auto">
-                    {/* 头部 */}
-                    <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
-                        <div className="flex items-center">
-                            <Shield className="h-6 w-6 text-orange-600 mr-3" />
-                            <div>
-                                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                                    Outlook Thunderbird 授权向导
-                                </h3>
-                                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                                    {steps[currentStepIndex]?.description}
-                                </p>
-                            </div>
+        <Modal open={isOpen} onOpenChange={(open) => !open && handleClose()}>
+            <ModalContent size="full" className="max-w-6xl max-h-[90vh] flex flex-col">
+                <ModalHeader>
+                    <div className="flex items-center">
+                        <Shield className="h-6 w-6 text-orange-600 mr-3" />
+                        <div>
+                            <ModalTitle>Outlook Thunderbird 授权向导</ModalTitle>
+                            <ModalDescription>{steps[currentStepIndex]?.description}</ModalDescription>
                         </div>
-                        <button
-                            onClick={handleClose}
-                            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                        >
-                            <X className="h-5 w-5" />
-                        </button>
                     </div>
+                </ModalHeader>
 
-                    {/* 步骤指示器 */}
-                    <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-                        <div className="flex items-center justify-between">
-                            {steps.map((step, index) => (
-                                <div key={step.key} className="flex items-center">
-                                    <div className={cn(
-                                        "w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium",
-                                        index < currentStepIndex
-                                            ? "bg-green-600 text-white"
-                                            : index === currentStepIndex
-                                                ? "bg-orange-600 text-white"
-                                                : "bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400"
-                                    )}>
-                                        {index < currentStepIndex ? (
-                                            <Check className="h-4 w-4" />
-                                        ) : (
-                                            <span>{index + 1}</span>
-                                        )}
-                                    </div>
-                                    <span className={cn(
-                                        "ml-2 text-sm font-medium",
-                                        index <= currentStepIndex
-                                            ? "text-gray-900 dark:text-white"
-                                            : "text-gray-500 dark:text-gray-400"
-                                    )}>
-                                        {step.title}
-                                    </span>
-                                    {index < steps.length - 1 && (
-                                        <ArrowRight className="h-4 w-4 ml-4 text-gray-400" />
+                {/* 步骤指示器 */}
+                <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+                    <div className="flex items-center justify-between">
+                        {steps.map((step, index) => (
+                            <div key={step.key} className="flex items-center">
+                                <div className={cn(
+                                    "w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium",
+                                    index < currentStepIndex
+                                        ? "bg-green-600 text-white"
+                                        : index === currentStepIndex
+                                            ? "bg-orange-600 text-white"
+                                            : "bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400"
+                                )}>
+                                    {index < currentStepIndex ? (
+                                        <Check className="h-4 w-4" />
+                                    ) : (
+                                        <span>{index + 1}</span>
                                     )}
                                 </div>
-                            ))}
-                        </div>
+                                <span className={cn(
+                                    "ml-2 text-sm font-medium",
+                                    index <= currentStepIndex
+                                        ? "text-gray-900 dark:text-white"
+                                        : "text-gray-500 dark:text-gray-400"
+                                )}>
+                                    {step.title}
+                                </span>
+                                {index < steps.length - 1 && (
+                                    <ArrowRight className="h-4 w-4 ml-4 text-gray-400" />
+                                )}
+                            </div>
+                        ))}
                     </div>
+                </div>
 
-                    {/* 内容区域 - 左右两栏布局 */}
+                <ModalBody className="flex-1 overflow-hidden">
                     <div className="flex min-h-96 max-h-[calc(90vh-300px)]">
                         {/* 左侧 - 操作文档 */}
                         <div className="w-1/2 p-6 border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
@@ -534,7 +531,7 @@ export default function OutlookThunderbirdModal({
                                                                 <div className="mt-2">
                                                                     <p className="text-green-600 dark:text-green-400">
                                                                         <Check className="inline h-3 w-3 mr-1" />
-                                        成功提取授权码
+                                                                        成功提取授权码
                                                                     </p>
                                                                     <p className="font-mono text-xs text-gray-600 dark:text-gray-400 mt-1">
                                                                         Code: {parseAuthorizationCode(stepData.authData.fullUrl)?.substring(0, 20)}...
@@ -723,22 +720,17 @@ export default function OutlookThunderbirdModal({
                             </div>
                         </div>
                     </div>
+                </ModalBody>
 
-                    {/* 底部 */}
-                    <div className="flex items-center justify-between p-6 bg-gray-50 dark:bg-gray-700 border-t border-gray-200 dark:border-gray-700">
-                        <button
-                            onClick={handleClose}
-                            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 dark:bg-gray-600 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-500"
-                        >
-                            取消
-                        </button>
-
-                        <div className="text-sm text-gray-500 dark:text-gray-400">
-                            步骤 {currentStepIndex + 1} / {steps.length}
-                        </div>
+                <ModalFooter className="justify-between">
+                    <Button variant="outline" onClick={handleClose}>
+                        取消
+                    </Button>
+                    <div className="text-sm text-gray-500 dark:text-gray-400">
+                        步骤 {currentStepIndex + 1} / {steps.length}
                     </div>
-                </div>
-            </div>
-        </>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
     )
 }

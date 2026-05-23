@@ -1,9 +1,23 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X } from 'lucide-react'
 import { EmailAccount } from '@/types'
 import { emailAccountService } from '@/services/email-account.service'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalFooter,
+    ModalTitle,
+    ModalDescription
+} from '@/components/ui/modal'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
+import { Loader2 } from 'lucide-react'
 
 interface AccountModalProps {
     isOpen: boolean
@@ -101,201 +115,172 @@ export default function AccountModal({ isOpen, onClose, onSuccess, account }: Ac
         }
     }
 
-    if (!isOpen) return null
-
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl dark:bg-gray-800">
-                {/* 标题栏 */}
-                <div className="mb-6 flex items-center justify-between">
-                    <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                        {account ? '编辑邮箱账户' : '添加邮箱账户'}
-                    </h2>
-                    <button
-                        onClick={onClose}
-                        className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                        <X className="h-5 w-5" />
-                    </button>
-                </div>
+        <Modal open={isOpen} onOpenChange={(open) => !open && onClose()}>
+            <ModalContent size="md">
+                <form onSubmit={handleSubmit}>
+                    <ModalHeader>
+                        <ModalTitle>{account ? '编辑邮箱账户' : '添加邮箱账户'}</ModalTitle>
+                        <ModalDescription>
+                            {account ? '修改邮箱账户信息' : '添加新的邮箱账户'}
+                        </ModalDescription>
+                    </ModalHeader>
 
-                {/* 错误提示 */}
-                {error && (
-                    <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400">
-                        {error}
-                    </div>
-                )}
-
-                {/* 表单 */}
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    {/* 邮箱地址 */}
-                    <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                            邮箱地址
-                        </label>
-                        <input
-                            type="email"
-                            value={formData.email}
-                            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                            required
-                            disabled={!!account}
-                        />
-                    </div>
-
-                    {/* 邮箱提供商 */}
-                    <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                            邮箱提供商
-                        </label>
-                        <select
-                            value={formData.provider}
-                            onChange={(e) => setFormData({ ...formData, provider: e.target.value })}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                        >
-                            <option value="gmail">Gmail</option>
-                            <option value="outlook">Outlook</option>
-                            <option value="yahoo">Yahoo</option>
-                            <option value="other">其他</option>
-                        </select>
-                    </div>
-
-                    {/* 认证方式 */}
-                    <div>
-                        <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                            认证方式
-                        </label>
-                        <select
-                            value={formData.auth_type}
-                            onChange={(e) => setFormData({ ...formData, auth_type: e.target.value as any })}
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                        >
-                            <option value="password">密码</option>
-                            <option value="app_password">应用专用密码</option>
-                            <option value="oauth2">OAuth2</option>
-                        </select>
-                    </div>
-
-                    {/* 密码输入 */}
-                    {formData.auth_type === 'password' && (
-                        <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                密码
-                            </label>
-                            <input
-                                type="password"
-                                value={formData.password}
-                                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                                className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                                required={!account}
-                                placeholder={account ? '留空表示不修改' : ''}
-                            />
-                        </div>
-                    )}
-
-                    {/* 应用专用密码输入 */}
-                    {formData.auth_type === 'app_password' && (
-                        <div>
-                            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                应用专用密码
-                            </label>
-                            <input
-                                type="password"
-                                value={formData.app_password}
-                                onChange={(e) => setFormData({ ...formData, app_password: e.target.value })}
-                                className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                                required={!account}
-                                placeholder={account ? '留空表示不修改' : ''}
-                            />
-                            <p className="mt-1 text-xs text-gray-500">
-                                请在邮箱设置中生成应用专用密码
-                            </p>
-                        </div>
-                    )}
-
-                    {/* OAuth2 提示 */}
-                    {formData.auth_type === 'oauth2' && (
-                        <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-600 dark:bg-blue-900/20 dark:text-blue-400">
-                            OAuth2 认证将在保存后自动跳转到授权页面
-                        </div>
-                    )}
-
-                    {/* 代理设置 */}
-                    <div>
-                        <label className="flex items-center space-x-2">
-                            <input
-                                type="checkbox"
-                                checked={formData.use_proxy}
-                                onChange={(e) => setFormData({ ...formData, use_proxy: e.target.checked })}
-                                className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                            />
-                            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                使用代理
-                            </span>
-                        </label>
-                    </div>
-
-                    {/* 代理详细设置 */}
-                    {formData.use_proxy && (
-                        <>
-                            <div>
-                                <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                    代理地址
-                                </label>
-                                <input
-                                    type="text"
-                                    value={formData.proxy_url}
-                                    onChange={(e) => setFormData({ ...formData, proxy_url: e.target.value })}
-                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                                    placeholder="socks5://127.0.0.1:1080"
-                                    required
-                                />
+                    <ModalBody className="space-y-4">
+                        {/* 错误提示 */}
+                        {error && (
+                            <div className="rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400">
+                                {error}
                             </div>
-                            <div>
-                                <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                    代理用户名（可选）
-                                </label>
-                                <input
-                                    type="text"
-                                    value={formData.proxy_username}
-                                    onChange={(e) => setFormData({ ...formData, proxy_username: e.target.value })}
-                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                                />
-                            </div>
-                            <div>
-                                <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                    代理密码（可选）
-                                </label>
-                                <input
+                        )}
+
+                        {/* 邮箱地址 */}
+                        <div className="space-y-2">
+                            <Label>邮箱地址</Label>
+                            <Input
+                                type="email"
+                                value={formData.email}
+                                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                                required
+                                disabled={!!account}
+                            />
+                        </div>
+
+                        {/* 邮箱提供商 */}
+                        <div className="space-y-2">
+                            <Label>邮箱提供商</Label>
+                            <Select
+                                value={formData.provider}
+                                onValueChange={(value) => setFormData({ ...formData, provider: value })}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="gmail">Gmail</SelectItem>
+                                    <SelectItem value="outlook">Outlook</SelectItem>
+                                    <SelectItem value="yahoo">Yahoo</SelectItem>
+                                    <SelectItem value="other">其他</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        {/* 认证方式 */}
+                        <div className="space-y-2">
+                            <Label>认证方式</Label>
+                            <Select
+                                value={formData.auth_type}
+                                onValueChange={(value) => setFormData({ ...formData, auth_type: value as any })}
+                            >
+                                <SelectTrigger>
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="password">密码</SelectItem>
+                                    <SelectItem value="app_password">应用专用密码</SelectItem>
+                                    <SelectItem value="oauth2">OAuth2</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        {/* 密码输入 */}
+                        {formData.auth_type === 'password' && (
+                            <div className="space-y-2">
+                                <Label>密码</Label>
+                                <Input
                                     type="password"
-                                    value={formData.proxy_password}
-                                    onChange={(e) => setFormData({ ...formData, proxy_password: e.target.value })}
-                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                    value={formData.password}
+                                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                                    required={!account}
+                                    placeholder={account ? '留空表示不修改' : ''}
                                 />
                             </div>
-                        </>
-                    )}
+                        )}
 
-                    {/* 操作按钮 */}
-                    <div className="flex space-x-3 pt-4">
-                        <button
+                        {/* 应用专用密码输入 */}
+                        {formData.auth_type === 'app_password' && (
+                            <div className="space-y-2">
+                                <Label>应用专用密码</Label>
+                                <Input
+                                    type="password"
+                                    value={formData.app_password}
+                                    onChange={(e) => setFormData({ ...formData, app_password: e.target.value })}
+                                    required={!account}
+                                    placeholder={account ? '留空表示不修改' : ''}
+                                />
+                                <p className="text-xs text-gray-500">
+                                    请在邮箱设置中生成应用专用密码
+                                </p>
+                            </div>
+                        )}
+
+                        {/* OAuth2 提示 */}
+                        {formData.auth_type === 'oauth2' && (
+                            <div className="rounded-lg bg-blue-50 p-3 text-sm text-blue-600 dark:bg-blue-900/20 dark:text-blue-400">
+                                OAuth2 认证将在保存后自动跳转到授权页面
+                            </div>
+                        )}
+
+                        {/* 代理设置 */}
+                        <div className="flex items-center justify-between">
+                            <Label>使用代理</Label>
+                            <Switch
+                                checked={formData.use_proxy}
+                                onCheckedChange={(checked) => setFormData({ ...formData, use_proxy: checked })}
+                            />
+                        </div>
+
+                        {/* 代理详细设置 */}
+                        {formData.use_proxy && (
+                            <>
+                                <div className="space-y-2">
+                                    <Label>代理地址</Label>
+                                    <Input
+                                        value={formData.proxy_url}
+                                        onChange={(e) => setFormData({ ...formData, proxy_url: e.target.value })}
+                                        placeholder="socks5://127.0.0.1:1080"
+                                        required
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>代理用户名（可选）</Label>
+                                    <Input
+                                        value={formData.proxy_username}
+                                        onChange={(e) => setFormData({ ...formData, proxy_username: e.target.value })}
+                                    />
+                                </div>
+                                <div className="space-y-2">
+                                    <Label>代理密码（可选）</Label>
+                                    <Input
+                                        type="password"
+                                        value={formData.proxy_password}
+                                        onChange={(e) => setFormData({ ...formData, proxy_password: e.target.value })}
+                                    />
+                                </div>
+                            </>
+                        )}
+                    </ModalBody>
+
+                    <ModalFooter>
+                        <Button
                             type="button"
+                            variant="outline"
                             onClick={onClose}
-                            className="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                             disabled={loading}
                         >
                             取消
-                        </button>
-                        <button
-                            type="submit"
-                            className="flex-1 rounded-lg bg-primary-600 px-4 py-2 text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
-                            disabled={loading}
-                        >
-                            {loading ? '处理中...' : account ? '保存' : '添加'}
-                        </button>
-                    </div>
+                        </Button>
+                        <Button type="submit" disabled={loading}>
+                            {loading ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    处理中...
+                                </>
+                            ) : account ? '保存' : '添加'}
+                        </Button>
+                    </ModalFooter>
                 </form>
-            </div>
-        </div>
+            </ModalContent>
+        </Modal>
     )
 }

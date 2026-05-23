@@ -37,19 +37,28 @@ func (r *TriggerRepository) GetByID(id uint) (*models.EmailTrigger, error) {
 }
 
 // GetAll retrieves all triggers
-func (r *TriggerRepository) GetAll() ([]models.EmailTrigger, error) {
+func (r *TriggerRepository) GetAll(orgID uint) ([]models.EmailTrigger, error) {
 	var triggers []models.EmailTrigger
-	err := r.db.Find(&triggers).Error
+	query := r.db.Model(&models.EmailTrigger{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Find(&triggers).Error
 	return triggers, err
 }
 
 // GetAllPaginated retrieves triggers with pagination and search
-func (r *TriggerRepository) GetAllPaginated(page, limit int, sortBy, sortOrder, search string) ([]models.EmailTrigger, int64, error) {
+func (r *TriggerRepository) GetAllPaginated(page, limit int, sortBy, sortOrder, search string, orgID uint) ([]models.EmailTrigger, int64, error) {
 	var triggers []models.EmailTrigger
 	var total int64
 
 	// Build query
 	query := r.db.Model(&models.EmailTrigger{})
+
+	// Apply org filter
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
 
 	// Apply search filter
 	if search != "" {
@@ -78,9 +87,13 @@ func (r *TriggerRepository) GetAllPaginated(page, limit int, sortBy, sortOrder, 
 }
 
 // GetByStatus retrieves triggers by status
-func (r *TriggerRepository) GetByStatus(status models.TriggerStatus) ([]models.EmailTrigger, error) {
+func (r *TriggerRepository) GetByStatus(status models.TriggerStatus, orgID uint) ([]models.EmailTrigger, error) {
 	var triggers []models.EmailTrigger
-	err := r.db.Where("status = ?", status).Find(&triggers).Error
+	query := r.db.Where("status = ?", status)
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Find(&triggers).Error
 	return triggers, err
 }
 
@@ -111,16 +124,24 @@ func (r *TriggerRepository) Delete(id uint) error {
 }
 
 // GetCount returns the total count of triggers
-func (r *TriggerRepository) GetCount() (int64, error) {
+func (r *TriggerRepository) GetCount(orgID uint) (int64, error) {
 	var count int64
-	err := r.db.Model(&models.EmailTrigger{}).Count(&count).Error
+	query := r.db.Model(&models.EmailTrigger{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
 // GetCountByStatus returns the count of triggers by status
-func (r *TriggerRepository) GetCountByStatus(status models.TriggerStatus) (int64, error) {
+func (r *TriggerRepository) GetCountByStatus(status models.TriggerStatus, orgID uint) (int64, error) {
 	var count int64
-	err := r.db.Model(&models.EmailTrigger{}).Where("status = ?", status).Count(&count).Error
+	query := r.db.Model(&models.EmailTrigger{}).Where("status = ?", status)
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
@@ -177,12 +198,17 @@ func (r *TriggerExecutionLogRepository) GetByTriggerID(triggerID uint, page, lim
 }
 
 // GetAllPaginated retrieves execution logs with pagination and filtering
-func (r *TriggerExecutionLogRepository) GetAllPaginated(page, limit int, triggerID *uint, status *models.TriggerExecutionStatus, startDate, endDate *time.Time) ([]models.TriggerExecutionLog, int64, error) {
+func (r *TriggerExecutionLogRepository) GetAllPaginated(page, limit int, triggerID *uint, status *models.TriggerExecutionStatus, startDate, endDate *time.Time, orgID uint) ([]models.TriggerExecutionLog, int64, error) {
 	var logs []models.TriggerExecutionLog
 	var total int64
 
 	// Build query
 	query := r.db.Model(&models.TriggerExecutionLog{})
+
+	// Apply org filter
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
 
 	// Apply filters
 	if triggerID != nil {

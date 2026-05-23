@@ -362,7 +362,7 @@ func (m *OptimizedIncrementalSyncManager) processAccountSync(job syncJob) {
 
 	// 更新最后同步时间（即使没有新邮件也更新）
 	// 传入同步的结束时间，确保时间窗口准确
-	m.processFetchComplete(accountID, emailsProcessed, hasNewEmails, endDate)
+	m.processFetchComplete(accountID, len(emailsProcessed), hasNewEmails, endDate)
 
 	// 更新内部缓存中的最后同步时间
 	now := time.Now()
@@ -371,7 +371,7 @@ func (m *OptimizedIncrementalSyncManager) processAccountSync(job syncJob) {
 	m.configMu.Unlock()
 
 	m.logger.Info("Completed sync for account %d: processed %d emails, has new: %v",
-		accountID, emailsProcessed, hasNewEmails)
+		accountID, len(emailsProcessed), hasNewEmails)
 }
 
 // fetchEmails 从邮件服务器获取邮件 - 直接调用获取服务，无过滤
@@ -747,8 +747,8 @@ func (m *OptimizedIncrementalSyncManager) processFetchComplete(accountID uint, e
 }
 
 // handleSyncBatch 处理一批邮件
-func (m *OptimizedIncrementalSyncManager) handleSyncBatch(emails []models.Email) (int, bool, error) {
-	newEmailCount := 0
+func (m *OptimizedIncrementalSyncManager) handleSyncBatch(emails []models.Email) ([]models.Email, bool, error) {
+	var syncedEmails []models.Email
 	hasNewEmails := false
 
 	for _, email := range emails {
@@ -787,16 +787,16 @@ func (m *OptimizedIncrementalSyncManager) handleSyncBatch(emails []models.Email)
 			continue
 		}
 
-		newEmailCount++
+		syncedEmails = append(syncedEmails, email)
 		hasNewEmails = true
 		m.logger.Info("Synced new email %s for account %d", email.MessageID, email.AccountID)
 	}
 
-	return newEmailCount, hasNewEmails, nil
+	return syncedEmails, hasNewEmails, nil
 }
 
 // SyncNow 立即同步指定账户
-func (m *OptimizedIncrementalSyncManager) SyncNow(accountID uint) (*SyncResult, error) {
+func (m *OptimizedIncrementalSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*SyncResult, error) {
 	m.logger.Info("SyncNow triggered for account %d", accountID)
 
 	// 获取账户配置
@@ -860,14 +860,14 @@ func (m *OptimizedIncrementalSyncManager) SyncNow(accountID uint) (*SyncResult, 
 		}
 
 		// 处理邮件
-		emailsProcessed, hasNewEmails, err := m.handleSyncBatch(emails)
+		syncedEmails, hasNewEmails, err := m.handleSyncBatch(emails)
 		if err != nil {
 			errorCh <- err
 			return
 		}
 
 		// 更新最后同步时间
-		if err := m.processFetchComplete(accountID, emailsProcessed, hasNewEmails, endTime); err != nil {
+		if err := m.processFetchComplete(accountID, len(syncedEmails), hasNewEmails, endTime); err != nil {
 			errorCh <- err
 			return
 		}
@@ -880,7 +880,8 @@ func (m *OptimizedIncrementalSyncManager) SyncNow(accountID uint) (*SyncResult, 
 
 		// 发送结果
 		resultCh <- &SyncResult{
-			EmailsSynced: emailsProcessed,
+			EmailsSynced: len(syncedEmails),
+			SyncedEmails: syncedEmails,
 			Duration:     time.Since(start),
 			Error:        nil,
 		}

@@ -1,0 +1,16 @@
+{
+    "accountId": 1,
+    "to": [
+        "test@example.com"
+    ],
+    "subject": "Attachment Verification Test",
+    "htmlContent": "<p>This is a test email to verify attachment sending.</p>",
+    "textContent": "This is a test email to verify attachment sending.",
+    "attachments": [
+        {
+            "filename": "test_attachment.txt",
+            "contentType": "text/plain",
+            "content": "SGVsbG8gV29ybGQgZnJvbSBBbnRpZ3Jhdml0eQ=="
+        }
+    ]
+}

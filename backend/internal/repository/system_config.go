@@ -104,6 +104,45 @@ func (r *SystemConfigRepository) InitializeDefaultConfigs() error {
 			IsVisible:  true,
 			SortOrder:  1,
 		},
+		{
+			Key:         "keyboard-shortcuts-enabled",
+			Name:        "启用快捷键",
+			Description: "启用或禁用全局键盘快捷键功能。禁用后，所有快捷键将不会响应。",
+			ValueType:   models.ConfigTypeBoolean,
+			DefaultValue: models.JSONMap{
+				"value": "true",
+			},
+			Category:   "keyboard",
+			IsEditable: true,
+			IsVisible:  true,
+			SortOrder:  0,
+		},
+		{
+			Key:         "login-theme",
+			Name:        "登录页主题",
+			Description: "选择登录页面的视觉主题。classic=经典, elegant=优雅, playful=趣味互动（小玩偶）",
+			ValueType:   models.ConfigTypeString,
+			DefaultValue: models.JSONMap{
+				"value": "classic",
+			},
+			Category:   "ui",
+			IsEditable: true,
+			IsVisible:  true,
+			SortOrder:  0,
+		},
+		{
+			Key:         "keyboard-shortcuts",
+			Name:        "快捷键配置",
+			Description: "自定义键盘快捷键绑定和组合键模式设置。包括组合键模式、超时时间等配置。",
+			ValueType:   models.ConfigTypeJSON,
+			DefaultValue: models.JSONMap{
+				"value": `{"chordMode":"visual","chordTimeout":2000,"holdThreshold":1000,"customBindings":[]}`,
+			},
+			Category:   "keyboard",
+			IsEditable: true,
+			IsVisible:  true,
+			SortOrder:  1,
+		},
 	}
 
 	for _, config := range defaultConfigs {

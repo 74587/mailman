@@ -153,10 +153,10 @@ nano .env  # 或使用其他编辑器如 vim、code 等
 
 ```env
 # 数据库配置（请修改为强密码）
-MYSQL_ROOT_PASSWORD=your_strong_root_password_123
+MYSQL_ROOT_PASSWORD=<YOUR_ROOT_PASSWORD>
 MYSQL_DATABASE=mailman
 MYSQL_USER=mailman
-MYSQL_PASSWORD=your_strong_mailman_password_456
+MYSQL_PASSWORD=<YOUR_DB_PASSWORD>
 
 # AI服务配置说明
 # 注意：AI服务配置已改为通过Web界面管理，不再使用环境变量
@@ -303,10 +303,10 @@ docker-compose -f docker-compose.dev.yml restart
 # 启动 MySQL 数据库
 docker run -d \
   --name mailman-mysql \
-  -e MYSQL_ROOT_PASSWORD=rootpass123 \
+  -e MYSQL_ROOT_PASSWORD=<YOUR_ROOT_PASSWORD> \
   -e MYSQL_DATABASE=mailman \
   -e MYSQL_USER=mailman \
-  -e MYSQL_PASSWORD=mailmanpass456 \
+  -e MYSQL_PASSWORD=<YOUR_DB_PASSWORD> \
   -p 3306:3306 \
   -v mailman_mysql_data:/var/lib/mysql \
   --restart unless-stopped \
@@ -327,7 +327,7 @@ docker run -d \
   -e DB_HOST=host.docker.internal \
   -e DB_PORT=3306 \
   -e DB_USER=mailman \
-  -e DB_PASSWORD=mailmanpass456 \
+  -e DB_PASSWORD=<YOUR_DB_PASSWORD> \
   -e DB_NAME=mailman \
   # -e OPENAI_API_KEY=your-openai-key \  # 已废弃，现在通过Web界面配置AI服务
   --restart unless-stopped \
@@ -373,10 +373,10 @@ cd mailman
 # 启动 MySQL 数据库
 docker run -d \
   --name mailman-mysql-local \
-  -e MYSQL_ROOT_PASSWORD=rootpass123 \
+  -e MYSQL_ROOT_PASSWORD=<YOUR_ROOT_PASSWORD> \
   -e MYSQL_DATABASE=mailman \
   -e MYSQL_USER=mailman \
-  -e MYSQL_PASSWORD=mailmanpass456 \
+  -e MYSQL_PASSWORD=<YOUR_DB_PASSWORD> \
   -p 3306:3306 \
   mysql:8.0
 ```
@@ -394,7 +394,7 @@ go mod download
 export DB_HOST=localhost
 export DB_PORT=3306
 export DB_USER=mailman
-export DB_PASSWORD=mailmanpass456
+export DB_PASSWORD=<YOUR_DB_PASSWORD>
 export DB_NAME=mailman
 export DB_DRIVER=mysql
 # export OPENAI_API_KEY=your-openai-api-key  # 已废弃，现在通过Web界面配置AI服务

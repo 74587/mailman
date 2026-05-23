@@ -1,9 +1,11 @@
+import { logger } from '@/lib/logger';
 // Tab回调管理工具函数
 
 // 全局回调注册表类型
 type TabCallbacks = {
     [tabId: string]: {
         onReady?: (data: any) => void;
+        onRefresh?: () => void;
         [key: string]: any;
     };
 };
@@ -21,7 +23,7 @@ export function registerTabCallback(tabId: string, callbackName: string, callbac
     (window as any).__tabCallbacks[tabId] = (window as any).__tabCallbacks[tabId] || {};
     (window as any).__tabCallbacks[tabId][callbackName] = callback;
 
-    console.log(`[registerTabCallback] 已注册${tabId}的${callbackName}回调`);
+    logger.debug(`[registerTabCallback] 已注册${tabId}的${callbackName}回调`);
 }
 
 // 移除Tab回调的工具函数
@@ -37,4 +39,39 @@ export function unregisterTabCallback(tabId: string, callbackName?: string) {
             delete (window as any).__tabCallbacks[tabId][callbackName];
         }
     }
+}
+
+// 刷新回调监听器管理
+let refreshListeners: Map<string, () => void> = new Map();
+
+// 注册Tab刷新回调 - 当Tab需要刷新时调用
+export function registerRefreshCallback(tabId: string, callback: () => void) {
+    if (typeof window === 'undefined') return;
+
+    refreshListeners.set(tabId, callback);
+    logger.debug(`[registerRefreshCallback] 已注册${tabId}的刷新回调`);
+}
+
+// 移除Tab刷新回调
+export function unregisterRefreshCallback(tabId: string) {
+    if (typeof window === 'undefined') return;
+
+    refreshListeners.delete(tabId);
+    logger.debug(`[unregisterRefreshCallback] 已移除${tabId}的刷新回调`);
+}
+
+// 初始化刷新事件监听器
+if (typeof window !== 'undefined') {
+    window.addEventListener('refreshTab', ((event: CustomEvent) => {
+        const { tabId } = event.detail;
+        logger.debug(`[tab-utils] 收到刷新事件:`, tabId);
+
+        const callback = refreshListeners.get(tabId);
+        if (callback) {
+            logger.debug(`[tab-utils] 执行${tabId}的刷新回调`);
+            callback();
+        } else {
+            logger.debug(`[tab-utils] ${tabId}未注册刷新回调`);
+        }
+    }) as EventListener);
 }

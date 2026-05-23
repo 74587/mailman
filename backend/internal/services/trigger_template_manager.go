@@ -3,7 +3,6 @@ package services
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -63,7 +62,7 @@ func (m *TriggerTemplateManager) LoadTemplates() error {
 		}
 
 		// 遍历目录中的所有文件
-		files, err := ioutil.ReadDir(dir)
+		files, err := os.ReadDir(dir)
 		if err != nil {
 			log.Printf("[TriggerTemplateManager] Error reading directory %s: %v", dir, err)
 			continue
@@ -97,7 +96,7 @@ func (m *TriggerTemplateManager) LoadTemplates() error {
 // loadTemplateFromFile 从文件加载模板
 func (m *TriggerTemplateManager) loadTemplateFromFile(path string) (*TriggerTemplate, error) {
 	// 读取模板文件
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read template file: %v", err)
 	}
@@ -206,7 +205,7 @@ func (m *TriggerTemplateManager) SaveTemplate(template *TriggerTemplate) error {
 
 	// 保存到文件
 	path := filepath.Join(dir, template.ID+".json")
-	if err := ioutil.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write template file: %v", err)
 	}
 

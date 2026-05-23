@@ -1,3 +1,4 @@
+import { logger } from '@/lib/logger';
 import { apiClient } from '@/lib/api-client';
 
 export interface EmailFilter {
@@ -105,7 +106,7 @@ class SubscriptionService {
             this.wsConnection = new WebSocket(wsUrl);
 
             this.wsConnection.onopen = () => {
-                console.log('WebSocket connected');
+                logger.debug('WebSocket connected');
                 if (onStatusChange) onStatusChange(true);
                 resolve();
             };
@@ -113,7 +114,7 @@ class SubscriptionService {
             this.wsConnection.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    console.log('WebSocket message:', data);
+                    logger.debug('WebSocket message:', data);
 
                     // Call registered callbacks
                     if (data.type && this.wsCallbacks.has(data.type)) {
@@ -135,7 +136,7 @@ class SubscriptionService {
             };
 
             this.wsConnection.onclose = () => {
-                console.log('WebSocket disconnected');
+                logger.debug('WebSocket disconnected');
                 if (onStatusChange) onStatusChange(false);
                 this.wsConnection = null;
             };

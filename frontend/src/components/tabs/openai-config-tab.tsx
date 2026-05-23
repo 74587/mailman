@@ -3,8 +3,10 @@
 import { useState, useEffect } from 'react'
 import { openAIService } from '@/services/openai.service'
 import type { OpenAIConfig, OpenAIConfigRequest, AIChannelType } from '@/types/openai'
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 
 export function OpenAIConfigTab() {
+    const { confirm } = useConfirmDialog()
     const [configs, setConfigs] = useState<OpenAIConfig[]>([])
     const [loading, setLoading] = useState(true)
     const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -106,9 +108,14 @@ export function OpenAIConfigTab() {
     }
 
     const handleDelete = async (id: number) => {
-        if (!confirm('确定要删除这个配置吗？')) {
-            return
-        }
+        const confirmed = await confirm({
+            title: '删除配置',
+            description: '确定要删除这个配置吗？',
+            confirmText: '删除',
+            cancelText: '取消',
+            variant: 'destructive'
+        })
+        if (!confirmed) return
 
         try {
             await openAIService.deleteOpenAIConfig(id)

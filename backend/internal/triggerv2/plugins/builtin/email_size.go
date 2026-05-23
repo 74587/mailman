@@ -500,12 +500,18 @@ func (p *EmailSizePlugin) Evaluate(ctx *plugins.PluginContext, event *models.Eve
 		}, nil
 	}
 
+	// 从 ctx.Config.Config 获取用户配置的条件（优先）
+	conditions := p.config
+	if ctx.Config != nil && ctx.Config.Config != nil {
+		conditions = ctx.Config.Config
+	}
+
 	// 获取配置
-	minSizeStr := p.getMinSize()
-	maxSizeStr := p.getMaxSize()
-	sizeField := p.getSizeField()
-	includeAttachments := p.getIncludeAttachments()
-	attachmentFilter := p.getAttachmentFilter()
+	minSizeStr := p.getMinSizeFromConfig(conditions)
+	maxSizeStr := p.getMaxSizeFromConfig(conditions)
+	sizeField := p.getSizeFieldFromConfig(conditions)
+	includeAttachments := p.getIncludeAttachmentsFromConfig(conditions)
+	attachmentFilter := p.getAttachmentFilterFromConfig(conditions)
 
 	// 解析大小限制
 	minSize, err := p.parseSize(minSizeStr)
@@ -613,7 +619,12 @@ func (p *EmailSizePlugin) GetRequiredFields() []string {
 
 // getMinSize 获取最小大小配置
 func (p *EmailSizePlugin) getMinSize() string {
-	if minSize, ok := p.config["min_size"]; ok {
+	return p.getMinSizeFromConfig(p.config)
+}
+
+// getMinSizeFromConfig 从指定配置获取最小大小
+func (p *EmailSizePlugin) getMinSizeFromConfig(config map[string]interface{}) string {
+	if minSize, ok := config["min_size"]; ok {
 		if str, ok := minSize.(string); ok {
 			return str
 		}
@@ -623,7 +634,12 @@ func (p *EmailSizePlugin) getMinSize() string {
 
 // getMaxSize 获取最大大小配置
 func (p *EmailSizePlugin) getMaxSize() string {
-	if maxSize, ok := p.config["max_size"]; ok {
+	return p.getMaxSizeFromConfig(p.config)
+}
+
+// getMaxSizeFromConfig 从指定配置获取最大大小
+func (p *EmailSizePlugin) getMaxSizeFromConfig(config map[string]interface{}) string {
+	if maxSize, ok := config["max_size"]; ok {
 		if str, ok := maxSize.(string); ok {
 			return str
 		}
@@ -633,7 +649,12 @@ func (p *EmailSizePlugin) getMaxSize() string {
 
 // getSizeField 获取大小字段配置
 func (p *EmailSizePlugin) getSizeField() string {
-	if sizeField, ok := p.config["size_field"]; ok {
+	return p.getSizeFieldFromConfig(p.config)
+}
+
+// getSizeFieldFromConfig 从指定配置获取大小字段
+func (p *EmailSizePlugin) getSizeFieldFromConfig(config map[string]interface{}) string {
+	if sizeField, ok := config["size_field"]; ok {
 		if str, ok := sizeField.(string); ok {
 			return str
 		}
@@ -643,7 +664,12 @@ func (p *EmailSizePlugin) getSizeField() string {
 
 // getIncludeAttachments 获取是否包含附件配置
 func (p *EmailSizePlugin) getIncludeAttachments() bool {
-	if includeAttachments, ok := p.config["include_attachments"]; ok {
+	return p.getIncludeAttachmentsFromConfig(p.config)
+}
+
+// getIncludeAttachmentsFromConfig 从指定配置获取是否包含附件
+func (p *EmailSizePlugin) getIncludeAttachmentsFromConfig(config map[string]interface{}) bool {
+	if includeAttachments, ok := config["include_attachments"]; ok {
 		if b, ok := includeAttachments.(bool); ok {
 			return b
 		}
@@ -653,7 +679,12 @@ func (p *EmailSizePlugin) getIncludeAttachments() bool {
 
 // getAttachmentFilter 获取附件过滤配置
 func (p *EmailSizePlugin) getAttachmentFilter() map[string]interface{} {
-	if attachmentFilter, ok := p.config["attachment_filter"]; ok {
+	return p.getAttachmentFilterFromConfig(p.config)
+}
+
+// getAttachmentFilterFromConfig 从指定配置获取附件过滤配置
+func (p *EmailSizePlugin) getAttachmentFilterFromConfig(config map[string]interface{}) map[string]interface{} {
+	if attachmentFilter, ok := config["attachment_filter"]; ok {
 		if afMap, ok := attachmentFilter.(map[string]interface{}); ok {
 			return afMap
 		}

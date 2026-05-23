@@ -1,4 +1,5 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
+import { logger } from '@/lib/logger';
 
 // API响应包装类型
 export interface ApiResponse<T = any> {
@@ -49,9 +50,7 @@ class ApiClient {
                 }
 
                 // 日志记录（开发环境）
-                if (process.env.NODE_ENV === 'development') {
-                    console.log(`[API Request] ${config.method?.toUpperCase()} ${config.url}`, config.data);
-                }
+                logger.debug(`[API Request] ${config.method?.toUpperCase()} ${config.url}`, config.data);
 
                 return config;
             },
@@ -65,9 +64,7 @@ class ApiClient {
         this.client.interceptors.response.use(
             (response) => {
                 // 日志记录（开发环境）
-                if (process.env.NODE_ENV === 'development') {
-                    console.log(`[API Response] ${response.config.url}`, response.data);
-                }
+                logger.debug(`[API Response] ${response.config.url}`, response.data);
                 return response;
             },
             (error: AxiosError) => {
@@ -111,10 +108,17 @@ class ApiClient {
     private getAuthToken(): string | null {
         // 从localStorage获取token
         if (typeof window !== 'undefined') {
-            // 尝试多个可能的 token 键
-            return localStorage.getItem('sessionToken') ||
-                localStorage.getItem('token') ||
-                localStorage.getItem('auth_token');
+            const token = localStorage.getItem('auth_token');
+            if (token) return token;
+
+            // One-time migration from legacy keys
+            const legacyToken = localStorage.getItem('sessionToken') || localStorage.getItem('token');
+            if (legacyToken) {
+                localStorage.setItem('auth_token', legacyToken);
+                localStorage.removeItem('sessionToken');
+                localStorage.removeItem('token');
+                return legacyToken;
+            }
         }
         return null;
     }
@@ -122,7 +126,7 @@ class ApiClient {
     private handleUnauthorized(): void {
         // 清除认证信息
         if (typeof window !== 'undefined') {
-            localStorage.removeItem('auth_token');
+            this.clearAuthToken();
             // 可选：触发全局登出事件
             window.dispatchEvent(new CustomEvent('auth:logout'));
             // 重定向到登录页（如果不在登录页或OAuth2页面）
@@ -216,17 +220,14 @@ class ApiClient {
         if (typeof window !== 'undefined') {
             // 统一使用 auth_token 作为键名
             localStorage.setItem('auth_token', token);
-            // 为了兼容性，也设置其他可能的键名
-            localStorage.setItem('token', token);
-            localStorage.setItem('sessionToken', token);
         }
     }
 
     // 清除认证令牌
     clearAuthToken(): void {
         if (typeof window !== 'undefined') {
-            // 清除所有可能的 token 键
             localStorage.removeItem('auth_token');
+            // Clean up legacy keys
             localStorage.removeItem('token');
             localStorage.removeItem('sessionToken');
         }

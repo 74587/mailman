@@ -3,7 +3,6 @@ package services
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -62,7 +61,7 @@ func (l *DynamicPluginLoader) LoadPlugins() error {
 		}
 
 		// 遍历目录中的所有文件
-		files, err := ioutil.ReadDir(dir)
+		files, err := os.ReadDir(dir)
 		if err != nil {
 			log.Printf("[DynamicPluginLoader] Error reading directory %s: %v", dir, err)
 			continue
@@ -103,7 +102,7 @@ func (l *DynamicPluginLoader) loadPluginMetadata(path string) (*PluginMetadata, 
 	}
 
 	// 读取元数据文件
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read metadata file: %v", err)
 	}
@@ -275,7 +274,7 @@ func (l *DynamicPluginLoader) checkForPluginChanges() {
 
 	// 扫描目录查找新插件
 	for _, dir := range l.pluginDirs {
-		files, err := ioutil.ReadDir(dir)
+		files, err := os.ReadDir(dir)
 		if err != nil {
 			log.Printf("[DynamicPluginLoader] Error reading directory %s: %v", dir, err)
 			continue

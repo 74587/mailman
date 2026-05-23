@@ -1,0 +1,257 @@
+package services
+
+import (
+	"mailman/internal/models"
+	"testing"
+	"time"
+)
+
+// TestActionExecutorIntegration tests the integration between the action executor and the email trigger service
+func TestActionExecutorIntegration(t *testing.T) {
+	// Skip this test in normal test runs as it's an integration test
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	
+	// Create a plugin manager
+	pluginManager := NewPluginManager()
+	
+	// Register a test plugin
+	testPlugin := &MockPlugin{
+		name:        "Test Plugin",
+		description: "A test plugin for integration testing",
+		schema:      map[string]interface{}{},
+		executeFunc: func(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+			return &PluginResult{
+				Success: true,
+				Data:    "Test successful",
+				Error:   "",
+			}, nil
+		},
+	}
+	pluginManager.RegisterPlugin("test-plugin", testPlugin)
+	
+	// Create an action executor
+	actionExecutor := NewActionExecutor(pluginManager)
+	
+	// Create a test email
+	email := models.Email{
+		ID:      1,
+		Subject: "Test Email",
+		From:    "sender@example.com",
+		To:      "recipient@example.com",
+		Body:    "This is a test email body",
+	}
+	
+	// Create test actions
+	actions := []models.TriggerAction{
+		{
+			ID:            "action1",
+			PluginID:      "test-plugin",
+			PluginName:    "Test Plugin",
+			Config:        map[string]interface{}{"param1": "value1"},
+			Enabled:       true,
+			ExecutionOrder: 1,
+		},
+		{
+			ID:            "action2",
+			PluginID:      "test-plugin",
+			PluginName:    "Test Plugin",
+			Config:        map[string]interface{}{"param2": "value2"},
+			Enabled:       true,
+			ExecutionOrder: 2,
+		},
+	}
+	
+	// Execute the actions
+	results, err := actionExecutor.ExecuteActions(actions, email)
+	
+	// Check for errors
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	
+	// Check the results
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+	
+	// Check that all actions were successful
+	for i, result := range results {
+		if !result.Success {
+			t.Errorf("Expected action %d to succeed, but it failed: %s", i, result.Error)
+		}
+		if result.Result != "Test successful" {
+			t.Errorf("Expected result 'Test successful', got '%v'", result.Result)
+		}
+	}
+	
+	// Test with a disabled action
+	actions[1].Enabled = false
+	
+	// Execute the actions again
+	results, err = actionExecutor.ExecuteActions(actions, email)
+	
+	// Check for errors
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	
+	// Check the results
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+	
+	// Check that the first action succeeded and the second failed
+	if !results[0].Success {
+		t.Errorf("Expected action 1 to succeed, but it failed: %s", results[0].Error)
+	}
+	if results[1].Success {
+		t.Errorf("Expected action 2 to fail because it's disabled, but it succeeded")
+	}
+	if results[1].Error != "Action is disabled" {
+		t.Errorf("Expected error 'Action is disabled', got '%s'", results[1].Error)
+	}
+	
+	// Test with execution order
+	actions = []models.TriggerAction{
+		{
+			ID:            "action3",
+			PluginID:      "test-plugin",
+			PluginName:    "Test Plugin",
+			Config:        map[string]interface{}{},
+			Enabled:       true,
+			ExecutionOrder: 3,
+		},
+		{
+			ID:            "action1",
+			PluginID:      "test-plugin",
+			PluginName:    "Test Plugin",
+			Config:        map[string]interface{}{},
+			Enabled:       true,
+			ExecutionOrder: 1,
+		},
+		{
+			ID:            "action2",
+			PluginID:      "test-plugin",
+			PluginName:    "Test Plugin",
+			Config:        map[string]interface{}{},
+			Enabled:       true,
+			ExecutionOrder: 2,
+		},
+	}
+	
+	// Execute the actions
+	results, err = actionExecutor.ExecuteActions(actions, email)
+	
+	// Check for errors
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	
+	// Check the results
+	if len(results) != 3 {
+		t.Errorf("Expected 3 results, got %d", len(results))
+	}
+	
+	// Check that the actions were executed in the correct order
+	if results[0].ActionID != "action1" || results[1].ActionID != "action2" || results[2].ActionID != "action3" {
+		t.Errorf("Actions were not executed in the correct order: %s, %s, %s", 
+			results[0].ActionID, results[1].ActionID, results[2].ActionID)
+	}
+}
+
+// TestActionExecutorWithEmailTriggerService tests the integration between the action executor and the email trigger service
+func TestActionExecutorWithEmailTriggerService(t *testing.T) {
+	// Skip this test in normal test runs as it's an integration test
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	
+	// Create a plugin manager
+	pluginManager := NewPluginManager()
+	
+	// Register a test plugin
+	testPlugin := &MockPlugin{
+		name:        "Test Plugin",
+		description: "A test plugin for integration testing",
+		schema:      map[string]interface{}{},
+		executeFunc: func(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+			return &PluginResult{
+				Success: true,
+				Data:    "Test successful",
+				Error:   "",
+			}, nil
+		},
+	}
+	pluginManager.RegisterPlugin("test-plugin", testPlugin)
+	
+	// Create an action executor
+	actionExecutor := NewActionExecutor(pluginManager)
+	
+	// Create a mock email trigger service
+	// In a real test, you would create a proper mock or use a test database
+	triggerService := &EmailTriggerService{
+		actionExecutor: actionExecutor,
+	}
+	
+	// Create a test email
+	email := models.Email{
+		ID:      1,
+		Subject: "Test Email",
+		From:    "sender@example.com",
+		To:      "recipient@example.com",
+		Body:    "This is a test email body",
+	}
+	
+	// Create a test trigger
+	trigger := &models.EmailTriggerV2{
+		ID:          1,
+		Name:        "Test Trigger",
+		Description: "A test trigger",
+		Enabled:     true,
+		Expressions: []models.TriggerExpression{
+			{
+				ID:   "expr1",
+				Type: models.TriggerExpressionTypeCondition,
+				Field: func() *string { s := "subject"; return &s }(),
+				Value: "Test",
+			},
+		},
+		Actions: []models.TriggerAction{
+			{
+				ID:            "action1",
+				PluginID:      "test-plugin",
+				PluginName:    "Test Plugin",
+				Config:        map[string]interface{}{},
+				Enabled:       true,
+				ExecutionOrder: 1,
+			},
+		},
+	}
+	
+	// Test the executeTriggerActions method
+	// This is a simplified test as we don't have access to the full EmailTriggerService implementation
+	results, err := actionExecutor.ExecuteActions(trigger.Actions, email)
+	
+	// Check for errors
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	
+	// Check the results
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+	
+	// Check that the action was successful
+	if !results[0].Success {
+		t.Errorf("Expected action to succeed, but it failed: %s", results[0].Error)
+	}
+	if results[0].Result != "Test successful" {
+		t.Errorf("Expected result 'Test successful', got '%v'", results[0].Result)
+	}
+	
+	// In a real test, you would also verify that the trigger execution log was created correctly
+	// and that the trigger statistics were updated
+}

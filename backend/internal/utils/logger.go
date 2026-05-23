@@ -26,8 +26,43 @@ const (
 
 // Logger provides structured logging with different levels
 type Logger struct {
-	level  LogLevel
-	prefix string
+	level   LogLevel
+	prefix  string
+	quieted bool // 是否被静默（仅输出 WARN 及以上）
+}
+
+// quietPrefixes 存储需要静默的前缀列表
+var quietPrefixes []string
+
+// initQuietPrefixes 初始化静默前缀列表
+func initQuietPrefixes() {
+	if quietPrefixes != nil {
+		return
+	}
+	quietPrefixes = []string{}
+
+	// 从环境变量读取静默前缀列表
+	// 格式: LOG_QUIET_PREFIXES="FetcherService,AccountSyncer"
+	if envQuiet := os.Getenv("LOG_QUIET_PREFIXES"); envQuiet != "" {
+		for _, prefix := range strings.Split(envQuiet, ",") {
+			prefix = strings.TrimSpace(prefix)
+			if prefix != "" {
+				quietPrefixes = append(quietPrefixes, prefix)
+			}
+		}
+	}
+}
+
+// isQuietedPrefix 检查前缀是否应该被静默
+func isQuietedPrefix(prefix string) bool {
+	initQuietPrefixes()
+	for _, qp := range quietPrefixes {
+		// 支持前缀匹配（例如 "AccountSyncer" 匹配 "AccountSyncer-36"）
+		if strings.HasPrefix(prefix, qp) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewLogger creates a new logger instance
@@ -48,14 +83,22 @@ func NewLogger(prefix string) *Logger {
 		}
 	}
 
+	// 检查是否需要静默此前缀的日志
+	quieted := isQuietedPrefix(prefix)
+
 	return &Logger{
-		level:  level,
-		prefix: prefix,
+		level:   level,
+		prefix:  prefix,
+		quieted: quieted,
 	}
 }
 
 // Debug logs a debug message
 func (l *Logger) Debug(format string, args ...interface{}) {
+	// 如果被静默，跳过 DEBUG 级别日志
+	if l.quieted {
+		return
+	}
 	if l.level <= DEBUG {
 		l.log("DEBUG", format, args...)
 	}
@@ -63,6 +106,10 @@ func (l *Logger) Debug(format string, args ...interface{}) {
 
 // Info logs an info message
 func (l *Logger) Info(format string, args ...interface{}) {
+	// 如果被静默，跳过 INFO 级别日志
+	if l.quieted {
+		return
+	}
 	if l.level <= INFO {
 		l.log("INFO", format, args...)
 	}

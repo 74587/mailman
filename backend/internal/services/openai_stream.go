@@ -137,11 +137,12 @@ func HandleAPIResponse(resp *http.Response, body []byte) (*ChatCompletionRespons
 		return HandleStreamResponse(resp)
 	}
 
-	// For non-streaming responses, parse as regular JSON
-	var completionResp ChatCompletionResponse
-	if err := json.Unmarshal(body, &completionResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
+	// Use default OpenAI parser chain for backward compatibility
+	return HandleAPIResponseWithFormat(body, ResponseFormatOpenAI)
+}
 
-	return &completionResp, nil
+// HandleAPIResponseWithFormat processes response with specified preferred format
+func HandleAPIResponseWithFormat(body []byte, preferredFormat ResponseFormat) (*ChatCompletionResponse, error) {
+	chain := NewResponseParserChain(preferredFormat)
+	return chain.Parse(body)
 }

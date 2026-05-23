@@ -97,6 +97,16 @@ func (r *UserRepository) Count() (int64, error) {
 	return count, err
 }
 
+// ListAll 分页获取所有用户
+func (r *UserRepository) ListAll(limit, offset int) ([]models.User, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var users []models.User
+	err := r.db.Order("id ASC").Limit(limit).Offset(offset).Find(&users).Error
+	return users, err
+}
+
 // UserSessionRepository handles user session-related database operations
 type UserSessionRepository struct {
 	db *gorm.DB

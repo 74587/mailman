@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { logger } from '@/lib/logger'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -92,7 +93,7 @@ export default function OAuth2SuccessPage() {
                     if (createError?.message?.includes('UNIQUE constraint failed') ||
                         createError?.message?.includes('已存在') ||
                         createError?.status === 409) {
-                        console.log('邮箱账户已存在，OAuth2流程仍然成功')
+                        logger.debug('邮箱账户已存在，OAuth2流程仍然成功')
                     } else {
                         // 其他错误才抛出
                         throw createError

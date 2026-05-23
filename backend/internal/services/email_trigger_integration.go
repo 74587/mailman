@@ -9,6 +9,8 @@ import (
 
 	"mailman/internal/models"
 	"mailman/internal/repository"
+	"mailman/internal/triggerv2/plugins"
+	"mailman/internal/triggerv2/plugins/builtin"
 )
 
 // EmailTriggerIntegration handles the integration of the email trigger system
@@ -19,17 +21,17 @@ type EmailTriggerIntegration struct {
 	subscriptionManager *SubscriptionManager
 	eventBus            *EventBus
 	conditionEngine     *ConditionEngine
-	pluginManager       *PluginManager
+	pluginManager       plugins.PluginManager
 	dynamicPluginLoader *DynamicPluginLoader
 	conditionLoader     *DynamicConditionLoader
 	templateManager     *TriggerTemplateManager
 	resultCache         *ResultCache
-	
+
 	// Configuration
-	pluginDirs     []string
-	conditionDirs  []string
-	templateDirs   []string
-	
+	pluginDirs    []string
+	conditionDirs []string
+	templateDirs  []string
+
 	// State
 	initialized bool
 	mu          sync.RWMutex
@@ -48,34 +50,38 @@ func NewEmailTriggerIntegration(
 		filepath.Join(basePath, "plugins"),
 		filepath.Join(basePath, "plugins", "actions"),
 	}
-	
+
 	conditionDirs := []string{
 		filepath.Join(basePath, "conditions"),
 		filepath.Join(basePath, "conditions", "operators"),
 		filepath.Join(basePath, "conditions", "functions"),
 	}
-	
+
 	templateDirs := []string{
 		filepath.Join(basePath, "templates"),
 		filepath.Join(basePath, "templates", "triggers"),
 	}
-	
+
+	// Create TriggerV2 plugin manager and register builtin plugins
+	pluginManager := plugins.NewTriggerV2PluginManager(plugins.DefaultPluginManagerConfig())
+	if err := builtin.RegisterBuiltinPlugins(pluginManager); err != nil {
+		log.Printf("[EmailTriggerIntegration] Error registering builtin plugins: %v", err)
+	}
+
 	// Create condition engine
-	conditionEngine := NewConditionEngine()
-	
-	// Create plugin manager
-	pluginManager := NewPluginManager()
-	
+	conditionEngine := NewConditionEngine(pluginManager)
+
 	// Create result cache with 5 minute expiration
 	resultCache := NewResultCache(5*time.Minute, 10*time.Minute)
-	
-	// Create dynamic loaders
-	dynamicPluginLoader := NewDynamicPluginLoader(pluginManager, pluginDirs)
+
+	// Create legacy services.PluginManager for dynamic loading and trigger service
+	legacyPluginManager := NewPluginManager()
+	dynamicPluginLoader := NewDynamicPluginLoader(legacyPluginManager, pluginDirs)
 	conditionLoader := NewDynamicConditionLoader(conditionEngine, conditionDirs)
-	
+
 	// Create template manager
 	templateManager := NewTriggerTemplateManager(templateDirs)
-	
+
 	// Create trigger service
 	triggerService := NewEmailTriggerService(
 		triggerRepo,
@@ -83,9 +89,9 @@ func NewEmailTriggerIntegration(
 		subscriptionManager,
 		eventBus,
 		conditionEngine,
-		pluginManager,
+		legacyPluginManager,
 	)
-	
+
 	return &EmailTriggerIntegration{
 		triggerService:      triggerService,
 		subscriptionManager: subscriptionManager,
@@ -107,42 +113,42 @@ func NewEmailTriggerIntegration(
 func (i *EmailTriggerIntegration) Initialize() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	
+
 	if i.initialized {
 		return fmt.Errorf("email trigger integration already initialized")
 	}
-	
+
 	log.Println("[EmailTriggerIntegration] Initializing email trigger integration")
-	
+
 	// Load dynamic conditions
 	if err := i.conditionLoader.LoadConditions(); err != nil {
 		log.Printf("[EmailTriggerIntegration] Warning: Failed to load dynamic conditions: %v", err)
 		// Continue anyway, as this is not critical
 	}
-	
+
 	// Load dynamic plugins
 	if err := i.dynamicPluginLoader.LoadPlugins(); err != nil {
 		log.Printf("[EmailTriggerIntegration] Warning: Failed to load dynamic plugins: %v", err)
 		// Continue anyway, as this is not critical
 	}
-	
+
 	// Start plugin watcher
 	i.dynamicPluginLoader.StartWatcher()
-	
+
 	// Load trigger templates
 	if err := i.templateManager.LoadTemplates(); err != nil {
 		log.Printf("[EmailTriggerIntegration] Warning: Failed to load trigger templates: %v", err)
 		// Continue anyway, as this is not critical
 	}
-	
+
 	// Initialize trigger service
 	if err := i.triggerService.Initialize(); err != nil {
 		return fmt.Errorf("failed to initialize trigger service: %w", err)
 	}
-	
+
 	i.initialized = true
 	log.Println("[EmailTriggerIntegration] Email trigger integration initialized successfully")
-	
+
 	return nil
 }
 
@@ -150,12 +156,12 @@ func (i *EmailTriggerIntegration) Initialize() error {
 func (i *EmailTriggerIntegration) RegisterBuiltinPlugins() {
 	// Register built-in plugins
 	// These are plugins that are compiled into the application rather than loaded dynamically
-	
+
 	// Example:
 	// i.pluginManager.RegisterPlugin("forward_email", NewForwardEmailPlugin())
 	// i.pluginManager.RegisterPlugin("add_label", NewAddLabelPlugin())
 	// i.pluginManager.RegisterPlugin("mark_as_read", NewMarkAsReadPlugin())
-	
+
 	log.Println("[EmailTriggerIntegration] Registered built-in plugins")
 }
 
@@ -163,7 +169,7 @@ func (i *EmailTriggerIntegration) RegisterBuiltinPlugins() {
 func (i *EmailTriggerIntegration) RegisterBuiltinConditions() {
 	// The condition engine already registers basic operators and functions in its constructor
 	// This method can be used to register additional custom conditions
-	
+
 	log.Println("[EmailTriggerIntegration] Registered built-in conditions")
 }
 
@@ -173,7 +179,7 @@ func (i *EmailTriggerIntegration) GetTriggerService() *EmailTriggerService {
 }
 
 // GetPluginManager returns the plugin manager
-func (i *EmailTriggerIntegration) GetPluginManager() *PluginManager {
+func (i *EmailTriggerIntegration) GetPluginManager() plugins.PluginManager {
 	return i.pluginManager
 }
 
@@ -191,42 +197,39 @@ func (i *EmailTriggerIntegration) GetTemplateManager() *TriggerTemplateManager {
 func (i *EmailTriggerIntegration) GetAvailablePlugins() []models.PluginInfo {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	
-	// Get dynamic plugins
-	dynamicPlugins := i.dynamicPluginLoader.GetLoadedPlugins()
-	
-	// Create plugin info list
-	plugins := make([]models.PluginInfo, 0, len(dynamicPlugins))
-	
-	// Add dynamic plugins
-	for _, pluginID := range dynamicPlugins {
-		plugin, err := i.pluginManager.GetPlugin(pluginID)
-		if err != nil {
-			continue
-		}
-		
-		plugins = append(plugins, models.PluginInfo{
-			ID:          pluginID,
-			Name:        plugin.GetName(),
-			Description: plugin.GetDescription(),
-			Schema:      plugin.GetConfigSchema(),
+
+	// Get all plugins from TriggerV2 PluginManager
+	pluginInfos, err := i.pluginManager.ListPlugins()
+	if err != nil {
+		log.Printf("[EmailTriggerIntegration] Error listing plugins: %v", err)
+		return []models.PluginInfo{}
+	}
+
+	// Convert to models.PluginInfo
+	result := make([]models.PluginInfo, 0, len(pluginInfos))
+	for _, info := range pluginInfos {
+		result = append(result, models.PluginInfo{
+			ID:          info.ID,
+			Name:        info.Name,
+			Description: info.Description,
+			Schema:      info.ConfigSchema,
 		})
 	}
-	
-	return plugins
+
+	return result
 }
 
 // GetAvailableConditions returns a list of all available conditions
 func (i *EmailTriggerIntegration) GetAvailableConditions() []models.ConditionInfo {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	
+
 	// Get all conditions
 	conditions := i.conditionLoader.GetAllConditions()
-	
+
 	// Create condition info list
 	conditionInfos := make([]models.ConditionInfo, 0, len(conditions))
-	
+
 	// Add conditions
 	for _, condition := range conditions {
 		conditionInfos = append(conditionInfos, models.ConditionInfo{
@@ -238,7 +241,7 @@ func (i *EmailTriggerIntegration) GetAvailableConditions() []models.ConditionInf
 			Schema:      condition.Schema,
 		})
 	}
-	
+
 	return conditionInfos
 }
 
@@ -246,19 +249,19 @@ func (i *EmailTriggerIntegration) GetAvailableConditions() []models.ConditionInf
 func (i *EmailTriggerIntegration) Shutdown() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	
+
 	if !i.initialized {
 		return
 	}
-	
+
 	log.Println("[EmailTriggerIntegration] Shutting down email trigger integration")
-	
+
 	// Stop plugin watcher
 	i.dynamicPluginLoader.StopWatcher()
-	
+
 	// Shutdown trigger service
 	i.triggerService.Shutdown()
-	
+
 	i.initialized = false
 	log.Println("[EmailTriggerIntegration] Email trigger integration shutdown complete")
 }

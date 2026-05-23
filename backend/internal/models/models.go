@@ -4,6 +4,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -98,8 +99,13 @@ func (s *StringSlice) Scan(value interface{}) error {
 		*s = []string{}
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
 		return nil
 	}
 	return json.Unmarshal(bytes, s)
@@ -110,7 +116,11 @@ func (s StringSlice) Value() (driver.Value, error) {
 	if len(s) == 0 {
 		return "[]", nil
 	}
-	return json.Marshal(s)
+	bytes, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	return string(bytes), nil
 }
 
 // JSONMap is a custom type for storing map[string]string in database
@@ -149,12 +159,50 @@ func (m JSONMap) Value() (driver.Value, error) {
 	if m == nil {
 		return "{}", nil
 	}
-	return json.Marshal(m)
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return string(bytes), nil
+}
+
+// JSONMapInterface is a custom type for storing map[string]interface{} in database
+type JSONMapInterface map[string]interface{}
+
+// Scan implements the sql.Scanner interface
+func (m *JSONMapInterface) Scan(value interface{}) error {
+	if value == nil {
+		*m = make(map[string]interface{})
+		return nil
+	}
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
+		return fmt.Errorf("failed to unmarshal JSONB value: %v", value)
+	}
+	return json.Unmarshal(bytes, m)
+}
+
+// Value implements the driver.Valuer interface
+func (m JSONMapInterface) Value() (driver.Value, error) {
+	if m == nil {
+		return "{}", nil
+	}
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return string(bytes), nil
 }
 
 // EmailAccount represents a user's email account credentials and settings.
 type EmailAccount struct {
 	ID               uint                `gorm:"primaryKey" json:"id"`
+	OrgID            uint                `gorm:"not null;index;default:1" json:"orgId"` // 所属组织
 	EmailAddress     string              `gorm:"uniqueIndex;not null;type:varchar(255)" json:"emailAddress"`
 	AuthType         AuthType            `gorm:"not null;default:'password'" json:"authType"`
 	Password         string              `json:"password,omitempty"`                                                                                         // For AuthTypePassword
@@ -178,22 +226,38 @@ type EmailAccount struct {
 	ErrorCount     int        `gorm:"default:0" json:"errorCount"`         // 累计错误次数
 	AutoDisabledAt *time.Time `json:"autoDisabledAt,omitempty"`            // 自动禁用时间
 
+	// 标签关联
+	Tags []Tag `gorm:"many2many:email_account_tags;foreignKey:ID;joinForeignKey:EmailAccountID;References:ID;joinReferences:TagID" json:"tags,omitempty"`
+
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 	DeletedAt DeletedAt `gorm:"index" json:"deletedAt,omitempty"`
 }
 
+// EmailDirection 邮件方向类型
+type EmailDirection string
+
+const (
+	EmailDirectionReceived EmailDirection = "received" // 收件（默认）
+	EmailDirectionSent     EmailDirection = "sent"     // 发件
+)
+
 // Email represents a single email message.
 type Email struct {
-	ID             uint         `gorm:"primaryKey"`
-	MessageID      string       `gorm:"index"` // RFC Message-ID
-	AccountID      uint         `gorm:"not null"`
-	Account        EmailAccount `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
-	Subject        string
-	From           StringSlice `gorm:"type:json"`
-	To             StringSlice `gorm:"type:json"`
-	Cc             StringSlice `gorm:"type:json"`
-	Bcc            StringSlice `gorm:"type:json"`
+	ID        uint         `gorm:"primaryKey"`
+	MessageID string       `gorm:"index"` // RFC Message-ID
+	AccountID uint         `gorm:"not null"`
+	Account   EmailAccount `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	Subject   string
+	From      StringSlice `gorm:"type:json"`
+	To        StringSlice `gorm:"type:json"`
+	Cc        StringSlice `gorm:"type:json"`
+	Bcc       StringSlice `gorm:"type:json"`
+	// 提取后的纯邮箱地址（不带显示名）
+	FromAddress    string      `gorm:"index;type:varchar(255)"` // 发件人纯邮箱地址（第一个）
+	ToAddresses    StringSlice `gorm:"type:json"`               // 收件人纯邮箱地址列表
+	CcAddresses    StringSlice `gorm:"type:json"`               // 抄送纯邮箱地址列表
+	BccAddresses   StringSlice `gorm:"type:json"`               // 密送纯邮箱地址列表
 	Date           time.Time   `gorm:"index"`
 	ReceivedAt     time.Time   `gorm:"index"` // 接收时间
 	Body           string      `gorm:"type:text"`
@@ -208,9 +272,57 @@ type Email struct {
 	MailboxName    string      `gorm:"index"`     // IMAP mailbox name
 	Flags          StringSlice `gorm:"type:json"` // IMAP flags
 	Size           int64
+	Direction      EmailDirection `gorm:"default:'received';index" json:"direction"` // 邮件方向: received/sent
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DeletedAt      *DeletedAt `gorm:"index"`
+}
+
+// ExtractEmail 从 "Name <email@domain.com>" 格式中提取纯邮箱地址
+func ExtractEmail(address string) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return ""
+	}
+
+	// 尝试从 "Name <email@domain.com>" 格式中提取
+	if start := strings.Index(address, "<"); start != -1 {
+		if end := strings.Index(address, ">"); end != -1 && end > start {
+			return strings.TrimSpace(address[start+1 : end])
+		}
+	}
+
+	// 如果没有尖括号，返回整个地址（可能已经是纯邮箱）
+	return address
+}
+
+// ExtractEmails 从地址列表中提取所有纯邮箱地址
+func ExtractEmails(addresses StringSlice) StringSlice {
+	result := make(StringSlice, 0, len(addresses))
+	for _, addr := range addresses {
+		if email := ExtractEmail(addr); email != "" {
+			result = append(result, email)
+		}
+	}
+	return result
+}
+
+// ExtractPureAddresses 提取并填充纯邮箱地址字段
+// 应在保存邮件到数据库之前调用
+func (e *Email) ExtractPureAddresses() {
+	// 提取发件人纯邮箱地址（取第一个）
+	if len(e.From) > 0 {
+		e.FromAddress = ExtractEmail(e.From[0])
+	}
+
+	// 提取收件人纯邮箱地址列表
+	e.ToAddresses = ExtractEmails(e.To)
+
+	// 提取抄送纯邮箱地址列表
+	e.CcAddresses = ExtractEmails(e.Cc)
+
+	// 提取密送纯邮箱地址列表
+	e.BccAddresses = ExtractEmails(e.Bcc)
 }
 
 // Attachment represents an email attachment.
@@ -269,8 +381,13 @@ func (e *ExtractorTemplateConfigs) Scan(value interface{}) error {
 		*e = []ExtractorTemplateConfig{}
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
 		return nil
 	}
 	return json.Unmarshal(bytes, e)
@@ -281,12 +398,17 @@ func (e ExtractorTemplateConfigs) Value() (driver.Value, error) {
 	if len(e) == 0 {
 		return "[]", nil
 	}
-	return json.Marshal(e)
+	bytes, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	return string(bytes), nil
 }
 
 // ExtractorTemplate represents a saved email extraction template
 type ExtractorTemplate struct {
 	ID          uint                     `gorm:"primaryKey" json:"id"`
+	OrgID       uint                     `gorm:"not null;index;default:1" json:"orgId"` // 所属组织
 	Name        string                   `gorm:"not null;uniqueIndex;type:varchar(255)" json:"name"` // Custom name for the template
 	Description string                   `json:"description,omitempty"`                              // Optional description
 	Extractors  ExtractorTemplateConfigs `gorm:"type:json;not null" json:"extractors"`               // Array of extractor configurations
@@ -307,6 +429,7 @@ const (
 // OpenAIConfig represents the OpenAI configuration settings
 type OpenAIConfig struct {
 	ID          uint          `gorm:"primaryKey" json:"id"`
+	OrgID       uint          `gorm:"not null;index;default:1" json:"orgId"` // 所属组织
 	Name        string        `gorm:"not null;uniqueIndex;type:varchar(255)" json:"name"` // Configuration name (e.g., "default", "production")
 	ChannelType AIChannelType `gorm:"not null;default:'openai'" json:"channel_type"`      // AI provider type
 	BaseURL     string        `gorm:"not null" json:"base_url"`                           // API base URL
@@ -375,6 +498,7 @@ type ConditionInfo struct {
 // Trigger 触发器（V1版本，用于兼容）
 type Trigger struct {
 	ID                uint                   `gorm:"primaryKey" json:"id"`
+	OrgID             uint                   `gorm:"not null;index;default:1" json:"orgId"` // 所属组织
 	UserID            uint                   `gorm:"not null;index" json:"user_id"`
 	Name              string                 `gorm:"not null" json:"name"`
 	Description       string                 `json:"description"`

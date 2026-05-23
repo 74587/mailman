@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"sync"
@@ -99,16 +98,11 @@ func (s *AuthService) Login(username, password string) (*models.UserSession, err
 		// Try email if username not found
 		user, err = s.userRepo.GetByEmail(username)
 		if err != nil {
-			// Log for debugging
-			fmt.Printf("DEBUG: User not found for username/email: %s\n", username)
 			return nil, errors.New("invalid credentials")
 		}
 	}
 
-	// Log user details for debugging
-	fmt.Printf("DEBUG: Found user: ID=%d, Username=%s, Email=%s, IsActive=%v\n",
-		user.ID, user.Username, user.Email, user.IsActive)
-	fmt.Printf("DEBUG: Password hash from DB: %s\n", user.PasswordHash)
+
 
 	// Check if user is active
 	if !user.IsActive {
@@ -117,7 +111,6 @@ func (s *AuthService) Login(username, password string) (*models.UserSession, err
 
 	// Verify password
 	if !user.CheckPassword(password) {
-		fmt.Printf("DEBUG: Password check failed for user %s\n", username)
 		return nil, errors.New("invalid credentials")
 	}
 
@@ -142,6 +135,7 @@ func (s *AuthService) Login(username, password string) (*models.UserSession, err
 }
 
 // RegisterFirstUser handles the silent registration of the first user
+// 第一个用户自动成为超级管理员，之后的用户只能由超级管理员创建
 func (s *AuthService) RegisterFirstUser(username, email, password string) (*models.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -153,14 +147,15 @@ func (s *AuthService) RegisterFirstUser(username, email, password string) (*mode
 	}
 
 	if count > 0 {
-		return nil, errors.New("users already exist")
+		return nil, errors.New("users already exist, new users must be created by super admin")
 	}
 
-	// Create the first user
+	// Create the first user as super admin
 	user := &models.User{
-		Username: username,
-		Email:    email,
-		IsActive: true,
+		Username:     username,
+		Email:        email,
+		IsActive:     true,
+		IsSuperAdmin: true, // 第一个用户自动成为超级管理员
 	}
 
 	if err := user.SetPassword(password); err != nil {

@@ -1,14 +1,17 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import React, { useState, useEffect, useRef } from 'react'
 import { X, Mail, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { addNotification, isProcessed } from '@/lib/notification-store'
 
 // 通知类型定义
 interface EmailNotification {
     type: string
     account_id: number
     account_email: string
+    email_id?: number
     email_count: number
     subject?: string
     from?: string
@@ -67,11 +70,15 @@ function NotificationItem({ notification, onDismiss, onClick }: NotificationItem
                             {notification.account_email}
                         </div>
                         <div className="text-sm text-gray-600 dark:text-gray-400">
-                            收到 {notification.email_count} 封新邮件
+                            {notification.from ? (
+                                <>收到来自 <span className="font-medium">{notification.from}</span> 的邮件</>
+                            ) : (
+                                <>收到 {notification.email_count} 封新邮件</>
+                            )}
                         </div>
                         {notification.subject && (
-                            <div className="text-xs text-gray-500 dark:text-gray-500 truncate mt-1">
-                                {notification.subject}
+                            <div className="text-xs text-gray-500 dark:text-gray-400 truncate mt-1 font-medium">
+                                📧 {notification.subject}
                             </div>
                         )}
                         <div className="text-xs text-gray-400 mt-1">
@@ -91,7 +98,16 @@ function NotificationItem({ notification, onDismiss, onClick }: NotificationItem
                 </button>
             </div>
 
-            <div className="mt-3 flex justify-end">
+            <div className="mt-3 flex justify-end gap-2">
+                <button
+                    className="text-xs bg-gray-200 hover:bg-gray-300 text-gray-700 dark:bg-gray-600 dark:hover:bg-gray-500 dark:text-gray-200 px-3 py-1 rounded-md transition-colors"
+                    onClick={(e) => {
+                        e.stopPropagation()
+                        handleDismiss()
+                    }}
+                >
+                    忽略
+                </button>
                 <button
                     className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md transition-colors"
                     onClick={(e) => {
@@ -122,14 +138,18 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
     const connectWebSocket = () => {
         try {
             // 确定WebSocket URL
+            // 注意：Next.js rewrites 不支持 WebSocket 代理，
+            // 开发环境下需要直接连接后端端口
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-            const wsUrl = `${protocol}//${window.location.host}/api/ws/notifications`
+            const isDev = process.env.NODE_ENV === 'development' || window.location.port === '3000'
+            const host = isDev ? `${window.location.hostname}:8080` : window.location.host
+            const wsUrl = `${protocol}//${host}/api/ws/notifications`
 
             const ws = new WebSocket(wsUrl)
             wsRef.current = ws
 
             ws.onopen = () => {
-                console.log('[EmailNotificationToast] WebSocket connected')
+                logger.debug('[EmailNotificationToast] WebSocket connected')
                 setConnectionStatus('connected')
 
                 // 清除重连定时器
@@ -144,20 +164,33 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
                     const notification: EmailNotification = JSON.parse(event.data)
 
                     if (notification.type === 'new_email') {
-                        console.log('[EmailNotificationToast] Received notification:', notification)
+                        logger.debug('[EmailNotificationToast] Received notification:', notification)
 
-                        // 添加到通知列表（最多显示5个）
-                        setNotifications(prev => {
-                            const newNotifications = [notification, ...prev.slice(0, 4)]
-                            return newNotifications
+                        // 使用 store 检查是否已处理过（去重）
+                        if (isProcessed(notification.timestamp, notification.account_id, notification.subject)) {
+                            logger.debug('[EmailNotificationToast] Notification already processed, skipping toast')
+                            return
+                        }
+
+                        // 添加到 store（持久化）
+                        const stored = addNotification({
+                            type: notification.type,
+                            account_id: notification.account_id,
+                            account_email: notification.account_email,
+                            email_id: notification.email_id,
+                            email_count: notification.email_count,
+                            subject: notification.subject,
+                            from: notification.from,
+                            timestamp: notification.timestamp
                         })
 
-                        // 3秒后自动移除
-                        setTimeout(() => {
-                            setNotifications(prev =>
-                                prev.filter(n => n.timestamp !== notification.timestamp)
-                            )
-                        }, 3000)
+                        // 只有成功添加（非重复）才显示 toast
+                        if (stored) {
+                            setNotifications(prev => {
+                                const newNotifications = [notification, ...prev.slice(0, 4)]
+                                return newNotifications
+                            })
+                        }
                     }
                 } catch (error) {
                     console.error('[EmailNotificationToast] Failed to parse notification:', error)
@@ -165,7 +198,7 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
             }
 
             ws.onclose = (event) => {
-                console.log('[EmailNotificationToast] WebSocket closed:', event.code, event.reason)
+                logger.debug('[EmailNotificationToast] WebSocket closed:', event.code, event.reason)
                 setConnectionStatus('disconnected')
                 wsRef.current = null
 
@@ -191,12 +224,12 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
     const scheduleReconnect = () => {
         if (reconnectTimeoutRef.current) return
 
-        console.log('[EmailNotificationToast] Scheduling reconnect in 5 seconds...')
+        logger.debug('[EmailNotificationToast] Scheduling reconnect in 2 seconds...')
         reconnectTimeoutRef.current = setTimeout(() => {
-            console.log('[EmailNotificationToast] Attempting to reconnect...')
+            logger.debug('[EmailNotificationToast] Attempting to reconnect...')
             setConnectionStatus('connecting')
             connectWebSocket()
-        }, 5000)
+        }, 2000)
     }
 
     // 断开连接
@@ -212,11 +245,25 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
         }
     }
 
-    // 处理通知点击
+    // 处理通知点击 - 导航到经典邮件管理器并选中邮件
     const handleNotificationClick = (notification: EmailNotification) => {
-        console.log('[EmailNotificationToast] Notification clicked:', notification.account_email)
+        logger.debug('[EmailNotificationToast] Notification clicked:', notification.account_email, notification.email_id)
 
-        if (onNotificationClick) {
+        // 使用 switchTab 事件导航到经典邮件管理器
+        if (notification.email_id) {
+            window.dispatchEvent(new CustomEvent('switchTab', {
+                detail: {
+                    tab: 'classic-mailbox',
+                    data: {
+                        locateEmail: {
+                            accountId: notification.account_id,
+                            emailId: notification.email_id
+                        }
+                    }
+                }
+            }))
+        } else if (onNotificationClick) {
+            // 如果没有 email_id (旧通知)，使用回调
             onNotificationClick(notification.account_id, notification.account_email)
         }
     }
@@ -282,7 +329,9 @@ export function useWebSocketConnection() {
 
     useEffect(() => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const wsUrl = `${protocol}//${window.location.host}/api/ws/notifications`
+        const isDev = process.env.NODE_ENV === 'development' || window.location.port === '3000'
+        const host = isDev ? `${window.location.hostname}:8080` : window.location.host
+        const wsUrl = `${protocol}//${host}/api/ws/notifications`
 
         const ws = new WebSocket(wsUrl)
 

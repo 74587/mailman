@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	stdlog "log"
 	"sync"
 
 	"mailman/internal/models"
@@ -51,7 +52,7 @@ func (al *ActivityLogger) processQueue() {
 	for log := range al.queue {
 		if err := al.repo.Create(log); err != nil {
 			// 记录错误但不中断处理
-			fmt.Printf("Failed to save activity log: %v\n", err)
+			stdlog.Printf("[ActivityLogger] Failed to save activity log: %v", err)
 		}
 	}
 }

@@ -135,5 +135,39 @@ export const syncConfigService = {
             ...data
         })
         return response
+    },
+
+    // 获取所有账户的同步状态（包含配置信息）
+    async getAllAccountSyncStatuses(): Promise<AccountSyncStatus[]> {
+        const response = await apiClient.get<{ success: boolean; data: AccountSyncStatus[] }>('/sync/account-status?include_config=true')
+        return response.data || []
+    },
+
+    // 获取单个账户的同步状态
+    async getAccountSyncStatus(accountId: number): Promise<AccountSyncStatus | null> {
+        const response = await apiClient.get<{ success: boolean; data: AccountSyncStatus | null }>(`/sync/account-status?account_id=${accountId}&include_config=true`)
+        return response.data
     }
 }
+
+// 账户同步状态类型（包含数据库配置和运行时状态）
+export interface AccountSyncStatus {
+    account_id: number
+    account_email: string
+    enable_auto_sync: boolean
+    sync_interval: number
+    sync_status: string // idle, syncing, error
+    auto_disabled: boolean
+    disable_reason?: string
+    consecutive_errors: number
+    last_sync_error?: string
+    last_sync_time?: string
+    last_sync_end_time?: string
+    last_error_time?: string
+    // 运行时状态（从同步器获取）
+    is_running?: boolean
+    sync_count?: number
+    error_count?: number
+    next_sync_time?: string
+}
+

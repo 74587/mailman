@@ -1,11 +1,24 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Sparkles, Loader2, Copy, Check, Settings, ChevronDown, ChevronUp } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { Sparkles, Loader2, Copy, Check, Settings, ChevronDown, ChevronUp } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { openAIService } from '@/services/openai.service'
 import type { OpenAIConfig, AIPromptTemplate, CallOpenAIRequest } from '@/types/openai'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalFooter,
+    ModalTitle,
+    ModalDescription
+} from '@/components/ui/modal'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface AIAssistantModalProps {
     isOpen: boolean
@@ -30,8 +43,6 @@ export function AIAssistantModal({
     variables = {},
     scenario = 'general'
 }: AIAssistantModalProps) {
-    const [isVisible, setIsVisible] = useState(false)
-    const [isAnimating, setIsAnimating] = useState(false)
     const [loading, setLoading] = useState(false)
     const [generating, setGenerating] = useState(false)
     const [copied, setCopied] = useState(false)
@@ -53,21 +64,15 @@ export function AIAssistantModal({
     const [generatedContent, setGeneratedContent] = useState('')
     const [error, setError] = useState('')
 
-    // 处理模态框动画
     useEffect(() => {
         if (isOpen) {
-            setIsVisible(true)
-            setTimeout(() => setIsAnimating(true), 10)
             loadData()
         } else {
-            setIsAnimating(false)
-            setTimeout(() => {
-                setIsVisible(false)
-                setGeneratedContent('')
-                setError('')
-                setCopied(false)
-                setShowAdvanced(false)
-            }, 300)
+            // 清理状态
+            setGeneratedContent('')
+            setError('')
+            setCopied(false)
+            setShowAdvanced(false)
         }
     }, [isOpen])
 
@@ -81,13 +86,11 @@ export function AIAssistantModal({
 
             setConfigs(configsData.filter(c => c.is_active))
 
-            // 过滤符合场景的模板
             const filteredTemplates = templatesData.filter(t =>
                 t.is_active && (t.scenario === scenario || scenario === 'general')
             )
             setTemplates(filteredTemplates)
 
-            // 自动选择第一个活跃的配置
             if (configsData.length > 0 && !selectedConfigId) {
                 const activeConfig = configsData.find(c => c.is_active)
                 if (activeConfig) {
@@ -95,10 +98,8 @@ export function AIAssistantModal({
                 }
             }
 
-            // 自动选择第一个符合场景的模板
             if (filteredTemplates.length > 0 && !selectedTemplateId) {
                 setSelectedTemplateId(filteredTemplates[0].id)
-                // 如果有模板，使用模板的系统提示
                 setSystemPrompt(filteredTemplates[0].system_prompt)
                 setMaxTokens(filteredTemplates[0].max_tokens)
                 setTemperature(filteredTemplates[0].temperature)
@@ -111,9 +112,10 @@ export function AIAssistantModal({
         }
     }
 
-    const handleTemplateChange = (templateId: number) => {
-        setSelectedTemplateId(templateId)
-        const template = templates.find(t => t.id === templateId)
+    const handleTemplateChange = (templateId: string) => {
+        const id = Number(templateId)
+        setSelectedTemplateId(id)
+        const template = templates.find(t => t.id === id)
         if (template) {
             setSystemPrompt(template.system_prompt)
             setMaxTokens(template.max_tokens)
@@ -131,7 +133,6 @@ export function AIAssistantModal({
         setError('')
 
         try {
-            // 构建增强的用户消息，包含邮件内容上下文
             let enhancedUserMessage = userInput
             if (variables.emailContent) {
                 enhancedUserMessage = `邮件内容：\n${variables.emailContent}\n\n用户需求：${userInput}`
@@ -169,49 +170,22 @@ export function AIAssistantModal({
         onClose()
     }
 
-    if (!isVisible) return null
-
     return (
-        <div
-            className={cn(
-                'fixed inset-0 z-50 flex items-center justify-center p-4 transition-all duration-300',
-                isAnimating ? 'bg-black/50' : 'bg-black/0'
-            )}
-            onClick={onClose}
-        >
-            <motion.div
-                initial={{ scale: 0.9, opacity: 0, y: 20 }}
-                animate={isAnimating ? { scale: 1, opacity: 1, y: 0 } : { scale: 0.9, opacity: 0, y: 20 }}
-                transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-                className="w-full max-w-3xl overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-gray-800"
-                onClick={(e) => e.stopPropagation()}
-            >
-                {/* 头部 */}
-                <div className="flex items-center justify-between border-b border-gray-200 p-6 dark:border-gray-700">
+        <Modal open={isOpen} onOpenChange={(open) => !open && onClose()}>
+            <ModalContent size="2xl">
+                <ModalHeader>
                     <div className="flex items-center gap-3">
                         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br from-purple-500 to-pink-500">
                             <Sparkles className="h-5 w-5 text-white" />
                         </div>
                         <div>
-                            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                                {title}
-                            </h2>
-                            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                                {description}
-                            </p>
+                            <ModalTitle>{title}</ModalTitle>
+                            <ModalDescription>{description}</ModalDescription>
                         </div>
                     </div>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-500 dark:hover:bg-gray-700"
-                    >
-                        <X className="h-5 w-5" />
-                    </button>
-                </div>
+                </ModalHeader>
 
-                {/* 内容区域 */}
-                <div className="p-6">
+                <ModalBody>
                     {loading ? (
                         <div className="flex h-64 items-center justify-center">
                             <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
@@ -220,40 +194,42 @@ export function AIAssistantModal({
                         <div className="space-y-6">
                             {/* AI 配置选择 */}
                             <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                        AI 配置
-                                    </label>
-                                    <select
-                                        value={selectedConfigId || ''}
-                                        onChange={(e) => setSelectedConfigId(Number(e.target.value))}
-                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                <div className="space-y-2">
+                                    <Label>AI 配置</Label>
+                                    <Select
+                                        value={selectedConfigId?.toString() || ''}
+                                        onValueChange={(value) => setSelectedConfigId(Number(value))}
                                     >
-                                        <option value="">选择 AI 配置</option>
-                                        {configs.map((config) => (
-                                            <option key={config.id} value={config.id}>
-                                                {config.name} ({config.model})
-                                            </option>
-                                        ))}
-                                    </select>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="选择 AI 配置" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {configs.map((config) => (
+                                                <SelectItem key={config.id} value={config.id.toString()}>
+                                                    {config.name} ({config.model})
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
                                 </div>
 
-                                <div>
-                                    <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                        提示模板（可选）
-                                    </label>
-                                    <select
-                                        value={selectedTemplateId || ''}
-                                        onChange={(e) => handleTemplateChange(Number(e.target.value))}
-                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                <div className="space-y-2">
+                                    <Label>提示模板（可选）</Label>
+                                    <Select
+                                        value={selectedTemplateId?.toString() || ''}
+                                        onValueChange={handleTemplateChange}
                                     >
-                                        <option value="">不使用模板</option>
-                                        {templates.map((template) => (
-                                            <option key={template.id} value={template.id}>
-                                                {template.name}
-                                            </option>
-                                        ))}
-                                    </select>
+                                        <SelectTrigger>
+                                            <SelectValue placeholder="不使用模板" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {templates.map((template) => (
+                                                <SelectItem key={template.id} value={template.id.toString()}>
+                                                    {template.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
                                 </div>
                             </div>
 
@@ -282,46 +258,37 @@ export function AIAssistantModal({
                                             transition={{ duration: 0.2 }}
                                             className="mt-4 space-y-4 overflow-hidden"
                                         >
-                                            <div>
-                                                <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                                    系统提示（System Prompt）
-                                                </label>
-                                                <textarea
+                                            <div className="space-y-2">
+                                                <Label>系统提示（System Prompt）</Label>
+                                                <Textarea
                                                     value={systemPrompt}
                                                     onChange={(e) => setSystemPrompt(e.target.value)}
                                                     rows={3}
-                                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
                                                     placeholder="设置 AI 的角色和行为..."
                                                 />
                                             </div>
 
                                             <div className="grid grid-cols-2 gap-4">
-                                                <div>
-                                                    <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                                        最大令牌数
-                                                    </label>
-                                                    <input
+                                                <div className="space-y-2">
+                                                    <Label>最大令牌数</Label>
+                                                    <Input
                                                         type="number"
                                                         value={maxTokens}
                                                         onChange={(e) => setMaxTokens(Number(e.target.value))}
                                                         min={100}
                                                         max={4000}
-                                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
                                                     />
                                                 </div>
 
-                                                <div>
-                                                    <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                                        温度（0-2）
-                                                    </label>
-                                                    <input
+                                                <div className="space-y-2">
+                                                    <Label>温度（0-2）</Label>
+                                                    <Input
                                                         type="number"
                                                         value={temperature}
                                                         onChange={(e) => setTemperature(Number(e.target.value))}
                                                         min={0}
                                                         max={2}
                                                         step={0.1}
-                                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
                                                     />
                                                 </div>
                                             </div>
@@ -331,15 +298,12 @@ export function AIAssistantModal({
                             </div>
 
                             {/* 用户输入 */}
-                            <div>
-                                <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                    您的需求
-                                </label>
-                                <textarea
+                            <div className="space-y-2">
+                                <Label>您的需求</Label>
+                                <Textarea
                                     value={userInput}
                                     onChange={(e) => setUserInput(e.target.value)}
                                     rows={4}
-                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
                                     placeholder={placeholder}
                                 />
                             </div>
@@ -363,13 +327,12 @@ export function AIAssistantModal({
                                     className="space-y-3"
                                 >
                                     <div className="flex items-center justify-between">
-                                        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                                            生成结果
-                                        </label>
-                                        <button
-                                            type="button"
+                                        <Label>生成结果</Label>
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
                                             onClick={handleCopy}
-                                            className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                                            className="gap-2"
                                         >
                                             {copied ? (
                                                 <>
@@ -382,9 +345,9 @@ export function AIAssistantModal({
                                                     复制
                                                 </>
                                             )}
-                                        </button>
+                                        </Button>
                                     </div>
-                                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900">
+                                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900 max-h-60 overflow-y-auto">
                                         <pre className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">
                                             {generatedContent}
                                         </pre>
@@ -393,31 +356,21 @@ export function AIAssistantModal({
                             )}
                         </div>
                     )}
-                </div>
+                </ModalBody>
 
-                {/* 底部按钮 */}
-                <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-6 py-4 dark:border-gray-700">
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="rounded-lg px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700"
-                    >
+                <ModalFooter>
+                    <Button variant="outline" onClick={onClose}>
                         取消
-                    </button>
+                    </Button>
                     {generatedContent ? (
-                        <button
-                            type="button"
-                            onClick={handleUseContent}
-                            className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700"
-                        >
+                        <Button onClick={handleUseContent}>
                             使用此内容
-                        </button>
+                        </Button>
                     ) : (
-                        <button
-                            type="button"
+                        <Button
                             onClick={handleGenerate}
                             disabled={generating || !selectedConfigId || !userInput.trim()}
-                            className="flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50"
+                            className="gap-2"
                         >
                             {generating ? (
                                 <>
@@ -430,10 +383,10 @@ export function AIAssistantModal({
                                     生成
                                 </>
                             )}
-                        </button>
+                        </Button>
                     )}
-                </div>
-            </motion.div>
-        </div>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
     )
 }

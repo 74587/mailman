@@ -3,7 +3,6 @@ package services
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -56,7 +55,7 @@ func (l *DynamicConditionLoader) LoadConditions() error {
 		}
 
 		// 遍历目录中的所有文件
-		files, err := ioutil.ReadDir(dir)
+		files, err := os.ReadDir(dir)
 		if err != nil {
 			log.Printf("[DynamicConditionLoader] Error reading directory %s: %v", dir, err)
 			continue
@@ -96,7 +95,7 @@ func (l *DynamicConditionLoader) LoadConditions() error {
 // loadConditionFromFile 从文件加载条件
 func (l *DynamicConditionLoader) loadConditionFromFile(path string) (*ConditionDefinition, error) {
 	// 读取条件文件
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read condition file: %v", err)
 	}

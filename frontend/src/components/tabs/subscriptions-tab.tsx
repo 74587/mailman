@@ -1,3 +1,4 @@
+import { logger } from '@/lib/logger';
 import React, { useState, useEffect, useRef } from 'react';
 import { Plus, Search, MoreVertical, Edit2, Trash2, RefreshCw, Bell, Clock, Filter, Wifi, WifiOff, Grid, List, Table, ChevronLeft, ChevronRight, Pause, Play, X } from 'lucide-react';
 import { subscriptionService, Subscription, CacheStats } from '@/services/subscription.service';
@@ -5,6 +6,7 @@ import { emailAccountService } from '@/services/email-account.service';
 import { EmailAccount } from '@/types';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog';
 
 // 视图类型
 type ViewType = 'grid' | 'list' | 'table';
@@ -94,6 +96,7 @@ function Pagination({
 }
 
 export function SubscriptionsTab() {
+    const { confirm } = useConfirmDialog()
     const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
     const [accounts, setAccounts] = useState<EmailAccount[]>([]);
     const [cacheStats, setCacheStats] = useState<CacheStats | null>(null);
@@ -156,16 +159,16 @@ export function SubscriptionsTab() {
     const loadData = async () => {
         try {
             setLoading(true);
-            console.log('Starting to load data...'); // 调试日志
+            logger.debug('Starting to load data...'); // 调试日志
             const [subs, accs, stats] = await Promise.all([
                 subscriptionService.getSubscriptions(),
                 emailAccountService.getAccounts(),
                 subscriptionService.getCacheStats()
             ]);
 
-            console.log('Loaded accounts:', accs); // 调试日志
-            console.log('Accounts type:', Array.isArray(accs) ? 'array' : typeof accs); // 调试日志
-            console.log('Accounts length:', accs?.length); // 调试日志
+            logger.debug('Loaded accounts:', accs); // 调试日志
+            logger.debug('Accounts type:', Array.isArray(accs) ? 'array' : typeof accs); // 调试日志
+            logger.debug('Accounts length:', accs?.length); // 调试日志
             setSubscriptions(subs.subscriptions || []);
             setAccounts(accs || []); // 确保设置为数组
             setCacheStats(stats);
@@ -249,7 +252,14 @@ export function SubscriptionsTab() {
     };
 
     const handleDeleteSubscription = async (id: string) => {
-        if (!confirm('确定要删除这个订阅吗？')) return;
+        const confirmed = await confirm({
+            title: '删除订阅',
+            description: '确定要删除这个订阅吗？',
+            confirmText: '删除',
+            cancelText: '取消',
+            variant: 'destructive'
+        })
+        if (!confirmed) return;
 
         try {
             await subscriptionService.deleteSubscription(id);

@@ -22,13 +22,22 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: MYSQL_ROOT_PASSWORD
-          value: "rootpassword123"
+          valueFrom:
+            secretKeyRef:
+              name: mariadb-secret
+              key: root-password
         - name: MYSQL_DATABASE
           value: "mailman"
         - name: MYSQL_USER
-          value: "mailman"
+          valueFrom:
+            secretKeyRef:
+              name: mariadb-secret
+              key: username
         - name: MYSQL_PASSWORD
-          value: "mailman123"
+          valueFrom:
+            secretKeyRef:
+              name: mariadb-secret
+              key: password
         ports:
         - containerPort: 3306
           name: mysql
@@ -86,6 +95,7 @@ metadata:
   namespace: default
 type: Opaque
 data:
-  # Base64 encoded values
-  username: bWFpbG1hbg==  # mailman
-  password: bWFpbG1hbjEyMw==  # mailman123
+  # IMPORTANT: Replace these base64-encoded values before deploying
+  root-password: ""  # echo -n 'YOUR_ROOT_PASSWORD' | base64
+  username: ""       # echo -n 'YOUR_USERNAME' | base64
+  password: ""       # echo -n 'YOUR_PASSWORD' | base64

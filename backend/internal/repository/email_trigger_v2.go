@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"database/sql"
 	"errors"
 	"mailman/internal/models"
 	"time"
@@ -37,19 +38,26 @@ func (r *EmailTriggerV2Repository) GetByID(id uint) (*models.EmailTriggerV2, err
 }
 
 // GetAll retrieves all email triggers
-func (r *EmailTriggerV2Repository) GetAll() ([]models.EmailTriggerV2, error) {
+func (r *EmailTriggerV2Repository) GetAll(orgID uint) ([]models.EmailTriggerV2, error) {
 	var triggers []models.EmailTriggerV2
-	err := r.db.Find(&triggers).Error
+	query := r.db.Model(&models.EmailTriggerV2{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Find(&triggers).Error
 	return triggers, err
 }
 
 // GetAllPaginated retrieves email triggers with pagination and search
-func (r *EmailTriggerV2Repository) GetAllPaginated(page, limit int, sortBy, sortOrder, search string) ([]models.EmailTriggerV2, int64, error) {
+func (r *EmailTriggerV2Repository) GetAllPaginated(page, limit int, sortBy, sortOrder, search string, orgID uint) ([]models.EmailTriggerV2, int64, error) {
 	var triggers []models.EmailTriggerV2
 	var total int64
 
 	// Build query
 	query := r.db.Model(&models.EmailTriggerV2{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
 
 	// Apply search filter
 	if search != "" {
@@ -78,9 +86,13 @@ func (r *EmailTriggerV2Repository) GetAllPaginated(page, limit int, sortBy, sort
 }
 
 // GetByStatus retrieves email triggers by enabled status
-func (r *EmailTriggerV2Repository) GetByStatus(enabled bool) ([]models.EmailTriggerV2, error) {
+func (r *EmailTriggerV2Repository) GetByStatus(enabled bool, orgID uint) ([]models.EmailTriggerV2, error) {
 	var triggers []models.EmailTriggerV2
-	err := r.db.Where("enabled = ?", enabled).Find(&triggers).Error
+	query := r.db.Where("enabled = ?", enabled)
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Find(&triggers).Error
 	return triggers, err
 }
 
@@ -111,16 +123,24 @@ func (r *EmailTriggerV2Repository) Delete(id uint) error {
 }
 
 // GetCount returns the total count of email triggers
-func (r *EmailTriggerV2Repository) GetCount() (int64, error) {
+func (r *EmailTriggerV2Repository) GetCount(orgID uint) (int64, error) {
 	var count int64
-	err := r.db.Model(&models.EmailTriggerV2{}).Count(&count).Error
+	query := r.db.Model(&models.EmailTriggerV2{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
 // GetCountByStatus returns the count of email triggers by enabled status
-func (r *EmailTriggerV2Repository) GetCountByStatus(enabled bool) (int64, error) {
+func (r *EmailTriggerV2Repository) GetCountByStatus(enabled bool, orgID uint) (int64, error) {
 	var count int64
-	err := r.db.Model(&models.EmailTriggerV2{}).Where("enabled = ?", enabled).Count(&count).Error
+	query := r.db.Model(&models.EmailTriggerV2{}).Where("enabled = ?", enabled)
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
@@ -177,12 +197,17 @@ func (r *TriggerExecutionLogV2Repository) GetByTriggerID(triggerID uint, page, l
 }
 
 // GetAllPaginated retrieves execution logs with pagination and filtering
-func (r *TriggerExecutionLogV2Repository) GetAllPaginated(page, limit int, triggerID *uint, status *models.TriggerExecutionV2Status, startDate, endDate *time.Time) ([]models.TriggerExecutionLogV2, int64, error) {
+func (r *TriggerExecutionLogV2Repository) GetAllPaginated(page, limit int, triggerID *uint, status *models.TriggerExecutionV2Status, startDate, endDate *time.Time, orgID uint) ([]models.TriggerExecutionLogV2, int64, error) {
 	var logs []models.TriggerExecutionLogV2
 	var total int64
 
 	// Build query
 	query := r.db.Model(&models.TriggerExecutionLogV2{})
+
+	// Apply org filter
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
 
 	// Apply filters
 	if triggerID != nil {
@@ -235,48 +260,58 @@ func (r *TriggerExecutionLogV2Repository) DeleteOldLogs(beforeDate time.Time) (i
 
 // GetStatistics retrieves execution statistics for a trigger
 func (r *TriggerExecutionLogV2Repository) GetStatistics(triggerID uint, startDate, endDate *time.Time) (map[string]interface{}, error) {
-	query := r.db.Model(&models.TriggerExecutionLogV2{}).Where("trigger_id = ?", triggerID)
-
-	if startDate != nil {
-		query = query.Where("created_at >= ?", *startDate)
-	}
-	if endDate != nil {
-		query = query.Where("created_at <= ?", *endDate)
+	// 创建基础查询构建器函数，每次调用返回新的查询对象
+	// 这样避免条件累积问题
+	baseQuery := func() *gorm.DB {
+		q := r.db.Model(&models.TriggerExecutionLogV2{}).Where("trigger_id = ?", triggerID)
+		if startDate != nil {
+			q = q.Where("created_at >= ?", *startDate)
+		}
+		if endDate != nil {
+			q = q.Where("created_at <= ?", *endDate)
+		}
+		return q
 	}
 
 	// Get total count
 	var totalCount int64
-	err := query.Count(&totalCount).Error
+	err := baseQuery().Count(&totalCount).Error
 	if err != nil {
 		return nil, err
 	}
 
-	// Get success count
+	// Get success count - 使用新的查询对象
 	var successCount int64
-	err = query.Where("status = ?", models.TriggerExecutionV2StatusSuccess).Count(&successCount).Error
+	err = baseQuery().Where("status = ?", models.TriggerExecutionV2StatusSuccess).Count(&successCount).Error
 	if err != nil {
 		return nil, err
 	}
 
-	// Get failed count
+	// Get failed count - 使用新的查询对象
 	var failedCount int64
-	err = query.Where("status = ?", models.TriggerExecutionV2StatusFailed).Count(&failedCount).Error
+	err = baseQuery().Where("status = ?", models.TriggerExecutionV2StatusFailed).Count(&failedCount).Error
 	if err != nil {
 		return nil, err
 	}
 
-	// Get partial count
+	// Get partial count - 使用新的查询对象
 	var partialCount int64
-	err = query.Where("status = ?", models.TriggerExecutionV2StatusPartial).Count(&partialCount).Error
+	err = baseQuery().Where("status = ?", models.TriggerExecutionV2StatusPartial).Count(&partialCount).Error
 	if err != nil {
 		return nil, err
 	}
 
-	// Calculate average execution time
-	var avgExecutionTime float64
-	err = query.Select("AVG(duration)").Scan(&avgExecutionTime).Error
+	// Calculate average execution time using sql.NullFloat64 to handle NULL
+	var avgExecutionTime sql.NullFloat64
+	err = baseQuery().Select("AVG(duration)").Scan(&avgExecutionTime).Error
 	if err != nil {
 		return nil, err
+	}
+
+	// Get the value or default to 0 if NULL
+	avgTime := 0.0
+	if avgExecutionTime.Valid {
+		avgTime = avgExecutionTime.Float64
 	}
 
 	// Calculate success rate
@@ -290,7 +325,7 @@ func (r *TriggerExecutionLogV2Repository) GetStatistics(triggerID uint, startDat
 		"success_executions": successCount,
 		"failed_executions":  failedCount,
 		"partial_executions": partialCount,
-		"avg_execution_time": avgExecutionTime,
+		"avg_execution_time": avgTime,
 		"success_rate":       successRate,
 	}, nil
 }

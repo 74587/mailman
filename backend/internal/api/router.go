@@ -2,13 +2,15 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/gorilla/mux"
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 // NewRouter creates a new router with all the necessary routes.
-func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *WebSocketHandler, syncHandlers *SyncHandlers) http.Handler {
+func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *WebSocketHandler, syncHandlers *SyncHandlers, pickupHandler *PickupHandler) http.Handler {
 	router := mux.NewRouter()
 
 	// Create API subrouter with /api prefix
@@ -45,8 +47,10 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	apiRouter.HandleFunc("/accounts/{id}/sync-records", handler.DeleteIncrementalSyncRecordHandler).Methods("DELETE")
 
 	// General email operations
-	apiRouter.HandleFunc("/emails/extract", handler.ExtractEmailsHandler).Methods("POST") // Global extract without account ID
-	apiRouter.HandleFunc("/emails/search", handler.SearchEmailsHandler).Methods("GET")    // New search endpoint with optional account ID
+	apiRouter.HandleFunc("/emails/extract", handler.ExtractEmailsHandler).Methods("POST")                      // Global extract without account ID
+	apiRouter.HandleFunc("/emails/search", handler.SearchEmailsHandler).Methods("GET")                         // New search endpoint with optional account ID
+	apiRouter.HandleFunc("/emails/{id}/trigger", handler.TriggerEmailHandler).Methods("POST")                  // Manual trigger for email event (must be before /emails/{id})
+	apiRouter.HandleFunc("/emails/{id}/sync-attachments", handler.SyncEmailAttachmentsHandler).Methods("POST") // Sync email attachments
 	apiRouter.HandleFunc("/emails/{id}", handler.GetEmailHandler).Methods("GET")
 
 	// Legacy endpoint
@@ -75,6 +79,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 
 	// Mail providers
 	apiRouter.HandleFunc("/providers", handler.GetProvidersHandler).Methods("GET")
+	apiRouter.HandleFunc("/providers", handler.CreateProviderHandler).Methods("POST")
 
 	// Extractor templates
 	apiRouter.HandleFunc("/extractor-templates", handler.CreateExtractorTemplateHandler).Methods("POST")
@@ -147,6 +152,50 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	// Batch sync configuration
 	apiRouter.HandleFunc("/sync/batch-config", syncHandlers.BatchCreateOrUpdateAccountSyncConfig).Methods("POST")
 
+	// Pickup poll endpoint
+	apiRouter.HandleFunc("/pickup/poll", pickupHandler.PollHandler).Methods("POST")
+
+	// Filter templates
+	apiRouter.HandleFunc("/filter-templates", handler.ListFilterTemplatesHandler).Methods("GET")
+	apiRouter.HandleFunc("/filter-templates", handler.CreateFilterTemplateHandler).Methods("POST")
+	apiRouter.HandleFunc("/filter-templates/categories", handler.GetFilterTemplateCategoriesHandler).Methods("GET")
+	apiRouter.HandleFunc("/filter-templates/{id}", handler.GetFilterTemplateHandler).Methods("GET")
+	apiRouter.HandleFunc("/filter-templates/{id}", handler.UpdateFilterTemplateHandler).Methods("PUT")
+	apiRouter.HandleFunc("/filter-templates/{id}", handler.DeleteFilterTemplateHandler).Methods("DELETE")
+	apiRouter.HandleFunc("/filter-templates/{id}/increment-usage", handler.IncrementFilterTemplateUsageHandler).Methods("POST")
+
+	// Action templates
+	apiRouter.HandleFunc("/action-templates", handler.ListActionTemplatesHandler).Methods("GET")
+	apiRouter.HandleFunc("/action-templates", handler.CreateActionTemplateHandler).Methods("POST")
+	apiRouter.HandleFunc("/action-templates/categories", handler.GetActionTemplateCategoriesHandler).Methods("GET")
+	apiRouter.HandleFunc("/action-templates/{id}", handler.GetActionTemplateHandler).Methods("GET")
+	apiRouter.HandleFunc("/action-templates/{id}", handler.UpdateActionTemplateHandler).Methods("PUT")
+	apiRouter.HandleFunc("/action-templates/{id}", handler.DeleteActionTemplateHandler).Methods("DELETE")
+	apiRouter.HandleFunc("/action-templates/{id}/increment-usage", handler.IncrementActionTemplateUsageHandler).Methods("POST")
+
+	// Extractor Templates V2
+	extractorV2Handler := NewExtractorTemplateV2Handler(nil)
+	RegisterExtractorTemplateV2Routes(apiRouter, extractorV2Handler)
+
+	// Tag management routes (to be registered by RegisterTagRoutes)
+	// Note: TagHandlers should be instantiated and routes registered in main.go
+	// The routes are:
+	// GET    /api/tag-groups          - GetAllTagGroups
+	// GET    /api/tag-groups/{id}     - GetTagGroupByID
+	// POST   /api/tag-groups          - CreateTagGroup
+	// PUT    /api/tag-groups/{id}     - UpdateTagGroup
+	// DELETE /api/tag-groups/{id}     - DeleteTagGroup
+	// GET    /api/tags                - GetAllTags
+	// POST   /api/tags                - CreateTag
+	// PUT    /api/tags/{id}           - UpdateTag
+	// DELETE /api/tags/{id}           - DeleteTag
+	// GET    /api/tags/usage          - GetTagUsageStats
+	// GET    /api/accounts/{id}/tags  - GetAccountTags
+	// PUT    /api/accounts/{id}/tags  - SetAccountTags
+	// POST   /api/accounts/batch-tags      - BatchSetAccountTags
+	// POST   /api/accounts/batch-add-tag   - BatchAddTag
+	// POST   /api/accounts/batch-remove-tag - BatchRemoveTag
+
 	// Swagger documentation
 	router.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
 
@@ -164,8 +213,44 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 
 // enableCORS adds CORS headers to responses
 func enableCORS(next http.Handler) http.Handler {
+	// Read allowed origins from environment variable
+	allowedOriginsStr := os.Getenv("CORS_ALLOWED_ORIGINS")
+	var allowedOrigins []string
+	allowAll := true
+
+	if allowedOriginsStr != "" && allowedOriginsStr != "*" {
+		allowAll = false
+		for _, origin := range strings.Split(allowedOriginsStr, ",") {
+			origin = strings.TrimSpace(origin)
+			if origin != "" {
+				allowedOrigins = append(allowedOrigins, origin)
+			}
+		}
+	}
+
+	isOriginAllowed := func(origin string) bool {
+		if allowAll {
+			return true
+		}
+		for _, allowed := range allowedOrigins {
+			if strings.EqualFold(origin, allowed) {
+				return true
+			}
+		}
+		return false
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+
+		if allowAll {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else if origin != "" && isOriginAllowed(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
+		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 

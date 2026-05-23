@@ -2,11 +2,13 @@
 
 import { useState, useEffect } from 'react'
 import { Settings, Plus, Edit, Trash2, Power, Check, X, AlertCircle, Link, Search, MoreVertical, HelpCircle, Users } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 import { oauth2Service } from '@/services/oauth2.service'
 import { emailAccountService } from '@/services/email-account.service'
 import { OAuth2GlobalConfig, OAuth2ProviderType, EmailAccount } from '@/types'
@@ -344,6 +346,7 @@ function OAuth2ConfigCard({
 
 // 主组件
 export default function OAuth2ConfigTab() {
+    const { confirm } = useConfirmDialog()
     const [configs, setConfigs] = useState<OAuth2GlobalConfig[]>([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
@@ -387,16 +390,22 @@ export default function OAuth2ConfigTab() {
 
     // 处理删除
     const handleDelete = async (config: OAuth2GlobalConfig) => {
-        if (!confirm(`确定要删除 ${oauth2Service.getProviderDisplayName(config.provider_type)} 的配置吗？`)) {
-            return
-        }
+        const confirmed = await confirm({
+            title: '删除 OAuth2 配置',
+            description: `确定要删除 ${oauth2Service.getProviderDisplayName(config.provider_type)} 的配置吗？`,
+            confirmText: '删除',
+            cancelText: '取消',
+            variant: 'destructive'
+        })
+        if (!confirmed) return
 
         try {
             await oauth2Service.deleteGlobalConfig(config.id)
             setConfigs(configs.filter(c => c.id !== config.id))
+            toast.success('OAuth2 配置已删除')
         } catch (err) {
             console.error('Failed to delete config:', err)
-            alert('删除配置失败')
+            toast.error('删除配置失败')
         }
     }
 
@@ -414,7 +423,7 @@ export default function OAuth2ConfigTab() {
             window.open(authUrl.auth_url, '_blank', 'width=600,height=700')
         } catch (err) {
             console.error('Failed to test connection:', err)
-            alert('测试连接失败')
+            toast.error('测试连接失败')
         }
     }
 

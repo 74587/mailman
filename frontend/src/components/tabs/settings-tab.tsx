@@ -62,7 +62,7 @@ export default function SettingsTab() {
                         title="主题"
                         description="选择界面主题"
                     >
-                        <div className="flex space-x-3">
+                        <div className="flex flex-wrap gap-3">
                             <button
                                 onClick={() => setTheme('light')}
                                 className={cn(
@@ -72,7 +72,7 @@ export default function SettingsTab() {
                                         : "bg-muted text-foreground hover:bg-muted/80"
                                 )}
                             >
-                                浅色
+                                ☀️ 浅色
                             </button>
                             <button
                                 onClick={() => setTheme('dark')}
@@ -83,8 +83,21 @@ export default function SettingsTab() {
                                         : "bg-muted text-foreground hover:bg-muted/80"
                                 )}
                             >
-                                深色
+                                🌙 深色
                             </button>
+                            {/* 临时隐藏樱花粉主题
+                            <button
+                                onClick={() => setTheme('sakura')}
+                                className={cn(
+                                    "rounded-lg px-4 py-2 text-sm font-medium transition-colors",
+                                    theme === 'sakura'
+                                        ? "bg-pink-500 text-white"
+                                        : "bg-muted text-foreground hover:bg-muted/80"
+                                )}
+                            >
+                                🌸 樱花粉
+                            </button>
+                            */}
                             <button
                                 onClick={() => setTheme('system')}
                                 className={cn(
@@ -94,7 +107,7 @@ export default function SettingsTab() {
                                         : "bg-muted text-foreground hover:bg-muted/80"
                                 )}
                             >
-                                跟随系统
+                                💻 跟随系统
                             </button>
                         </div>
                     </SettingItem>

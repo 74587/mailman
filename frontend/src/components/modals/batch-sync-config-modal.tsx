@@ -1,11 +1,25 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Clock, Settings, AlertCircle, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { Clock, Settings, AlertCircle, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { syncConfigService } from '@/services/sync-config.service'
 import type { BatchSyncConfigRequest, BatchSyncConfigResponse } from '@/services/sync-config.service'
 import { EmailAccount } from '@/types'
 import { cn } from '@/lib/utils'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalFooter,
+    ModalTitle,
+    ModalDescription
+} from '@/components/ui/modal'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 
 interface BatchSyncConfigModalProps {
     isOpen: boolean
@@ -15,21 +29,21 @@ interface BatchSyncConfigModalProps {
 }
 
 const SYNC_INTERVALS = [
-    { value: 30, label: '30秒', unit: 's' },
-    { value: 60, label: '1分钟', unit: 's' },
-    { value: 300, label: '5分钟', unit: 's' },
-    { value: 600, label: '10分钟', unit: 's' },
-    { value: 900, label: '15分钟', unit: 's' },
-    { value: 1800, label: '30分钟', unit: 's' },
-    { value: 3600, label: '1小时', unit: 's' },
-    { value: 21600, label: '6小时', unit: 's' },
-    { value: 43200, label: '12小时', unit: 's' },
-    { value: 86400, label: '24小时', unit: 's' },
+    { value: 30, label: '30秒' },
+    { value: 60, label: '1分钟' },
+    { value: 300, label: '5分钟' },
+    { value: 600, label: '10分钟' },
+    { value: 900, label: '15分钟' },
+    { value: 1800, label: '30分钟' },
+    { value: 3600, label: '1小时' },
+    { value: 21600, label: '6小时' },
+    { value: 43200, label: '12小时' },
+    { value: 86400, label: '24小时' },
 ]
 
 export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selectedAccounts }: BatchSyncConfigModalProps) {
     const [enableAutoSync, setEnableAutoSync] = useState(true)
-    const [syncInterval, setSyncInterval] = useState(300) // 默认5分钟
+    const [syncInterval, setSyncInterval] = useState(300)
     const [customInterval, setCustomInterval] = useState('')
     const [useCustomInterval, setUseCustomInterval] = useState(false)
 
@@ -37,7 +51,6 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
     const [result, setResult] = useState<BatchSyncConfigResponse | null>(null)
     const [showResult, setShowResult] = useState(false)
 
-    // 重置表单状态
     const resetForm = () => {
         setEnableAutoSync(true)
         setSyncInterval(300)
@@ -47,7 +60,6 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
         setShowResult(false)
     }
 
-    // 当模态框打开时重置表单
     useEffect(() => {
         if (isOpen) {
             resetForm()
@@ -63,12 +75,11 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
         try {
             setLoading(true)
 
-            // 计算实际同步间隔
             let actualInterval = syncInterval
             if (useCustomInterval && customInterval) {
                 const customValue = parseInt(customInterval)
                 if (isNaN(customValue) || customValue < 1) {
-                    alert('自定义间隔必须大于等于30秒')
+                    toast.warning('自定义间隔必须大于等于30秒')
                     return
                 }
                 actualInterval = customValue
@@ -78,7 +89,6 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
             const configData: BatchSyncConfigRequest = {
                 enable_auto_sync: enableAutoSync,
                 sync_interval: actualInterval
-                // sync_folders removed - system automatically handles all important folders
             }
 
             const response = await syncConfigService.batchCreateOrUpdateAccountSyncConfig(accountIds, configData)
@@ -86,7 +96,6 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
             setShowResult(true)
 
             if (response.error_count === 0) {
-                // 如果全部成功，延迟关闭模态框
                 setTimeout(() => {
                     onSuccess()
                     handleClose()
@@ -95,34 +104,25 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
 
         } catch (error) {
             console.error('Failed to batch update sync config:', error)
-            alert('批量更新同步配置失败')
+            toast.error('批量更新同步配置失败')
         } finally {
             setLoading(false)
         }
     }
 
-    if (!isOpen) return null
-
     return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 dark:bg-gray-800">
+        <Modal open={isOpen} onOpenChange={(open) => !open && handleClose()}>
+            <ModalContent size="md">
                 {!showResult ? (
                     <>
-                        {/* 标题栏 */}
-                        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
-                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                                批量同步配置
-                            </h3>
-                            <button
-                                onClick={handleClose}
-                                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                            >
-                                <X className="h-5 w-5" />
-                            </button>
-                        </div>
+                        <ModalHeader>
+                            <ModalTitle>批量同步配置</ModalTitle>
+                            <ModalDescription>
+                                为 {selectedAccounts.length} 个账户配置同步设置
+                            </ModalDescription>
+                        </ModalHeader>
 
-                        {/* 内容区域 */}
-                        <div className="p-6 space-y-6">
+                        <ModalBody className="space-y-6">
                             {/* 选中账户信息 */}
                             <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-4">
                                 <div className="flex items-center space-x-2">
@@ -138,37 +138,30 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
                             </div>
 
                             {/* 启用自动同步 */}
-                            <div className="space-y-3">
-                                <label className="flex items-center space-x-3 cursor-pointer">
-                                    <input
-                                        type="checkbox"
-                                        checked={enableAutoSync}
-                                        onChange={(e) => setEnableAutoSync(e.target.checked)}
-                                        className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                    />
-                                    <div>
-                                        <span className="text-sm font-medium text-gray-900 dark:text-white">
-                                            启用自动同步
-                                        </span>
-                                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                                            开启后将按照设定的间隔自动同步邮件
-                                        </p>
-                                    </div>
-                                </label>
+                            <div className="flex items-center justify-between">
+                                <div className="space-y-0.5">
+                                    <Label>启用自动同步</Label>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                                        开启后将按照设定的间隔自动同步邮件
+                                    </p>
+                                </div>
+                                <Switch
+                                    checked={enableAutoSync}
+                                    onCheckedChange={setEnableAutoSync}
+                                />
                             </div>
 
                             {/* 同步间隔设置 */}
                             {enableAutoSync && (
                                 <div className="space-y-3">
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                        同步间隔
-                                    </label>
+                                    <Label>同步间隔</Label>
 
                                     {/* 预设间隔 */}
                                     <div className="grid grid-cols-3 gap-2">
                                         {SYNC_INTERVALS.map((interval) => (
                                             <button
                                                 key={interval.value}
+                                                type="button"
                                                 onClick={() => {
                                                     setSyncInterval(interval.value)
                                                     setUseCustomInterval(false)
@@ -199,7 +192,7 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
                                             </span>
                                         </label>
                                         <div className="flex items-center space-x-2">
-                                            <input
+                                            <Input
                                                 type="number"
                                                 value={customInterval}
                                                 onChange={(e) => {
@@ -208,7 +201,7 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
                                                 }}
                                                 placeholder="300"
                                                 min="30"
-                                                className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-primary-500 dark:bg-gray-700 dark:border-gray-600"
+                                                className="w-20"
                                             />
                                             <span className="text-sm text-gray-500 dark:text-gray-400">秒</span>
                                         </div>
@@ -234,42 +227,25 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
                                     </div>
                                 </div>
                             </div>
-                        </div>
+                        </ModalBody>
 
-                        {/* 操作按钮 */}
-                        <div className="flex items-center justify-end space-x-3 p-6 bg-gray-50 dark:bg-gray-700">
-                            <button
-                                onClick={handleClose}
-                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 dark:bg-gray-600 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-500"
-                            >
+                        <ModalFooter>
+                            <Button variant="outline" onClick={handleClose}>
                                 取消
-                            </button>
-                            <button
-                                onClick={handleSubmit}
-                                disabled={loading}
-                                className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-white bg-primary-600 border border-transparent rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                                <span>{loading ? '配置中...' : '批量配置'}</span>
-                            </button>
-                        </div>
+                            </Button>
+                            <Button onClick={handleSubmit} disabled={loading}>
+                                {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                {loading ? '配置中...' : '批量配置'}
+                            </Button>
+                        </ModalFooter>
                     </>
                 ) : (
                     <>
-                        {/* 结果显示 */}
-                        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
-                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                                配置结果
-                            </h3>
-                            <button
-                                onClick={handleClose}
-                                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                            >
-                                <X className="h-5 w-5" />
-                            </button>
-                        </div>
+                        <ModalHeader>
+                            <ModalTitle>配置结果</ModalTitle>
+                        </ModalHeader>
 
-                        <div className="p-6 space-y-4">
+                        <ModalBody className="space-y-4">
                             {/* 成功统计 */}
                             <div className="flex items-center space-x-3 p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
                                 <CheckCircle className="h-5 w-5 text-green-600 dark:text-green-400" />
@@ -313,20 +289,16 @@ export default function BatchSyncConfigModal({ isOpen, onClose, onSuccess, selec
                                     </div>
                                 </div>
                             )}
+                        </ModalBody>
 
-                            {/* 操作按钮 */}
-                            <div className="flex justify-end space-x-3 pt-4">
-                                <button
-                                    onClick={handleClose}
-                                    className="px-4 py-2 text-sm font-medium text-white bg-primary-600 border border-transparent rounded-lg hover:bg-primary-700"
-                                >
-                                    完成
-                                </button>
-                            </div>
-                        </div>
+                        <ModalFooter>
+                            <Button onClick={handleClose}>
+                                完成
+                            </Button>
+                        </ModalFooter>
                     </>
                 )}
-            </div>
-        </div>
+            </ModalContent>
+        </Modal>
     )
 }

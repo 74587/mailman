@@ -1,4 +1,5 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
@@ -7,17 +8,22 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { toast } from 'react-hot-toast'
+import { toast } from 'sonner'
 import { apiClient } from '@/lib/api-client'
-import { motion, AnimatePresence } from 'framer-motion'
 import {
-    X,
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalFooter,
+    ModalTitle,
+    ModalDescription
+} from '@/components/ui/modal'
+import {
     Plus,
     Loader2,
-    Globe,
     User,
     Clock,
-    Folder,
     Zap,
     Settings,
     Mail,
@@ -84,8 +90,6 @@ export default function SyncConfigModal({
     mode,
     accounts = []
 }: SyncConfigModalProps) {
-    const [isVisible, setIsVisible] = useState(false)
-    const [isAnimating, setIsAnimating] = useState(false)
     const [loading, setLoading] = useState(false)
     const [formData, setFormData] = useState<SyncConfig>({
         enable_auto_sync: true,
@@ -129,17 +133,6 @@ export default function SyncConfigModal({
         { value: 86400, label: '1d' }
     ]
 
-    // 处理模态框动画
-    useEffect(() => {
-        if (isOpen) {
-            setIsVisible(true)
-            setTimeout(() => setIsAnimating(true), 10)
-        } else {
-            setIsAnimating(false)
-            setTimeout(() => setIsVisible(false), 300)
-        }
-    }, [isOpen])
-
     useEffect(() => {
         if (config) {
             setFormData({
@@ -171,6 +164,29 @@ export default function SyncConfigModal({
         }
     }, [config])
 
+    // 全局配置模式下加载全局配置
+    useEffect(() => {
+        const loadGlobalConfig = async () => {
+            if (mode === 'global' && isOpen) {
+                try {
+                    const response = await apiClient.get('/sync/global-config')
+                    const globalData = response.data || response
+                    if (globalData) {
+                        setFormData({
+                            enable_auto_sync: globalData.default_enable_sync ?? true,
+                            sync_interval: globalData.default_sync_interval ?? 300,
+                            sync_folders: globalData.default_sync_folders || ['INBOX']
+                        })
+                        setCustomInterval(globalData.default_sync_interval?.toString() || '300')
+                    }
+                } catch (error) {
+                    console.error('Failed to load global config:', error)
+                }
+            }
+        }
+        loadGlobalConfig()
+    }, [mode, isOpen])
+
     // 加载账户数据的函数
     const loadAccounts = async (page: number = 1, search: string = '', reset: boolean = false) => {
         if (mode !== 'create') return;
@@ -189,13 +205,13 @@ export default function SyncConfigModal({
 
             const response = await apiClient.get(`/accounts/paginated?${params}`);
             const data: PaginatedAccountsResponse = response;
-            console.log("API Response:", data);
+            logger.debug("API Response:", data);
 
             // 确保数据存在
             if (data && data.data) {
                 if (reset || page === 1) {
                     setFilteredAccounts(data.data);
-                    console.log("Set filtered accounts:", data.data);
+                    logger.debug("Set filtered accounts:", data.data);
                 } else {
                     setFilteredAccounts(prev => [...prev, ...data.data]);
                 }
@@ -448,40 +464,20 @@ export default function SyncConfigModal({
             account.mailProvider?.name?.toLowerCase().includes('gmail')
     }
 
-    if (!isVisible) return null
-
     return (
-        <div className={cn(
-            "fixed inset-0 z-50 flex items-center justify-center p-4 transition-all duration-300",
-            isAnimating ? "bg-black/50" : "bg-black/0"
-        )}>
-            <div className={cn(
-                "w-full max-w-2xl max-h-[90vh] flex flex-col rounded-xl bg-white shadow-xl dark:bg-gray-800 transition-all duration-300",
-                isAnimating ? "scale-100 opacity-100" : "scale-95 opacity-0"
-            )}>
-                {/* 标题栏 */}
-                <div className="flex items-center justify-between border-b border-gray-200 p-6 dark:border-gray-700">
+        <Modal open={isOpen} onOpenChange={(open) => !open && onClose()}>
+            <ModalContent size="xl" className="max-h-[90vh] flex flex-col">
+                <ModalHeader>
                     <div className="flex items-center gap-3">
                         {getIcon()}
                         <div>
-                            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                                {getTitle()}
-                            </h2>
-                            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                                {getDescription()}
-                            </p>
+                            <ModalTitle>{getTitle()}</ModalTitle>
+                            <ModalDescription>{getDescription()}</ModalDescription>
                         </div>
                     </div>
-                    <button
-                        onClick={onClose}
-                        className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    >
-                        <X className="h-5 w-5" />
-                    </button>
-                </div>
+                </ModalHeader>
 
-                {/* 内容区域 */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                <ModalBody className="flex-1 overflow-y-auto space-y-6">
                     {mode === 'create' && (
                         <div className="space-y-2">
                             <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -502,7 +498,7 @@ export default function SyncConfigModal({
                                             }
                                         }}
                                         onFocus={() => {
-                                            console.log('Input focused, showing dropdown');
+                                            logger.debug('Input focused, showing dropdown');
                                             setShowAccountDropdown(true);
                                             // 如果没有数据，重新加载
                                             if (filteredAccounts.length === 0 && !loadingAccounts) {
@@ -529,7 +525,7 @@ export default function SyncConfigModal({
                                         style={{ zIndex: 9999 }}
                                     >
                                         {(() => {
-                                            console.log('Dropdown Debug:', {
+                                            logger.debug('Dropdown Debug:', {
                                                 showAccountDropdown,
                                                 filteredAccountsLength: filteredAccounts.length,
                                                 loadingAccounts,
@@ -725,33 +721,24 @@ export default function SyncConfigModal({
                             </div>
                         </div>
                     ) : null}
-                </div>
+                </ModalBody>
 
-                {/* 底部操作栏 */}
-                <div className="flex items-center justify-end space-x-3 border-t border-gray-200 p-6 dark:border-gray-700">
-                    <button
-                        onClick={onClose}
-                        disabled={loading}
-                        className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-                    >
+                <ModalFooter>
+                    <Button variant="outline" onClick={onClose} disabled={loading}>
                         取消
-                    </button>
-                    <button
-                        onClick={handleSubmit}
-                        disabled={loading}
-                        className="flex items-center space-x-2 rounded-lg bg-primary-600 px-4 py-2 text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
-                    >
+                    </Button>
+                    <Button onClick={handleSubmit} disabled={loading}>
                         {loading ? (
                             <>
-                                <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
-                                <span>保存中...</span>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                保存中...
                             </>
                         ) : (
                             <span>{mode === 'create' ? '创建' : '保存'}</span>
                         )}
-                    </button>
-                </div>
-            </div>
-        </div>
+                    </Button>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
     )
 }

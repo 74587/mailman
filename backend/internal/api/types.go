@@ -115,6 +115,16 @@ type CreateAccountRequest struct {
 	CustomSettings   models.JSONMap  `json:"customSettings,omitempty"`
 }
 
+// CreateProviderRequest represents the request body for creating a custom mail provider
+// @Description Request body for creating a custom mail provider
+type CreateProviderRequest struct {
+	Name       string `json:"name" binding:"required"`
+	IMAPServer string `json:"imapServer" binding:"required"`
+	IMAPPort   int    `json:"imapPort" binding:"required"`
+	SMTPServer string `json:"smtpServer,omitempty"`
+	SMTPPort   int    `json:"smtpPort,omitempty"`
+}
+
 // EmailSearchRequest represents the request parameters for the /emails endpoint
 // @Description Request parameters for searching emails with pagination and filters
 type EmailSearchRequest struct {
@@ -447,6 +457,10 @@ type WaitEmailRequest struct {
 	StartTime *string `json:"start_time,omitempty" form:"start_time" example:"2024-01-01T00:00:00Z"`
 	// Extraction configurations (same as extract-emails endpoint)
 	Extract []ExtractorConfig `json:"extract,omitempty"`
+	// Strategy for ensuring sync is active: "none" (default), "ensure", "force"
+	CreateStrategy string `json:"create_strategy,omitempty" example:"ensure"`
+	// Interval for temporary sync in seconds (default: 30)
+	SyncInterval int `json:"sync_interval,omitempty" example:"30"`
 }
 
 // WaitEmailResponse represents the response for the /wait-email endpoint

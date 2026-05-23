@@ -6,22 +6,25 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { 
-  Search, 
-  Calendar, 
-  CheckCircle, 
-  XCircle, 
-  AlertTriangle, 
-  Clock, 
+import {
+  Search,
+  Calendar,
+  CheckCircle,
+  XCircle,
+  AlertTriangle,
+  Clock,
   Download,
   ChevronDown,
   ChevronUp,
   RefreshCw,
-  AlertCircle
+  AlertCircle,
+  GitBranch
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { triggerService } from '@/services/trigger.service'
+import { ExecutionTimeline } from './execution-timeline'
 import { TriggerExecutionLog, PaginationParams, TriggerExecutionStatus } from '@/types'
+import { toast } from 'sonner'
 
 interface TriggerLogsProps {
   triggerId?: number
@@ -32,13 +35,13 @@ interface TriggerLogsProps {
   onViewDetails?: (log: TriggerExecutionLog) => void
 }
 
-export function TriggerLogs({ 
-  triggerId, 
-  limit = 10, 
-  showFilters = true, 
+export function TriggerLogs({
+  triggerId,
+  limit = 10,
+  showFilters = true,
   showPagination = true,
   showExport = true,
-  onViewDetails 
+  onViewDetails
 }: TriggerLogsProps) {
   const router = useRouter()
   const [logs, setLogs] = useState<TriggerExecutionLog[]>([])
@@ -47,21 +50,21 @@ export function TriggerLogs({
   const [pageSize, setPageSize] = useState(limit)
   const [isLoading, setIsLoading] = useState(true)
   const [expandedLogs, setExpandedLogs] = useState<Record<number, boolean>>({})
-  
+
   // 过滤条件
   const [statusFilter, setStatusFilter] = useState<TriggerExecutionStatus | 'all'>('all')
   const [startDate, setStartDate] = useState<string>('')
   const [endDate, setEndDate] = useState<string>('')
-  
+
   // 加载日志
   useEffect(() => {
     loadLogs()
   }, [triggerId, page, pageSize, statusFilter, startDate, endDate])
-  
+
   const loadLogs = async () => {
     try {
       setIsLoading(true)
-      
+
       const params: PaginationParams & {
         status?: string
         start_date?: string
@@ -70,23 +73,23 @@ export function TriggerLogs({
         page,
         limit: pageSize
       }
-      
+
       if (statusFilter !== 'all') {
         params.status = statusFilter
       }
-      
+
       if (startDate) {
         params.start_date = startDate
       }
-      
+
       if (endDate) {
         params.end_date = endDate
       }
-      
-      const response = triggerId 
+
+      const response = triggerId
         ? await triggerService.getTriggerLogs(triggerId, params)
         : await triggerService.getTriggerLogs(undefined, params)
-      
+
       setLogs(response.data)
       setTotal(response.total)
     } catch (error) {
@@ -95,17 +98,17 @@ export function TriggerLogs({
       setIsLoading(false)
     }
   }
-  
+
   // 导出日志
   const exportLogs = async () => {
     try {
       // 实现导出功能
-      alert('导出功能待实现')
+      toast.info('导出功能待实现')
     } catch (error) {
       console.error('导出日志失败:', error)
     }
   }
-  
+
   // 切换日志详情展开/折叠
   const toggleLogDetails = (logId: number) => {
     setExpandedLogs(prev => ({
@@ -113,12 +116,12 @@ export function TriggerLogs({
       [logId]: !prev[logId]
     }))
   }
-  
+
   // 打开错误诊断工具
   const openDiagnostics = (log: TriggerExecutionLog) => {
     router.push(`/triggers/diagnostics?logId=${log.id}${triggerId ? `&triggerId=${triggerId}` : ''}`)
   }
-  
+
   // 获取状态图标
   const getStatusIcon = (status: TriggerExecutionStatus) => {
     switch (status) {
@@ -132,7 +135,7 @@ export function TriggerLogs({
         return <Clock className="h-4 w-4 text-gray-500" />
     }
   }
-  
+
   // 获取状态文本
   const getStatusText = (status: TriggerExecutionStatus) => {
     switch (status) {
@@ -146,7 +149,7 @@ export function TriggerLogs({
         return '未知'
     }
   }
-  
+
   // 获取状态颜色
   const getStatusColor = (status: TriggerExecutionStatus) => {
     switch (status) {
@@ -160,13 +163,13 @@ export function TriggerLogs({
         return 'bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400'
     }
   }
-  
+
   // 格式化日期时间
   const formatDateTime = (dateString: string) => {
     const date = new Date(dateString)
     return date.toLocaleString()
   }
-  
+
   // 计算执行时间（毫秒）
   const formatExecutionTime = (ms: number) => {
     if (ms < 1000) {
@@ -175,7 +178,7 @@ export function TriggerLogs({
       return `${(ms / 1000).toFixed(2)}s`
     }
   }
-  
+
   return (
     <div className="space-y-4">
       {/* 过滤器 */}
@@ -200,7 +203,7 @@ export function TriggerLogs({
                   <option value="partial">部分成功</option>
                 </select>
               </div>
-              
+
               <div>
                 <Label htmlFor="startDate">开始日期</Label>
                 <Input
@@ -214,7 +217,7 @@ export function TriggerLogs({
                   className="mt-1"
                 />
               </div>
-              
+
               <div>
                 <Label htmlFor="endDate">结束日期</Label>
                 <Input
@@ -228,10 +231,10 @@ export function TriggerLogs({
                   className="mt-1"
                 />
               </div>
-              
+
               <div className="flex items-end">
-                <Button 
-                  type="button" 
+                <Button
+                  type="button"
                   onClick={() => {
                     setStatusFilter('all')
                     setStartDate('')
@@ -251,8 +254,8 @@ export function TriggerLogs({
             </div>
           </CardContent>
         </Card>
-      )}   
-   {/* 日志列表 */}
+      )}
+      {/* 日志列表 */}
       {isLoading ? (
         <Card>
           <CardContent className="p-12 text-center">
@@ -293,7 +296,7 @@ export function TriggerLogs({
                       </Button>
                     </div>
                   </div>
-                  
+
                   {/* 基本信息 */}
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div>
@@ -319,7 +322,7 @@ export function TriggerLogs({
                       </span>
                     </div>
                   </div>
-                  
+
                   {/* 展开的详细信息 */}
                   {expandedLogs[log.id] && (
                     <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -331,12 +334,12 @@ export function TriggerLogs({
                             {log.condition_result ? '条件满足' : '条件不满足'}
                             {log.condition_error && ` (错误: ${log.condition_error})`}
                           </p>
-                          
+
                           {log.condition_error && (
                             <div className="mt-2 flex justify-end">
-                              <Button 
-                                type="button" 
-                                variant="outline" 
+                              <Button
+                                type="button"
+                                variant="outline"
                                 size="sm"
                                 className="text-red-600"
                                 onClick={() => openDiagnostics(log)}
@@ -348,15 +351,15 @@ export function TriggerLogs({
                           )}
                         </div>
                       </div>
-                      
+
                       {/* 动作执行详情 */}
                       {log.action_results && log.action_results.length > 0 && (
                         <div>
                           <h4 className="text-sm font-medium mb-2">动作执行结果</h4>
                           <div className="space-y-2">
                             {log.action_results.map((result, index) => (
-                              <div 
-                                key={index} 
+                              <div
+                                key={index}
                                 className={`p-3 rounded-lg ${result.success ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'}`}
                               >
                                 <div className="flex items-center justify-between">
@@ -380,9 +383,9 @@ export function TriggerLogs({
                                       错误: {result.error}
                                     </p>
                                     <div className="mt-2 flex justify-end">
-                                      <Button 
-                                        type="button" 
-                                        variant="outline" 
+                                      <Button
+                                        type="button"
+                                        variant="outline"
                                         size="sm"
                                         className="text-red-600"
                                         onClick={() => openDiagnostics(log)}
@@ -397,8 +400,19 @@ export function TriggerLogs({
                             ))}
                           </div>
                         </div>
-                      )}         
-                      
+                      )}
+
+                      {/* 执行追踪时间轴 */}
+                      {log.execution_trace_data && (
+                        <div className="mt-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <GitBranch className="h-4 w-4" />
+                            <h4 className="text-sm font-medium">执行追踪时间轴</h4>
+                          </div>
+                          <ExecutionTimeline traceData={log.execution_trace_data} />
+                        </div>
+                      )}
+
                       {/* 错误信息 */}
                       {log.error_message && (
                         <div className="mt-4">
@@ -408,9 +422,9 @@ export function TriggerLogs({
                               {log.error_message}
                             </p>
                             <div className="mt-2 flex justify-end">
-                              <Button 
-                                type="button" 
-                                variant="outline" 
+                              <Button
+                                type="button"
+                                variant="outline"
                                 size="sm"
                                 className="text-red-600"
                                 onClick={() => openDiagnostics(log)}
@@ -422,13 +436,13 @@ export function TriggerLogs({
                           </div>
                         </div>
                       )}
-                      
+
                       {/* 查看详情按钮 */}
                       <div className="mt-4 flex justify-end gap-2">
                         {(log.status === 'failed' || log.status === 'partial') && (
-                          <Button 
-                            type="button" 
-                            variant="outline" 
+                          <Button
+                            type="button"
+                            variant="outline"
                             size="sm"
                             className="text-red-600"
                             onClick={() => openDiagnostics(log)}
@@ -437,11 +451,11 @@ export function TriggerLogs({
                             错误诊断
                           </Button>
                         )}
-                        
+
                         {onViewDetails && (
-                          <Button 
-                            type="button" 
-                            variant="outline" 
+                          <Button
+                            type="button"
+                            variant="outline"
                             size="sm"
                             onClick={() => onViewDetails(log)}
                           >
@@ -469,7 +483,7 @@ export function TriggerLogs({
           </CardContent>
         </Card>
       )}
-      
+
       {/* 分页和导出 */}
       {(showPagination || showExport) && total > 0 && (
         <div className="flex justify-between items-center mt-4">
@@ -498,7 +512,7 @@ export function TriggerLogs({
               </div>
             </div>
           )}
-          
+
           {showExport && (
             <Button variant="outline" onClick={exportLogs}>
               <Download className="h-4 w-4 mr-2" />

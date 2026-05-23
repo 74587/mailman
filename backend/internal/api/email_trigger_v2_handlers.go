@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/services"
+	"mailman/internal/triggerv2/plugins"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,8 +21,9 @@ type EmailTriggerV2Controller struct {
 	triggerService  *services.EmailTriggerService
 	triggerRepo     *repository.EmailTriggerV2Repository
 	logRepo         *repository.TriggerExecutionLogV2Repository
+	emailRepo       *repository.EmailRepository
 	actionExecutor  *services.ActionExecutor
-	pluginManager   *services.PluginManager
+	pluginManager   plugins.PluginManager
 	conditionEngine *services.ConditionEngine
 	activityLogger  *services.ActivityLogger
 }
@@ -30,15 +33,21 @@ func NewEmailTriggerV2Controller(
 	triggerService *services.EmailTriggerService,
 	triggerRepo *repository.EmailTriggerV2Repository,
 	logRepo *repository.TriggerExecutionLogV2Repository,
-	pluginManager *services.PluginManager,
+	emailRepo *repository.EmailRepository,
+	pluginManager plugins.PluginManager,
 	conditionEngine *services.ConditionEngine,
 ) *EmailTriggerV2Controller {
-	actionExecutor := services.NewActionExecutor(pluginManager)
+	// Note: ActionExecutor (V1) is passed nil because V2 trigger handlers
+	// use the pluginManager directly via the V2 plugin system.
+	// The actionExecutor field is only used for legacy TestAction/ExecuteActions
+	// compatibility and will return plugin-not-found errors when called with nil.
+	actionExecutor := services.NewActionExecutor(nil)
 
 	return &EmailTriggerV2Controller{
 		triggerService:  triggerService,
 		triggerRepo:     triggerRepo,
 		logRepo:         logRepo,
+		emailRepo:       emailRepo,
 		actionExecutor:  actionExecutor,
 		pluginManager:   pluginManager,
 		conditionEngine: conditionEngine,
@@ -133,20 +142,11 @@ func (c *EmailTriggerV2Controller) TestTriggerConditionHandler(w http.ResponseWr
 	// Create an email from the test data
 	email := models.Email{}
 	if req.TestData != nil {
-		// Map test data to email fields
-		if subject, ok := req.TestData["subject"].(string); ok {
-			email.Subject = subject
+		// Use JSON marshalling to convert map back to bytes, then unmarshal into Email struct
+		// This handles field mapping (case-insensitive for untagged fields) and type conversion automaticaly
+		if dataBytes, err := json.Marshal(req.TestData); err == nil {
+			_ = json.Unmarshal(dataBytes, &email)
 		}
-		if from, ok := req.TestData["from"].(string); ok {
-			email.From = models.StringSlice{from}
-		}
-		if to, ok := req.TestData["to"].(string); ok {
-			email.To = models.StringSlice{to}
-		}
-		if body, ok := req.TestData["body"].(string); ok {
-			email.Body = body
-		}
-		// Add other fields as needed
 	}
 
 	// Create evaluation context
@@ -191,20 +191,10 @@ func (c *EmailTriggerV2Controller) TestTriggerActionHandler(w http.ResponseWrite
 	// Create a test email from the test data
 	email := models.Email{}
 	if req.TestData != nil {
-		// Map test data to email fields
-		if subject, ok := req.TestData["subject"].(string); ok {
-			email.Subject = subject
+		// Use JSON marshalling to convert map back to bytes, then unmarshal into Email struct
+		if dataBytes, err := json.Marshal(req.TestData); err == nil {
+			_ = json.Unmarshal(dataBytes, &email)
 		}
-		if from, ok := req.TestData["from"].(string); ok {
-			email.From = models.StringSlice{from}
-		}
-		if to, ok := req.TestData["to"].(string); ok {
-			email.To = models.StringSlice{to}
-		}
-		if body, ok := req.TestData["body"].(string); ok {
-			email.Body = body
-		}
-		// Add other fields as needed
 	}
 
 	// Use the action executor to test the action
@@ -223,35 +213,41 @@ func (c *EmailTriggerV2Controller) TestTriggerActionHandler(w http.ResponseWrite
 // RegisterRoutes registers the routes for EmailTriggerV2Controller
 func (c *EmailTriggerV2Controller) RegisterRoutes(router *mux.Router) {
 	// Test API routes
-	router.HandleFunc("/api/v2/triggers/test-condition", c.TestTriggerConditionHandler).Methods("POST")
-	router.HandleFunc("/api/v2/triggers/test-action", c.TestTriggerActionHandler).Methods("POST")
-	router.HandleFunc("/api/v2/triggers/test-complete", c.TestCompleteTriggerHandler).Methods("POST")
+	// Note: paths are relative to the /api/v2 subrouter
+	router.HandleFunc("/triggers/test-condition", c.TestTriggerConditionHandler).Methods("POST")
+	router.HandleFunc("/triggers/test-action", c.TestTriggerActionHandler).Methods("POST")
+	router.HandleFunc("/triggers/test-complete", c.TestCompleteTriggerHandler).Methods("POST")
+	router.HandleFunc("/triggers/test-with-db-emails", c.TestConditionWithDatabaseEmailsHandler).Methods("POST")
 
 	// Trigger management API routes
-	router.HandleFunc("/api/v2/triggers", c.CreateTriggerHandler).Methods("POST")
-	router.HandleFunc("/api/v2/triggers", c.GetTriggersHandler).Methods("GET")
-	router.HandleFunc("/api/v2/triggers/{id}", c.GetTriggerHandler).Methods("GET")
-	router.HandleFunc("/api/v2/triggers/{id}", c.UpdateTriggerHandler).Methods("PUT")
-	router.HandleFunc("/api/v2/triggers/{id}", c.DeleteTriggerHandler).Methods("DELETE")
-	router.HandleFunc("/api/v2/triggers/{id}/enable", c.EnableTriggerHandler).Methods("POST")
-	router.HandleFunc("/api/v2/triggers/{id}/disable", c.DisableTriggerHandler).Methods("POST")
+	router.HandleFunc("/triggers", c.CreateTriggerHandler).Methods("POST")
+	router.HandleFunc("/triggers", c.GetTriggersHandler).Methods("GET")
+	// Note: /triggers/{id}/statistics must be registered before /triggers/{id}
+	router.HandleFunc("/triggers/{id}/statistics", c.GetTriggerStatisticsHandler).Methods("GET")
+	router.HandleFunc("/triggers/{id}", c.GetTriggerHandler).Methods("GET")
+	router.HandleFunc("/triggers/{id}", c.UpdateTriggerHandler).Methods("PUT")
+	router.HandleFunc("/triggers/{id}", c.DeleteTriggerHandler).Methods("DELETE")
+	router.HandleFunc("/triggers/{id}/enable", c.EnableTriggerHandler).Methods("POST")
+	router.HandleFunc("/triggers/{id}/disable", c.DisableTriggerHandler).Methods("POST")
 
 	// Batch operations
-	router.HandleFunc("/api/v2/triggers/batch/enable", c.BatchEnableTriggersHandler).Methods("POST")
-	router.HandleFunc("/api/v2/triggers/batch/disable", c.BatchDisableTriggersHandler).Methods("POST")
-	router.HandleFunc("/api/v2/triggers/batch/delete", c.BatchDeleteTriggersHandler).Methods("POST")
+	router.HandleFunc("/triggers/batch/enable", c.BatchEnableTriggersHandler).Methods("POST")
+	router.HandleFunc("/triggers/batch/disable", c.BatchDisableTriggersHandler).Methods("POST")
+	router.HandleFunc("/triggers/batch/delete", c.BatchDeleteTriggersHandler).Methods("POST")
 
 	// Execution logs API routes
-	router.HandleFunc("/api/v2/triggers/logs", c.GetTriggerLogsHandler).Methods("GET")
-	router.HandleFunc("/api/v2/triggers/{id}/logs", c.GetTriggerLogsByTriggerIDHandler).Methods("GET")
-	router.HandleFunc("/api/v2/triggers/logs/stats", c.GetTriggerLogsStatsHandler).Methods("GET")
-	router.HandleFunc("/api/v2/triggers/logs/export", c.ExportTriggerLogsHandler).Methods("GET")
+	router.HandleFunc("/triggers/logs", c.GetTriggerLogsHandler).Methods("GET")
+	router.HandleFunc("/triggers/{id}/logs", c.GetTriggerLogsByTriggerIDHandler).Methods("GET")
+	router.HandleFunc("/triggers/logs/stats", c.GetTriggerLogsStatsHandler).Methods("GET")
+	router.HandleFunc("/triggers/logs/export", c.ExportTriggerLogsHandler).Methods("GET")
 }
 
 // CreateTriggerHandler handles requests to create a new trigger
 func (c *EmailTriggerV2Controller) CreateTriggerHandler(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+
 	// Parse request body
-	var req CreateTriggerV2Request
+	var req CreateEmailTriggerV2Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
@@ -278,21 +274,34 @@ func (c *EmailTriggerV2Controller) CreateTriggerHandler(w http.ResponseWriter, r
 		Name:        req.Name,
 		Description: req.Description,
 		Enabled:     req.Enabled,
-		Expressions: convertAPIExpressionsToModel(req.Expressions),
-		Actions:     convertAPIActionsToModel(req.Actions),
+		Expressions: models.TriggerExpressions(req.Expressions),
+		Actions:     models.TriggerActions(req.Actions),
+		OrgID:       orgID,
 	}
+
+	// Enrich actions with plugin names from plugin registry
+	c.enrichActionsWithPluginNames(trigger.Actions)
+
+	// Debug: print expressions and actions
+	log.Printf("[DEBUG] Creating trigger: %s", req.Name)
+	exprJSON, _ := json.Marshal(trigger.Expressions)
+	actJSON, _ := json.Marshal(trigger.Actions)
+	log.Printf("[DEBUG] Expressions: %s", string(exprJSON))
+	log.Printf("[DEBUG] Actions: %s", string(actJSON))
 
 	// Create trigger in database
 	if err := c.triggerRepo.Create(trigger); err != nil {
+		log.Printf("[DEBUG] Create error: %v", err)
 		http.Error(w, "Failed to create trigger: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[DEBUG] Trigger created successfully with ID: %d", trigger.ID)
 
 	// If enabled, set up subscription
 	if trigger.Enabled {
 		if err := c.triggerService.EnableTrigger(trigger.ID); err != nil {
 			// Log the error but don't fail the request
-			fmt.Printf("Warning: Failed to enable trigger subscription: %v\n", err)
+			log.Printf("[TriggerV2] Warning: Failed to enable trigger subscription: %v", err)
 		}
 	}
 
@@ -333,6 +342,8 @@ func (c *EmailTriggerV2Controller) CreateTriggerHandler(w http.ResponseWriter, r
 
 // GetTriggersHandler handles requests to get all triggers with pagination
 func (c *EmailTriggerV2Controller) GetTriggersHandler(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+
 	// Parse query parameters
 	page := 1
 	limit := 10
@@ -363,7 +374,7 @@ func (c *EmailTriggerV2Controller) GetTriggersHandler(w http.ResponseWriter, r *
 	search = r.URL.Query().Get("search")
 
 	// Get triggers with pagination
-	triggers, total, err := c.triggerRepo.GetAllPaginated(page, limit, sortBy, sortOrder, search)
+	triggers, total, err := c.triggerRepo.GetAllPaginated(page, limit, sortBy, sortOrder, search, orgID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve triggers: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -409,6 +420,7 @@ func (c *EmailTriggerV2Controller) GetTriggersHandler(w http.ResponseWriter, r *
 
 // GetTriggerHandler handles requests to get a single trigger by ID
 func (c *EmailTriggerV2Controller) GetTriggerHandler(w http.ResponseWriter, r *http.Request) {
+
 	// Get trigger ID from URL
 	vars := mux.Vars(r)
 	id, err := strconv.ParseUint(vars["id"], 10, 32)
@@ -446,6 +458,7 @@ func (c *EmailTriggerV2Controller) GetTriggerHandler(w http.ResponseWriter, r *h
 
 // UpdateTriggerHandler handles requests to update a trigger
 func (c *EmailTriggerV2Controller) UpdateTriggerHandler(w http.ResponseWriter, r *http.Request) {
+
 	// Get trigger ID from URL
 	vars := mux.Vars(r)
 	id, err := strconv.ParseUint(vars["id"], 10, 32)
@@ -500,6 +513,8 @@ func (c *EmailTriggerV2Controller) UpdateTriggerHandler(w http.ResponseWriter, r
 			modelActions[i] = convertAPIActionToModel(action)
 		}
 		trigger.Actions = modelActions
+		// Enrich actions with plugin names from plugin registry
+		c.enrichActionsWithPluginNames(trigger.Actions)
 	}
 
 	// Update trigger in database
@@ -513,12 +528,12 @@ func (c *EmailTriggerV2Controller) UpdateTriggerHandler(w http.ResponseWriter, r
 		if trigger.Enabled {
 			if err := c.triggerService.EnableTrigger(trigger.ID); err != nil {
 				// Log the error but don't fail the request
-				fmt.Printf("Warning: Failed to enable trigger subscription: %v\n", err)
+				log.Printf("[TriggerV2] Warning: Failed to enable trigger subscription: %v", err)
 			}
 		} else {
 			if err := c.triggerService.DisableTrigger(trigger.ID); err != nil {
 				// Log the error but don't fail the request
-				fmt.Printf("Warning: Failed to disable trigger subscription: %v\n", err)
+				log.Printf("[TriggerV2] Warning: Failed to disable trigger subscription: %v", err)
 			}
 		}
 	}
@@ -558,6 +573,7 @@ func (c *EmailTriggerV2Controller) UpdateTriggerHandler(w http.ResponseWriter, r
 
 // DeleteTriggerHandler handles requests to delete a trigger
 func (c *EmailTriggerV2Controller) DeleteTriggerHandler(w http.ResponseWriter, r *http.Request) {
+
 	// Get trigger ID from URL
 	vars := mux.Vars(r)
 	id, err := strconv.ParseUint(vars["id"], 10, 32)
@@ -577,7 +593,7 @@ func (c *EmailTriggerV2Controller) DeleteTriggerHandler(w http.ResponseWriter, r
 	if trigger.Enabled {
 		if err := c.triggerService.DisableTrigger(trigger.ID); err != nil {
 			// Log the error but don't fail the request
-			fmt.Printf("Warning: Failed to disable trigger before deletion: %v\n", err)
+			log.Printf("[TriggerV2] Warning: Failed to disable trigger before deletion: %v", err)
 		}
 	}
 
@@ -862,7 +878,7 @@ func (c *EmailTriggerV2Controller) BatchDeleteTriggersHandler(w http.ResponseWri
 		if trigger.Enabled {
 			if err := c.triggerService.DisableTrigger(id); err != nil {
 				// Log the error but continue with deletion
-				fmt.Printf("Warning: Failed to disable trigger %d before deletion: %v\n", id, err)
+				log.Printf("[TriggerV2] Warning: Failed to disable trigger %d before deletion: %v", id, err)
 			}
 		}
 
@@ -950,7 +966,8 @@ func (c *EmailTriggerV2Controller) GetTriggerLogsHandler(w http.ResponseWriter, 
 	}
 
 	// Get logs with pagination and filtering
-	logs, total, err := c.logRepo.GetAllPaginated(page, limit, triggerID, status, startDate, endDate)
+	orgID := GetCurrentOrgID(r)
+	logs, total, err := c.logRepo.GetAllPaginated(page, limit, triggerID, status, startDate, endDate, orgID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve logs: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1027,8 +1044,60 @@ func (c *EmailTriggerV2Controller) GetTriggerLogsByTriggerIDHandler(w http.Respo
 	json.NewEncoder(w).Encode(response)
 }
 
+// GetTriggerStatisticsHandler handles requests to get statistics for a specific trigger
+// This endpoint is used by the frontend at /triggers/{id}/statistics
+func (c *EmailTriggerV2Controller) GetTriggerStatisticsHandler(w http.ResponseWriter, r *http.Request) {
+	// Get trigger ID from URL
+	vars := mux.Vars(r)
+	id, err := strconv.ParseUint(vars["id"], 10, 32)
+	if err != nil {
+		http.Error(w, "Invalid trigger ID", http.StatusBadRequest)
+		return
+	}
+	triggerID := uint(id)
+
+	// Parse date range parameters
+	var startDate, endDate *time.Time
+	if startDateStr := r.URL.Query().Get("start_date"); startDateStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, startDateStr); err == nil {
+			startDate = &parsed
+		}
+	}
+
+	if endDateStr := r.URL.Query().Get("end_date"); endDateStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, endDateStr); err == nil {
+			endDate = &parsed
+		}
+	}
+
+	// Get statistics from log repository
+	stats, err := c.logRepo.GetStatistics(triggerID, startDate, endDate)
+	if err != nil {
+		http.Error(w, "Failed to retrieve statistics: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Add trigger details
+	trigger, err := c.triggerRepo.GetByID(triggerID)
+	if err == nil {
+		stats["trigger_name"] = trigger.Name
+		stats["trigger_enabled"] = trigger.Enabled
+		stats["total_executions"] = trigger.TotalExecutions
+		stats["success_executions"] = trigger.SuccessExecutions
+	}
+
+	// Wrap in data field for frontend API client compatibility
+	response := map[string]interface{}{
+		"data": stats,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 // GetTriggerLogsStatsHandler handles requests to get statistics for trigger execution logs
 func (c *EmailTriggerV2Controller) GetTriggerLogsStatsHandler(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
 	// Parse filter parameters
 	var triggerID *uint
 	if idStr := r.URL.Query().Get("trigger_id"); idStr != "" {
@@ -1089,7 +1158,7 @@ func (c *EmailTriggerV2Controller) GetTriggerLogsStatsHandler(w http.ResponseWri
 	// For now, we'll implement a simple version that counts logs by status
 
 	// Get all triggers
-	triggers, err := c.triggerRepo.GetAll()
+	triggers, err := c.triggerRepo.GetAll(orgID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve triggers: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1179,8 +1248,8 @@ func (c *EmailTriggerV2Controller) ExportTriggerLogsHandler(w http.ResponseWrite
 		}
 	}
 
-	// Get all logs matching the filters (no pagination for export)
-	logs, _, err := c.logRepo.GetAllPaginated(1, 10000, triggerID, status, startDate, endDate)
+	orgID := GetCurrentOrgID(r)
+	logs, _, err := c.logRepo.GetAllPaginated(1, 10000, triggerID, status, startDate, endDate, orgID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve logs: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1260,20 +1329,56 @@ func (c *EmailTriggerV2Controller) TestCompleteTriggerHandler(w http.ResponseWri
 	// Create a test email from the test data
 	email := models.Email{}
 	if req.TestData != nil {
-		// Map test data to email fields
-		if subject, ok := req.TestData["subject"].(string); ok {
-			email.Subject = subject
+		// Try to parse as JSON and unmarshal directly to Email struct
+		testDataBytes, err := json.Marshal(req.TestData)
+		if err == nil {
+			// Try to unmarshal directly - this handles the case where testData matches Email struct
+			json.Unmarshal(testDataBytes, &email)
 		}
-		if from, ok := req.TestData["from"].(string); ok {
-			email.From = models.StringSlice{from}
+
+		// Also try lowercase field names (for backwards compatibility)
+		if email.Subject == "" {
+			if subject, ok := req.TestData["subject"].(string); ok {
+				email.Subject = subject
+			}
 		}
-		if to, ok := req.TestData["to"].(string); ok {
-			email.To = models.StringSlice{to}
+		if len(email.From) == 0 {
+			// Handle both string and array formats
+			if from, ok := req.TestData["from"].(string); ok {
+				email.From = models.StringSlice{from}
+			} else if fromArr, ok := req.TestData["from"].([]interface{}); ok {
+				email.From = make(models.StringSlice, len(fromArr))
+				for i, v := range fromArr {
+					if s, ok := v.(string); ok {
+						email.From[i] = s
+					}
+				}
+			}
 		}
-		if body, ok := req.TestData["body"].(string); ok {
-			email.Body = body
+		if len(email.To) == 0 {
+			// Handle both string and array formats
+			if to, ok := req.TestData["to"].(string); ok {
+				email.To = models.StringSlice{to}
+			} else if toArr, ok := req.TestData["to"].([]interface{}); ok {
+				email.To = make(models.StringSlice, len(toArr))
+				for i, v := range toArr {
+					if s, ok := v.(string); ok {
+						email.To[i] = s
+					}
+				}
+			}
 		}
-		// Add other fields as needed
+		if email.Body == "" {
+			if body, ok := req.TestData["body"].(string); ok {
+				email.Body = body
+			}
+		}
+		// Handle ID field
+		if email.ID == 0 {
+			if id, ok := req.TestData["ID"].(float64); ok {
+				email.ID = uint(id)
+			}
+		}
 	}
 
 	startTime := time.Now()
@@ -1360,6 +1465,8 @@ func convertModelExpressionsToAPI(expressions models.TriggerExpressions) []Trigg
 			Field:      derefString(expr.Field),
 			Value:      expr.Value,
 			Conditions: convertModelExpressionsToAPI(expr.Conditions),
+			PluginID:   derefString(expr.PluginID),
+			Fields:     expr.Fields,
 			Not:        derefBool(expr.Not),
 		}
 	}
@@ -1390,6 +1497,8 @@ func convertAPIExpressionToModel(expr TriggerExpression) models.TriggerExpressio
 		Field:      &expr.Field,
 		Value:      expr.Value,
 		Conditions: convertAPIExpressionsToModelExpressions(expr.Conditions),
+		PluginID:   &expr.PluginID,
+		Fields:     expr.Fields,
 		Not:        &expr.Not,
 	}
 }
@@ -1474,4 +1583,189 @@ func derefBool(b *bool) bool {
 		return false
 	}
 	return *b
+}
+
+// TestConditionWithDatabaseEmailsRequest 使用数据库邮件测试过滤条件的请求
+type TestConditionWithDatabaseEmailsRequest struct {
+	Expressions []models.TriggerExpression `json:"expressions"`
+	StartTime   *time.Time                 `json:"startTime,omitempty"`
+	EndTime     *time.Time                 `json:"endTime,omitempty"`
+	Sender      string                     `json:"sender,omitempty"`
+	Recipient   string                     `json:"recipient,omitempty"`
+	Limit       int                        `json:"limit"`
+}
+
+// MatchedEmailResult 匹配邮件结果
+type MatchedEmailResult struct {
+	ID          uint                   `json:"id"`
+	MessageID   string                 `json:"messageId"`
+	Subject     string                 `json:"subject"`
+	From        string                 `json:"from"`
+	To          []string               `json:"to"`
+	ReceivedAt  time.Time              `json:"receivedAt"`
+	BodyPreview string                 `json:"bodyPreview"`
+	HTMLPreview string                 `json:"htmlPreview"`
+	Evaluation  map[string]interface{} `json:"evaluation"`
+}
+
+// TestConditionWithDatabaseEmailsResponse 使用数据库邮件测试过滤条件的响应
+type TestConditionWithDatabaseEmailsResponse struct {
+	TotalScanned    int                  `json:"totalScanned"`
+	TotalMatched    int                  `json:"totalMatched"`
+	MatchedEmails   []MatchedEmailResult `json:"matchedEmails"`
+	ExecutionTimeMs int64                `json:"executionTimeMs"`
+}
+
+// TestConditionWithDatabaseEmailsHandler 使用数据库邮件测试过滤条件
+func (c *EmailTriggerV2Controller) TestConditionWithDatabaseEmailsHandler(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+
+	// Parse request body
+	var req TestConditionWithDatabaseEmailsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if len(req.Expressions) == 0 {
+		http.Error(w, "Expressions are required", http.StatusBadRequest)
+		return
+	}
+
+	// Set default limit if not provided (0 表示不限制)
+	if req.Limit <= 0 {
+		req.Limit = 100 // 默认值
+	}
+	// 不再限制最大值，允许扫描所有邮件
+
+	// Query emails from database
+	emails, err := c.queryEmailsWithFilters(req)
+	if err != nil {
+		http.Error(w, "Failed to query emails: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Test each email against the expressions
+	matchedEmails := make([]MatchedEmailResult, 0)
+
+	for _, email := range emails {
+		// Create evaluation context
+		context := services.NewEvaluationContext(email)
+
+		// Evaluate expressions
+		result, evalDetails, err := c.conditionEngine.EvaluateExpressions(req.Expressions, context)
+		if err != nil {
+			// Log error but continue to next email
+			log.Printf("[TriggerV2] Error evaluating email %d: %v", email.ID, err)
+			continue
+		}
+
+		if result {
+			// Create body preview (max 200 chars, sanitized)
+			bodyPreview := email.TextBody
+			if len(bodyPreview) > 200 {
+				bodyPreview = bodyPreview[:200] + "..."
+			}
+
+			// Create HTML preview (sanitized - remove script tags etc for XSS protection)
+			htmlPreview := c.sanitizeHTML(email.HTMLBody)
+			if len(htmlPreview) > 5000 {
+				htmlPreview = htmlPreview[:5000] + "..."
+			}
+
+			// Get from address
+			fromAddr := ""
+			if len(email.From) > 0 {
+				fromAddr = email.From[0]
+			}
+
+			// Convert models.JSONMap to map[string]interface{}
+			evalMap := make(map[string]interface{})
+			for k, v := range evalDetails {
+				evalMap[k] = v
+			}
+
+			matchedEmails = append(matchedEmails, MatchedEmailResult{
+				ID:          email.ID,
+				MessageID:   email.MessageID,
+				Subject:     email.Subject,
+				From:        fromAddr,
+				To:          email.To,
+				ReceivedAt:  email.ReceivedAt,
+				BodyPreview: bodyPreview,
+				HTMLPreview: htmlPreview,
+				Evaluation:  evalMap,
+			})
+		}
+	}
+
+	// Build response
+	response := TestConditionWithDatabaseEmailsResponse{
+		TotalScanned:    len(emails),
+		TotalMatched:    len(matchedEmails),
+		MatchedEmails:   matchedEmails,
+		ExecutionTimeMs: time.Since(startTime).Milliseconds(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// queryEmailsWithFilters 根据过滤条件查询邮件
+func (c *EmailTriggerV2Controller) queryEmailsWithFilters(req TestConditionWithDatabaseEmailsRequest) ([]models.Email, error) {
+	// Use the SearchEmails method with EmailSearchOptions
+	options := repository.EmailSearchOptions{
+		Limit:     req.Limit,
+		Offset:    0,
+		SortBy:    "received_at DESC",
+		StartDate: req.StartTime,
+		EndDate:   req.EndTime,
+		FromQuery: req.Sender,
+		ToQuery:   req.Recipient,
+	}
+
+	emails, _, err := c.emailRepo.SearchEmails(options)
+	return emails, err
+}
+
+// sanitizeHTML 简单的 HTML sanitization 防止 XSS
+func (c *EmailTriggerV2Controller) sanitizeHTML(html string) string {
+	// Remove script tags
+	html = strings.ReplaceAll(html, "<script", "&lt;script")
+	html = strings.ReplaceAll(html, "</script>", "&lt;/script&gt;")
+	html = strings.ReplaceAll(html, "javascript:", "")
+	html = strings.ReplaceAll(html, "onclick", "data-onclick")
+	html = strings.ReplaceAll(html, "onerror", "data-onerror")
+	html = strings.ReplaceAll(html, "onload", "data-onload")
+	html = strings.ReplaceAll(html, "onmouseover", "data-onmouseover")
+	return html
+}
+
+// enrichActionsWithPluginNames populates pluginName for actions from the plugin registry
+func (c *EmailTriggerV2Controller) enrichActionsWithPluginNames(actions models.TriggerActions) {
+	// Get all available plugins
+	plugins, err := c.pluginManager.ListPlugins()
+	if err != nil {
+		log.Printf("[enrichActionsWithPluginNames] Failed to list plugins: %v", err)
+		return
+	}
+
+	// Create a map for quick lookups
+	pluginMap := make(map[string]string)
+	for _, plugin := range plugins {
+		pluginMap[plugin.ID] = plugin.Name
+	}
+
+	// Enrich actions with plugin names
+	for i := range actions {
+		if actions[i].PluginName == "" && actions[i].PluginID != "" {
+			if name, exists := pluginMap[actions[i].PluginID]; exists {
+				actions[i].PluginName = name
+			} else {
+				// Use pluginID as fallback name
+				actions[i].PluginName = actions[i].PluginID
+			}
+		}
+	}
 }

@@ -17,7 +17,7 @@ backend/main
 *.exe
 
 # Temporary files
-*_test.go
+# 注意: 不要忽略 *_test.go，这是Go的测试文件！
 *测试*.md
 *验证*.md
 fix_account.go
@@ -30,6 +30,8 @@ Thumbs.db
 # Environment files
 .env
 .env.local
+.env.backup*
+.env.*.backup
 
 # IDE files
 .idea/
@@ -74,3 +76,18 @@ coverage/
 *.pem
 *.tmp
 *.temp
+deleted_*.txt
+*_backup_list.txt
+
+# Security - Backup files
+*.backup
+*_副本.*
+*-bak.*
+
+.trash/
+
+# AI tool configs
+.agent/
+.claude/
+.openclaude/
+.qodo/

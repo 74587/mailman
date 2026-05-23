@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Trash2, ChevronUp, ChevronDown, Settings, ToggleLeft, ToggleRight, Hash } from 'lucide-react'
+import { Trash2, ChevronUp, ChevronDown, Settings, ToggleLeft, ToggleRight, Hash, HelpCircle, Maximize2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -8,7 +8,9 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { apiClient } from '@/lib/api-client'
+import { CodeEditorModal, CodeLanguage, CodeExample, DocumentationSection } from './code-editor-modal'
 
 interface Action {
     id?: string
@@ -38,9 +40,11 @@ interface ActionGroupProps {
 interface UIField {
     name: string
     label: string
-    type: 'text' | 'number' | 'select' | 'multi_select' | 'textarea' | 'dynamic' | 'boolean' | 'date' | 'time' | 'json' | 'code'
+    type: 'text' | 'number' | 'select' | 'multi_select' | 'textarea' | 'dynamic' | 'boolean' | 'date' | 'time' | 'json' | 'code' | 'javascript' | 'gotemplate' | 'regex'
     description?: string
     placeholder?: string
+    tooltip?: string      // 详细帮助信息，鼠标悬停时显示
+    help_url?: string     // 帮助文档链接
     required?: boolean
     pattern?: string
     min?: number | null
@@ -59,6 +63,9 @@ interface UIField {
     options_api?: string
     show_if?: Record<string, any>
     depends_on?: string | null
+    // 代码编辑器专用
+    examples?: CodeExample[]
+    documentation?: DocumentationSection[]
 }
 
 interface UISchema {
@@ -102,6 +109,11 @@ export function ActionGroup({
     const [pluginData, setPluginData] = useState<PluginData | null>(null)
     const [loading, setLoading] = useState(true)
     const [dynamicOptions, setDynamicOptions] = useState<Record<string, any[]>>({})
+
+    // CodeEditorModal state
+    const [codeEditorOpen, setCodeEditorOpen] = useState(false)
+    const [codeEditorField, setCodeEditorField] = useState<UIField | null>(null)
+    const [codeEditorLanguage, setCodeEditorLanguage] = useState<CodeLanguage>('javascript')
 
     // 获取插件UI架构
     useEffect(() => {
@@ -383,6 +395,44 @@ export function ActionGroup({
                     />
                 )
 
+            case 'javascript':
+            case 'gotemplate':
+            case 'regex':
+                const codeLanguage: CodeLanguage = field.type === 'gotemplate' ? 'gotemplate'
+                    : field.type === 'regex' ? 'regex'
+                        : 'javascript'
+                return (
+                    <div className="space-y-2">
+                        <div className="relative">
+                            <Textarea
+                                value={String(value)}
+                                onChange={(e) => handleFieldChange(field.name, e.target.value)}
+                                placeholder={field.placeholder}
+                                className="min-h-[80px] text-sm resize-none font-mono pr-10"
+                                rows={4}
+                                disabled={field.disabled}
+                            />
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="absolute right-1 top-1 h-8 w-8 hover:bg-blue-100"
+                                onClick={() => {
+                                    setCodeEditorField(field)
+                                    setCodeEditorLanguage(codeLanguage)
+                                    setCodeEditorOpen(true)
+                                }}
+                                title="在编辑器中打开"
+                            >
+                                <Maximize2 className="h-4 w-4 text-blue-600" />
+                            </Button>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                            点击右上角按钮可打开高级编辑器，获得代码提示和示例
+                        </p>
+                    </div>
+                )
+
             default:
                 // 默认使用文本输入
                 return (
@@ -425,144 +475,186 @@ export function ActionGroup({
     }
 
     return (
-        <Card className={`p-4 ${action.enabled ? 'bg-white' : 'bg-gray-50 opacity-75'}`}>
-            <div className="space-y-4">
-                {/* 头部信息 */}
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className="flex items-center gap-2">
-                            <Hash className="h-4 w-4 text-gray-400" />
-                            <span className="text-sm font-medium text-gray-500">#{action.executionOrder}</span>
+        <>
+            <Card className={`p-4 ${action.enabled ? 'bg-white' : 'bg-gray-50 opacity-75'}`}>
+                <div className="space-y-4">
+                    {/* 头部信息 */}
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-2">
+                                <Hash className="h-4 w-4 text-gray-400" />
+                                <span className="text-sm font-medium text-gray-500">#{action.executionOrder}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <Settings className="h-4 w-4 text-blue-500" />
+                                <span className="font-medium">{action.pluginName}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {action.enabled ? (
+                                    <ToggleRight className="h-4 w-4 text-green-500" />
+                                ) : (
+                                    <ToggleLeft className="h-4 w-4 text-gray-400" />
+                                )}
+                                <Switch
+                                    checked={action.enabled}
+                                    onCheckedChange={handleToggleEnabled}
+                                />
+                            </div>
                         </div>
                         <div className="flex items-center gap-2">
-                            <Settings className="h-4 w-4 text-blue-500" />
-                            <span className="font-medium">{action.pluginName}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            {action.enabled ? (
-                                <ToggleRight className="h-4 w-4 text-green-500" />
-                            ) : (
-                                <ToggleLeft className="h-4 w-4 text-gray-400" />
-                            )}
-                            <Switch
-                                checked={action.enabled}
-                                onCheckedChange={handleToggleEnabled}
-                            />
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => onMove('up')}
+                                disabled={index === 0}
+                            >
+                                <ChevronUp className="h-4 w-4" />
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => onMove('down')}
+                                disabled={index === totalCount - 1}
+                            >
+                                <ChevronDown className="h-4 w-4" />
+                            </Button>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={onDelete}
+                                className="text-red-500 hover:text-red-700"
+                            >
+                                <Trash2 className="h-4 w-4" />
+                            </Button>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onMove('up')}
-                            disabled={index === 0}
-                        >
-                            <ChevronUp className="h-4 w-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => onMove('down')}
-                            disabled={index === totalCount - 1}
-                        >
-                            <ChevronDown className="h-4 w-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={onDelete}
-                            className="text-red-500 hover:text-red-700"
-                        >
-                            <Trash2 className="h-4 w-4" />
-                        </Button>
-                    </div>
-                </div>
 
-                {/* 插件选择 */}
-                <div className="space-y-2">
-                    <Label htmlFor={`plugin-${action.id}`}>动作插件</Label>
-                    <Select value={action.pluginId} onValueChange={handlePluginChange}>
-                        <SelectTrigger id={`plugin-${action.id}`}>
-                            <SelectValue placeholder="选择动作插件" />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {availablePlugins.map((plugin) => (
-                                <SelectItem key={plugin.id} value={plugin.id}>
-                                    <div className="flex flex-col">
-                                        <span>{plugin.name}</span>
-                                        <span className="text-xs text-gray-500">{plugin.description}</span>
+                    {/* 插件选择 */}
+                    <div className="space-y-2">
+                        <Label htmlFor={`plugin-${action.id}`}>动作插件</Label>
+                        <Select value={action.pluginId} onValueChange={handlePluginChange}>
+                            <SelectTrigger id={`plugin-${action.id}`}>
+                                <SelectValue placeholder="选择动作插件" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {availablePlugins.map((plugin) => (
+                                    <SelectItem key={plugin.id} value={plugin.id}>
+                                        <div className="flex flex-col">
+                                            <span>{plugin.name}</span>
+                                            <span className="text-xs text-gray-500">{plugin.description}</span>
+                                        </div>
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+
+                    {/* 插件信息 */}
+                    {currentPlugin && (
+                        <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3">
+                            <div className="flex items-start gap-2">
+                                <div className="flex-1">
+                                    <p className="text-sm text-gray-700 dark:text-gray-300">
+                                        {currentPlugin.description}
+                                    </p>
+                                    <div className="flex gap-2 mt-2">
+                                        {currentPlugin.supportedEventTypes.map((type) => (
+                                            <Badge key={type} variant="secondary" className="text-xs">
+                                                {type}
+                                            </Badge>
+                                        ))}
                                     </div>
-                                </SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-                </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
-                {/* 插件信息 */}
-                {currentPlugin && (
-                    <div className="bg-blue-50 dark:bg-blue-900/20 rounded-lg p-3">
-                        <div className="flex items-start gap-2">
-                            <div className="flex-1">
-                                <p className="text-sm text-gray-700 dark:text-gray-300">
-                                    {currentPlugin.description}
-                                </p>
-                                <div className="flex gap-2 mt-2">
-                                    {currentPlugin.supportedEventTypes.map((type) => (
-                                        <Badge key={type} variant="secondary" className="text-xs">
-                                            {type}
-                                        </Badge>
+                    {/* 配置区域 */}
+                    {pluginData && (
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                                <Label>插件配置</Label>
+                                <Badge variant="secondary" className="text-xs">
+                                    {pluginData.info.name}
+                                </Badge>
+                            </div>
+
+                            {/* 字段网格布局 */}
+                            <TooltipProvider delayDuration={200}>
+                                <div className="grid grid-cols-12 gap-3">
+                                    {pluginData.schema.fields.filter(shouldShowField).map(field => (
+                                        <div key={field.name} className={getFieldClass(field.width)}>
+                                            <label className="flex items-center gap-1 text-xs font-medium text-gray-700 mb-1">
+                                                <span>{field.label}</span>
+                                                {field.required && <span className="text-red-500">*</span>}
+                                                {field.tooltip && (
+                                                    <Tooltip>
+                                                        <TooltipTrigger asChild>
+                                                            <button type="button" className="inline-flex items-center justify-center w-4 h-4 rounded-full text-gray-400 hover:text-gray-600 hover:bg-gray-100">
+                                                                <HelpCircle className="w-3.5 h-3.5" />
+                                                            </button>
+                                                        </TooltipTrigger>
+                                                        <TooltipContent side="top" className="max-w-sm p-3 text-sm whitespace-pre-line">
+                                                            <p>{field.tooltip}</p>
+                                                            {field.help_url && (
+                                                                <a
+                                                                    href={field.help_url}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                    className="mt-2 inline-block text-blue-500 hover:text-blue-700 text-xs"
+                                                                >
+                                                                    查看帮助文档 →
+                                                                </a>
+                                                            )}
+                                                        </TooltipContent>
+                                                    </Tooltip>
+                                                )}
+                                            </label>
+                                            {renderField(field)}
+                                            {field.description && (
+                                                <p className="text-xs text-gray-500 mt-1">{field.description}</p>
+                                            )}
+                                        </div>
                                     ))}
                                 </div>
-                            </div>
-                        </div>
-                    </div>
-                )}
+                            </TooltipProvider>
 
-                {/* 配置区域 */}
-                {pluginData && (
-                    <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                            <Label>插件配置</Label>
-                            <Badge variant="secondary" className="text-xs">
-                                {pluginData.info.name}
-                            </Badge>
-                        </div>
-
-                        {/* 字段网格布局 */}
-                        <div className="grid grid-cols-12 gap-3">
-                            {pluginData.schema.fields.filter(shouldShowField).map(field => (
-                                <div key={field.name} className={getFieldClass(field.width)}>
-                                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                                        {field.label}
-                                        {field.required && <span className="text-red-500">*</span>}
-                                    </label>
-                                    {renderField(field)}
-                                    {field.description && (
-                                        <p className="text-xs text-gray-500 mt-1">{field.description}</p>
-                                    )}
+                            {/* 帮助文本 */}
+                            {pluginData.schema.help_text && (
+                                <div className="mt-2 p-2 bg-blue-50 rounded text-xs text-blue-600">
+                                    {pluginData.schema.help_text}
                                 </div>
-                            ))}
+                            )}
                         </div>
+                    )}
 
-                        {/* 帮助文本 */}
-                        {pluginData.schema.help_text && (
-                            <div className="mt-2 p-2 bg-blue-50 rounded text-xs text-blue-600">
-                                {pluginData.schema.help_text}
-                            </div>
-                        )}
-                    </div>
-                )}
+                    {/* 当前配置预览 */}
+                    {Object.keys(action.config).length > 0 && (
+                        <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
+                            <Label className="text-xs text-gray-500 mb-2 block">当前配置</Label>
+                            <pre className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
+                                {JSON.stringify(action.config, null, 2)}
+                            </pre>
+                        </div>
+                    )}
+                </div>
+            </Card>
 
-                {/* 当前配置预览 */}
-                {Object.keys(action.config).length > 0 && (
-                    <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-                        <Label className="text-xs text-gray-500 mb-2 block">当前配置</Label>
-                        <pre className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap">
-                            {JSON.stringify(action.config, null, 2)}
-                        </pre>
-                    </div>
-                )}
-            </div>
-        </Card>
+            {/* Code Editor Modal */}
+            {
+                codeEditorField && (
+                    <CodeEditorModal
+                        open={codeEditorOpen}
+                        onOpenChange={setCodeEditorOpen}
+                        language={codeEditorLanguage}
+                        code={action.config[codeEditorField.name] || ''}
+                        onCodeChange={(code) => handleFieldChange(codeEditorField.name, code)}
+                        title={`编辑 ${codeEditorField.label}`}
+                        customExamples={codeEditorField.examples}
+                        customDocumentation={codeEditorField.documentation}
+                    />
+                )
+            }
+        </>
     )
 }

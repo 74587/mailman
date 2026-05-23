@@ -3,13 +3,13 @@ package api
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"mailman/internal/models"
 	"mailman/internal/services"
+	"mailman/internal/utils"
 
 	"github.com/gorilla/websocket"
 )
@@ -47,9 +47,10 @@ type WaitEmailWebSocketRequest struct {
 
 // WaitEmailWebSocketHandler handles WebSocket connections for waiting for emails
 func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Request) {
+	wsLogger := utils.NewLogger("WebSocket")
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
+		wsLogger.Error("WebSocket upgrade error: %v", err)
 		return
 	}
 	defer conn.Close()
@@ -57,7 +58,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 	// Read initial configuration
 	var request WaitEmailWebSocketRequest
 	if err := conn.ReadJSON(&request); err != nil {
-		log.Printf("Error reading WebSocket message: %v", err)
+		wsLogger.Error("Error reading WebSocket message: %v", err)
 		conn.WriteJSON(WebSocketMessage{
 			Type:  "error",
 			Error: "Invalid request format",
@@ -118,7 +119,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 					filterStartTime = time.Unix(unixMs/1000, (unixMs%1000)*1e6).UTC()
 				} else {
 					// Default to current time if parsing fails
-					log.Printf("[WebSocket] Failed to parse start time '%s', using current time", *request.StartTime)
+					wsLogger.Warn("Failed to parse start time '%s', using current time", *request.StartTime)
 					filterStartTime = time.Now().UTC()
 				}
 			}
@@ -128,7 +129,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	// Log the parsed time for debugging
-	log.Printf("[WebSocket] Using filter start time: %s (UTC)", filterStartTime.Format(time.RFC3339))
+	wsLogger.Debug("Using filter start time: %s (UTC)", filterStartTime.Format(time.RFC3339))
 
 	// Setup extractor service if needed
 	var extractorService *services.ExtractorService
@@ -161,7 +162,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 	// Function to check and process emails
 	checkAndProcessEmails := func() {
 		currentCheckTime := time.Now()
-		log.Printf("[WebSocket] Checking emails for %s from %s to %s", account.EmailAddress, emailFetchStartTime.Format(time.RFC3339), currentCheckTime.Format(time.RFC3339))
+		wsLogger.Debug("Checking emails for %s from %s to %s", account.EmailAddress, emailFetchStartTime.Format(time.RFC3339), currentCheckTime.Format(time.RFC3339))
 
 		// Fetch recent emails from multiple mailboxes (including spam/junk)
 		// Always use the initial start time to catch all emails since monitoring began
@@ -176,16 +177,16 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 		}
 
 		// Log the fetch options for debugging
-		log.Printf("[WebSocket] Fetch options - StartDate: %s (Local: %s), Limit: %d, FetchFromServer: %v, IncludeBody: %v",
+		wsLogger.Debug("Fetch options - StartDate: %s (Local: %s), Limit: %d, FetchFromServer: %v, IncludeBody: %v",
 			emailFetchStartTime.Format(time.RFC3339), emailFetchStartTime.Local().Format("2006-01-02 15:04:05"),
 			options.Limit, options.FetchFromServer, options.IncludeBody)
-		log.Printf("[WebSocket] Current time: %s (Local: %s)",
+		wsLogger.Debug("Current time: %s (Local: %s)",
 			currentCheckTime.Format(time.RFC3339), currentCheckTime.Local().Format("2006-01-02 15:04:05"))
 
 		// Use the new method that fetches from multiple mailboxes including spam
 		emails, err := h.Fetcher.FetchEmailsFromMultipleMailboxes(*account, options)
 		if err != nil {
-			log.Printf("[WebSocket] Error fetching emails during WebSocket wait: %v", err)
+			wsLogger.Error("Error fetching emails during WebSocket wait: %v", err)
 			conn.WriteJSON(WebSocketMessage{
 				Type:    "error",
 				Error:   "Error fetching emails",
@@ -194,12 +195,12 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 			return
 		}
 
-		log.Printf("[WebSocket] Fetched %d total emails for %s from server", len(emails), account.EmailAddress)
+		wsLogger.Debug("Fetched %d total emails for %s from server", len(emails), account.EmailAddress)
 
 		// Log first few emails for debugging
 		for i, email := range emails {
 			if i < 5 { // 只记录前5封邮件
-				log.Printf("[WebSocket] Email %d - ID: %d, Subject: '%s', Date: %s (Local: %s), MessageID: %s",
+				wsLogger.Debug("Email %d - ID: %d, Subject: '%s', Date: %s (Local: %s), MessageID: %s",
 					i+1, email.ID, email.Subject,
 					email.Date.Format(time.RFC3339), email.Date.Local().Format("2006-01-02 15:04:05"),
 					email.MessageID)
@@ -222,7 +223,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 			}
 
 			if processedMessageIDs[messageKey] {
-				log.Printf("[WebSocket] Skipping already processed email - MessageID: %s, Subject: '%s'",
+				wsLogger.Debug("Skipping already processed email - MessageID: %s, Subject: '%s'",
 					messageKey, email.Subject)
 				continue
 			}
@@ -235,7 +236,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 			currentCheckTimeUTC := currentCheckTime.UTC()
 
 			if emailDateUTC.Before(filterStartTimeUTC) || emailDateUTC.After(currentCheckTimeUTC) {
-				log.Printf("[WebSocket] Skipping email ID %d - Subject: '%s', From: %s, Date: %s (UTC) is outside monitoring window (started at %s UTC, current: %s UTC)",
+				wsLogger.Debug("Skipping email ID %d - Subject: '%s', From: %s, Date: %s (UTC) is outside monitoring window (started at %s UTC, current: %s UTC)",
 					email.ID, email.Subject, email.From, emailDateUTC.Format(time.RFC3339),
 					filterStartTimeUTC.Format(time.RFC3339), currentCheckTimeUTC.Format(time.RFC3339))
 				continue
@@ -243,7 +244,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 
 			// Check if the email is addressed to the monitored email account
 			if !isEmailAddressedToAccount(&email, account) {
-				log.Printf("[WebSocket] Skipping email ID %d - Subject: '%s', not addressed to %s (To: %v, Cc: %v, Bcc: %v)",
+				wsLogger.Debug("Skipping email ID %d - Subject: '%s', not addressed to %s (To: %v, Cc: %v, Bcc: %v)",
 					email.ID, email.Subject, account.EmailAddress, email.To, email.Cc, email.Bcc)
 				continue
 			}
@@ -252,7 +253,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 			processedMessageIDs[messageKey] = true
 			emailsFound++
 
-			log.Printf("[WebSocket] ✓ Found matching email - MessageID: %s, ID: %d, Subject: '%s', From: %s, Date: %s, To: %v",
+			wsLogger.Info("Found matching email - MessageID: %s, ID: %d, Subject: '%s', From: %s, Date: %s, To: %v",
 				messageKey, email.ID, email.Subject, email.From, email.Date.Format(time.RFC3339), email.To)
 
 			// If no extractors, return the email
@@ -270,7 +271,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 			// Check extractors
 			result, err := extractorService.ExtractFromEmail(email, serviceExtractors)
 			if err != nil {
-				log.Printf("Error extracting from email ID %d: %v", email.ID, err)
+				wsLogger.Error("Error extracting from email ID %d: %v", email.ID, err)
 				continue
 			}
 
@@ -286,12 +287,12 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 			}
 		}
 
-		log.Printf("[WebSocket] Finished checking emails. Found %d matching emails out of %d total fetched", emailsFound, len(emails))
+		wsLogger.Debug("Finished checking emails. Found %d matching emails out of %d total fetched", emailsFound, len(emails))
 		// Note: We don't update the start time here - it remains fixed at filterStartTime
 	}
 
 	// First, check for existing emails immediately
-	log.Printf("[WebSocket] Starting initial email check for %s", account.EmailAddress)
+	wsLogger.Info("Starting initial email check for %s", account.EmailAddress)
 	checkAndProcessEmails()
 
 	// Start monitoring for new emails
@@ -326,14 +327,14 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 				var msg map[string]interface{}
 				err := conn.ReadJSON(&msg)
 				if err != nil {
-					log.Printf("[WebSocket] Client disconnected for %s: %v", account.EmailAddress, err)
+					wsLogger.Info("Client disconnected for %s: %v", account.EmailAddress, err)
 					cancel() // Cancel the context to stop all operations
 					return
 				}
 
 				// Check if it's a stop message
 				if msgType, ok := msg["type"].(string); ok && msgType == "stop" {
-					log.Printf("[WebSocket] Received stop message for %s", account.EmailAddress)
+					wsLogger.Info("Received stop message for %s", account.EmailAddress)
 					cancel() // Cancel the context to stop all operations
 					return
 				}
@@ -344,7 +345,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[WebSocket] Stopping email monitoring for %s - context cancelled", account.EmailAddress)
+			wsLogger.Info("Stopping email monitoring for %s - context cancelled", account.EmailAddress)
 			// Send a final message to indicate monitoring has stopped
 			conn.WriteJSON(WebSocketMessage{
 				Type:    "stopped",
@@ -366,7 +367,7 @@ func (h *APIHandler) WaitEmailWebSocketHandler(w http.ResponseWriter, r *http.Re
 
 			// Check if timeout has been reached
 			if time.Since(startTime) >= timeoutDuration {
-				log.Printf("[WebSocket] Timeout reached for %s after %v", account.EmailAddress, timeoutDuration)
+				wsLogger.Info("Timeout reached for %s after %v", account.EmailAddress, timeoutDuration)
 				conn.WriteJSON(WebSocketMessage{
 					Type:    "timeout",
 					Message: "Monitoring timeout reached",
@@ -486,9 +487,10 @@ func isEmailAddressedToAccount(email *models.Email, account *models.EmailAccount
 
 // SubscriptionWebSocketHandler handles WebSocket connections for subscription-based email monitoring
 func (h *APIHandler) SubscriptionWebSocketHandler(w http.ResponseWriter, r *http.Request) {
+	wsLogger := utils.NewLogger("WebSocket")
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
+		wsLogger.Error("WebSocket upgrade error: %v", err)
 		return
 	}
 	defer conn.Close()
@@ -512,7 +514,7 @@ func (h *APIHandler) SubscriptionWebSocketHandler(w http.ResponseWriter, r *http
 	for {
 		var request SubscriptionWebSocketRequest
 		if err := conn.ReadJSON(&request); err != nil {
-			log.Printf("Error reading WebSocket message: %v", err)
+			wsLogger.Error("Error reading WebSocket message: %v", err)
 			break
 		}
 
@@ -615,8 +617,9 @@ func (h *APIHandler) SubscriptionWebSocketHandler(w http.ResponseWriter, r *http
 
 // monitorSubscription monitors a subscription and sends updates via WebSocket
 func (h *APIHandler) monitorSubscription(ctx context.Context, conn *websocket.Conn, subscription *services.EmailSubscription) {
+	wsLogger := utils.NewLogger("WebSocket")
 	subscriptionID := subscription.ID
-	log.Printf("[WebSocket] Starting monitoring for subscription %s", subscriptionID)
+	wsLogger.Info("Starting monitoring for subscription %s", subscriptionID)
 
 	// Subscribe to email events for this subscription
 	eventChan := make(chan services.EmailEvent, 100)
@@ -626,7 +629,7 @@ func (h *APIHandler) monitorSubscription(ctx context.Context, conn *websocket.Co
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[WebSocket] Stopping monitoring for subscription %s", subscriptionID)
+			wsLogger.Info("Stopping monitoring for subscription %s", subscriptionID)
 			return
 
 		case event := <-eventChan:
@@ -679,7 +682,7 @@ func (h *APIHandler) monitorSubscription(ctx context.Context, conn *websocket.Co
 				Type: msgType,
 				Data: data,
 			}); err != nil {
-				log.Printf("[WebSocket] Error sending message for subscription %s: %v", subscriptionID, err)
+				wsLogger.Error("Error sending message for subscription %s: %v", subscriptionID, err)
 				return
 			}
 		}

@@ -13,13 +13,13 @@ keywords:
   - gmail
   - outlook
 
-home: https://github.com/your-org/mailman
+home: https://github.com/seongminhwan/mailman
 sources:
-  - https://github.com/your-org/mailman
+  - https://github.com/seongminhwan/mailman
 
 maintainers:
   - name: Mailman Team
-    email: team@example.com
+    email: seongminhwan@users.noreply.github.com
 
 dependencies:
   - name: mysql

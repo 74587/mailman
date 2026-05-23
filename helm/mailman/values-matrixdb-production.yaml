@@ -70,7 +70,7 @@ mailman:
       DB_HOST: "mariadb"
       DB_PORT: "3306"
       DB_USER: "mailman"
-      DB_PASSWORD: "mailman123"
+      DB_PASSWORD: ""  # Must be set via secretKeyRef
       DB_NAME: "mailman"
       DB_SSLMODE: "disable"
 

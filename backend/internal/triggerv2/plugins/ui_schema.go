@@ -15,6 +15,11 @@ const (
 	UIFieldTypeCode        UIFieldType = "code"         // 代码编辑器
 	UIFieldTypeFile        UIFieldType = "file"         // 文件选择
 	UIFieldTypeDynamic     UIFieldType = "dynamic"      // 动态选择（需要回调）
+	UIFieldTypeJavaScript  UIFieldType = "javascript"   // JavaScript代码编辑器
+	UIFieldTypeGoTemplate  UIFieldType = "gotemplate"   // Go模板编辑器
+	UIFieldTypeRegex       UIFieldType = "regex"        // 正则表达式编辑器
+	UIFieldTypeKeyValue    UIFieldType = "key_value"    // 键值对输入（用于HTTP头等）
+	UIFieldTypeArray       UIFieldType = "array"        // 数组类型（可添加/删除/排序项）
 )
 
 // UIField UI字段定义
@@ -25,13 +30,16 @@ type UIField struct {
 	Type        UIFieldType `json:"type"`        // 字段类型
 	Description string      `json:"description"` // 字段描述
 	Placeholder string      `json:"placeholder"` // 占位符文本
+	Tooltip     string      `json:"tooltip"`     // 详细帮助信息，用于鼠标悬停时显示
+	HelpUrl     string      `json:"help_url"`    // 帮助文档链接
 
 	// 验证规则
-	Required bool          `json:"required"` // 是否必填
-	Pattern  string        `json:"pattern"`  // 正则表达式
-	Min      interface{}   `json:"min"`      // 最小值
-	Max      interface{}   `json:"max"`      // 最大值
-	Enum     []interface{} `json:"enum"`     // 枚举值
+	Required   bool          `json:"required"`   // 是否必填
+	Pattern    string        `json:"pattern"`    // 正则表达式
+	Min        interface{}   `json:"min"`        // 最小值
+	Max        interface{}   `json:"max"`        // 最大值
+	Enum       []interface{} `json:"enum"`       // 枚举值
+	Validation *UIValidation `json:"validation"` // 验证规则（用于更复杂的验证）
 
 	// UI配置
 	Width        string      `json:"width"`    // 宽度（如 "full", "half", "1/3"）
@@ -46,6 +54,41 @@ type UIField struct {
 	// 依赖关系
 	DependsOn []string               `json:"depends_on"` // 依赖的其他字段
 	ShowIf    map[string]interface{} `json:"show_if"`    // 显示条件
+
+	// 数组类型专用：子项架构
+	ItemSchema *UISchema `json:"item_schema,omitempty"` // 数组项的架构（用于 array 类型）
+
+	// 代码编辑器专用：自定义示例和文档
+	Examples      []CodeExample          `json:"examples,omitempty"`      // 代码示例
+	Documentation []DocumentationSection `json:"documentation,omitempty"` // 文档说明
+}
+
+// UIValidation 验证规则
+type UIValidation struct {
+	Pattern   string `json:"pattern"`    // 正则表达式模式
+	Message   string `json:"message"`    // 验证失败时的错误消息
+	MinLength int    `json:"min_length"` // 最小长度
+	MaxLength int    `json:"max_length"` // 最大长度
+}
+
+// CodeExample 代码示例
+type CodeExample struct {
+	Title       string `json:"title"`       // 示例标题
+	Description string `json:"description"` // 示例描述
+	Code        string `json:"code"`        // 示例代码
+}
+
+// DocumentationSection 文档部分
+type DocumentationSection struct {
+	Title    string           `json:"title"`              // 文档标题
+	Content  string           `json:"content"`            // 文档内容
+	Examples []DocExampleItem `json:"examples,omitempty"` // 文档示例
+}
+
+// DocExampleItem 文档示例项
+type DocExampleItem struct {
+	Code        string `json:"code"`        // 示例代码
+	Description string `json:"description"` // 示例描述
 }
 
 // UIOption UI选项

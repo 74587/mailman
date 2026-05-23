@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -317,7 +318,7 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// 验证会话状态
 	session, err := h.authSessionService.GetSessionByState(state)
 	if err != nil {
-		fmt.Printf("Failed to get session by state: %v\n", err)
+		log.Printf("[OAuth2] Failed to get session by state: %v", err)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "invalid session")
 		http.Error(w, "invalid session", http.StatusBadRequest)
 		return
@@ -382,11 +383,11 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	var userInfo models.JSONMap
 
 	if providerType == "gmail" {
-		fmt.Printf("开始获取Gmail用户信息，access_token: %s\n", accessToken[:20]+"...")
+
 
 		userInfoResp, err := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + accessToken)
 		if err != nil {
-			fmt.Printf("获取用户信息请求失败: %v\n", err)
+			log.Printf("[OAuth2] Failed to get Gmail user info: %v", err)
 			h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "failed to get user info")
 			http.Error(w, "failed to get user info", http.StatusInternalServerError)
 			return
@@ -396,18 +397,15 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		if userInfoResp.StatusCode == 200 {
 			var responseData map[string]interface{}
 			if err := json.NewDecoder(userInfoResp.Body).Decode(&responseData); err != nil {
-				fmt.Printf("解析响应失败: %v\n", err)
+
 				h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "failed to parse user info")
 				http.Error(w, "failed to parse user info", http.StatusInternalServerError)
 				return
 			}
 
-			fmt.Printf("API响应数据: %+v\n", responseData)
-
 			// 提取邮箱
 			if email, ok := responseData["email"]; ok && email != nil {
 				userEmail = email.(string)
-				fmt.Printf("从UserInfo API获取邮箱: %s\n", userEmail)
 			}
 
 			// 保存完整用户信息，转换为JSONMap格式
@@ -422,7 +420,7 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "user info API error", http.StatusInternalServerError)
 			return
 		}
-		fmt.Printf("最终获取的邮箱地址: %s\n", userEmail)
+
 	}
 
 	// 更新会话状态为成功，并保存认证数据
@@ -436,7 +434,7 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		userInfo,
 	)
 	if err != nil {
-		fmt.Printf("Failed to complete auth flow: %v\n", err)
+		log.Printf("[OAuth2] Failed to complete auth flow: %v", err)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "failed to save auth data")
 		http.Error(w, "failed to save auth data", http.StatusInternalServerError)
 		return
@@ -451,7 +449,7 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// 重定向到成功页面，携带state参数用于前端轮询获取结果
 	callbackUrl := fmt.Sprintf("%s/oauth2/success?state=%s&provider=%s", frontendUrl, state, providerType)
 
-	fmt.Printf("重定向到前端成功页面: %s\n", callbackUrl)
+
 	http.Redirect(w, r, callbackUrl, http.StatusFound)
 }
 
@@ -716,7 +714,7 @@ func (h *OAuth2Handler) ExchangeThunderbirdToken(w http.ResponseWriter, r *http.
 	)
 
 	if err != nil {
-		fmt.Printf("Thunderbird token exchange failed: %v\n", err)
+		log.Printf("[OAuth2] Thunderbird token exchange failed: %v", err)
 		http.Error(w, fmt.Sprintf("failed to exchange authorization code: %v", err), http.StatusInternalServerError)
 		return
 	}

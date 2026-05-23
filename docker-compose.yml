@@ -1,79 +1,66 @@
-version: "3.8"
-
 services:
-  # MySQL Database
-  mysql:
-    image: mysql:8.0
-    container_name: mailman-mysql
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: mailman-postgres
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-    # ports:
-    #   - "3306:3306"  # 移除端口映射以避免冲突，MySQL 只在容器网络内部可访问
+      POSTGRES_DB: ${POSTGRES_DB:-mailman}
+      POSTGRES_USER: ${POSTGRES_USER:-mailman}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 文件中设置 POSTGRES_PASSWORD}
     volumes:
-      - mysql_data:/var/lib/mysql
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - mailman-network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mailman} -d ${POSTGRES_DB:-mailman}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
-  # Backend API
-  backend:
+  # Mailman All-in-One (Backend + Frontend)
+  mailman:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: mailman-backend
+      context: .
+      dockerfile: Dockerfile.all
+    container_name: mailman-app
     restart: unless-stopped
+    ports:
+      - "${MAILMAN_PORT:-8080}:8080"
     environment:
-      # Server Configuration
+      # Server
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 8080
 
-      # Database Configuration
-      DB_DRIVER: mysql
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_USER: ${MYSQL_USER}
-      DB_PASSWORD: ${MYSQL_PASSWORD}
-      DB_NAME: ${MYSQL_DATABASE}
+      # Database - PostgreSQL
+      DB_DRIVER: postgres
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER:-mailman}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 文件中设置 POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB:-mailman}
 
-      # OpenAI Configuration (deprecated - now managed via web interface)
-      # OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      # OPENAI_MODEL: ${OPENAI_MODEL:-gpt-3.5-turbo}
+      # Optional: encryption key for sensitive data
+      # ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+
+      # Optional: OAuth2 redirect URIs
+      # GMAIL_REDIRECT_URI: ${GMAIL_REDIRECT_URI:-http://localhost:8080/api/oauth2/callback/gmail}
+      # OUTLOOK_REDIRECT_URI: ${OUTLOOK_REDIRECT_URI:-http://localhost:8080/api/oauth2/callback/outlook}
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
-    networks:
-      - mailman-network
     volumes:
-      - ./backend/email.txt:/app/email.txt:ro
-
-  # Frontend with Nginx
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.nginx
-    container_name: mailman-frontend
-    restart: unless-stopped
-    ports:
-      - "80:80"
-    depends_on:
-      - backend
+      - mailman_data:/app/data
     networks:
       - mailman-network
-    environment:
-      - NODE_ENV=production
 
 networks:
   mailman-network:
     driver: bridge
 
 volumes:
-  mysql_data:
+  postgres_data:
+    driver: local
+  mailman_data:
     driver: local

@@ -1,20 +1,68 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, createContext, useContext } from 'react'
+import { cn } from '@/lib/utils'
 
-// Simple tooltip implementation that matches the expected API
-export const TooltipProvider = ({ children }: { children: React.ReactNode }) => {
-  return <>{children}</>
+// Context for tooltip provider settings
+interface TooltipContextType {
+  delayDuration: number
 }
 
+const TooltipContext = createContext<TooltipContextType>({ delayDuration: 500 })
+
+// Tooltip Provider with configurable delay
+export const TooltipProvider = ({
+  children,
+  delayDuration = 500
+}: {
+  children: React.ReactNode
+  delayDuration?: number
+}) => {
+  return (
+    <TooltipContext.Provider value={{ delayDuration }}>
+      {children}
+    </TooltipContext.Provider>
+  )
+}
+
+interface TooltipContentProps {
+  children: React.ReactNode
+  className?: string
+  side?: 'top' | 'bottom' | 'left' | 'right'
+  align?: 'start' | 'center' | 'end'
+}
+
+import { createPortal } from 'react-dom'
+
 export function Tooltip({ children }: { children: React.ReactNode }) {
+  const { delayDuration } = useContext(TooltipContext)
   const [isVisible, setIsVisible] = useState(false)
   const [showTimeout, setShowTimeout] = useState<NodeJS.Timeout | null>(null)
+  const [position, setPosition] = useState({ top: 0, left: 0 })
+  const triggerRef = React.useRef<HTMLDivElement>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  const updatePosition = () => {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      // Default to top center for now, can be expanded for other sides
+      setPosition({
+        top: rect.top - 8, // slight gap
+        left: rect.left + rect.width / 2
+      })
+    }
+  }
 
   const handleMouseEnter = () => {
+    updatePosition()
     const timeout = setTimeout(() => {
+      updatePosition() // Update again just in case
       setIsVisible(true)
-    }, 500)
+    }, delayDuration)
     setShowTimeout(timeout)
   }
 
@@ -27,6 +75,15 @@ export function Tooltip({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
+    // Hide tooltip on scroll to prevent detached look
+    const handleScroll = () => {
+      if (isVisible) setIsVisible(false)
+    }
+    window.addEventListener('scroll', handleScroll, true)
+    return () => window.removeEventListener('scroll', handleScroll, true)
+  }, [isVisible])
+
+  useEffect(() => {
     return () => {
       if (showTimeout) {
         clearTimeout(showTimeout)
@@ -36,6 +93,7 @@ export function Tooltip({ children }: { children: React.ReactNode }) {
 
   let trigger: React.ReactNode = null
   let content: React.ReactNode = null
+  let contentClassName = ''
 
   React.Children.forEach(children, (child) => {
     if (React.isValidElement(child)) {
@@ -43,33 +101,56 @@ export function Tooltip({ children }: { children: React.ReactNode }) {
         trigger = child.props.children
       } else if (child.type === TooltipContent) {
         content = child.props.children
+        contentClassName = child.props.className || ''
       }
     }
   })
 
   return (
-    <div className="relative inline-block">
+    <>
       <div
+        ref={triggerRef}
+        className="inline-block"
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
         {trigger}
       </div>
-      
-      {isVisible && content && (
-        <div className="absolute z-50 px-3 py-2 text-sm text-white bg-gray-900 rounded-md shadow-lg whitespace-nowrap bottom-full left-1/2 -translate-x-1/2 mb-2 max-w-xs">
+
+      {mounted && isVisible && content && createPortal(
+        <div
+          className={cn(
+            "fixed z-[9999] pointer-events-none transform -translate-x-1/2 -translate-y-full px-2 py-1 text-xs text-white bg-gray-900 rounded shadow-md whitespace-nowrap",
+            contentClassName
+          )}
+          style={{
+            top: position.top,
+            left: position.left,
+          }}
+        >
           {content}
-          <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-4 border-l-transparent border-r-transparent border-b-transparent border-t-gray-900" />
-        </div>
+        </div>,
+        document.body
       )}
-    </div>
+    </>
   )
 }
 
-export const TooltipTrigger = ({ children, asChild }: { children: React.ReactNode, asChild?: boolean }) => {
+export const TooltipTrigger = ({
+  children,
+  asChild
+}: {
+  children: React.ReactNode
+  asChild?: boolean
+}) => {
   return <>{children}</>
 }
 
-export const TooltipContent = ({ children, className }: { children: React.ReactNode, className?: string }) => {
+export const TooltipContent = ({
+  children,
+  className,
+  side = 'top',
+  align = 'center'
+}: TooltipContentProps) => {
   return <>{children}</>
 }

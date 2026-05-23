@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mailman/internal/models"
 	"net/http"
 	"strings"
@@ -111,15 +112,8 @@ func (s *OpenAIService) GenerateEmailTemplate(systemPrompt, userInput string, ma
 		}
 	}
 
-	// Debug: Log request body
-	fmt.Printf("[OpenAI DEBUG] Request Body: %s\n", string(jsonData))
-
 	// Send the request
-	// Debug: Before sending request in GenerateEmailTemplate
-	fmt.Printf("[OpenAI DEBUG] GenerateEmailTemplate: About to call s.Client.Do(req) - Time: %s\n", time.Now().Format("15:04:05.000"))
-	fmt.Printf("[OpenAI DEBUG] Request URL: %s\n", req.URL.String())
 	resp, err := s.Client.Do(req)
-	fmt.Printf("[OpenAI DEBUG] GenerateEmailTemplate: s.client.Do(req) returned - Time: %s\n", time.Now().Format("15:04:05.000"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
@@ -145,8 +139,7 @@ func (s *OpenAIService) GenerateEmailTemplate(systemPrompt, userInput string, ma
 	// Parse the response
 	var completionResp ChatCompletionResponse
 	if err := json.Unmarshal(body, &completionResp); err != nil {
-		// Log the actual response body for debugging
-		fmt.Printf("[OpenAI DEBUG] Failed to parse response. Status: %d, Body: %s\n", resp.StatusCode, string(body))
+		log.Printf("[OpenAI] Failed to parse response. Status: %d, Body: %s", resp.StatusCode, string(body))
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -194,26 +187,12 @@ func (s *OpenAIService) CallOpenAI(messages []Message, maxTokens int, temperatur
 		}
 	}
 
-	// Debug: Log request body
-	fmt.Printf("[OpenAI DEBUG] Request Body: %s\n", string(jsonData))
-
 	// Send the request
-	// Debug: Before sending request
-	fmt.Printf("[OpenAI DEBUG] About to call s.Client.Do(req) at line 183 - Time: %s\n", time.Now().Format("15:04:05.000"))
-	fmt.Printf("[OpenAI DEBUG] Request URL: %s\n", req.URL.String())
-	fmt.Printf("[OpenAI DEBUG] Client timeout: %v\n", s.Client.Timeout)
 	resp, err := s.Client.Do(req)
-	fmt.Printf("[OpenAI DEBUG] s.client.Do(req) returned - Time: %s\n", time.Now().Format("15:04:05.000"))
-	fmt.Printf("[OpenAI DEBUG] Error: %v, Response: %v\n", err, resp != nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
-
-	// Debug: Check response headers
-	fmt.Printf("[OpenAI DEBUG] Response Status: %d\n", resp.StatusCode)
-	fmt.Printf("[OpenAI DEBUG] Response Content-Type: %s\n", resp.Header.Get("Content-Type"))
-	fmt.Printf("[OpenAI DEBUG] Response Headers: %v\n", resp.Header)
 
 	// Read the response
 	body, err := io.ReadAll(resp.Body)
@@ -221,12 +200,7 @@ func (s *OpenAIService) CallOpenAI(messages []Message, maxTokens int, temperatur
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Debug: Log response body (first 500 chars)
-	bodyPreview := string(body)
-	if len(bodyPreview) > 500 {
-		bodyPreview = bodyPreview[:500] + "..."
-	}
-	fmt.Printf("[OpenAI DEBUG] Response Body Preview: %s\n", bodyPreview)
+
 
 	// Check if response is HTML (error page)
 	contentType := resp.Header.Get("Content-Type")
@@ -248,8 +222,7 @@ func (s *OpenAIService) CallOpenAI(messages []Message, maxTokens int, temperatur
 	// Use HandleAPIResponse to handle both streaming and non-streaming responses
 	completionResp, err := HandleAPIResponse(resp, body)
 	if err != nil {
-		// Log the actual response body for debugging
-		fmt.Printf("[OpenAI DEBUG] Failed to parse response. Status: %d, Body: %s\n", resp.StatusCode, string(body))
+		log.Printf("[OpenAI] Failed to parse response. Status: %d, Body: %s", resp.StatusCode, string(body))
 		return nil, err
 	}
 

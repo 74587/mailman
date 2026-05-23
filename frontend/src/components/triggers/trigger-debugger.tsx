@@ -9,10 +9,11 @@ import { Textarea } from '@/components/ui/textarea'
 import { Loader2, CheckCircle2, AlertCircle, Code, Mail, Play } from 'lucide-react'
 import { ConditionTest } from './condition-test'
 import { ActionTest } from './action-test'
-import { Expression } from './condition-group'
+import { TriggerExpression as Expression } from '@/types'
 import { TriggerActionConfig, EmailTrigger } from '@/types'
 import { triggerService } from '@/services/trigger.service'
 import { expressionsToText } from './condition-utils'
+import { apiClient } from '@/lib/api-client'
 
 interface TriggerDebuggerProps {
   trigger: EmailTrigger
@@ -46,14 +47,14 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
   const [testResult, setTestResult] = useState<any>(null)
   const [conditionResult, setConditionResult] = useState<any>(null)
   const [actionResults, setActionResults] = useState<any[]>([])
-  
+
   // 测试条件
   const handleTestCondition = async () => {
     try {
       setIsLoading(true)
       setError(null)
       setConditionResult(null)
-      
+
       // 解析测试数据
       let parsedData
       try {
@@ -62,10 +63,14 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
         setError('测试数据JSON格式无效，请检查格式')
         return
       }
-      
+
       // 执行条件测试
-      const result = await triggerService.testTriggerCondition(trigger.condition, parsedData)
-      
+      // V2 API 期望 'expressions' 和 'testData'
+      const result = await apiClient.post('/v2/triggers/test-condition', {
+        expressions: trigger.expressions || [],
+        testData: parsedData
+      })
+
       // 设置测试结果
       setConditionResult(result)
     } catch (err: any) {
@@ -75,13 +80,13 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       setIsLoading(false)
     }
   }
-  
+
   // 测试动作
   const handleTestAction = async (action: TriggerActionConfig) => {
     try {
       setIsLoading(true)
       setError(null)
-      
+
       // 解析测试数据
       let parsedData
       try {
@@ -90,10 +95,23 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
         setError('测试数据JSON格式无效，请检查格式')
         return
       }
-      
+
       // 执行动作测试
-      const result = await triggerService.testTriggerAction(action, parsedData)
-      
+      // V2 API 期望 'action' (含 pluginId, config 等) 和 'testData'
+      const v2Action = {
+        id: (action as any).id || 'test-action',
+        pluginId: (action as any).pluginId || (action.type === 'modify_content' ? 'email_modify_plugin' : 'email_forward_plugin'),
+        pluginName: action.name,
+        config: typeof action.config === 'string' ? JSON.parse(action.config) : action.config,
+        enabled: action.enabled,
+        executionOrder: action.order
+      }
+
+      const result = await apiClient.post('/v2/triggers/test-action', {
+        action: v2Action,
+        testData: parsedData
+      })
+
       // 更新动作结果
       return result
     } catch (err: any) {
@@ -104,7 +122,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       setIsLoading(false)
     }
   }
-  
+
   // 测试完整触发器
   const handleTestCompleteTrigger = async () => {
     try {
@@ -113,7 +131,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       setTestResult(null)
       setConditionResult(null)
       setActionResults([])
-      
+
       // 解析测试数据
       let parsedData
       try {
@@ -122,33 +140,30 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
         setError('测试数据JSON格式无效，请检查格式')
         return
       }
-      
-      // 创建测试请求
+
+      // 创建测试请求 - 适配 V2 模型
       const testRequest = {
         trigger: {
           id: trigger.id,
           name: trigger.name,
-          condition: trigger.condition,
-          actions: trigger.actions
+          description: trigger.description,
+          enabled: trigger.status === 'enabled',
+          expressions: trigger.expressions || [],
+          actions: trigger.actions.map((a, index) => ({
+            id: (a as any).id || `action_${Date.now()}_${index}`,
+            pluginId: (a as any).pluginId || (a.type === 'modify_content' ? 'email_modify_plugin' : 'email_forward_plugin'),
+            pluginName: a.name,
+            config: typeof a.config === 'string' ? JSON.parse(a.config) : a.config,
+            enabled: a.enabled,
+            executionOrder: a.order
+          }))
         },
         testData: parsedData
       }
-      
+
       // 执行完整触发器测试
-      const response = await fetch('/api/v2/triggers/test-complete', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(testRequest),
-      })
-      
-      if (!response.ok) {
-        throw new Error(`测试失败: ${response.status} ${response.statusText}`)
-      }
-      
-      const result = await response.json()
-      
+      const result = await apiClient.post('/v2/triggers/test-complete', testRequest)
+
       // 设置测试结果
       setTestResult(result)
       setConditionResult({
@@ -163,7 +178,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       setIsLoading(false)
     }
   }
-  
+
   // 重置测试数据
   const resetTestData = () => {
     setTestData(JSON.stringify(DEFAULT_TEST_DATA, null, 2))
@@ -172,16 +187,16 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
     setActionResults([])
     setError(null)
   }
-  
+
   // 渲染测试数据编辑器
   const renderTestDataEditor = () => {
     return (
       <div className="space-y-2">
         <div className="flex justify-between items-center">
           <label className="text-sm font-medium">测试数据 (JSON格式)</label>
-          <Button 
-            type="button" 
-            variant="outline" 
+          <Button
+            type="button"
+            variant="outline"
             size="sm"
             onClick={resetTestData}
           >
@@ -200,7 +215,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       </div>
     )
   }
-  
+
   // 渲染邮件预览
   const renderEmailPreview = () => {
     let emailData
@@ -213,7 +228,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
         </div>
       )
     }
-    
+
     return (
       <div className="border rounded-md p-4">
         <div className="border-b pb-2 mb-2">
@@ -240,7 +255,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       </div>
     )
   }
-  
+
   // 渲染条件表达式预览
   const renderExpressionPreview = () => {
     return (
@@ -254,7 +269,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       </div>
     )
   }
-  
+
   // 渲染动作列表预览
   const renderActionsPreview = () => {
     return (
@@ -272,13 +287,13 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       </div>
     )
   }
-  
+
   // 渲染测试结果
   const renderTestResult = () => {
     if (!testResult) return null
-    
+
     const { conditionResult, actionsExecuted, actionsSucceeded, duration, error } = testResult
-    
+
     return (
       <div className="mt-4 space-y-4">
         <div className={`p-4 rounded-md ${error ? 'bg-red-50 border border-red-200' : conditionResult ? 'bg-green-50 border border-green-200' : 'bg-yellow-50 border border-yellow-200'}`}>
@@ -304,7 +319,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
             执行时间: {duration}ms
           </div>
         </div>
-        
+
         {/* 条件评估结果 */}
         {conditionResult !== null && (
           <div className="mt-4">
@@ -312,7 +327,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
             {renderConditionResult()}
           </div>
         )}
-        
+
         {/* 动作执行结果 */}
         {actionResults.length > 0 && (
           <div className="mt-4">
@@ -323,11 +338,11 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       </div>
     )
   }
-  
+
   // 渲染条件评估结果
   const renderConditionResult = () => {
     if (!conditionResult) return null
-    
+
     return (
       <Tabs defaultValue="tree" className="w-full">
         <TabsList>
@@ -348,20 +363,20 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       </Tabs>
     )
   }
-  
+
   // 递归渲染评估树
   const renderEvaluationTree = (details: any, level = 0) => {
     if (!details) return null
-    
+
     const paddingLeft = `${level * 16}px`
-    
+
     if (details.type === 'group') {
       return (
         <div style={{ paddingLeft }}>
           <div className="flex items-center">
             <span className={`font-medium ${details.result ? 'text-green-600' : 'text-red-600'}`}>
-              {details.operator?.toUpperCase()} 组 
-              {details.not && ' (取反)'} - 
+              {details.operator?.toUpperCase()} 组
+              {details.not && ' (取反)'} -
               {details.result ? ' 满足' : ' 不满足'}
             </span>
           </div>
@@ -397,11 +412,11 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       )
     }
   }
-  
+
   // 渲染动作执行结果
   const renderActionResults = () => {
     if (!actionResults || actionResults.length === 0) return null
-    
+
     return (
       <div className="space-y-3">
         {actionResults.map((result, index) => (
@@ -421,19 +436,19 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
                 执行时间: {result.duration}ms
               </span>
             </div>
-            
+
             {result.error && (
               <div className="mt-2 text-sm text-red-600">
                 错误: {result.error}
               </div>
             )}
-            
+
             {result.result && (
               <div className="mt-2">
                 <div className="text-sm font-medium">结果:</div>
                 <pre className="text-xs bg-white p-2 rounded mt-1 overflow-auto max-h-32">
-                  {typeof result.result === 'object' 
-                    ? JSON.stringify(result.result, null, 2) 
+                  {typeof result.result === 'object'
+                    ? JSON.stringify(result.result, null, 2)
                     : String(result.result)}
                 </pre>
               </div>
@@ -443,7 +458,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
       </div>
     )
   }
-  
+
   return (
     <Card>
       <CardHeader>
@@ -459,11 +474,11 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
             {renderExpressionPreview()}
             {renderActionsPreview()}
           </div>
-          
+
           {/* 测试数据编辑 */}
           <div className="space-y-4">
             <h3 className="text-lg font-medium">测试数据</h3>
-            
+
             <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="editor">
@@ -483,12 +498,12 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
               </TabsContent>
             </Tabs>
           </div>
-          
+
           {/* 测试按钮 */}
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row gap-3">
-              <Button 
-                onClick={handleTestCondition} 
+              <Button
+                onClick={handleTestCondition}
                 disabled={isLoading}
                 variant="outline"
                 className="flex-1"
@@ -499,8 +514,8 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
                   <span>测试条件</span>
                 )}
               </Button>
-              
-              <Button 
+
+              <Button
                 onClick={handleTestCompleteTrigger}
                 disabled={isLoading}
                 className="flex-1"
@@ -515,7 +530,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
                 )}
               </Button>
             </div>
-            
+
             {error && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
@@ -524,7 +539,7 @@ export function TriggerDebugger({ trigger, onSave }: TriggerDebuggerProps) {
               </Alert>
             )}
           </div>
-          
+
           {/* 测试结果 */}
           {testResult && renderTestResult()}
           {!testResult && conditionResult && renderConditionResult()}

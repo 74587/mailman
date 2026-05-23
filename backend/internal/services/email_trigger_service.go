@@ -3,12 +3,12 @@ package services
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"mailman/internal/models"
 	"mailman/internal/repository"
+	"mailman/internal/utils"
 )
 
 // EmailTriggerService handles email trigger operations and event processing
@@ -18,9 +18,10 @@ type EmailTriggerService struct {
 	subscriptionManager *SubscriptionManager
 	eventBus            *EventBus
 	conditionEngine     *ConditionEngine
-	pluginManager       *PluginManager
+	pluginManager       actionPluginProvider
 	actionExecutor      *ParallelActionExecutor // 使用并行执行器
 	resultCache         *ResultCache            // 结果缓存
+	logger              *utils.Logger
 
 	// For managing active subscriptions
 	activeSubscriptions map[uint]string // Map of triggerID to subscriptionID
@@ -34,7 +35,7 @@ func NewEmailTriggerService(
 	subscriptionManager *SubscriptionManager,
 	eventBus *EventBus,
 	conditionEngine *ConditionEngine,
-	pluginManager *PluginManager,
+	pluginManager actionPluginProvider,
 ) *EmailTriggerService {
 	// 创建并行动作执行器，最大并行度为10
 	actionExecutor := NewParallelActionExecutor(pluginManager, 10)
@@ -51,13 +52,14 @@ func NewEmailTriggerService(
 		pluginManager:       pluginManager,
 		actionExecutor:      actionExecutor,
 		resultCache:         resultCache,
+		logger:              utils.NewLogger("EmailTriggerService"),
 		activeSubscriptions: make(map[uint]string),
 	}
 }
 
 // Initialize initializes the email trigger service and sets up event subscriptions
 func (s *EmailTriggerService) Initialize() error {
-	log.Println("[EmailTriggerService] Initializing email trigger service")
+	s.logger.Info("Initializing email trigger service")
 
 	// Register event handlers
 	s.eventBus.Subscribe(EventTypeNewEmail, s.handleNewEmailEvent)
@@ -69,17 +71,17 @@ func (s *EmailTriggerService) Initialize() error {
 // setupAllTriggerSubscriptions sets up subscriptions for all enabled triggers
 func (s *EmailTriggerService) setupAllTriggerSubscriptions() error {
 	// Get all enabled triggers
-	triggers, err := s.triggerRepo.GetByStatus(true)
+	triggers, err := s.triggerRepo.GetByStatus(true, 0)
 	if err != nil {
 		return fmt.Errorf("failed to get enabled triggers: %w", err)
 	}
 
-	log.Printf("[EmailTriggerService] Setting up subscriptions for %d enabled triggers", len(triggers))
+	s.logger.Info("Setting up subscriptions for %d enabled triggers", len(triggers))
 
 	// Set up subscription for each trigger
 	for _, trigger := range triggers {
 		if err := s.setupTriggerSubscription(&trigger); err != nil {
-			log.Printf("[EmailTriggerService] Failed to set up subscription for trigger %d: %v", trigger.ID, err)
+			s.logger.Error("Failed to set up subscription for trigger %d: %v", trigger.ID, err)
 			// Continue with other triggers even if one fails
 			continue
 		}
@@ -90,7 +92,7 @@ func (s *EmailTriggerService) setupAllTriggerSubscriptions() error {
 
 // setupTriggerSubscription sets up a subscription for a single trigger
 func (s *EmailTriggerService) setupTriggerSubscription(trigger *models.EmailTriggerV2) error {
-	log.Printf("[EmailTriggerService] Setting up subscription for trigger: %s (ID: %d)", trigger.Name, trigger.ID)
+	s.logger.Info("Setting up subscription for trigger: %s (ID: %d)", trigger.Name, trigger.ID)
 
 	// Create a subscription request
 	req := SubscribeRequest{
@@ -118,7 +120,7 @@ func (s *EmailTriggerService) setupTriggerSubscription(trigger *models.EmailTrig
 	s.activeSubscriptions[trigger.ID] = subscription.ID
 	s.mu.Unlock()
 
-	log.Printf("[EmailTriggerService] Successfully set up subscription for trigger %d with subscription ID: %s",
+	s.logger.Info("Successfully set up subscription for trigger %d with subscription ID: %s",
 		trigger.ID, subscription.ID)
 
 	return nil
@@ -126,7 +128,7 @@ func (s *EmailTriggerService) setupTriggerSubscription(trigger *models.EmailTrig
 
 // handleNewEmailEvent handles new email events from the event bus
 func (s *EmailTriggerService) handleNewEmailEvent(event EmailEvent) {
-	log.Printf("[EmailTriggerService] Received new email event: %v", event.Type)
+	s.logger.Debug("Received new email event: %v", event.Type)
 
 	// The actual processing is handled by the subscription callbacks
 	// This method is mainly for logging and monitoring
@@ -134,7 +136,7 @@ func (s *EmailTriggerService) handleNewEmailEvent(event EmailEvent) {
 
 // processEmailForTrigger processes an email for a specific trigger
 func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTriggerV2, email models.Email) error {
-	log.Printf("[EmailTriggerService] Processing email %d for trigger: %s (ID: %d)",
+	s.logger.Debug("Processing email %d for trigger: %s (ID: %d)",
 		email.ID, trigger.Name, trigger.ID)
 
 	startTime := time.Now()
@@ -172,7 +174,7 @@ func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTrigge
 		executionLog.Status = models.TriggerExecutionV2StatusSuccess // Successful evaluation, just didn't match
 		s.logRepo.Create(executionLog)
 
-		log.Printf("[EmailTriggerService] Email %d did not match conditions for trigger %d",
+		s.logger.Debug("Email %d did not match conditions for trigger %d",
 			email.ID, trigger.ID)
 		return nil
 	}
@@ -212,7 +214,7 @@ func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTrigge
 	// Update trigger statistics
 	s.updateTriggerStatistics(trigger.ID, executionLog.Status == models.TriggerExecutionV2StatusSuccess, executionLog.Error)
 
-	log.Printf("[EmailTriggerService] Completed processing email %d for trigger %d with status: %s",
+	s.logger.Info("Completed processing email %d for trigger %d with status: %s",
 		email.ID, trigger.ID, executionLog.Status)
 
 	return nil
@@ -220,12 +222,12 @@ func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTrigge
 
 // evaluateTriggerConditions evaluates the conditions of a trigger against an email
 func (s *EmailTriggerService) evaluateTriggerConditions(trigger *models.EmailTriggerV2, email models.Email) (bool, models.JSONMap, error) {
-	log.Printf("[EmailTriggerService] Evaluating conditions for trigger %d against email %d",
+	s.logger.Debug("Evaluating conditions for trigger %d against email %d",
 		trigger.ID, email.ID)
 
 	// 尝试从缓存获取结果
 	if cachedResult, cachedDetails, found := s.resultCache.Get(trigger.ID, email.ID); found {
-		log.Printf("[EmailTriggerService] Using cached result for trigger %d and email %d: %v",
+		s.logger.Debug("Using cached result for trigger %d and email %d: %v",
 			trigger.ID, email.ID, cachedResult)
 		return cachedResult, cachedDetails, nil
 	}
@@ -240,7 +242,7 @@ func (s *EmailTriggerService) evaluateTriggerConditions(trigger *models.EmailTri
 	// 使用条件引擎评估表达式
 	result, evalDetails, err := s.conditionEngine.EvaluateExpressions(trigger.Expressions, context)
 	if err != nil {
-		log.Printf("[EmailTriggerService] Error evaluating conditions for trigger %d: %v",
+		s.logger.Error("Error evaluating conditions for trigger %d: %v",
 			trigger.ID, err)
 		return false, models.JSONMap{
 			"evaluated": "true",
@@ -249,7 +251,7 @@ func (s *EmailTriggerService) evaluateTriggerConditions(trigger *models.EmailTri
 		}, err
 	}
 
-	log.Printf("[EmailTriggerService] Condition evaluation result for trigger %d: %v",
+	s.logger.Debug("Condition evaluation result for trigger %d: %v",
 		trigger.ID, result)
 
 	// 缓存结果
@@ -260,7 +262,7 @@ func (s *EmailTriggerService) evaluateTriggerConditions(trigger *models.EmailTri
 
 // executeTriggerActions executes the actions of a trigger for an email
 func (s *EmailTriggerService) executeTriggerActions(trigger *models.EmailTriggerV2, email models.Email) (models.ActionExecutionResults, error) {
-	log.Printf("[EmailTriggerService] Executing actions for trigger %d on email %d",
+	s.logger.Debug("Executing actions for trigger %d on email %d",
 		trigger.ID, email.ID)
 
 	// Use the action executor to execute the actions
@@ -272,7 +274,7 @@ func (s *EmailTriggerService) updateTriggerStatistics(triggerID uint, success bo
 	// Get the current trigger
 	trigger, err := s.triggerRepo.GetByID(triggerID)
 	if err != nil {
-		log.Printf("[EmailTriggerService] Failed to get trigger %d for statistics update: %v",
+		s.logger.Error("Failed to get trigger %d for statistics update: %v",
 			triggerID, err)
 		return
 	}
@@ -289,7 +291,7 @@ func (s *EmailTriggerService) updateTriggerStatistics(triggerID uint, success bo
 
 	// Save the updated trigger
 	if err := s.triggerRepo.Update(trigger); err != nil {
-		log.Printf("[EmailTriggerService] Failed to update trigger %d statistics: %v",
+		s.logger.Error("Failed to update trigger %d statistics: %v",
 			triggerID, err)
 	}
 }
@@ -316,7 +318,7 @@ func (s *EmailTriggerService) EnableTrigger(triggerID uint) error {
 		return fmt.Errorf("failed to set up subscription: %w", err)
 	}
 
-	log.Printf("[EmailTriggerService] Enabled trigger: %s (ID: %d)", trigger.Name, trigger.ID)
+	s.logger.Info("Enabled trigger: %s (ID: %d)", trigger.Name, trigger.ID)
 	return nil
 }
 
@@ -341,7 +343,7 @@ func (s *EmailTriggerService) DisableTrigger(triggerID uint) error {
 
 	if exists {
 		if err := s.subscriptionManager.Unsubscribe(subscriptionID); err != nil {
-			log.Printf("[EmailTriggerService] Failed to unsubscribe trigger %d: %v", triggerID, err)
+			s.logger.Warn("Failed to unsubscribe trigger %d: %v", triggerID, err)
 			// Continue anyway, as the trigger is already disabled in the database
 		}
 
@@ -350,23 +352,23 @@ func (s *EmailTriggerService) DisableTrigger(triggerID uint) error {
 		s.mu.Unlock()
 	}
 
-	log.Printf("[EmailTriggerService] Disabled trigger: %s (ID: %d)", trigger.Name, trigger.ID)
+	s.logger.Info("Disabled trigger: %s (ID: %d)", trigger.Name, trigger.ID)
 	return nil
 }
 
 // Shutdown gracefully shuts down the email trigger service
 func (s *EmailTriggerService) Shutdown() {
-	log.Println("[EmailTriggerService] Shutting down email trigger service")
+	s.logger.Info("Shutting down email trigger service")
 
 	// Unsubscribe from all active subscriptions
 	s.mu.Lock()
 	for triggerID, subscriptionID := range s.activeSubscriptions {
 		if err := s.subscriptionManager.Unsubscribe(subscriptionID); err != nil {
-			log.Printf("[EmailTriggerService] Failed to unsubscribe trigger %d: %v", triggerID, err)
+			s.logger.Warn("Failed to unsubscribe trigger %d: %v", triggerID, err)
 		}
 	}
 	s.activeSubscriptions = make(map[uint]string)
 	s.mu.Unlock()
 
-	log.Println("[EmailTriggerService] Email trigger service shutdown complete")
+	s.logger.Info("Email trigger service shutdown complete")
 }

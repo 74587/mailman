@@ -10,8 +10,6 @@ export default function DevToolsPage() {
     const handleSetToken = () => {
         if (token) {
             // 设置 token 到 localStorage
-            localStorage.setItem('sessionToken', token);
-            localStorage.setItem('token', token);
             localStorage.setItem('auth_token', token);
 
             alert('Token 已设置！');

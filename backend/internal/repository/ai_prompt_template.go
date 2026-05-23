@@ -121,6 +121,93 @@ func (r *AIPromptTemplateRepository) InitializeDefaultTemplates() error {
 			Temperature: 0.7,
 			IsActive:    true,
 		},
+		{
+			Scenario:    "trigger_name_description",
+			Name:        "触发器名称描述生成",
+			Description: "根据触发器配置自动生成名称和描述信息",
+			SystemPrompt: `你是一个专业的邮件自动化助手。你需要根据提供的触发器配置信息，生成一个简洁明了的名称和描述。
+
+分析触发器配置时，请关注以下要点：
+1. 过滤条件（expressions）：包含了邮件匹配规则，如发件人、收件人、主题等
+2. 动作列表（actions）：触发器匹配后要执行的操作，如转发、通知等
+3. 整体功能：综合分析这个触发器的用途
+
+生成规则：
+- 名称：简洁的中文名称，不超过20个字符，能够清晰表达触发器的核心用途
+- 描述：详细的中文描述（50-100字），说明这个触发器的作用、触发条件和执行动作
+
+请以JSON格式返回：
+{"name": "触发器名称", "description": "触发器描述"}`,
+			UserPrompt:  "",
+			Variables:   models.JSONMap{"expressions": "过滤条件配置", "actions": "动作列表配置"},
+			MaxTokens:   500,
+			Temperature: 0.7,
+			IsActive:    true,
+		},
+		{
+			Scenario:    "filter_name_description",
+			Name:        "过滤器名称描述生成",
+			Description: "根据过滤条件自动生成名称和描述信息",
+			SystemPrompt: `你是一个专业的邮件自动化助手。你需要根据提供的过滤条件配置，生成一个简洁明了的名称和描述。
+
+过滤条件配置说明：
+- 条件组（type: group）：包含多个子条件，通过 AND/OR 逻辑连接
+- 插件条件（type: plugin）：使用特定的过滤插件，如：
+  - email.from: 发件人过滤
+  - email.to: 收件人过滤
+  - email.subject: 主题过滤
+  - email.body: 正文过滤
+  - email.has_attachment: 附件过滤
+- 表达式条件（type: expression）：JavaScript 表达式
+
+分析时请关注：
+1. 过滤的目标字段（发件人、收件人、主题等）
+2. 匹配模式（包含、等于、正则等）
+3. 匹配内容（具体的筛选值）
+
+生成规则：
+- 名称：简洁的中文名称，不超过15个字符，能够清晰表达过滤条件
+- 描述：简短的中文描述（30-50字），说明这个过滤器匹配什么样的邮件
+
+请以JSON格式返回：
+{"name": "过滤器名称", "description": "过滤器描述"}`,
+			UserPrompt:  "",
+			Variables:   models.JSONMap{"conditions": "过滤条件配置"},
+			MaxTokens:   300,
+			Temperature: 0.7,
+			IsActive:    true,
+		},
+		{
+			Scenario:    "action_name_description",
+			Name:        "动作名称描述生成",
+			Description: "根据动作配置自动生成名称和描述信息",
+			SystemPrompt: `你是一个专业的邮件自动化助手。你需要根据提供的动作配置信息，生成一个简洁明了的名称和描述。
+
+常见的动作插件类型：
+- email_forward_action: 邮件转发，参数包括收件人、是否包含原文等
+- email_transform_action: 邮件内容转换，参数包括目标字段、转换类型、模板等
+- telegram_bot_action: Telegram 通知，参数包括 Bot Token、Chat ID、消息内容等
+- webhook_action: Webhook 调用，参数包括 URL、请求方法、请求体等
+- email_label_action: 邮件标签管理
+- email_delete_action: 邮件删除
+
+分析时请关注：
+1. 插件类型（pluginId）：决定了动作的主要功能
+2. 配置参数（config）：具体的执行参数
+3. 动作别名（alias）：如果有的话
+
+生成规则：
+- 名称：简洁的中文名称，不超过15个字符，能够清晰表达动作的作用
+- 描述：简短的中文描述（30-50字），说明这个动作会执行什么操作
+
+请以JSON格式返回：
+{"name": "动作名称", "description": "动作描述"}`,
+			UserPrompt:  "",
+			Variables:   models.JSONMap{"pluginId": "插件类型", "pluginName": "插件名称", "config": "配置参数"},
+			MaxTokens:   300,
+			Temperature: 0.7,
+			IsActive:    true,
+		},
 	}
 
 	for _, template := range defaultTemplates {

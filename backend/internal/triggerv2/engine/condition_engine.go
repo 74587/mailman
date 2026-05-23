@@ -501,6 +501,37 @@ func (ce *ConditionEngine) registerDefaultOperators() {
 	ce.RegisterOperator(&MatchesOperator{})
 	ce.RegisterOperator(&InOperator{})
 	ce.RegisterOperator(&NotInOperator{})
+
+	// 注册数组专用操作符
+	ce.RegisterOperator(&ArrayContainsOperator{})
+	ce.RegisterOperator(&ArrayNotContainsOperator{})
+	ce.RegisterOperator(&AnyEqualsOperator{})
+	ce.RegisterOperator(&AnyContainsOperator{})
+	ce.RegisterOperator(&AnyStartsWithOperator{})
+	ce.RegisterOperator(&AnyEndsWithOperator{})
+	ce.RegisterOperator(&AnyMatchesOperator{})
+	ce.RegisterOperator(&AnyNotMatchesOperator{})
+	ce.RegisterOperator(&AllEqualsOperator{})
+	ce.RegisterOperator(&AllContainsOperator{})
+	ce.RegisterOperator(&AllMatchesOperator{})
+	ce.RegisterOperator(&AllNotMatchesOperator{})
+	ce.RegisterOperator(&ArrayLengthEqualsOperator{})
+	ce.RegisterOperator(&ArrayLengthGreaterOperator{})
+	ce.RegisterOperator(&ArrayLengthLessOperator{})
+	ce.RegisterOperator(&ArrayIsEmptyOperator{})
+	ce.RegisterOperator(&ArrayIsNotEmptyOperator{})
+
+	// 注册别名
+	ce.operators["=="] = ce.operators["equals"]
+	ce.operators["="] = ce.operators["equals"]
+	ce.operators["!="] = ce.operators["not_equals"]
+	ce.operators[">"] = ce.operators["greater_than"]
+	ce.operators["<"] = ce.operators["less_than"]
+	ce.operators[">="] = ce.operators["greater_equal"]
+	ce.operators["<="] = ce.operators["less_equal"]
+	ce.operators["startswith"] = ce.operators["starts_with"]
+	ce.operators["endswith"] = ce.operators["ends_with"]
+	ce.operators["notin"] = ce.operators["not_in"]
 }
 
 // registerDefaultFunctions 注册默认函数
@@ -957,3 +988,345 @@ func (f *IsNotEmptyFunction) Execute(args []interface{}) (interface{}, error) {
 
 func (f *IsNotEmptyFunction) GetName() string  { return "isNotEmpty" }
 func (f *IsNotEmptyFunction) GetArgCount() int { return 1 }
+
+// ===================== 数组专用操作符 =====================
+
+// toSlice 将值转换为字符串切片
+func toSlice(value interface{}) []string {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case []interface{}:
+		result := make([]string, len(v))
+		for i, item := range v {
+			result[i] = fmt.Sprintf("%v", item)
+		}
+		return result
+	default:
+		return []string{fmt.Sprintf("%v", value)}
+	}
+}
+
+// getArrayLength 获取数组长度
+func getArrayLength(value interface{}) int {
+	switch v := value.(type) {
+	case []string:
+		return len(v)
+	case []interface{}:
+		return len(v)
+	default:
+		return 0
+	}
+}
+
+// ArrayContainsOperator 数组包含操作符 - 检查数组中是否存在某个值
+type ArrayContainsOperator struct{}
+
+func (o *ArrayContainsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if item == rightStr {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *ArrayContainsOperator) GetName() string  { return "array_contains" }
+func (o *ArrayContainsOperator) GetPriority() int { return 3 }
+
+// ArrayNotContainsOperator 数组不包含操作符
+type ArrayNotContainsOperator struct{}
+
+func (o *ArrayNotContainsOperator) Evaluate(left, right interface{}) (bool, error) {
+	op := &ArrayContainsOperator{}
+	result, err := op.Evaluate(left, right)
+	if err != nil {
+		return false, err
+	}
+	return !result, nil
+}
+
+func (o *ArrayNotContainsOperator) GetName() string  { return "array_not_contains" }
+func (o *ArrayNotContainsOperator) GetPriority() int { return 3 }
+
+// AnyEqualsOperator 任意元素等于操作符
+type AnyEqualsOperator struct{}
+
+func (o *AnyEqualsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if item == rightStr {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyEqualsOperator) GetName() string  { return "any_equals" }
+func (o *AnyEqualsOperator) GetPriority() int { return 3 }
+
+// AnyContainsOperator 任意元素包含操作符
+type AnyContainsOperator struct{}
+
+func (o *AnyContainsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if strings.Contains(item, rightStr) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyContainsOperator) GetName() string  { return "any_contains" }
+func (o *AnyContainsOperator) GetPriority() int { return 3 }
+
+// AnyStartsWithOperator 任意元素开头是操作符
+type AnyStartsWithOperator struct{}
+
+func (o *AnyStartsWithOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if strings.HasPrefix(item, rightStr) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyStartsWithOperator) GetName() string  { return "any_starts_with" }
+func (o *AnyStartsWithOperator) GetPriority() int { return 3 }
+
+// AnyEndsWithOperator 任意元素结尾是操作符
+type AnyEndsWithOperator struct{}
+
+func (o *AnyEndsWithOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if strings.HasSuffix(item, rightStr) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyEndsWithOperator) GetName() string  { return "any_ends_with" }
+func (o *AnyEndsWithOperator) GetPriority() int { return 3 }
+
+// AnyMatchesOperator 任意元素匹配正则操作符
+type AnyMatchesOperator struct{}
+
+func (o *AnyMatchesOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	pattern := fmt.Sprintf("%v", right)
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	for _, item := range arr {
+		if re.MatchString(item) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyMatchesOperator) GetName() string  { return "any_matches" }
+func (o *AnyMatchesOperator) GetPriority() int { return 3 }
+
+// AnyNotMatchesOperator 任意元素不匹配正则操作符
+type AnyNotMatchesOperator struct{}
+
+func (o *AnyNotMatchesOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	pattern := fmt.Sprintf("%v", right)
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	for _, item := range arr {
+		if !re.MatchString(item) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyNotMatchesOperator) GetName() string  { return "any_not_matches" }
+func (o *AnyNotMatchesOperator) GetPriority() int { return 3 }
+
+// AllEqualsOperator 所有元素等于操作符
+type AllEqualsOperator struct{}
+
+func (o *AllEqualsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	if len(arr) == 0 {
+		return false, nil
+	}
+
+	rightStr := fmt.Sprintf("%v", right)
+	for _, item := range arr {
+		if item != rightStr {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (o *AllEqualsOperator) GetName() string  { return "all_equals" }
+func (o *AllEqualsOperator) GetPriority() int { return 3 }
+
+// AllContainsOperator 所有元素包含操作符
+type AllContainsOperator struct{}
+
+func (o *AllContainsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	if len(arr) == 0 {
+		return false, nil
+	}
+
+	rightStr := fmt.Sprintf("%v", right)
+	for _, item := range arr {
+		if !strings.Contains(item, rightStr) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (o *AllContainsOperator) GetName() string  { return "all_contains" }
+func (o *AllContainsOperator) GetPriority() int { return 3 }
+
+// AllMatchesOperator 所有元素匹配正则操作符
+type AllMatchesOperator struct{}
+
+func (o *AllMatchesOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	if len(arr) == 0 {
+		return false, nil
+	}
+
+	pattern := fmt.Sprintf("%v", right)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	for _, item := range arr {
+		if !re.MatchString(item) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (o *AllMatchesOperator) GetName() string  { return "all_matches" }
+func (o *AllMatchesOperator) GetPriority() int { return 3 }
+
+// AllNotMatchesOperator 所有元素不匹配正则操作符
+type AllNotMatchesOperator struct{}
+
+func (o *AllNotMatchesOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	if len(arr) == 0 {
+		return false, nil
+	}
+
+	pattern := fmt.Sprintf("%v", right)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	for _, item := range arr {
+		if re.MatchString(item) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (o *AllNotMatchesOperator) GetName() string  { return "all_not_matches" }
+func (o *AllNotMatchesOperator) GetPriority() int { return 3 }
+
+// ArrayLengthEqualsOperator 数组长度等于操作符
+type ArrayLengthEqualsOperator struct{}
+
+func (o *ArrayLengthEqualsOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	rightNum, err := strconv.Atoi(fmt.Sprintf("%v", right))
+	if err != nil {
+		return false, fmt.Errorf("right value must be a number: %v", err)
+	}
+	return length == rightNum, nil
+}
+
+func (o *ArrayLengthEqualsOperator) GetName() string  { return "array_length_equals" }
+func (o *ArrayLengthEqualsOperator) GetPriority() int { return 3 }
+
+// ArrayLengthGreaterOperator 数组长度大于操作符
+type ArrayLengthGreaterOperator struct{}
+
+func (o *ArrayLengthGreaterOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	rightNum, err := strconv.Atoi(fmt.Sprintf("%v", right))
+	if err != nil {
+		return false, fmt.Errorf("right value must be a number: %v", err)
+	}
+	return length > rightNum, nil
+}
+
+func (o *ArrayLengthGreaterOperator) GetName() string  { return "array_length_greater" }
+func (o *ArrayLengthGreaterOperator) GetPriority() int { return 3 }
+
+// ArrayLengthLessOperator 数组长度小于操作符
+type ArrayLengthLessOperator struct{}
+
+func (o *ArrayLengthLessOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	rightNum, err := strconv.Atoi(fmt.Sprintf("%v", right))
+	if err != nil {
+		return false, fmt.Errorf("right value must be a number: %v", err)
+	}
+	return length < rightNum, nil
+}
+
+func (o *ArrayLengthLessOperator) GetName() string  { return "array_length_less" }
+func (o *ArrayLengthLessOperator) GetPriority() int { return 3 }
+
+// ArrayIsEmptyOperator 数组为空操作符
+type ArrayIsEmptyOperator struct{}
+
+func (o *ArrayIsEmptyOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	return length == 0, nil
+}
+
+func (o *ArrayIsEmptyOperator) GetName() string  { return "array_is_empty" }
+func (o *ArrayIsEmptyOperator) GetPriority() int { return 3 }
+
+// ArrayIsNotEmptyOperator 数组不为空操作符
+type ArrayIsNotEmptyOperator struct{}
+
+func (o *ArrayIsNotEmptyOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	return length > 0, nil
+}
+
+func (o *ArrayIsNotEmptyOperator) GetName() string  { return "array_is_not_empty" }
+func (o *ArrayIsNotEmptyOperator) GetPriority() int { return 3 }

@@ -549,11 +549,17 @@ func (p *EmailTimeRangePlugin) Evaluate(ctx *plugins.PluginContext, event *model
 		}, nil
 	}
 
+	// 从 ctx.Config.Config 获取用户配置的条件（优先）
+	conditions := p.config
+	if ctx.Config != nil && ctx.Config.Config != nil {
+		conditions = ctx.Config.Config
+	}
+
 	// 获取配置
-	timeField := p.getTimeField()
-	timeZone := p.getTimeZone()
-	relativeTime := p.getRelativeTime()
-	workingHours := p.getWorkingHours()
+	timeField := p.getTimeFieldFromConfig(conditions)
+	timeZone := p.getTimeZoneFromConfig(conditions)
+	relativeTime := p.getRelativeTimeFromConfig(conditions)
+	workingHours := p.getWorkingHoursFromConfig(conditions)
 
 	// 获取邮件时间
 	var emailTime time.Time
@@ -639,7 +645,12 @@ func (p *EmailTimeRangePlugin) GetRequiredFields() []string {
 
 // getTimeField 获取时间字段配置
 func (p *EmailTimeRangePlugin) getTimeField() string {
-	if timeField, ok := p.config["time_field"]; ok {
+	return p.getTimeFieldFromConfig(p.config)
+}
+
+// getTimeFieldFromConfig 从指定配置获取时间字段
+func (p *EmailTimeRangePlugin) getTimeFieldFromConfig(config map[string]interface{}) string {
+	if timeField, ok := config["time_field"]; ok {
 		if str, ok := timeField.(string); ok {
 			return str
 		}
@@ -649,7 +660,12 @@ func (p *EmailTimeRangePlugin) getTimeField() string {
 
 // getTimeZone 获取时区配置
 func (p *EmailTimeRangePlugin) getTimeZone() string {
-	if timeZone, ok := p.config["time_zone"]; ok {
+	return p.getTimeZoneFromConfig(p.config)
+}
+
+// getTimeZoneFromConfig 从指定配置获取时区
+func (p *EmailTimeRangePlugin) getTimeZoneFromConfig(config map[string]interface{}) string {
+	if timeZone, ok := config["time_zone"]; ok {
 		if str, ok := timeZone.(string); ok {
 			return str
 		}
@@ -659,7 +675,12 @@ func (p *EmailTimeRangePlugin) getTimeZone() string {
 
 // getRelativeTime 获取相对时间配置
 func (p *EmailTimeRangePlugin) getRelativeTime() map[string]interface{} {
-	if relativeTime, ok := p.config["relative_time"]; ok {
+	return p.getRelativeTimeFromConfig(p.config)
+}
+
+// getRelativeTimeFromConfig 从指定配置获取相对时间配置
+func (p *EmailTimeRangePlugin) getRelativeTimeFromConfig(config map[string]interface{}) map[string]interface{} {
+	if relativeTime, ok := config["relative_time"]; ok {
 		if rtMap, ok := relativeTime.(map[string]interface{}); ok {
 			return rtMap
 		}
@@ -673,7 +694,12 @@ func (p *EmailTimeRangePlugin) getRelativeTime() map[string]interface{} {
 
 // getWorkingHours 获取工作时间配置
 func (p *EmailTimeRangePlugin) getWorkingHours() map[string]interface{} {
-	if workingHours, ok := p.config["working_hours"]; ok {
+	return p.getWorkingHoursFromConfig(p.config)
+}
+
+// getWorkingHoursFromConfig 从指定配置获取工作时间配置
+func (p *EmailTimeRangePlugin) getWorkingHoursFromConfig(config map[string]interface{}) map[string]interface{} {
+	if workingHours, ok := config["working_hours"]; ok {
 		if whMap, ok := workingHours.(map[string]interface{}); ok {
 			return whMap
 		}

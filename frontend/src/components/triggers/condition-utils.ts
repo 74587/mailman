@@ -1,13 +1,13 @@
 import { v4 as uuidv4 } from 'uuid'
-import { Expression } from './condition-group'
+import { TriggerExpression } from '@/types'
 
 // 将表达式转换为JSON字符串
-export const expressionsToJson = (expressions: Expression[]): string => {
+export const expressionsToJson = (expressions: TriggerExpression[]): string => {
   return JSON.stringify(expressions, null, 2)
 }
 
 // 尝试从JSON字符串解析表达式
-export const jsonToExpressions = (json: string): Expression[] | null => {
+export const jsonToExpressions = (json: string): TriggerExpression[] | null => {
   try {
     const parsed = JSON.parse(json)
     if (Array.isArray(parsed)) {
@@ -21,48 +21,48 @@ export const jsonToExpressions = (json: string): Expression[] | null => {
 }
 
 // 将表达式转换为可读的文本描述
-export const expressionsToText = (expressions: Expression[]): string => {
+export const expressionsToText = (expressions: TriggerExpression[]): string => {
   if (!expressions || expressions.length === 0) {
     return '无条件'
   }
-  
+
   return expressions.map(expr => expressionToText(expr)).join(' 且 ')
 }
 
 // 将单个表达式转换为可读的文本描述
-export const expressionToText = (expression: Expression): string => {
+export const expressionToText = (expression: TriggerExpression): string => {
   if (expression.type === 'condition') {
     let text = ''
-    
+
     // 字段
     if (expression.field) {
       text += getFieldDisplayName(expression.field)
     }
-    
+
     // 操作符
     if (expression.operator) {
       text += ' ' + getOperatorDisplayName(expression.operator)
     }
-    
+
     // 值
     if (expression.value !== undefined && expression.value !== null) {
       text += ' "' + expression.value + '"'
     }
-    
+
     // 取反
     if (expression.not) {
       text = '不(' + text + ')'
     }
-    
+
     return text
   } else if (expression.type === 'group') {
     if (!expression.conditions || expression.conditions.length === 0) {
       return '空组'
     }
-    
+
     const conditionsText = expression.conditions.map(expr => expressionToText(expr))
     let text = ''
-    
+
     if (expression.operator === 'and') {
       text = conditionsText.join(' 且 ')
     } else if (expression.operator === 'or') {
@@ -70,15 +70,15 @@ export const expressionToText = (expression: Expression): string => {
     } else if (expression.operator === 'not') {
       text = '非(' + conditionsText.join(' 且 ') + ')'
     }
-    
+
     // 取反
     if (expression.not) {
       text = '不(' + text + ')'
     }
-    
+
     return text
   }
-  
+
   return '未知表达式'
 }
 
@@ -98,7 +98,7 @@ export const getFieldDisplayName = (field: string): string => {
     'receivedAt': '接收时间',
     'messageId': '消息ID'
   }
-  
+
   return fieldMap[field] || field
 }
 
@@ -119,17 +119,17 @@ export const getOperatorDisplayName = (operator: string): string => {
     'in': '在列表中',
     'not_in': '不在列表中'
   }
-  
+
   return operatorMap[operator] || operator
 }
 
 // 将表达式转换为后端API格式
-export const expressionsToApiFormat = (expressions: Expression[]): any[] => {
+export const expressionsToApiFormat = (expressions: TriggerExpression[]): any[] => {
   return expressions.map(expr => expressionToApiFormat(expr))
 }
 
 // 将单个表达式转换为后端API格式
-export const expressionToApiFormat = (expression: Expression): any => {
+export const expressionToApiFormat = (expression: TriggerExpression): any => {
   if (expression.type === 'condition') {
     return {
       id: expression.id,
@@ -148,21 +148,21 @@ export const expressionToApiFormat = (expression: Expression): any => {
       not: expression.not
     }
   }
-  
+
   return expression
 }
 
 // 从后端API格式转换为表达式
-export const apiFormatToExpressions = (apiData: any[]): Expression[] => {
+export const apiFormatToExpressions = (apiData: any[]): TriggerExpression[] => {
   return apiData.map(item => apiFormatToExpression(item))
 }
 
 // 从后端API格式转换为单个表达式
-export const apiFormatToExpression = (apiData: any): Expression => {
+export const apiFormatToExpression = (apiData: any): TriggerExpression => {
   if (!apiData.id) {
     apiData.id = uuidv4()
   }
-  
+
   if (apiData.type === 'condition') {
     return {
       id: apiData.id,
@@ -171,7 +171,7 @@ export const apiFormatToExpression = (apiData: any): Expression => {
       operator: apiData.operator,
       value: apiData.value,
       not: apiData.not
-    }
+    } as TriggerExpression
   } else if (apiData.type === 'group') {
     return {
       id: apiData.id,
@@ -179,27 +179,27 @@ export const apiFormatToExpression = (apiData: any): Expression => {
       operator: apiData.operator,
       conditions: apiData.conditions?.map((item: any) => apiFormatToExpression(item)) || [],
       not: apiData.not
-    }
+    } as TriggerExpression
   }
-  
-  return apiData as Expression
+
+  return apiData as TriggerExpression
 }
 
 // 验证表达式是否有效
-export const validateExpression = (expression: Expression): boolean => {
+export const validateExpression = (expression: TriggerExpression): boolean => {
   if (expression.type === 'condition') {
     return !!expression.field && !!expression.operator
   } else if (expression.type === 'group') {
-    return !!expression.operator && 
-           !!expression.conditions && 
-           expression.conditions.length > 0 &&
-           expression.conditions.every(expr => validateExpression(expr))
+    return !!expression.operator &&
+      !!expression.conditions &&
+      expression.conditions.length > 0 &&
+      expression.conditions.every(expr => validateExpression(expr))
   }
-  
+
   return false
 }
 
 // 验证表达式数组是否有效
-export const validateExpressions = (expressions: Expression[]): boolean => {
+export const validateExpressions = (expressions: TriggerExpression[]): boolean => {
   return expressions.length > 0 && expressions.every(expr => validateExpression(expr))
 }

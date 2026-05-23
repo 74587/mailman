@@ -72,7 +72,32 @@ module.exports = {
     				'3': 'hsl(var(--chart-3))',
     				'4': 'hsl(var(--chart-4))',
     				'5': 'hsl(var(--chart-5))'
-    			}
+			},
+			// Semantic component colors - auto-switch with theme
+			sidebar: {
+				bg: 'rgb(var(--sidebar-bg))',
+				text: 'rgb(var(--sidebar-text))',
+				'text-hover': 'rgb(var(--sidebar-text-hover))',
+				active: 'rgb(var(--sidebar-active))',
+				'active-bg': 'rgb(var(--sidebar-active-bg))',
+				'hover-bg': 'rgb(var(--sidebar-hover-bg))',
+				border: 'rgb(var(--sidebar-border))',
+			},
+			'btn-icon': {
+				bg: 'rgb(var(--btn-icon-bg))',
+				text: 'rgb(var(--btn-icon-text))',
+				'hover-bg': 'rgb(var(--btn-icon-hover-bg))',
+			},
+			'input-custom': {
+				bg: 'rgb(var(--input-bg))',
+				border: 'rgb(var(--input-border))',
+				focus: 'rgb(var(--input-focus))',
+				placeholder: 'rgb(var(--input-placeholder))',
+			},
+			'card-custom': {
+				bg: 'rgb(var(--card-bg))',
+				border: 'rgb(var(--card-border))',
+			}
     		},
     		fontFamily: {
     			sans: [

@@ -1,8 +1,9 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import * as React from 'react'
 
-type Theme = 'dark' | 'light' | 'system'
+type Theme = 'dark' | 'light' | 'system' | 'sakura'
 
 type ThemeProviderProps = {
     children: React.ReactNode
@@ -37,7 +38,7 @@ export function ThemeProvider({
 
         setMounted(true)
         const storedTheme = localStorage.getItem(storageKey) as Theme
-        console.log('[ThemeProvider] 初始化，存储的主题:', storedTheme)
+        logger.debug('[ThemeProvider] 初始化，存储的主题:', storedTheme)
 
         if (storedTheme) {
             setTheme(storedTheme)
@@ -46,7 +47,7 @@ export function ThemeProvider({
             const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches
                 ? 'dark'
                 : 'light'
-            console.log('[ThemeProvider] 使用系统主题:', systemTheme)
+            logger.debug('[ThemeProvider] 使用系统主题:', systemTheme)
             setTheme(defaultTheme === 'system' ? 'system' : systemTheme)
         }
     }, [storageKey, defaultTheme])
@@ -55,10 +56,10 @@ export function ThemeProvider({
         if (!mounted || typeof window === 'undefined') return
 
         const root = window.document.documentElement
-        console.log('[ThemeProvider] 应用主题变化:', theme)
+        logger.debug('[ThemeProvider] 应用主题变化:', theme)
 
-        root.classList.remove('light', 'dark')
-        console.log('[ThemeProvider] 移除类后的html类:', root.className)
+        root.classList.remove('light', 'dark', 'sakura')
+        logger.debug('[ThemeProvider] 移除类后的html类:', root.className)
 
         let appliedTheme: string
         if (theme === 'system' && enableSystem) {
@@ -66,14 +67,14 @@ export function ThemeProvider({
                 ? 'dark'
                 : 'light'
             appliedTheme = systemTheme
-            console.log('[ThemeProvider] 系统主题为:', systemTheme)
+            logger.debug('[ThemeProvider] 系统主题为:', systemTheme)
         } else {
             appliedTheme = theme
-            console.log('[ThemeProvider] 直接应用主题:', theme)
+            logger.debug('[ThemeProvider] 直接应用主题:', theme)
         }
 
         root.classList.add(appliedTheme)
-        console.log('[ThemeProvider] 应用主题后的html类:', root.className)
+        logger.debug('[ThemeProvider] 应用主题后的html类:', root.className)
     }, [theme, enableSystem, mounted])
 
     // Listen for system theme changes
@@ -84,7 +85,7 @@ export function ThemeProvider({
 
         const handleChange = () => {
             const root = window.document.documentElement
-            root.classList.remove('light', 'dark')
+            root.classList.remove('light', 'dark', 'sakura')
             const systemTheme = mediaQuery.matches ? 'dark' : 'light'
             root.classList.add(systemTheme)
         }
@@ -97,10 +98,10 @@ export function ThemeProvider({
         () => ({
             theme,
             setTheme: (newTheme: Theme) => {
-                console.log('[ThemeProvider] setTheme 被调用:', theme, '->', newTheme)
+                logger.debug('[ThemeProvider] setTheme 被调用:', theme, '->', newTheme)
                 if (typeof window !== 'undefined') {
                     localStorage.setItem(storageKey, newTheme)
-                    console.log('[ThemeProvider] 主题已保存到 localStorage:', newTheme)
+                    logger.debug('[ThemeProvider] 主题已保存到 localStorage:', newTheme)
                 }
                 setTheme(newTheme)
             },
@@ -134,7 +135,7 @@ export const useTheme = () => {
                 if (typeof window !== 'undefined') {
                     localStorage.setItem('theme', newTheme)
                     const root = window.document.documentElement
-                    root.classList.remove('light', 'dark')
+                    root.classList.remove('light', 'dark', 'sakura')
 
                     if (newTheme === 'system') {
                         const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches

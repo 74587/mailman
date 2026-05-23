@@ -3,11 +3,11 @@ package services
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"mailman/internal/models"
+	"mailman/internal/utils"
 )
 
 // SubscriptionType 定义订阅类型
@@ -91,6 +91,7 @@ type SubscriptionManager struct {
 	// 扩展接口
 	hooks   SubscriptionHooks
 	metrics *SubscriptionMetrics
+	logger  *utils.Logger
 
 	// 配置选项
 	defaultExpirationTime time.Duration // 默认过期时间
@@ -129,6 +130,7 @@ func NewSubscriptionManager() *SubscriptionManager {
 		byType:                make(map[SubscriptionType][]*Subscription),
 		byFingerprint:         make(map[string]*Subscription),
 		metrics:               &SubscriptionMetrics{},
+		logger:                utils.NewLogger("SubscriptionManager"),
 		defaultExpirationTime: 24 * time.Hour,  // 默认24小时过期
 		cleanupInterval:       5 * time.Minute, // 5分钟清理一次
 		maxSubscriptions:      1000,            // 最大1000个订阅
@@ -160,7 +162,7 @@ func (m *SubscriptionManager) Subscribe(req SubscribeRequest) (*Subscription, er
 		// 检查现有订阅是否仍然有效
 		if m.isSubscriptionActive(existingSub) {
 			m.mu.RUnlock()
-			log.Printf("[SubscriptionManager] Reusing existing subscription %s for fingerprint %s",
+			m.logger.Info("Reusing existing subscription %s for fingerprint %s",
 				existingSub.ID, fingerprint)
 			return existingSub, nil
 		}
@@ -169,10 +171,10 @@ func (m *SubscriptionManager) Subscribe(req SubscribeRequest) (*Subscription, er
 		m.mu.RUnlock()
 
 		// 完全清理失效的订阅
-		log.Printf("[SubscriptionManager] Cleaning up inactive subscription %s for fingerprint %s",
+		m.logger.Info("Cleaning up inactive subscription %s for fingerprint %s",
 			subscriptionID, fingerprint)
 		if err := m.Unsubscribe(subscriptionID); err != nil {
-			log.Printf("[SubscriptionManager] Warning: Failed to cleanup inactive subscription %s: %v",
+			m.logger.Warn("Failed to cleanup inactive subscription %s: %v",
 				subscriptionID, err)
 		}
 	} else {
@@ -184,7 +186,7 @@ func (m *SubscriptionManager) Subscribe(req SubscribeRequest) (*Subscription, er
 	if expiresAt == nil && m.defaultExpirationTime > 0 {
 		expireTime := time.Now().Add(m.defaultExpirationTime)
 		expiresAt = &expireTime
-		log.Printf("[SubscriptionManager] Setting default expiration time: %v", expireTime)
+		m.logger.Debug("Setting default expiration time: %v", expireTime)
 	}
 
 	// 创建订阅上下文
@@ -237,7 +239,7 @@ func (m *SubscriptionManager) Subscribe(req SubscribeRequest) (*Subscription, er
 	m.wg.Add(1)
 	go m.monitorSubscription(subscription)
 
-	log.Printf("[SubscriptionManager] Created subscription %s for %s (real: %s, fingerprint: %s, expires: %v)",
+	m.logger.Info("Created subscription %s for %s (real: %s, fingerprint: %s, expires: %v)",
 		subscription.ID, req.Filter.EmailAddress, subscription.Filter.RealMailbox, fingerprint, expiresAt)
 
 	return subscription, nil
@@ -276,7 +278,7 @@ func (m *SubscriptionManager) Unsubscribe(subscriptionID string) error {
 	close(subscription.EmailChannel)
 	close(subscription.ErrorChannel)
 
-	log.Printf("[SubscriptionManager] Unsubscribed %s (fingerprint: %s)", subscriptionID, fingerprint)
+	m.logger.Info("Unsubscribed %s (fingerprint: %s)", subscriptionID, fingerprint)
 	return nil
 }
 
@@ -325,14 +327,14 @@ func (m *SubscriptionManager) DistributeEmail(realMailbox string, email models.E
 		// 执行邮件匹配钩子
 		if m.hooks.OnEmailMatch != nil {
 			if err := m.hooks.OnEmailMatch(sub, email); err != nil {
-				log.Printf("[SubscriptionManager] Email match hook failed: %v", err)
+				m.logger.Error("Email match hook failed: %v", err)
 				continue
 			}
 		}
 
 		// 分发邮件
 		if err := m.deliverEmail(sub, email); err != nil {
-			log.Printf("[SubscriptionManager] Failed to deliver email to %s: %v", sub.ID, err)
+			m.logger.Error("Failed to deliver email to %s: %v", sub.ID, err)
 			m.sendError(sub, err)
 		} else {
 			delivered++
@@ -355,7 +357,7 @@ func (m *SubscriptionManager) DistributeEmail(realMailbox string, email models.E
 	}
 	m.metrics.mu.Unlock()
 
-	log.Printf("[SubscriptionManager] Distributed email to %d/%d subscriptions for %s",
+	m.logger.Debug("Distributed email to %d/%d subscriptions for %s",
 		delivered, len(subscriptions), realMailbox)
 }
 
@@ -385,7 +387,7 @@ func (m *SubscriptionManager) matchesFilter(email models.Email, filter EmailFilt
 		subjectPreview = subjectPreview[:50] + "..."
 	}
 
-	log.Printf("[SubscriptionManager] DEBUG: 检查邮件: %s", subjectPreview)
+	m.logger.Debug("检查邮件: %s", subjectPreview)
 
 	var filterResults []string
 	allMatched := true
@@ -477,14 +479,14 @@ func (m *SubscriptionManager) matchesFilter(email models.Email, filter EmailFilt
 
 	// 输出所有过滤结果
 	for _, result := range filterResults {
-		log.Printf("[SubscriptionManager] DEBUG: %s", result)
+		m.logger.Debug("%s", result)
 	}
 
 	// 输出最终结果
 	if allMatched {
-		log.Printf("[SubscriptionManager] DEBUG:   ✅ 邮件通过所有过滤条件")
+		m.logger.Debug("  ✅ 邮件通过所有过滤条件")
 	} else {
-		log.Printf("[SubscriptionManager] DEBUG:   ❌ 邮件会被过滤掉")
+		m.logger.Debug("  ❌ 邮件会被过滤掉")
 	}
 
 	return allMatched
@@ -513,7 +515,7 @@ func (m *SubscriptionManager) monitorSubscription(sub *Subscription) {
 		case <-ticker.C:
 			// 检查过期
 			if sub.ExpiresAt != nil && time.Now().After(*sub.ExpiresAt) {
-				log.Printf("[SubscriptionManager] Subscription %s expired at %v", sub.ID, *sub.ExpiresAt)
+				m.logger.Info("Subscription %s expired at %v", sub.ID, *sub.ExpiresAt)
 				if m.hooks.OnExpire != nil {
 					m.hooks.OnExpire(sub)
 				}
@@ -577,7 +579,7 @@ func (m *SubscriptionManager) sendError(sub *Subscription, err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				// channel已关闭，忽略错误
-				log.Printf("[SubscriptionManager] Failed to send error to subscription %s: channel closed", sub.ID)
+				m.logger.Warn("Failed to send error to subscription %s: channel closed", sub.ID)
 			}
 		}()
 
@@ -627,7 +629,7 @@ func (m *SubscriptionManager) SetDefaultExpirationTime(duration time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.defaultExpirationTime = duration
-	log.Printf("[SubscriptionManager] Default expiration time set to %v", duration)
+	m.logger.Info("Default expiration time set to %v", duration)
 }
 
 // SetCleanupInterval 设置清理间隔
@@ -635,7 +637,7 @@ func (m *SubscriptionManager) SetCleanupInterval(interval time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanupInterval = interval
-	log.Printf("[SubscriptionManager] Cleanup interval set to %v", interval)
+	m.logger.Info("Cleanup interval set to %v", interval)
 }
 
 // SetMaxSubscriptions 设置最大订阅数量
@@ -643,7 +645,7 @@ func (m *SubscriptionManager) SetMaxSubscriptions(max int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.maxSubscriptions = max
-	log.Printf("[SubscriptionManager] Max subscriptions set to %d", max)
+	m.logger.Info("Max subscriptions set to %d", max)
 }
 
 // CleanupExpiredSubscriptions 批量清理过期订阅
@@ -662,12 +664,12 @@ func (m *SubscriptionManager) CleanupExpiredSubscriptions() int {
 	// 批量删除过期订阅
 	for _, id := range expiredIDs {
 		if err := m.Unsubscribe(id); err != nil {
-			log.Printf("[SubscriptionManager] Failed to cleanup expired subscription %s: %v", id, err)
+			m.logger.Error("Failed to cleanup expired subscription %s: %v", id, err)
 		}
 	}
 
 	if len(expiredIDs) > 0 {
-		log.Printf("[SubscriptionManager] Cleaned up %d expired subscriptions", len(expiredIDs))
+		m.logger.Info("Cleaned up %d expired subscriptions", len(expiredIDs))
 	}
 
 	return len(expiredIDs)
@@ -688,12 +690,12 @@ func (m *SubscriptionManager) CleanupInactiveSubscriptions() int {
 	// 批量删除不活跃订阅
 	for _, id := range inactiveIDs {
 		if err := m.Unsubscribe(id); err != nil {
-			log.Printf("[SubscriptionManager] Failed to cleanup inactive subscription %s: %v", id, err)
+			m.logger.Error("Failed to cleanup inactive subscription %s: %v", id, err)
 		}
 	}
 
 	if len(inactiveIDs) > 0 {
-		log.Printf("[SubscriptionManager] Cleaned up %d inactive subscriptions", len(inactiveIDs))
+		m.logger.Info("Cleaned up %d inactive subscriptions", len(inactiveIDs))
 	}
 
 	return len(inactiveIDs)
@@ -749,16 +751,16 @@ func (m *SubscriptionManager) StartPeriodicCleanup() {
 				inactiveCount := m.CleanupInactiveSubscriptions()
 
 				if expiredCount > 0 || inactiveCount > 0 {
-					log.Printf("[SubscriptionManager] Periodic cleanup: %d expired, %d inactive",
+					m.logger.Info("Periodic cleanup: %d expired, %d inactive",
 						expiredCount, inactiveCount)
 				}
 
 			case <-m.shutdownCh:
-				log.Printf("[SubscriptionManager] Periodic cleanup stopped")
+				m.logger.Info("Periodic cleanup stopped")
 				return
 			}
 		}
 	}()
 
-	log.Printf("[SubscriptionManager] Started periodic cleanup with interval %v", m.cleanupInterval)
+	m.logger.Info("Started periodic cleanup with interval %v", m.cleanupInterval)
 }

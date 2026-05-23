@@ -3,8 +3,10 @@
 import { useState, useEffect } from 'react'
 import { openAIService } from '@/services/openai.service'
 import type { AIPromptTemplate, AIPromptTemplateRequest } from '@/types/openai'
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 
 export function AIPromptTemplateTab() {
+    const { confirm } = useConfirmDialog()
     const [templates, setTemplates] = useState<AIPromptTemplate[]>([])
     const [loading, setLoading] = useState(true)
     const [isDialogOpen, setIsDialogOpen] = useState(false)
@@ -115,9 +117,14 @@ export function AIPromptTemplateTab() {
     }
 
     const handleDelete = async (id: number) => {
-        if (!confirm('确定要删除这个模板吗？')) {
-            return
-        }
+        const confirmed = await confirm({
+            title: '删除模板',
+            description: '确定要删除这个模板吗？',
+            confirmText: '删除',
+            cancelText: '取消',
+            variant: 'destructive'
+        })
+        if (!confirmed) return
 
         try {
             await openAIService.deletePromptTemplate(id)

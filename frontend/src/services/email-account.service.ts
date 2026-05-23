@@ -4,6 +4,7 @@ import {
     CreateEmailAccountRequest,
     UpdateEmailAccountRequest,
     PaginationParams,
+    AccountFilterParams,
     PaginatedResponse
 } from '@/types';
 
@@ -42,7 +43,10 @@ export class EmailAccountService {
         return response;
     }
 
-    async getAccountsPaginated(params?: PaginationParams): Promise<PaginatedResponse<EmailAccount>> {
+    /**
+     * 获取分页的邮箱账户（支持完整过滤参数）
+     */
+    async getAccountsPaginated(params?: AccountFilterParams): Promise<PaginatedResponse<EmailAccount>> {
         const response = await apiClient.get<PaginatedResponse<EmailAccount>>(
             `${this.basePath}/paginated`,
             { params }
@@ -268,6 +272,20 @@ export class EmailAccountService {
      */
     async getProviders(): Promise<any[]> {
         const response = await apiClient.get<any[]>('/providers');
+        return response;
+    }
+
+    /**
+     * 创建自定义邮件服务商
+     */
+    async createProvider(data: {
+        name: string;
+        imapServer: string;
+        imapPort: number;
+        smtpServer?: string;
+        smtpPort?: number;
+    }): Promise<any> {
+        const response = await apiClient.post<any>('/providers', data);
         return response;
     }
 }

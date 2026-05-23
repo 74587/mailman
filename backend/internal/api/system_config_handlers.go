@@ -188,3 +188,24 @@ func (h *SystemConfigHandler) ResetConfigToDefault(w http.ResponseWriter, r *htt
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
 }
+
+// GetLoginTheme 获取登录页主题（公开端点，无需认证）
+// @Summary 获取登录页主题
+// @Description 获取当前登录页面的视觉主题配置（公开端点）
+// @Tags system-config
+// @Produce json
+// @Success 200 {object} map[string]string
+// @Failure 500 {object} ErrorResponse
+// @Router /api/public/login-theme [get]
+func (h *SystemConfigHandler) GetLoginTheme(w http.ResponseWriter, r *http.Request) {
+	theme, err := h.service.GetStringConfig("login-theme")
+	if err != nil {
+		// 如果获取失败，返回默认值
+		theme = "classic"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"theme": theme,
+	})
+}

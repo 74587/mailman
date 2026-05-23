@@ -28,13 +28,15 @@ type TriggerAPIHandler struct {
 
 // TriggerV2 Expression结构 - 对应前端Expression接口
 type TriggerExpression struct {
-	ID         string              `json:"id,omitempty"`
-	Type       string              `json:"type"`               // 'group' | 'condition'
-	Operator   string              `json:"operator,omitempty"` // 'and' | 'or' | 'not'
-	Field      string              `json:"field,omitempty"`
-	Value      interface{}         `json:"value,omitempty"`
-	Conditions []TriggerExpression `json:"conditions,omitempty"`
-	Not        bool                `json:"not,omitempty"`
+	ID         string                 `json:"id,omitempty"`
+	Type       string                 `json:"type"`
+	Operator   string                 `json:"operator,omitempty"`
+	Field      string                 `json:"field,omitempty"`
+	Value      interface{}            `json:"value,omitempty"`
+	Conditions []TriggerExpression    `json:"conditions,omitempty"`
+	PluginID   string                 `json:"pluginId,omitempty"`
+	Fields     map[string]interface{} `json:"fields,omitempty"`
+	Not        bool                   `json:"not,omitempty"`
 }
 
 // TriggerV2 Action结构 - 对应前端Action接口
@@ -291,7 +293,8 @@ func (h *TriggerAPIHandler) GetTriggersHandler(w http.ResponseWriter, r *http.Re
 	search = r.URL.Query().Get("search")
 
 	// 获取分页数据
-	triggers, total, err := h.triggerRepo.GetAllPaginated(page, limit, sortBy, sortOrder, search)
+	orgID := GetCurrentOrgID(r)
+	triggers, total, err := h.triggerRepo.GetAllPaginated(page, limit, sortBy, sortOrder, search, orgID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve triggers: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -713,7 +716,8 @@ func (h *TriggerAPIHandler) GetTriggerExecutionLogsHandler(w http.ResponseWriter
 	}
 
 	// 获取执行日志
-	logs, total, err := h.logRepo.GetAllPaginated(page, limit, triggerID, status, startDate, endDate)
+	orgID := GetCurrentOrgID(r)
+	logs, total, err := h.logRepo.GetAllPaginated(page, limit, triggerID, status, startDate, endDate, orgID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve execution logs: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -747,22 +751,23 @@ func (h *TriggerAPIHandler) GetTriggerExecutionLogsHandler(w http.ResponseWriter
 // @Failure 500 {object} ErrorResponse
 // @Router /api/trigger-stats [get]
 func (h *TriggerAPIHandler) GetTriggerStatsHandler(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
 	// 获取触发器总数
-	totalCount, err := h.triggerRepo.GetCount()
+	totalCount, err := h.triggerRepo.GetCount(orgID)
 	if err != nil {
 		http.Error(w, "Failed to get trigger count: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// 获取启用的触发器数量
-	enabledCount, err := h.triggerRepo.GetCountByStatus(models.TriggerStatusEnabled)
+	enabledCount, err := h.triggerRepo.GetCountByStatus(models.TriggerStatusEnabled, orgID)
 	if err != nil {
 		http.Error(w, "Failed to get enabled trigger count: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// 获取禁用的触发器数量
-	disabledCount, err := h.triggerRepo.GetCountByStatus(models.TriggerStatusDisabled)
+	disabledCount, err := h.triggerRepo.GetCountByStatus(models.TriggerStatusDisabled, orgID)
 	if err != nil {
 		http.Error(w, "Failed to get disabled trigger count: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -1489,7 +1494,8 @@ func (h *TriggerAPIHandler) GetTriggersV2Handler(w http.ResponseWriter, r *http.
 	search = r.URL.Query().Get("search")
 
 	// 获取分页数据
-	triggers, total, err := h.triggerRepo.GetAllPaginated(page, limit, sortBy, sortOrder, search)
+	orgID := GetCurrentOrgID(r)
+	triggers, total, err := h.triggerRepo.GetAllPaginated(page, limit, sortBy, sortOrder, search, orgID)
 	if err != nil {
 		http.Error(w, "Failed to retrieve triggers: "+err.Error(), http.StatusInternalServerError)
 		return

@@ -29,6 +29,31 @@
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
+
+    /* Sidebar variables */
+    --sidebar-bg: 255 255 255;
+    --sidebar-text: 107 114 128;
+    --sidebar-text-hover: 17 24 39;
+    --sidebar-active: 37 99 235;
+    --sidebar-active-bg: 239 246 255;
+    --sidebar-hover-bg: 243 244 246;
+    --sidebar-border: 229 231 235;
+
+    /* Button icon variables */
+    --btn-icon-bg: 229 231 235;
+    --btn-icon-text: 75 85 99;
+    --btn-icon-hover-bg: 209 213 219;
+
+    /* Input variables */
+    --input-bg: 255 255 255;
+    --input-border: 209 213 219;
+    --input-focus: 59 130 246;
+    --input-placeholder: 156 163 175;
+
+    /* Card variables */
+    --card-bg: 255 255 255;
+    --card-border: 229 231 235;
+    --card-hover-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
   }
 
   .dark {
@@ -56,12 +81,173 @@
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
+
+    /* Sidebar variables */
+    --sidebar-bg: 17 24 39;
+    --sidebar-text: 156 163 175;
+    --sidebar-text-hover: 229 231 235;
+    --sidebar-active: 96 165 250;
+    --sidebar-active-bg: 30 58 138;
+    --sidebar-hover-bg: 31 41 55;
+    --sidebar-border: 55 65 81;
+
+    /* Button icon variables */
+    --btn-icon-bg: 55 65 81;
+    --btn-icon-text: 209 213 219;
+    --btn-icon-hover-bg: 75 85 99;
+
+    /* Input variables */
+    --input-bg: 55 65 81;
+    --input-border: 75 85 99;
+    --input-focus: 96 165 250;
+    --input-placeholder: 107 114 128;
+
+    /* Card variables */
+    --card-bg: 31 41 55;
+    --card-border: 55 65 81;
+    --card-hover-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+  }
+
+  .sakura {
+    --background: 350 100% 98%;
+    --foreground: 330 80% 20%;
+    --card: 350 100% 98%;
+    --card-foreground: 330 80% 20%;
+    --popover: 350 100% 98%;
+    --popover-foreground: 330 80% 20%;
+    --primary: 330 80% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 340 100% 95%;
+    --secondary-foreground: 330 80% 30%;
+    --muted: 340 60% 93%;
+    --muted-foreground: 330 30% 45%;
+    --accent: 340 100% 92%;
+    --accent-foreground: 330 80% 30%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 340 60% 88%;
+    --input: 340 60% 88%;
+    --ring: 330 80% 55%;
+    --chart-1: 330 80% 55%;
+    --chart-2: 340 70% 65%;
+    --chart-3: 350 60% 75%;
+    --chart-4: 320 80% 60%;
+    --chart-5: 310 70% 55%;
+
+    /* Sidebar variables */
+    --sidebar-bg: 255 238 242;
+    --sidebar-text: 131 24 67;
+    --sidebar-text-hover: 131 24 40;
+    --sidebar-active: 236 72 153;
+    --sidebar-active-bg: 252 231 243;
+    --sidebar-hover-bg: 253 242 248;
+    --sidebar-border: 251 207 232;
+
+    /* Button icon variables */
+    --btn-icon-bg: 252 231 243;
+    --btn-icon-text: 157 23 77;
+    --btn-icon-hover-bg: 251 207 232;
+
+    /* Input variables */
+    --input-bg: 255 245 247;
+    --input-border: 251 207 232;
+    --input-focus: 236 72 153;
+    --input-placeholder: 190 130 160;
+
+    /* Card variables */
+    --card-bg: 255 245 247;
+    --card-border: 251 207 232;
+    --card-hover-shadow: 0 10px 15px -3px rgb(236 72 153 / 0.15);
   }
 }
 
 @layer base {
   * {
     @apply border-gray-200 dark:border-gray-700;
+  }
+
+  /* Sakura theme color overrides */
+  .sakura * {
+    @apply border-pink-200;
+  }
+
+  /* Override blue colors with pink for sakura theme */
+  .sakura .text-blue-600,
+  .sakura .text-blue-500,
+  .sakura .text-blue-400 {
+    color: rgb(236 72 153) !important;
+  }
+
+  .sakura .text-primary-600,
+  .sakura .text-primary-500,
+  .sakura .text-primary-400 {
+    color: rgb(236 72 153) !important;
+  }
+
+  .sakura .bg-blue-600,
+  .sakura .bg-blue-500,
+  .sakura .bg-primary-600,
+  .sakura .bg-primary-500 {
+    background-color: rgb(236 72 153) !important;
+  }
+
+  .sakura .bg-blue-100,
+  .sakura .bg-blue-50 {
+    background-color: rgb(252 231 243) !important;
+  }
+
+  .sakura .from-blue-500,
+  .sakura .from-blue-600 {
+    --tw-gradient-from: rgb(236 72 153) !important;
+  }
+
+  .sakura .to-indigo-500,
+  .sakura .to-indigo-600 {
+    --tw-gradient-to: rgb(244 114 182) !important;
+  }
+
+  .sakura .from-blue-500\/10,
+  .sakura .from-blue-500\/15 {
+    --tw-gradient-from: rgb(236 72 153 / 0.1) !important;
+  }
+
+  .sakura .to-indigo-500\/10,
+  .sakura .to-indigo-500\/15 {
+    --tw-gradient-to: rgb(244 114 182 / 0.1) !important;
+  }
+
+  .sakura .ring-blue-500,
+  .sakura .ring-primary-500 {
+    --tw-ring-color: rgb(236 72 153) !important;
+  }
+
+  .sakura .border-blue-500,
+  .sakura .border-blue-600,
+  .sakura .border-primary-500,
+  .sakura .border-primary-600 {
+    border-color: rgb(236 72 153) !important;
+  }
+
+  .sakura .focus\:border-blue-500:focus,
+  .sakura .focus\:border-primary-500:focus {
+    border-color: rgb(236 72 153) !important;
+  }
+
+  .sakura .focus\:ring-blue-500:focus,
+  .sakura .focus\:ring-primary-500:focus {
+    --tw-ring-color: rgb(236 72 153) !important;
+  }
+
+  .sakura .hover\:bg-blue-600:hover,
+  .sakura .hover\:bg-blue-700:hover,
+  .sakura .hover\:bg-primary-600:hover,
+  .sakura .hover\:bg-primary-700:hover {
+    background-color: rgb(219 39 119) !important;
+  }
+
+  /* Sidebar active state for sakura */
+  .sakura .bg-gradient-to-r.from-blue-500\/10 {
+    background: linear-gradient(to right, rgb(236 72 153 / 0.1), rgb(244 114 182 / 0.1)) !important;
   }
 
   body {
@@ -89,6 +275,7 @@
 }
 
 @layer components {
+
   /* Glass morphism effect */
   .glass {
     @apply backdrop-blur-md bg-white/10 dark:bg-gray-900/10 border border-white/20 dark:border-gray-800/20;
@@ -146,12 +333,13 @@
 }
 
 @layer utilities {
+
   /* Hide scrollbar but keep functionality */
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
-  
+
   .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
@@ -191,12 +379,15 @@
     0% {
       transform: translate(0px, 0px) scale(1);
     }
+
     33% {
       transform: translate(30px, -50px) scale(1.1);
     }
+
     66% {
       transform: translate(-20px, 20px) scale(0.9);
     }
+
     100% {
       transform: translate(0px, 0px) scale(1);
     }
@@ -212,6 +403,7 @@
       opacity: 0;
       transform: translateY(10px);
     }
+
     to {
       opacity: 1;
       transform: translateY(0);
@@ -228,6 +420,7 @@
       opacity: 0;
       transform: translateX(20px);
     }
+
     to {
       opacity: 1;
       transform: translateX(0);
@@ -239,6 +432,7 @@
       opacity: 1;
       transform: translateX(0);
     }
+
     to {
       opacity: 0;
       transform: translateX(-20px);
@@ -255,15 +449,20 @@
 
   /* 邮箱图标跳动动画 */
   @keyframes bounce-rotate {
-    0%, 100% {
+
+    0%,
+    100% {
       transform: translateY(0) rotate(0deg) scale(1);
     }
+
     25% {
       transform: translateY(-10px) rotate(-5deg) scale(1.05);
     }
+
     50% {
       transform: translateY(-20px) rotate(5deg) scale(1.1);
     }
+
     75% {
       transform: translateY(-10px) rotate(-3deg) scale(1.05);
     }
@@ -278,20 +477,19 @@
     0% {
       background-position: -200% center;
     }
+
     100% {
       background-position: 200% center;
     }
   }
 
   .text-shimmer {
-    background: linear-gradient(
-      120deg,
-      transparent 20%,
-      rgba(255, 255, 255, 0.3) 40%,
-      rgba(255, 255, 255, 0.5) 50%,
-      rgba(255, 255, 255, 0.3) 60%,
-      transparent 80%
-    );
+    background: linear-gradient(120deg,
+        transparent 20%,
+        rgba(255, 255, 255, 0.3) 40%,
+        rgba(255, 255, 255, 0.5) 50%,
+        rgba(255, 255, 255, 0.3) 60%,
+        transparent 80%);
     background-size: 200% 100%;
     background-clip: text;
     -webkit-background-clip: text;
@@ -303,26 +501,26 @@
     0% {
       background-position: 0% 50%;
     }
+
     50% {
       background-position: 100% 50%;
     }
+
     100% {
       background-position: 0% 50%;
     }
   }
 
   .text-rainbow {
-    background: linear-gradient(
-      90deg,
-      #ff0080,
-      #ff8c00,
-      #ffd700,
-      #00ff00,
-      #00ffff,
-      #0080ff,
-      #8000ff,
-      #ff0080
-    );
+    background: linear-gradient(90deg,
+        #ff0080,
+        #ff8c00,
+        #ffd700,
+        #00ff00,
+        #00ffff,
+        #0080ff,
+        #8000ff,
+        #ff0080);
     background-size: 200% 100%;
     background-clip: text;
     -webkit-background-clip: text;
@@ -336,10 +534,12 @@
       transform: scale(0.95);
       box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
     }
+
     70% {
       transform: scale(1);
       box-shadow: 0 0 0 20px rgba(59, 130, 246, 0);
     }
+
     100% {
       transform: scale(0.95);
       box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
@@ -352,9 +552,12 @@
 
   /* 浮动动画 */
   @keyframes float {
-    0%, 100% {
+
+    0%,
+    100% {
       transform: translateY(0px);
     }
+
     50% {
       transform: translateY(-10px);
     }
@@ -366,10 +569,13 @@
 
   /* 闪烁星星效果 */
   @keyframes sparkle {
-    0%, 100% {
+
+    0%,
+    100% {
       opacity: 0;
       transform: scale(0);
     }
+
     50% {
       opacity: 1;
       transform: scale(1);
@@ -390,9 +596,11 @@
     0% {
       background-position: 0% 50%;
     }
+
     50% {
       background-position: 100% 50%;
     }
+
     100% {
       background-position: 0% 50%;
     }
@@ -416,7 +624,263 @@
   .dark .gradient-border-content {
     background: rgb(17 24 39);
   }
+
+  /* 可拖拽调整面板样式 */
+  .resizable-handle {
+    @apply absolute w-1 cursor-col-resize transition-colors duration-200;
+    @apply bg-transparent hover:bg-blue-400;
+  }
+
+  .resizable-handle:hover::after {
+    content: '';
+    @apply absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2;
+    @apply w-4 h-12 rounded-full bg-blue-400 opacity-50;
+  }
+
+  .resizable-handle-active {
+    @apply bg-blue-500;
+  }
+
+  /* 邮件管理器增强样式 */
+  .email-account-card {
+    @apply rounded-xl p-3 cursor-pointer transition-all duration-200;
+    @apply hover:shadow-md hover:-translate-y-0.5;
+    @apply focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2;
+  }
+
+  .email-account-card-selected {
+    @apply border-2 shadow-md;
+  }
+
+  .email-account-card:hover {
+    @apply transform-gpu;
+  }
+
+  /* 搜索框增强样式 */
+  .search-input-enhanced {
+    @apply w-full rounded-lg border border-gray-300 bg-white;
+    @apply py-2 pl-9 pr-8 text-sm;
+    @apply focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500;
+    @apply dark:border-gray-600 dark:bg-gray-800 dark:text-white;
+    @apply placeholder:text-gray-400;
+    @apply transition-all duration-200;
+  }
+
+  .search-input-enhanced:focus {
+    @apply shadow-lg shadow-blue-500/10;
+  }
+
+  /* 布局菜单动画 */
+  @keyframes layout-menu-enter {
+    from {
+      opacity: 0;
+      transform: translateY(-10px) scale(0.95);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  .layout-menu-enter {
+    animation: layout-menu-enter 0.2s ease-out;
+  }
+
+  /* 响应式面板过渡 */
+  .panel-transition {
+    @apply transition-all duration-300 ease-in-out;
+  }
+
+  /* 移动端滑动面板 */
+  @keyframes slide-in-left {
+    from {
+      transform: translateX(-100%);
+      opacity: 0;
+    }
+
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+
+  @keyframes slide-in-right {
+    from {
+      transform: translateX(100%);
+      opacity: 0;
+    }
+
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
+
+  .slide-in-left {
+    animation: slide-in-left 0.3s ease-out;
+  }
+
+  .slide-in-right {
+    animation: slide-in-right 0.3s ease-out;
+  }
+
+  /* 邮件账户列表项动画 */
+  @keyframes account-item-enter {
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .account-item-enter {
+    animation: account-item-enter 0.3s ease-out forwards;
+  }
+
+  /* 玻璃态卡片效果 */
+  .glass-card {
+    @apply backdrop-blur-md bg-white/80 dark:bg-gray-800/80;
+    @apply border border-white/20 dark:border-gray-700/20;
+    @apply shadow-lg shadow-gray-200/50 dark:shadow-gray-900/50;
+  }
+
+  /* 优化的滚动条样式 - 邮件管理器专用 */
+  .mailbox-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .mailbox-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  .mailbox-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 dark:bg-gray-600 rounded-full;
+    @apply transition-colors duration-200;
+  }
+
+  .mailbox-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400 dark:bg-gray-500;
+  }
+
+  /* 面板阴影效果 */
+  .panel-shadow-left {
+    box-shadow: inset -8px 0 8px -8px rgba(0, 0, 0, 0.08);
+  }
+
+  .panel-shadow-right {
+    box-shadow: inset 8px 0 8px -8px rgba(0, 0, 0, 0.08);
+  }
+
+  .dark .panel-shadow-left {
+    box-shadow: inset -8px 0 8px -8px rgba(0, 0, 0, 0.3);
+  }
+
+  .dark .panel-shadow-right {
+    box-shadow: inset 8px 0 8px -8px rgba(0, 0, 0, 0.3);
+  }
+
+  /* 快捷键提示样式 */
+  .keyboard-shortcut {
+    @apply inline-flex items-center justify-center px-1.5 py-0.5;
+    @apply text-xs font-mono bg-gray-100 dark:bg-gray-700;
+    @apply text-gray-500 dark:text-gray-400;
+    @apply rounded border border-gray-200 dark:border-gray-600;
+    @apply shadow-sm;
+  }
+
+  /* 状态指示器脉冲效果 */
+  @keyframes status-pulse {
+
+    0%,
+    100% {
+      opacity: 1;
+    }
+
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  .status-indicator-pulse {
+    animation: status-pulse 2s ease-in-out infinite;
+  }
+
+  /* 拖拽指示器样式 */
+  .drag-indicator {
+    @apply flex items-center justify-center;
+    @apply w-4 h-12 rounded-full;
+    @apply bg-gray-300 dark:bg-gray-600;
+    @apply transition-all duration-200;
+  }
+
+  .drag-indicator-active {
+    @apply bg-blue-500 scale-110;
+  }
+
+  .drag-indicator:hover {
+    @apply bg-blue-400;
+  }
+
+  /* 全局搜索框快捷键聚焦动画 */
+  @keyframes glow {
+
+    0%,
+    100% {
+      opacity: 0.75;
+    }
+
+    50% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes search-highlight {
+    0% {
+      transform: scale(1);
+      box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+    }
+
+    50% {
+      transform: scale(1.02);
+      box-shadow: 0 0 20px 4px rgba(59, 130, 246, 0.5);
+    }
+
+    100% {
+      transform: scale(1);
+      box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+    }
+  }
+
+  .animate-glow {
+    animation: glow 0.6s ease-in-out;
+  }
+
+  .animate-search-highlight {
+    animation: search-highlight 0.6s ease-out;
+  }
+
+  /* 单次脉冲动画 */
+  @keyframes pulse-once {
+    0% {
+      transform: scale(1);
+    }
+
+    50% {
+      transform: scale(1.02);
+    }
+
+    100% {
+      transform: scale(1);
+    }
+  }
+
+  .animate-pulse-once {
+    animation: pulse-once 0.4s ease-out;
+  }
 }
-
-
-

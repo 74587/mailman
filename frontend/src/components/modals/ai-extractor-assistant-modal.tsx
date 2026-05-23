@@ -1,9 +1,24 @@
+'use client'
+
 import React, { useState, useEffect } from 'react'
-import { X, Sparkles, Copy, Check } from 'lucide-react'
+import { Sparkles, Copy, Check, Loader2 } from 'lucide-react'
 import { openAIService } from '@/services/openai.service'
-import { toast } from 'react-hot-toast'
+import { toast } from 'sonner'
 import type { OpenAIConfig } from '@/types/openai'
 import type { ExtractorConfig } from '@/types'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalFooter,
+    ModalTitle,
+    ModalDescription
+} from '@/components/ui/modal'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface AIExtractorAssistantModalProps {
     isOpen: boolean
@@ -45,8 +60,6 @@ export function AIExtractorAssistantModal({
         }
     }
 
-    if (!isOpen) return null
-
     const handleGenerate = async () => {
         if (!prompt.trim()) {
             toast.error('请输入提示词')
@@ -85,7 +98,6 @@ export function AIExtractorAssistantModal({
                 if (Array.isArray(jsonData)) {
                     configs = jsonData.map(item => {
                         const field = item.field || 'ALL'
-                        // 确保 field 是有效的类型
                         const validFields = ['ALL', 'from', 'to', 'cc', 'subject', 'body', 'html_body', 'headers']
                         const validField = validFields.includes(field) ? field : 'ALL'
 
@@ -151,51 +163,46 @@ export function AIExtractorAssistantModal({
     }
 
     return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-black dark:bg-opacity-70 flex items-center justify-center z-50">
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-3xl max-h-[85vh] overflow-hidden">
-                <div className="flex items-center justify-between p-6 border-b dark:border-gray-700">
+        <Modal open={isOpen} onOpenChange={(open) => !open && onClose()}>
+            <ModalContent size="2xl" className="z-[70]" overlayClassName="z-[70]">
+                <ModalHeader>
                     <div className="flex items-center space-x-2">
                         <Sparkles className="h-5 w-5 text-purple-600 dark:text-purple-400" />
-                        <h2 className="text-xl font-semibold dark:text-white">AI 生成提取规则</h2>
+                        <ModalTitle>AI 生成提取规则</ModalTitle>
                     </div>
-                    <button
-                        onClick={onClose}
-                        className="text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-                    >
-                        <X className="h-5 w-5" />
-                    </button>
-                </div>
+                    <ModalDescription>
+                        使用 AI 自动生成邮件内容提取规则
+                    </ModalDescription>
+                </ModalHeader>
 
-                <div className="p-6 space-y-4 overflow-y-auto max-h-[calc(85vh-180px)]">
+                <ModalBody className="space-y-4">
                     {/* AI 配置选择 */}
                     {configs.length > 0 && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                                AI 配置
-                            </label>
-                            <select
-                                value={selectedConfigId || ''}
-                                onChange={(e) => setSelectedConfigId(Number(e.target.value))}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:focus:ring-purple-500"
+                        <div className="space-y-2">
+                            <Label>AI 配置</Label>
+                            <Select
+                                value={selectedConfigId?.toString() || ''}
+                                onValueChange={(value) => setSelectedConfigId(Number(value))}
                             >
-                                <option value="">选择 AI 配置</option>
-                                {configs.map((config) => (
-                                    <option key={config.id} value={config.id}>
-                                        {config.name} ({config.model})
-                                    </option>
-                                ))}
-                            </select>
+                                <SelectTrigger>
+                                    <SelectValue placeholder="选择 AI 配置" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {configs.map((config) => (
+                                        <SelectItem key={config.id} value={config.id.toString()}>
+                                            {config.name} ({config.model})
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                     )}
 
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                            请描述您想要提取的内容
-                        </label>
-                        <textarea
+                    <div className="space-y-2">
+                        <Label>请描述您想要提取的内容</Label>
+                        <Textarea
                             value={prompt}
                             onChange={(e) => setPrompt(e.target.value)}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:focus:ring-purple-500"
                             rows={4}
                             placeholder="例如：提取邮件中的日期时间信息、订单号、金额等"
                         />
@@ -205,20 +212,22 @@ export function AIExtractorAssistantModal({
                         <div className="border-t dark:border-gray-700 pt-4">
                             <div className="flex items-center justify-between mb-3">
                                 <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300">生成的提取规则</h3>
-                                <button
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
                                     onClick={handleCopy}
-                                    className="flex items-center space-x-1 text-sm text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                                    className="gap-1"
                                 >
                                     {copied ? (
                                         <Check className="h-4 w-4 text-green-600" />
                                     ) : (
                                         <Copy className="h-4 w-4" />
                                     )}
-                                    <span>{copied ? '已复制' : '复制JSON'}</span>
-                                </button>
+                                    {copied ? '已复制' : '复制JSON'}
+                                </Button>
                             </div>
 
-                            <div className="space-y-3">
+                            <div className="space-y-3 max-h-60 overflow-y-auto">
                                 {generatedConfigs.map((config, index) => (
                                     <div key={index} className="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600">
                                         <div className="grid grid-cols-2 gap-3 mb-3">
@@ -261,42 +270,36 @@ export function AIExtractorAssistantModal({
                             </div>
                         </div>
                     )}
-                </div>
+                </ModalBody>
 
-                <div className="flex justify-end space-x-3 p-6 border-t dark:border-gray-700">
-                    <button
-                        onClick={onClose}
-                        className="px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-                    >
+                <ModalFooter>
+                    <Button variant="outline" onClick={onClose}>
                         取消
-                    </button>
+                    </Button>
                     {generatedConfigs.length > 0 && (
-                        <button
-                            onClick={handleUseContent}
-                            className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 dark:bg-purple-700 dark:hover:bg-purple-800"
-                        >
+                        <Button onClick={handleUseContent} variant="secondary">
                             使用这些规则
-                        </button>
+                        </Button>
                     )}
-                    <button
+                    <Button
                         onClick={handleGenerate}
                         disabled={isGenerating || !prompt.trim()}
-                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2 dark:bg-blue-700 dark:hover:bg-blue-800"
+                        className="gap-2"
                     >
                         {isGenerating ? (
                             <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                                <span>生成中...</span>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                生成中...
                             </>
                         ) : (
                             <>
                                 <Sparkles className="h-4 w-4" />
-                                <span>生成</span>
+                                生成
                             </>
                         )}
-                    </button>
-                </div>
-            </div>
-        </div>
+                    </Button>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
     )
 }

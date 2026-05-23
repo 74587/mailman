@@ -16,20 +16,20 @@ export function TriggerStats({ triggerId, startDate, endDate, onRefresh }: Trigg
   const [stats, setStats] = useState<TriggerStatistics | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  
+
   // 加载统计数据
   useEffect(() => {
     loadStats()
   }, [triggerId, startDate, endDate])
-  
+
   const loadStats = async () => {
     try {
       setIsLoading(true)
       setError(null)
-      
+
       const statistics = await triggerService.getTriggerStatistics(triggerId, startDate, endDate)
       setStats(statistics)
-      
+
       if (onRefresh) {
         onRefresh()
       }
@@ -40,12 +40,12 @@ export function TriggerStats({ triggerId, startDate, endDate, onRefresh }: Trigg
       setIsLoading(false)
     }
   }
-  
-  // 格式化百分比
+
+  // 格式化百分比 - API返回的是百分比值 (0-100)
   const formatPercentage = (value: number) => {
-    return `${(value * 100).toFixed(1)}%`
+    return `${value.toFixed(1)}%`
   }
-  
+
   // 格式化执行时间
   const formatExecutionTime = (ms: number) => {
     if (ms < 1000) {
@@ -54,7 +54,7 @@ export function TriggerStats({ triggerId, startDate, endDate, onRefresh }: Trigg
       return `${(ms / 1000).toFixed(2)}s`
     }
   }
-  
+
   return (
     <div className="space-y-4">
       {error && (
@@ -62,7 +62,7 @@ export function TriggerStats({ triggerId, startDate, endDate, onRefresh }: Trigg
           {error}
         </div>
       )}
-      
+
       {isLoading ? (
         <Card>
           <CardContent className="p-12 text-center">
@@ -81,7 +81,7 @@ export function TriggerStats({ triggerId, startDate, endDate, onRefresh }: Trigg
               <div className="text-2xl font-bold">{stats.total_executions}</div>
             </CardContent>
           </Card>
-          
+
           {/* 成功率 */}
           <Card>
             <CardHeader className="pb-2">
@@ -92,14 +92,14 @@ export function TriggerStats({ triggerId, startDate, endDate, onRefresh }: Trigg
                 {formatPercentage(stats.success_rate)}
               </div>
               <div className="mt-2 h-2 bg-gray-200 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-green-600" 
-                  style={{ width: `${stats.success_rate * 100}%` }}
+                <div
+                  className="h-full bg-green-600"
+                  style={{ width: `${stats.success_rate}%` }}
                 ></div>
               </div>
             </CardContent>
           </Card>
-          
+
           {/* 平均执行时间 */}
           <Card>
             <CardHeader className="pb-2">
@@ -111,7 +111,7 @@ export function TriggerStats({ triggerId, startDate, endDate, onRefresh }: Trigg
               </div>
             </CardContent>
           </Card>
-          
+
           {/* 执行结果分布 */}
           <Card>
             <CardHeader className="pb-2">
@@ -124,30 +124,30 @@ export function TriggerStats({ triggerId, startDate, endDate, onRefresh }: Trigg
                   <span className="text-sm font-medium">{stats.success_executions}</span>
                 </div>
                 <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-green-600" 
+                  <div
+                    className="h-full bg-green-600"
                     style={{ width: `${stats.total_executions > 0 ? (stats.success_executions / stats.total_executions) * 100 : 0}%` }}
                   ></div>
                 </div>
-                
+
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-red-600">失败</span>
                   <span className="text-sm font-medium">{stats.failed_executions}</span>
                 </div>
                 <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-red-600" 
+                  <div
+                    className="h-full bg-red-600"
                     style={{ width: `${stats.total_executions > 0 ? (stats.failed_executions / stats.total_executions) * 100 : 0}%` }}
                   ></div>
                 </div>
-                
+
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-yellow-600">部分成功</span>
                   <span className="text-sm font-medium">{stats.partial_executions}</span>
                 </div>
                 <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-yellow-600" 
+                  <div
+                    className="h-full bg-yellow-600"
                     style={{ width: `${stats.total_executions > 0 ? (stats.partial_executions / stats.total_executions) * 100 : 0}%` }}
                   ></div>
                 </div>

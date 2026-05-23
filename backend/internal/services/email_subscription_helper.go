@@ -142,6 +142,16 @@ func (m *SubscriptionManager) generateSubscriptionFingerprint(req SubscribeReque
 	// 订阅类型
 	parts = append(parts, string(req.Type))
 
+	// 触发器 ID（确保每个触发器有独立订阅）
+	if req.Metadata != nil {
+		if triggerID, ok := req.Metadata["triggerID"]; ok {
+			parts = append(parts, fmt.Sprintf("trigger:%v", triggerID))
+		}
+		if triggerName, ok := req.Metadata["triggerName"]; ok {
+			parts = append(parts, fmt.Sprintf("name:%v", triggerName))
+		}
+	}
+
 	// 邮箱地址（使用真实邮箱）
 	realMailbox := m.resolveRealMailbox(req.Filter.EmailAddress)
 	parts = append(parts, realMailbox)
@@ -212,8 +222,9 @@ func (m *SubscriptionManager) generateSubscriptionFingerprint(req SubscribeReque
 func (m *SubscriptionManager) generateSubscriptionFingerprintFromSub(sub *Subscription) string {
 	// 构建一个临时的SubscribeRequest来复用指纹生成逻辑
 	req := SubscribeRequest{
-		Type:   sub.Type,
-		Filter: sub.Filter,
+		Type:     sub.Type,
+		Filter:   sub.Filter,
+		Metadata: sub.Metadata, // 包含触发器元数据
 	}
 	return m.generateSubscriptionFingerprint(req)
 }

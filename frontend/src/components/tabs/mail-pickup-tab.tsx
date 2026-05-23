@@ -1,4 +1,5 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import {
@@ -155,23 +156,23 @@ export default function MailPickupTab() {
         const savedMonitoredEmails = getMonitoredEmailsFromStorage();
 
         if (savedEmailState) {
-            console.log('[MailPickupTab] 从localStorage恢复选中的邮箱:', savedEmailState);
+            logger.debug('[MailPickupTab] 从localStorage恢复选中的邮箱:', savedEmailState);
 
             // 如果有保存的监控邮箱列表，先恢复它
             if (savedMonitoredEmails && savedMonitoredEmails.length > 0) {
-                console.log('[MailPickupTab] 从localStorage恢复监控邮箱列表');
+                logger.debug('[MailPickupTab] 从localStorage恢复监控邮箱列表');
                 setMonitoredEmails(savedMonitoredEmails);
             } else {
                 // 如果没有保存的列表，但有选中的邮箱，确保它被添加
                 const emailExists = monitoredEmails.some(m => m.email === savedEmailState.email);
                 if (!emailExists) {
-                    console.log('[MailPickupTab] 添加已保存的邮箱到监控列表:', savedEmailState.email);
+                    logger.debug('[MailPickupTab] 添加已保存的邮箱到监控列表:', savedEmailState.email);
                     addMonitoredEmail(savedEmailState.email);
                 }
             }
 
             // 恢复选中状态
-            console.log('[MailPickupTab] 恢复选中邮箱ID:', savedEmailState.id);
+            logger.debug('[MailPickupTab] 恢复选中邮箱ID:', savedEmailState.id);
             setSelectedEmailId(savedEmailState.id);
 
             // 设置跳过标记，避免被其他操作覆盖
@@ -187,7 +188,7 @@ export default function MailPickupTab() {
         if (selectedEmailId && !skipEmailSelection) {
             const selectedEmail = monitoredEmails.find(m => m.id === selectedEmailId);
             if (selectedEmail) {
-                console.log('[MailPickupTab] 选中邮箱变化，保存到localStorage:', selectedEmail.email);
+                logger.debug('[MailPickupTab] 选中邮箱变化，保存到localStorage:', selectedEmail.email);
                 saveEmailStateToStorage(selectedEmailId, selectedEmail.email, monitoredEmails);
             }
         }
@@ -234,7 +235,7 @@ export default function MailPickupTab() {
                 timestamp: new Date().getTime()
             }));
 
-            console.log('[MailPickupTab] 保存邮箱状态到localStorage:', emailId, emailAddress);
+            logger.debug('[MailPickupTab] 保存邮箱状态到localStorage:', emailId, emailAddress);
         } catch (error) {
             console.error('[MailPickupTab] 无法保存邮箱状态到localStorage:', error);
         }
@@ -289,12 +290,12 @@ export default function MailPickupTab() {
 
     // 处理从账户管理页面切换过来的数据
     const handleTabSwitchData = useCallback((data: any) => {
-        console.log('[MailPickupTab] 回调函数收到数据:', data);
+        logger.debug('[MailPickupTab] 回调函数收到数据:', data);
 
         if (data) {
             // 先检查数据是否已有processed标记
             if (data.__processed === true) {
-                console.log('[MailPickupTab] 数据已被主页面标记为已处理，跳过');
+                logger.debug('[MailPickupTab] 数据已被主页面标记为已处理，跳过');
                 return;
             }
 
@@ -305,25 +306,25 @@ export default function MailPickupTab() {
 
             // 在全局对象中检查是否处理过
             if (processedDataRef.current.has(dataId)) {
-                console.log('[MailPickupTab] 数据已全局处理过，跳过:', dataId);
+                logger.debug('[MailPickupTab] 数据已全局处理过，跳过:', dataId);
                 return;
             }
 
             // 标记为已全局处理
             processedDataRef.current.add(dataId);
-            console.log('[MailPickupTab] 标记数据为已处理:', dataId);
+            logger.debug('[MailPickupTab] 标记数据为已处理:', dataId);
 
             // 如果传入了账户邮箱，添加到监控列表
             if (accountEmail) {
-                console.log('[MailPickupTab] 收到账户邮箱:', accountEmail);
+                logger.debug('[MailPickupTab] 收到账户邮箱:', accountEmail);
 
                 // 使用增强版addMonitoredEmail直接获取ID
                 // 如果邮箱已存在，会返回现有ID；如果不存在，会添加并返回新ID
                 const emailId = addMonitoredEmail(accountEmail);
-                console.log('[MailPickupTab] 添加/获取邮箱ID:', emailId);
+                logger.debug('[MailPickupTab] 添加/获取邮箱ID:', emailId);
 
                 // 直接设置为选中状态，不需要setTimeout
-                console.log('[MailPickupTab] 设置邮箱为选中状态:', emailId);
+                logger.debug('[MailPickupTab] 设置邮箱为选中状态:', emailId);
                 setSelectedEmailId(emailId);
 
                 // 同时保存到localStorage，确保组件重新挂载时能恢复状态
@@ -335,7 +336,7 @@ export default function MailPickupTab() {
 
             // 如果传入了域名，设置为选中的域名
             if (domain && accountDomains.includes(domain)) {
-                console.log('[MailPickupTab] 设置域名:', domain);
+                logger.debug('[MailPickupTab] 设置域名:', domain);
                 setSelectedDomain(domain);
                 setUseDomain(true);
             }
@@ -343,7 +344,7 @@ export default function MailPickupTab() {
             // 5秒后清除这个ID，以便将来可以再次处理相同的数据
             setTimeout(() => {
                 processedDataRef.current.delete(dataId);
-                console.log('[MailPickupTab] 已清除处理记录:', dataId);
+                logger.debug('[MailPickupTab] 已清除处理记录:', dataId);
             }, 5000);
         }
     }, [monitoredEmails, accountDomains]);
@@ -352,11 +353,11 @@ export default function MailPickupTab() {
     useEffect(() => {
         // 避免重复注册
         if ((window as any).__mailPickupCallbackRegistered) {
-            console.log('[MailPickupTab] 回调已注册，跳过重复注册');
+            logger.debug('[MailPickupTab] 回调已注册，跳过重复注册');
             return;
         }
 
-        console.log('[MailPickupTab] 首次注册onReady回调函数');
+        logger.debug('[MailPickupTab] 首次注册onReady回调函数');
 
         // 标记已注册
         (window as any).__mailPickupCallbackRegistered = true;
@@ -372,11 +373,11 @@ export default function MailPickupTab() {
 
         return () => {
             // 卸载组件时不立即注销回调，避免短时间内重复注册和注销
-            console.log('[MailPickupTab] 组件卸载，但保留回调注册状态');
+            logger.debug('[MailPickupTab] 组件卸载，但保留回调注册状态');
 
             // 设置延迟清理，给足够时间让组件稳定下来
             setTimeout(() => {
-                console.log('[MailPickupTab] 延迟清理回调状态');
+                logger.debug('[MailPickupTab] 延迟清理回调状态');
                 (window as any).__mailPickupCallbackRegistered = false;
             }, 2000);
         };
@@ -479,12 +480,12 @@ export default function MailPickupTab() {
 
     // 添加监控邮箱（增强版，防止重复添加，并保存到localStorage）
     const addMonitoredEmail = (email: string) => {
-        console.log(`[MailPickupTab] 尝试添加邮箱: ${email}`);
+        logger.debug(`[MailPickupTab] 尝试添加邮箱: ${email}`);
 
         // 首先检查这个邮箱是否已经在监控列表中
         const existingEmail = monitoredEmails.find(m => m.email === email);
         if (existingEmail) {
-            console.log(`[MailPickupTab] 邮箱 ${email} 已存在，ID: ${existingEmail.id}，不重复添加`);
+            logger.debug(`[MailPickupTab] 邮箱 ${email} 已存在，ID: ${existingEmail.id}，不重复添加`);
 
             // 更新到localStorage，确保状态持久化
             saveEmailStateToStorage(existingEmail.id, email, monitoredEmails);
@@ -494,7 +495,7 @@ export default function MailPickupTab() {
 
         // 创建新邮箱
         const id = Date.now().toString();
-        console.log(`[MailPickupTab] 添加新邮箱: ${email}，ID: ${id}`);
+        logger.debug(`[MailPickupTab] 添加新邮箱: ${email}，ID: ${id}`);
         const newEmail: MonitoredEmail = {
             id,
             email,
@@ -523,14 +524,14 @@ export default function MailPickupTab() {
 
     // 从现有账户添加
     const addFromAccount = (accountEmail: string) => {
-        console.log(`[MailPickupTab] 从账户添加邮箱: ${accountEmail}`);
+        logger.debug(`[MailPickupTab] 从账户添加邮箱: ${accountEmail}`);
 
         // 获取邮箱ID（如果已存在则返回现有ID，否则添加并返回新ID）
         // addMonitoredEmail会自动保存到localStorage
         const emailId = addMonitoredEmail(accountEmail);
 
         // 设置为选中状态
-        console.log(`[MailPickupTab] 设置邮箱为选中状态: ${emailId}`);
+        logger.debug(`[MailPickupTab] 设置邮箱为选中状态: ${emailId}`);
         setSelectedEmailId(emailId);
 
         // 设置跳过标记，确保不会被自动选择覆盖
@@ -610,7 +611,7 @@ export default function MailPickupTab() {
     // 检查邮箱是否已在系统中注册
     const checkEmailRegistered = async (emailAddress: string): Promise<boolean> => {
         try {
-            console.log(`[轮询] checkEmailRegistered 被调用，邮箱: ${emailAddress}, 账户列表:`, accounts);
+            logger.debug(`[轮询] checkEmailRegistered 被调用，邮箱: ${emailAddress}, 账户列表:`, accounts);
 
             // 处理别名邮箱的情况
             // Gmail 别名格式: username+alias@gmail.com -> username@gmail.com
@@ -621,7 +622,7 @@ export default function MailPickupTab() {
             if (plusIndex > 0 && atIndex > plusIndex) {
                 // 移除 + 和 @ 之间的部分，得到基础邮箱地址
                 baseEmail = baseEmail.substring(0, plusIndex) + baseEmail.substring(atIndex);
-                console.log(`[轮询] 检测到别名邮箱，基础邮箱地址: ${baseEmail}`);
+                logger.debug(`[轮询] 检测到别名邮箱，基础邮箱地址: ${baseEmail}`);
             }
 
             // 尝试从账户列表中查找邮箱（同时检查原始邮箱和基础邮箱）
@@ -631,12 +632,12 @@ export default function MailPickupTab() {
             });
 
             if (registeredAccount) {
-                console.log(`[轮询] 邮箱 ${emailAddress} 已在系统中注册（匹配账户: ${registeredAccount.emailAddress}）`)
+                logger.debug(`[轮询] 邮箱 ${emailAddress} 已在系统中注册（匹配账户: ${registeredAccount.emailAddress}）`)
                 return true
             }
 
             // 如果没找到，尝试通过API查询
-            console.log(`[轮询] 邮箱 ${emailAddress} 未在本地账户列表中找到`)
+            logger.debug(`[轮询] 邮箱 ${emailAddress} 未在本地账户列表中找到`)
 
             // 这里可以添加API调用来查询邮箱是否存在
             // 例如：const response = await apiClient.get(`/check-email-exists?email=${encodeURIComponent(emailAddress)}`)
@@ -651,7 +652,7 @@ export default function MailPickupTab() {
 
     // 开始监听邮件 - 改进版，修复状态闭包问题
     const startListening = useCallback(async (id: string) => {
-        console.log('[监听] startListening 被调用，ID:', id);
+        logger.debug('[监听] startListening 被调用，ID:', id);
 
         // 使用函数式更新来获取最新状态，避免闭包问题
         let emailToListen: MonitoredEmail | undefined = undefined;
@@ -670,7 +671,7 @@ export default function MailPickupTab() {
         // 类型断言，确保TypeScript知道emailToListen不为空
         const email = emailToListen as MonitoredEmail;
 
-        console.log('[监听] 找到邮箱:', email.email);
+        logger.debug('[监听] 找到邮箱:', email.email);
 
         // 邮箱地址格式验证
         if (!email.email || !email.email.includes('@')) {
@@ -679,11 +680,11 @@ export default function MailPickupTab() {
             return
         }
 
-        console.log('[监听] 邮箱格式验证通过');
+        logger.debug('[监听] 邮箱格式验证通过');
 
         try {
             // 清空缓存（如果需要的话）
-            console.log('[监听] 清空邮件缓存...');
+            logger.debug('[监听] 清空邮件缓存...');
             // TODO: 实现清空缓存的逻辑
 
             // 对于随机邮箱或域名邮箱，我们不需要检查是否注册
@@ -706,25 +707,25 @@ export default function MailPickupTab() {
             });
 
             if (account) {
-                console.log(`[监听] 找到匹配的账户: ${account.emailAddress}, ID: ${account.id}`);
+                logger.debug(`[监听] 找到匹配的账户: ${account.emailAddress}, ID: ${account.id}`);
                 accountId = account.id;
 
                 // 检查是否有同步配置
-                console.log('[监听] 检查同步配置...')
+                logger.debug('[监听] 检查同步配置...')
                 try {
                     const effectiveConfig = await syncConfigService.getEffectiveSyncConfig(account.id)
-                    console.log('[监听] 获取到有效配置:', effectiveConfig)
+                    logger.debug('[监听] 获取到有效配置:', effectiveConfig)
 
                     // 如果没有用户配置或临时配置，显示创建同步配置的模态框
                     if (!effectiveConfig.config || (!effectiveConfig.is_temporary && !effectiveConfig.config.id)) {
-                        console.log('[监听] 没有找到同步配置，需要创建')
+                        logger.debug('[监听] 没有找到同步配置，需要创建')
                         setShowSyncConfigModal(true)
                         setSyncConfigAccountId(account.id)
                         setSyncConfigAccountEmail(email.email)
                         return
                     }
                 } catch (error) {
-                    console.log('[监听] 获取同步配置失败，显示创建模态框')
+                    logger.debug('[监听] 获取同步配置失败，显示创建模态框')
                     setShowSyncConfigModal(true)
                     setSyncConfigAccountId(account.id)
                     setSyncConfigAccountEmail(email.email)
@@ -732,23 +733,23 @@ export default function MailPickupTab() {
                 }
             } else {
                 // 对于随机邮箱或域名邮箱，使用默认账户ID或第一个账户
-                console.log(`[监听] 未找到匹配账户，使用默认账户监听邮箱: ${email.email}`);
+                logger.debug(`[监听] 未找到匹配账户，使用默认账户监听邮箱: ${email.email}`);
                 if (accounts.length > 0) {
                     accountId = accounts[0].id;
-                    console.log(`[监听] 使用第一个账户ID: ${accountId}`);
+                    logger.debug(`[监听] 使用第一个账户ID: ${accountId}`);
                 } else {
                     // 如果没有任何账户，我们仍然可以监听，但使用accountId=0
                     accountId = 0;
-                    console.log('[监听] 没有找到任何账户，使用accountId=0进行监听');
+                    logger.debug('[监听] 没有找到任何账户，使用accountId=0进行监听');
                 }
             }
 
             // 开始监听
-            console.log('[监听] 开始监听邮箱:', email.email, '配置:', email.config)
+            logger.debug('[监听] 开始监听邮箱:', email.email, '配置:', email.config)
 
             // 每次点击监听都重新设置开始时间，确保超时时间正确刷新
             const listeningStartTime = new Date();
-            console.log(`[监听] 重置监听开始时间: ${listeningStartTime.toISOString()}`);
+            logger.debug(`[监听] 重置监听开始时间: ${listeningStartTime.toISOString()}`);
 
             // 更新UI状态
             setMonitoredEmails(prev => prev.map(m =>
@@ -778,7 +779,7 @@ export default function MailPickupTab() {
 
             // 初始化最后检查时间为监听开始时间
             lastCheckTimeRef.current[id] = listeningStartTime;
-            console.log(`[监听] 初始化监听开始时间: ${listeningStartTime.toISOString()}`);
+            logger.debug(`[监听] 初始化监听开始时间: ${listeningStartTime.toISOString()}`);
 
             // 更新状态为已连接
             setMonitoredEmails(prev => prev.map(m =>
@@ -790,11 +791,11 @@ export default function MailPickupTab() {
 
             // 设置轮询间隔
             const intervalSeconds = email.config.interval || 5;
-            console.log(`[监听] 设置轮询间隔: ${intervalSeconds} 秒`);
+            logger.debug(`[监听] 设置轮询间隔: ${intervalSeconds} 秒`);
 
             // 使用setTimeout确保状态更新完成后再执行首次检查
             setTimeout(() => {
-                console.log('[监听] 执行首次立即检查');
+                logger.debug('[监听] 执行首次立即检查');
                 if (accountId !== null) {
                     checkEmailsViaSearchAPI(email.email, accountId);
                 }
@@ -813,11 +814,11 @@ export default function MailPickupTab() {
             // 从监听状态中获取配置
             const listeningState = listeningStateRef.current[email];
             if (!listeningState || !listeningState.isListening) {
-                console.log(`[搜索] 邮箱 ${email} 不在监听状态或已停止监听`);
+                logger.debug(`[搜索] 邮箱 ${email} 不在监听状态或已停止监听`);
                 return;
             }
 
-            console.log(`[搜索] 检查邮件: ${email}, 监听开始时间: ${listeningState.startTime.toISOString()}, 当前时间: ${now.toISOString()}`);
+            logger.debug(`[搜索] 检查邮件: ${email}, 监听开始时间: ${listeningState.startTime.toISOString()}, 当前时间: ${now.toISOString()}`);
 
             // 更新检查次数
             listeningState.checksPerformed++;
@@ -841,17 +842,17 @@ export default function MailPickupTab() {
                 to_query: email
             });
 
-            console.log(`[搜索] 发送请求到 /api/emails/search:`, searchParams.toString());
-            console.log(`[搜索] 使用 to_query 过滤器: ${email}`);
+            logger.debug(`[搜索] 发送请求到 /api/emails/search:`, searchParams.toString());
+            logger.debug(`[搜索] 使用 to_query 过滤器: ${email}`);
 
             // 调用搜索API
             const response = await apiClient.get(`/emails/search?${searchParams.toString()}`);
 
-            console.log(`[搜索] 收到响应:`, response);
+            logger.debug(`[搜索] 收到响应:`, response);
 
             // 处理搜索结果
             if (response && response.emails && response.emails.length > 0) {
-                console.log(`[搜索] 找到 ${response.emails.length} 封新邮件`);
+                logger.debug(`[搜索] 找到 ${response.emails.length} 封新邮件`);
 
                 // 使用函数式更新获取最新状态并进行去重
                 let newEmailsToAdd: Email[] = [];
@@ -872,7 +873,7 @@ export default function MailPickupTab() {
                     newEmailsToAdd = response.emails.filter((e: Email) => !receivedEmailIds.has(e.ID));
 
                     if (newEmailsToAdd.length > 0) {
-                        console.log(`[搜索] 发现 ${newEmailsToAdd.length} 封新邮件`);
+                        logger.debug(`[搜索] 发现 ${newEmailsToAdd.length} 封新邮件`);
 
                         // 检查是否需要自动选择第一封邮件
                         shouldSelectFirstEmail = selectedEmailId === currentMonitoredEmail.id && currentMonitoredEmail.receivedEmails.length === 0;
@@ -892,7 +893,7 @@ export default function MailPickupTab() {
                             return dateB.getTime() - dateA.getTime();
                         });
 
-                        console.log(`[搜索] 邮件已按时间倒序排序，共 ${uniqueEmails.length} 封邮件`);
+                        logger.debug(`[搜索] 邮件已按时间倒序排序，共 ${uniqueEmails.length} 封邮件`);
 
                         return prev.map(m =>
                             m.email === email ? {
@@ -933,7 +934,7 @@ export default function MailPickupTab() {
                 }
             }
 
-            console.log(`[搜索] 第 ${listeningState.checksPerformed} 次检查完成`);
+            logger.debug(`[搜索] 第 ${listeningState.checksPerformed} 次检查完成`);
 
             // 检查是否还需要继续监听（如果没有设置超时或未超时）
             const elapsedSeconds = Math.round((now.getTime() - listeningState.startTime.getTime()) / 1000);
@@ -944,7 +945,7 @@ export default function MailPickupTab() {
                 }, listeningState.config.interval * 1000);
             } else if (listeningState.config.timeout > 0 && elapsedSeconds >= listeningState.config.timeout) {
                 // 超时停止
-                console.log(`[搜索] 监听超时，停止监听`);
+                logger.debug(`[搜索] 监听超时，停止监听`);
                 stopListening(email);
             }
         } catch (error: any) {
@@ -1024,7 +1025,7 @@ export default function MailPickupTab() {
         const monitoredEmail = monitoredEmails.find(m => m.id === idOrEmail || m.email === idOrEmail);
         if (!monitoredEmail) return;
 
-        console.log('[监听] 停止监听邮箱:', monitoredEmail.email);
+        logger.debug('[监听] 停止监听邮箱:', monitoredEmail.email);
 
         // 完全清理监听状态，避免状态污染
         if (listeningStateRef.current[monitoredEmail.email]) {
@@ -1033,7 +1034,7 @@ export default function MailPickupTab() {
 
         // 停止轮询（如果正在进行）
         if (pollIntervalRef.current[monitoredEmail.id]) {
-            console.log(`[监听] 停止轮询模式 (${monitoredEmail.id})`);
+            logger.debug(`[监听] 停止轮询模式 (${monitoredEmail.id})`);
             clearInterval(pollIntervalRef.current[monitoredEmail.id]!);
             pollIntervalRef.current[monitoredEmail.id] = null;
         }
@@ -1041,9 +1042,9 @@ export default function MailPickupTab() {
         // 如果有后端订阅ID，调用API删除订阅
         if (monitoredEmail.subscriptionId) {
             try {
-                console.log(`[监听] 删除后端订阅: ${monitoredEmail.subscriptionId}`);
+                logger.debug(`[监听] 删除后端订阅: ${monitoredEmail.subscriptionId}`);
                 await subscriptionService.deleteSubscription(monitoredEmail.subscriptionId);
-                console.log(`[监听] 成功删除后端订阅: ${monitoredEmail.subscriptionId}`);
+                logger.debug(`[监听] 成功删除后端订阅: ${monitoredEmail.subscriptionId}`);
             } catch (error) {
                 console.error(`[监听] 删除后端订阅失败:`, error);
                 // 即使删除失败也继续清理前端状态
@@ -1726,7 +1727,7 @@ export default function MailPickupTab() {
                     accountId={syncConfigAccountId}
                     accountEmail={syncConfigAccountEmail}
                     onSuccess={(config) => {
-                        console.log('[监听] 同步配置创建成功:', config);
+                        logger.debug('[监听] 同步配置创建成功:', config);
                         setShowSyncConfigModal(false);
                         // 重新尝试开始监听
                         const monitoredEmail = monitoredEmails.find(m => m.email === syncConfigAccountEmail);

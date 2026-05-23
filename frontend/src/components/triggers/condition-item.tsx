@@ -1,48 +1,20 @@
-'use client'
-
 import { useState } from 'react'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Trash2, HelpCircle } from 'lucide-react'
-import { Expression } from './condition-group'
+import { TriggerExpression } from '@/types'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 // 条件操作符
-export type ConditionOperator = 
-  'equals' | 
-  'not_equals' | 
-  'contains' | 
-  'not_contains' | 
-  'starts_with' | 
-  'ends_with' | 
-  'matches' | 
-  'greater_than' | 
-  'less_than' | 
-  'greater_equal' | 
-  'less_equal' | 
-  'in' | 
-  'not_in'
+export type ConditionOperator = string;
 
-// 条件字段
-export type ConditionField = 
-  'subject' | 
-  'from' | 
-  'to' | 
-  'cc' | 
-  'bcc' | 
-  'body' | 
-  'htmlBody' | 
-  'textBody' | 
-  'hasAttachments' | 
-  'date' | 
-  'receivedAt' | 
-  'messageId'
+// ... other imports
 
 interface ConditionItemProps {
-  condition: Expression
-  onUpdate: (updatedCondition: Expression) => void
+  condition: TriggerExpression
+  onUpdate: (updatedCondition: TriggerExpression) => void
   onRemove: () => void
 }
 
@@ -81,7 +53,7 @@ const fieldHelp: Record<string, string> = {
 
 export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemProps) {
   const [showHelp, setShowHelp] = useState(false)
-  
+
   // 更新条件字段
   const handleFieldChange = (value: string) => {
     onUpdate({
@@ -89,7 +61,7 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
       field: value
     })
   }
-  
+
   // 更新条件操作符
   const handleOperatorChange = (value: string) => {
     onUpdate({
@@ -97,7 +69,7 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
       operator: value as ConditionOperator
     })
   }
-  
+
   // 更新条件值
   const handleValueChange = (value: string) => {
     onUpdate({
@@ -105,7 +77,7 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
       value: value
     })
   }
-  
+
   // 更新条件取反状态
   const handleNotChange = (checked: boolean) => {
     onUpdate({
@@ -113,11 +85,11 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
       not: checked
     })
   }
-  
+
   // 获取字段类型
   const getFieldType = (field?: string): 'text' | 'boolean' | 'date' => {
     if (!field) return 'text'
-    
+
     switch (field) {
       case 'hasAttachments':
         return 'boolean'
@@ -128,16 +100,16 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
         return 'text'
     }
   }
-  
+
   // 渲染值输入框
   const renderValueInput = () => {
     const fieldType = getFieldType(condition.field)
-    
+
     switch (fieldType) {
       case 'boolean':
         return (
-          <Select 
-            value={String(condition.value)} 
+          <Select
+            value={String(condition.value)}
             onValueChange={handleValueChange}
           >
             <SelectTrigger className="w-full">
@@ -169,7 +141,7 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
         )
     }
   }
-  
+
   return (
     <div className="grid grid-cols-12 gap-2 mb-2 items-end">
       <div className="col-span-3">
@@ -188,8 +160,8 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
             </Tooltip>
           </TooltipProvider>
         </div>
-        <Select 
-          value={condition.field} 
+        <Select
+          value={condition.field}
           onValueChange={handleFieldChange}
         >
           <SelectTrigger className="w-full">
@@ -211,7 +183,7 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
           </SelectContent>
         </Select>
       </div>
-      
+
       <div className="col-span-3">
         <div className="flex items-center gap-1">
           <Label htmlFor={`operator-${condition.id}`}>操作符</Label>
@@ -228,8 +200,8 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
             </Tooltip>
           </TooltipProvider>
         </div>
-        <Select 
-          value={condition.operator} 
+        <Select
+          value={condition.operator}
           onValueChange={handleOperatorChange}
         >
           <SelectTrigger className="w-full">
@@ -252,12 +224,12 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
           </SelectContent>
         </Select>
       </div>
-      
+
       <div className="col-span-5">
         <Label htmlFor={`value-${condition.id}`}>值</Label>
         {renderValueInput()}
       </div>
-      
+
       <div className="col-span-1 flex items-center justify-center">
         <Label htmlFor={`not-${condition.id}`} className="mr-2">取反</Label>
         <input
@@ -268,7 +240,7 @@ export function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemPr
           className="h-4 w-4"
         />
       </div>
-      
+
       <div className="col-span-1">
         <Button
           type="button"

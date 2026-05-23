@@ -1,47 +1,39 @@
-import { Expression } from '@/components/triggers/condition-group'
+import { apiClient } from '@/lib/api-client'
+import { TriggerExpression } from '@/types'
 import { expressionsToApiFormat } from '@/components/triggers/condition-utils'
 
 // 条件测试服务
 export const conditionTestService = {
   // 测试条件表达式
-  async testCondition(expressions: Expression[], testData: any): Promise<any> {
+  async testCondition(expressions: TriggerExpression[], testData: any): Promise<any> {
     try {
-      const response = await fetch('/api/triggers/test-condition', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          expressions: expressionsToApiFormat(expressions),
-          testData
-        }),
+      // 使用 V2 API
+      const response = await apiClient.post<any>('/v2/triggers/test-condition', {
+        expressions: expressionsToApiFormat(expressions),
+        testData
       })
-      
-      if (!response.ok) {
-        throw new Error(`测试失败: ${response.status} ${response.statusText}`)
-      }
-      
-      return await response.json()
+
+      return response
     } catch (error) {
       console.error('测试条件失败:', error)
       throw error
     }
   },
-  
+
   // 模拟测试条件表达式（用于开发和测试）
-  async mockTestCondition(expressions: Expression[], testData: any): Promise<any> {
+  async mockTestCondition(expressions: TriggerExpression[], testData: any): Promise<any> {
     // 模拟API延迟
     await new Promise(resolve => setTimeout(resolve, 500))
-    
+
     // 简单的条件评估逻辑
-    const evaluateExpression = (expr: Expression): { result: boolean, details: any } => {
+    const evaluateExpression = (expr: TriggerExpression): { result: boolean, details: any } => {
       if (expr.type === 'condition') {
         let result = false
         const field = expr.field || ''
         const operator = expr.operator || 'equals'
         const value = expr.value
         const fieldValue = testData[field]
-        
+
         switch (operator) {
           case 'equals':
             result = String(fieldValue) === String(value)
@@ -64,12 +56,12 @@ export const conditionTestService = {
           default:
             result = false
         }
-        
+
         // 处理取反
         if (expr.not) {
           result = !result
         }
-        
+
         return {
           result,
           details: {
@@ -86,7 +78,7 @@ export const conditionTestService = {
       } else if (expr.type === 'group') {
         const childResults = expr.conditions?.map(child => evaluateExpression(child)) || []
         const operator = expr.operator || 'and'
-        
+
         let result
         if (operator === 'and') {
           result = childResults.every(r => r.result)
@@ -97,12 +89,12 @@ export const conditionTestService = {
         } else {
           result = false
         }
-        
+
         // 处理取反
         if (expr.not) {
           result = !result
         }
-        
+
         return {
           result,
           details: {
@@ -115,14 +107,14 @@ export const conditionTestService = {
           }
         }
       }
-      
+
       return { result: false, details: { error: '未知表达式类型' } }
     }
-    
+
     // 评估所有表达式
     const results = expressions.map(expr => evaluateExpression(expr))
     const finalResult = results.every(r => r.result)
-    
+
     return {
       result: finalResult,
       details: results.length === 1 ? results[0].details : {

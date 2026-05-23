@@ -142,7 +142,7 @@ jobs:
 
             After deployment:
             - **Frontend**: http://localhost:8080
-            - **Default Login**: admin / admin123
+            - **First Login**: Create your admin account on first visit
             - **API**: http://localhost:8080/api/health
 
             ## 📦 Architecture Support

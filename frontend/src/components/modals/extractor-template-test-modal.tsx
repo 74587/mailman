@@ -10,6 +10,14 @@ import { extractorTemplateService } from '@/services/extractor-template.service'
 import { motion, AnimatePresence } from 'framer-motion'
 import { FieldPreviewPanel } from '../field-preview-panel'
 import { AIExtractorAssistantModal } from './ai-extractor-assistant-modal'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalTitle,
+    ModalDescription
+} from '@/components/ui/modal'
+import { Button } from '@/components/ui/button'
 
 interface ExtractorTemplateTestModalProps {
     isOpen: boolean
@@ -56,8 +64,6 @@ export function ExtractorTemplateTestModal({
     template,
     onSave
 }: ExtractorTemplateTestModalProps) {
-    const [isVisible, setIsVisible] = useState(false)
-    const [isAnimating, setIsAnimating] = useState(false)
     const [loading, setLoading] = useState(false)
     const [accounts, setAccounts] = useState<EmailAccount[]>([])
     const [emails, setEmails] = useState<Email[]>([])
@@ -89,11 +95,9 @@ export function ExtractorTemplateTestModal({
     const [showAIAssistant, setShowAIAssistant] = useState(false)
     const [aiTargetIndex, setAITargetIndex] = useState<number | null>(null)
 
-    // 处理模态框动画
+    // 处理模态框打开/关闭
     useEffect(() => {
         if (isOpen) {
-            setIsVisible(true)
-            setTimeout(() => setIsAnimating(true), 10)
             loadAccounts()
             // 初始化可编辑的提取器配置，确保有extract字段和replacement字段
             setEditableExtractors(template.extractors.map(ext => ({
@@ -104,19 +108,16 @@ export function ExtractorTemplateTestModal({
             })))
             setHasChanges(false)
         } else {
-            setIsAnimating(false)
-            setTimeout(() => {
-                setIsVisible(false)
-                setTestResults([])
-                setSelectedAccountId(null)
-                setSelectedEmailId(null)
-                setUseCustomEmail(false)
-                setActiveTab('email')
-                setEditableExtractors([])
-                setHasChanges(false)
-                setFieldPreviews([])
-                setShowHelp({})
-            }, 300)
+            // 重置状态
+            setTestResults([])
+            setSelectedAccountId(null)
+            setSelectedEmailId(null)
+            setUseCustomEmail(false)
+            setActiveTab('email')
+            setEditableExtractors([])
+            setHasChanges(false)
+            setFieldPreviews([])
+            setShowHelp({})
         }
     }, [isOpen, template])
 
@@ -486,8 +487,6 @@ export function ExtractorTemplateTestModal({
 
     const selectedEmail = emails.find(e => e.ID === selectedEmailId)
 
-    if (!isVisible) return null
-
     const tabs = [
         { id: 'email' as TabType, label: '邮件内容', icon: Mail },
         { id: 'config' as TabType, label: '提取器配置', icon: Settings },
@@ -496,29 +495,22 @@ export function ExtractorTemplateTestModal({
 
     return (
         <>
-            <div
-                className={cn(
-                    'fixed inset-0 z-50 flex items-center justify-center p-4 transition-all duration-300',
-                    isAnimating ? 'bg-black/50' : 'bg-black/0'
-                )}
-                onClick={onClose}
-            >
-                <motion.div
-                    initial={{ scale: 0.9, opacity: 0, y: 20 }}
-                    animate={isAnimating ? { scale: 1, opacity: 1, y: 0 } : { scale: 0.9, opacity: 0, y: 20 }}
-                    transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-                    className="w-full max-w-6xl overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-gray-800"
-                    onClick={(e) => e.stopPropagation()}
+            <Modal open={isOpen} onOpenChange={(open) => !open && onClose()}>
+                <ModalContent
+                    size="6xl"
+                    showCloseButton={false}
+                    className="z-[60] max-h-[90vh] flex flex-col"
+                    overlayClassName="z-[60]"
                 >
                     {/* 头部 */}
                     <div className="flex items-center justify-between border-b border-gray-200 p-6 dark:border-gray-700">
                         <div>
-                            <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+                            <ModalTitle className="text-xl font-semibold text-gray-900 dark:text-white">
                                 测试取件模板
-                            </h2>
-                            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                            </ModalTitle>
+                            <ModalDescription className="mt-1 text-sm text-gray-500 dark:text-gray-400">
                                 {template.name}
-                            </p>
+                            </ModalDescription>
                         </div>
                         <div className="flex items-center gap-3">
                             {hasChanges && (
@@ -1234,8 +1226,8 @@ export function ExtractorTemplateTestModal({
                             )}
                         </AnimatePresence>
                     </div>
-                </motion.div>
-            </div>
+                </ModalContent>
+            </Modal>
 
             {/* 字段预览面板 */}
             {fieldPreviews.map(preview => (

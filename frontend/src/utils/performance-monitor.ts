@@ -1,3 +1,4 @@
+import { logger } from '@/lib/logger';
 /**
  * 性能监控工具
  * 用于测量和记录组件渲染性能
@@ -21,7 +22,7 @@ class PerformanceMonitor {
    */
   enable(): void {
     this.isEnabled = true;
-    console.log('性能监控已启用');
+    logger.debug('性能监控已启用');
   }
 
   /**
@@ -29,7 +30,7 @@ class PerformanceMonitor {
    */
   disable(): void {
     this.isEnabled = false;
-    console.log('性能监控已禁用');
+    logger.debug('性能监控已禁用');
   }
 
   /**
@@ -148,7 +149,7 @@ class PerformanceMonitor {
    */
   printReport(): void {
     if (this.entries.length === 0) {
-      console.log('没有性能数据可供报告');
+      logger.debug('没有性能数据可供报告');
       return;
     }
     
@@ -159,7 +160,7 @@ class PerformanceMonitor {
     console.table(summary);
     
     // 打印详细数据
-    console.log('详细性能数据:');
+    logger.debug('详细性能数据:');
     console.table(this.entries.map(entry => ({
       component: entry.component,
       operation: entry.operation,
@@ -175,7 +176,7 @@ class PerformanceMonitor {
    */
   clear(): void {
     this.entries = [];
-    console.log('性能数据已清除');
+    logger.debug('性能数据已清除');
   }
 }
 

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -52,7 +53,7 @@ func (s *TriggerService) Start() error {
 	log.Printf("[TriggerService] Starting trigger service (event-driven mode)...")
 
 	// 加载所有启用的触发器
-	triggers, err := s.triggerRepo.GetByStatus(models.TriggerStatusEnabled)
+	triggers, err := s.triggerRepo.GetByStatus(models.TriggerStatusEnabled, 0)
 	if err != nil {
 		return fmt.Errorf("failed to load enabled triggers: %w", err)
 	}
@@ -210,8 +211,9 @@ func (s *TriggerService) subscribeToEmailEvents(trigger *models.EmailTrigger) er
 			Folders:       trigger.Folders,
 			CustomFilters: trigger.CustomFilters,
 		},
+		Context:  context.Background(),
 		Callback: eventHandler,
-		Timeout:  30 * time.Second,
+		// 不设置Timeout，让触发器订阅永久有效直到服务停止
 	}
 
 	// 使用SubscriptionManager订阅邮件事件
@@ -305,11 +307,9 @@ func (s *TriggerService) processEmailWithTrigger(trigger *models.EmailTrigger, e
 		executionLog.EndTime = time.Now()
 		executionLog.ExecutionMs = executionLog.EndTime.Sub(executionLog.StartTime).Milliseconds()
 
-		// 保存执行日志（如果启用了日志）
-		if trigger.EnableLogging {
-			if err := s.logRepo.Create(executionLog); err != nil {
-				log.Printf("[TriggerService] Failed to save execution log: %v", err)
-			}
+		// 始终保存执行日志，便于调试和监控
+		if err := s.logRepo.Create(executionLog); err != nil {
+			log.Printf("[TriggerService] Failed to save execution log: %v", err)
 		}
 
 		// 更新触发器统计信息
@@ -620,6 +620,13 @@ func (s *TriggerService) updateTriggerStatistics(trigger *models.EmailTrigger, s
 
 	if err := s.triggerRepo.UpdateStatistics(trigger.ID, totalExecutions, successExecutions, &now, lastError); err != nil {
 		log.Printf("[TriggerService] Failed to update trigger statistics: %v", err)
+	} else {
+		// 更新内存中的触发器统计，确保后续执行使用正确的计数
+		trigger.TotalExecutions = totalExecutions
+		trigger.SuccessExecutions = successExecutions
+		if !success {
+			trigger.LastError = lastError
+		}
 	}
 }
 

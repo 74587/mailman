@@ -46,7 +46,9 @@ func NewOpenAIHandler(
 // @Failure 500 {string} string "Internal Server Error"
 // @Router /api/openai/configs [get]
 func (h *OpenAIHandler) ListOpenAIConfigs(w http.ResponseWriter, r *http.Request) {
-	configs, err := h.OpenAIConfigRepo.List()
+	orgID := GetCurrentOrgID(r)
+
+	configs, err := h.OpenAIConfigRepo.List(orgID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -54,6 +56,8 @@ func (h *OpenAIHandler) ListOpenAIConfigs(w http.ResponseWriter, r *http.Request
 
 	response := make([]OpenAIConfigResponse, len(configs))
 	for i, config := range configs {
+		// Decrypt API key for response
+		config.APIKey = services.DecryptIfAvailable(config.APIKey)
 		response[i] = ConvertOpenAIConfigToResponse(&config)
 	}
 
@@ -73,6 +77,7 @@ func (h *OpenAIHandler) ListOpenAIConfigs(w http.ResponseWriter, r *http.Request
 // @Failure 500 {string} string "Internal Server Error"
 // @Router /api/openai/configs/{id} [get]
 func (h *OpenAIHandler) GetOpenAIConfig(w http.ResponseWriter, r *http.Request) {
+
 	vars := mux.Vars(r)
 	id, err := strconv.ParseUint(vars["id"], 10, 32)
 	if err != nil {
@@ -85,6 +90,9 @@ func (h *OpenAIHandler) GetOpenAIConfig(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Configuration not found", http.StatusNotFound)
 		return
 	}
+
+	// Decrypt API key for response
+	config.APIKey = services.DecryptIfAvailable(config.APIKey)
 
 	response := ConvertOpenAIConfigToResponse(config)
 	w.Header().Set("Content-Type", "application/json")
@@ -103,6 +111,8 @@ func (h *OpenAIHandler) GetOpenAIConfig(w http.ResponseWriter, r *http.Request) 
 // @Failure 500 {string} string "Internal Server Error"
 // @Router /api/openai/configs [post]
 func (h *OpenAIHandler) CreateOpenAIConfig(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+
 	var req OpenAIConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -113,10 +123,11 @@ func (h *OpenAIHandler) CreateOpenAIConfig(w http.ResponseWriter, r *http.Reques
 		Name:        req.Name,
 		ChannelType: models.AIChannelType(req.ChannelType),
 		BaseURL:     req.BaseURL,
-		APIKey:      req.APIKey,
+		APIKey:      services.EncryptIfAvailable(req.APIKey),
 		Model:       req.Model,
 		Headers:     models.JSONMap(req.Headers),
 		IsActive:    req.IsActive,
+		OrgID:       orgID,
 	}
 
 	if err := h.OpenAIConfigRepo.Create(config); err != nil {
@@ -124,6 +135,8 @@ func (h *OpenAIHandler) CreateOpenAIConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Decrypt for response
+	config.APIKey = services.DecryptIfAvailable(config.APIKey)
 	response := ConvertOpenAIConfigToResponse(config)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -144,6 +157,7 @@ func (h *OpenAIHandler) CreateOpenAIConfig(w http.ResponseWriter, r *http.Reques
 // @Failure 500 {string} string "Internal Server Error"
 // @Router /api/openai/configs/{id} [put]
 func (h *OpenAIHandler) UpdateOpenAIConfig(w http.ResponseWriter, r *http.Request) {
+
 	vars := mux.Vars(r)
 	id, err := strconv.ParseUint(vars["id"], 10, 32)
 	if err != nil {
@@ -166,7 +180,7 @@ func (h *OpenAIHandler) UpdateOpenAIConfig(w http.ResponseWriter, r *http.Reques
 	config.Name = req.Name
 	config.ChannelType = models.AIChannelType(req.ChannelType)
 	config.BaseURL = req.BaseURL
-	config.APIKey = req.APIKey
+	config.APIKey = services.EncryptIfAvailable(req.APIKey)
 	config.Model = req.Model
 	config.Headers = models.JSONMap(req.Headers)
 	config.IsActive = req.IsActive
@@ -176,6 +190,8 @@ func (h *OpenAIHandler) UpdateOpenAIConfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Decrypt for response
+	config.APIKey = services.DecryptIfAvailable(config.APIKey)
 	response := ConvertOpenAIConfigToResponse(config)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -193,6 +209,7 @@ func (h *OpenAIHandler) UpdateOpenAIConfig(w http.ResponseWriter, r *http.Reques
 // @Failure 500 {string} string "Internal Server Error"
 // @Router /api/openai/configs/{id} [delete]
 func (h *OpenAIHandler) DeleteOpenAIConfig(w http.ResponseWriter, r *http.Request) {
+
 	vars := mux.Vars(r)
 	id, err := strconv.ParseUint(vars["id"], 10, 32)
 	if err != nil {
@@ -277,6 +294,7 @@ func (h *OpenAIHandler) GetAIPromptTemplate(w http.ResponseWriter, r *http.Reque
 // @Failure 500 {string} string "Internal Server Error"
 // @Router /api/openai/prompt-templates [post]
 func (h *OpenAIHandler) CreateAIPromptTemplate(w http.ResponseWriter, r *http.Request) {
+
 	var req AIPromptTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -400,6 +418,8 @@ func (h *OpenAIHandler) DeleteAIPromptTemplate(w http.ResponseWriter, r *http.Re
 // @Failure 500 {string} string "Internal Server Error"
 // @Router /api/openai/generate-template [post]
 func (h *OpenAIHandler) GenerateEmailTemplate(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+
 	var req GenerateEmailTemplateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -407,11 +427,12 @@ func (h *OpenAIHandler) GenerateEmailTemplate(w http.ResponseWriter, r *http.Req
 	}
 
 	// Get active OpenAI configuration
-	openAIConfig, err := h.OpenAIConfigRepo.GetActive()
+	openAIConfig, err := h.OpenAIConfigRepo.GetActive(orgID)
 	if err != nil {
 		http.Error(w, "No active OpenAI configuration found", http.StatusInternalServerError)
 		return
 	}
+	openAIConfig.APIKey = services.DecryptIfAvailable(openAIConfig.APIKey)
 
 	// Get prompt template
 	scenario := req.Scenario
@@ -462,6 +483,7 @@ func (h *OpenAIHandler) GenerateEmailTemplate(w http.ResponseWriter, r *http.Req
 		Name:        req.TemplateName,
 		Description: req.Description,
 		Extractors:  extractorConfig,
+		OrgID:       orgID,
 	}
 
 	if err := h.ExtractorTemplateRepo.Create(extractorTemplate); err != nil {
@@ -543,6 +565,7 @@ func (h *OpenAIHandler) CallOpenAI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Configuration not found", http.StatusNotFound)
 		return
 	}
+	config.APIKey = services.DecryptIfAvailable(config.APIKey)
 
 	if !config.IsActive {
 		http.Error(w, "Configuration is not active", http.StatusBadRequest)

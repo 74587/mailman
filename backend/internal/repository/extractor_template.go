@@ -49,9 +49,13 @@ func (r *ExtractorTemplateRepository) GetByName(name string) (*models.ExtractorT
 }
 
 // GetAll retrieves all extractor templates
-func (r *ExtractorTemplateRepository) GetAll() ([]models.ExtractorTemplate, error) {
+func (r *ExtractorTemplateRepository) GetAll(orgID uint) ([]models.ExtractorTemplate, error) {
 	var templates []models.ExtractorTemplate
-	err := r.db.Find(&templates).Error
+	query := r.db.Model(&models.ExtractorTemplate{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Find(&templates).Error
 	return templates, err
 }
 
@@ -71,12 +75,17 @@ func (r *ExtractorTemplateRepository) HardDelete(id uint) error {
 }
 
 // GetAllPaginated retrieves extractor templates with pagination and search
-func (r *ExtractorTemplateRepository) GetAllPaginated(page, limit int, sortBy, sortOrder, search string) ([]models.ExtractorTemplate, int64, error) {
+func (r *ExtractorTemplateRepository) GetAllPaginated(page, limit int, sortBy, sortOrder, search string, orgID uint) ([]models.ExtractorTemplate, int64, error) {
 	var templates []models.ExtractorTemplate
 	var total int64
 
 	// 构建查询
 	query := r.db.Model(&models.ExtractorTemplate{})
+
+	// Apply org filter
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
 
 	// 添加搜索条件（根据名称模糊查询）
 	if search != "" {

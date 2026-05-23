@@ -215,6 +215,12 @@ func (s *EmailFetchScheduler) GetFetcherService() *FetcherService {
 	return s.fetcherService
 }
 
+// GetSubscriptionManager 获取订阅管理器实例
+// 用于让TriggerService与EmailFetchScheduler共享同一个订阅管理器
+func (s *EmailFetchScheduler) GetSubscriptionManager() *SubscriptionManager {
+	return s.subscriptionMgr
+}
+
 // setupSubscriptionHooks 设置订阅钩子
 func (s *EmailFetchScheduler) setupSubscriptionHooks() {
 	s.subscriptionMgr.hooks = SubscriptionHooks{
@@ -580,4 +586,16 @@ func (s *EmailFetchScheduler) cleanupWorkerForMailbox(realMailbox string) {
 		close(worker.shutdownCh)
 		delete(s.workerPool.workers, realMailbox)
 	}
+}
+
+// DispatchEmailEvent 手动分发邮件事件给所有匹配的订阅者
+// 主要用于用户手动触发邮件事件以激活相关触发器
+func (s *EmailFetchScheduler) DispatchEmailEvent(realMailbox string, email models.Email) {
+	if s.subscriptionMgr == nil {
+		log.Printf("[Scheduler] DispatchEmailEvent: subscriptionMgr is nil")
+		return
+	}
+	log.Printf("[Scheduler] Dispatching email event for %s, email ID: %d, subject: %s",
+		realMailbox, email.ID, email.Subject)
+	s.subscriptionMgr.DistributeEmail(realMailbox, email)
 }

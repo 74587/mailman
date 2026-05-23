@@ -14,6 +14,20 @@ type EmailAccountRepository struct {
 	db *gorm.DB
 }
 
+// AccountFilterParams contains all filter parameters for account queries
+type AccountFilterParams struct {
+	Search         string     // 搜索邮箱地址
+	ProviderID     *uint      // 按供应商ID过滤
+	TagIDs         []uint     // 按标签ID过滤
+	TagFilterMode  string     // 标签过滤模式: "and" 或 "or"
+	IsVerified     *bool      // 按验证状态过滤
+	ErrorStatus    string     // 按错误状态过滤
+	CreatedAfter   *time.Time // 创建时间起始
+	CreatedBefore  *time.Time // 创建时间结束
+	LastSyncAfter  *time.Time // 最后同步时间起始
+	LastSyncBefore *time.Time // 最后同步时间结束
+}
+
 // NewEmailAccountRepository creates a new EmailAccountRepository
 func NewEmailAccountRepository(db *gorm.DB) *EmailAccountRepository {
 	return &EmailAccountRepository{db: db}
@@ -107,14 +121,18 @@ func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailA
 }
 
 // GetAll retrieves all email accounts
-func (r *EmailAccountRepository) GetAll() ([]models.EmailAccount, error) {
+func (r *EmailAccountRepository) GetAll(orgID uint) ([]models.EmailAccount, error) {
 	var accounts []models.EmailAccount
-	err := r.db.Preload("MailProvider").Find(&accounts).Error
+	query := r.db.Preload("MailProvider")
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Find(&accounts).Error
 	return accounts, err
 }
 
 // GetAllPaginated retrieves email accounts with pagination
-func (r *EmailAccountRepository) GetAllPaginated(page, limit int, sortBy, sortOrder string, search string) ([]models.EmailAccount, int64, error) {
+func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, sortBy, sortOrder string, search string) ([]models.EmailAccount, int64, error) {
 	var accounts []models.EmailAccount
 	var total int64
 
@@ -137,6 +155,9 @@ func (r *EmailAccountRepository) GetAllPaginated(page, limit int, sortBy, sortOr
 
 	// 初始化查询
 	query := r.db.Model(&models.EmailAccount{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
 
 	// 如果有搜索参数，添加搜索条件
 	if search != "" {
@@ -150,10 +171,287 @@ func (r *EmailAccountRepository) GetAllPaginated(page, limit int, sortBy, sortOr
 	}
 
 	// 获取分页数据（应用相同的搜索条件）
-	queryForData := r.db.Preload("MailProvider")
+	queryForData := r.db.Preload("MailProvider").Preload("Tags").Preload("Tags.Group")
+	if orgID > 0 {
+		queryForData = queryForData.Where("org_id = ?", orgID)
+	}
 	if search != "" {
 		searchTerm := "%" + search + "%"
 		queryForData = queryForData.Where("email_address LIKE ?", searchTerm)
+	}
+
+	err := queryForData.
+		Order(sortBy + " " + sortOrder).
+		Limit(limit).
+		Offset(offset).
+		Find(&accounts).Error
+
+	return accounts, total, err
+}
+
+// GetAllPaginatedFiltered retrieves email accounts with pagination and comprehensive filtering
+func (r *EmailAccountRepository) GetAllPaginatedFiltered(orgID uint, page, limit int, sortBy, sortOrder string, filters AccountFilterParams) ([]models.EmailAccount, int64, error) {
+	var accounts []models.EmailAccount
+	var total int64
+
+	// 默认值
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 10
+	}
+
+	// 排序字段映射: 前端camelCase -> 数据库snake_case
+	sortFieldMap := map[string]string{
+		"emailAddress":     "email_address",
+		"createdAt":        "created_at",
+		"created_at":       "created_at",
+		"updatedAt":        "updated_at",
+		"updated_at":       "updated_at",
+		"lastSyncAt":       "last_sync_at",
+		"last_sync_at":     "last_sync_at",
+		"isVerified":       "is_verified",
+		"is_verified":      "is_verified",
+		"errorStatus":      "error_status",
+		"error_status":     "error_status",
+		"mailProviderId":   "mail_provider_id",
+		"mail_provider_id": "mail_provider_id",
+	}
+
+	// 转换排序字段
+	if sortBy == "" {
+		sortBy = "created_at"
+	} else if mapped, ok := sortFieldMap[sortBy]; ok {
+		sortBy = mapped
+	} else {
+		// 默认使用 created_at，防止 SQL 注入
+		sortBy = "created_at"
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		sortOrder = "desc"
+	}
+
+	// 计算偏移量
+	offset := (page - 1) * limit
+
+	// 构建基础查询条件
+	baseQuery := r.db.Model(&models.EmailAccount{})
+	if orgID > 0 {
+		baseQuery = baseQuery.Where("org_id = ?", orgID)
+	}
+
+	// 搜索邮箱地址
+	if filters.Search != "" {
+		searchTerm := "%" + filters.Search + "%"
+		baseQuery = baseQuery.Where("email_address LIKE ?", searchTerm)
+	}
+
+	// 供应商过滤
+	if filters.ProviderID != nil {
+		baseQuery = baseQuery.Where("mail_provider_id = ?", *filters.ProviderID)
+	}
+
+	// 验证状态过滤
+	if filters.IsVerified != nil {
+		baseQuery = baseQuery.Where("is_verified = ?", *filters.IsVerified)
+	}
+
+	// 错误状态过滤
+	if filters.ErrorStatus != "" {
+		baseQuery = baseQuery.Where("error_status = ?", filters.ErrorStatus)
+	}
+
+	// 创建时间过滤
+	if filters.CreatedAfter != nil {
+		baseQuery = baseQuery.Where("created_at >= ?", *filters.CreatedAfter)
+	}
+	if filters.CreatedBefore != nil {
+		baseQuery = baseQuery.Where("created_at <= ?", *filters.CreatedBefore)
+	}
+
+	// 最后同步时间过滤
+	if filters.LastSyncAfter != nil {
+		baseQuery = baseQuery.Where("last_sync_at >= ?", *filters.LastSyncAfter)
+	}
+	if filters.LastSyncBefore != nil {
+		baseQuery = baseQuery.Where("last_sync_at <= ?", *filters.LastSyncBefore)
+	}
+
+	// 标签过滤 (需要子查询)
+	if len(filters.TagIDs) > 0 {
+		tagFilterMode := filters.TagFilterMode
+		if tagFilterMode != "and" && tagFilterMode != "or" {
+			tagFilterMode = "or"
+		}
+
+		if tagFilterMode == "or" {
+			// OR 模式: 包含任意一个标签
+			baseQuery = baseQuery.Where("id IN (?)",
+				r.db.Table("email_account_tags").
+					Select("email_account_id").
+					Where("tag_id IN ?", filters.TagIDs))
+		} else {
+			// AND 模式: 必须包含所有标签
+			for _, tagID := range filters.TagIDs {
+				baseQuery = baseQuery.Where("id IN (?)",
+					r.db.Table("email_account_tags").
+						Select("email_account_id").
+						Where("tag_id = ?", tagID))
+			}
+		}
+	}
+
+	// 获取总数
+	if err := baseQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 获取分页数据（需要重新构建查询以包含 Preload）
+	queryForData := r.db.Preload("MailProvider").Preload("Tags").Preload("Tags.Group")
+	if orgID > 0 {
+		queryForData = queryForData.Where("org_id = ?", orgID)
+	}
+
+	// 复制过滤条件
+	if filters.Search != "" {
+		searchTerm := "%" + filters.Search + "%"
+		queryForData = queryForData.Where("email_address LIKE ?", searchTerm)
+	}
+	if filters.ProviderID != nil {
+		queryForData = queryForData.Where("mail_provider_id = ?", *filters.ProviderID)
+	}
+	if filters.IsVerified != nil {
+		queryForData = queryForData.Where("is_verified = ?", *filters.IsVerified)
+	}
+	if filters.ErrorStatus != "" {
+		queryForData = queryForData.Where("error_status = ?", filters.ErrorStatus)
+	}
+	if filters.CreatedAfter != nil {
+		queryForData = queryForData.Where("created_at >= ?", *filters.CreatedAfter)
+	}
+	if filters.CreatedBefore != nil {
+		queryForData = queryForData.Where("created_at <= ?", *filters.CreatedBefore)
+	}
+	if filters.LastSyncAfter != nil {
+		queryForData = queryForData.Where("last_sync_at >= ?", *filters.LastSyncAfter)
+	}
+	if filters.LastSyncBefore != nil {
+		queryForData = queryForData.Where("last_sync_at <= ?", *filters.LastSyncBefore)
+	}
+	if len(filters.TagIDs) > 0 {
+		tagFilterMode := filters.TagFilterMode
+		if tagFilterMode != "and" && tagFilterMode != "or" {
+			tagFilterMode = "or"
+		}
+		if tagFilterMode == "or" {
+			queryForData = queryForData.Where("id IN (?)",
+				r.db.Table("email_account_tags").
+					Select("email_account_id").
+					Where("tag_id IN ?", filters.TagIDs))
+		} else {
+			for _, tagID := range filters.TagIDs {
+				queryForData = queryForData.Where("id IN (?)",
+					r.db.Table("email_account_tags").
+						Select("email_account_id").
+						Where("tag_id = ?", tagID))
+			}
+		}
+	}
+
+	err := queryForData.
+		Order(sortBy + " " + sortOrder).
+		Limit(limit).
+		Offset(offset).
+		Find(&accounts).Error
+
+	return accounts, total, err
+}
+
+// GetAllPaginatedWithTags retrieves email accounts with pagination and tag filtering
+func (r *EmailAccountRepository) GetAllPaginatedWithTags(orgID uint, page, limit int, sortBy, sortOrder string, search string, tagIDs []uint, tagFilterMode string) ([]models.EmailAccount, int64, error) {
+	var accounts []models.EmailAccount
+	var total int64
+
+	// 默认值
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 10
+	}
+	if sortBy == "" {
+		sortBy = "created_at"
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		sortOrder = "desc"
+	}
+	if tagFilterMode != "and" && tagFilterMode != "or" {
+		tagFilterMode = "or"
+	}
+
+	// 计算偏移量
+	offset := (page - 1) * limit
+
+	// 初始化查询
+	query := r.db.Model(&models.EmailAccount{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+
+	// 如果有搜索参数，添加搜索条件
+	if search != "" {
+		searchTerm := "%" + search + "%"
+		query = query.Where("email_address LIKE ?", searchTerm)
+	}
+
+	// 如果有标签过滤，添加标签条件
+	if len(tagIDs) > 0 {
+		if tagFilterMode == "and" {
+			// AND 模式: 账户必须包含所有选中的标签
+			subQuery := r.db.Model(&models.EmailAccountTag{}).
+				Select("email_account_id").
+				Where("tag_id IN ?", tagIDs).
+				Group("email_account_id").
+				Having("COUNT(DISTINCT tag_id) = ?", len(tagIDs))
+			query = query.Where("id IN (?)", subQuery)
+		} else {
+			// OR 模式: 账户包含任意选中的标签
+			subQuery := r.db.Model(&models.EmailAccountTag{}).
+				Select("DISTINCT email_account_id").
+				Where("tag_id IN ?", tagIDs)
+			query = query.Where("id IN (?)", subQuery)
+		}
+	}
+
+	// 获取总数
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 重新构建数据查询
+	queryForData := r.db.Preload("MailProvider")
+	if orgID > 0 {
+		queryForData = queryForData.Where("org_id = ?", orgID)
+	}
+	if search != "" {
+		searchTerm := "%" + search + "%"
+		queryForData = queryForData.Where("email_address LIKE ?", searchTerm)
+	}
+	if len(tagIDs) > 0 {
+		if tagFilterMode == "and" {
+			subQuery := r.db.Model(&models.EmailAccountTag{}).
+				Select("email_account_id").
+				Where("tag_id IN ?", tagIDs).
+				Group("email_account_id").
+				Having("COUNT(DISTINCT tag_id) = ?", len(tagIDs))
+			queryForData = queryForData.Where("id IN (?)", subQuery)
+		} else {
+			subQuery := r.db.Model(&models.EmailAccountTag{}).
+				Select("DISTINCT email_account_id").
+				Where("tag_id IN ?", tagIDs)
+			queryForData = queryForData.Where("id IN (?)", subQuery)
+		}
 	}
 
 	err := queryForData.

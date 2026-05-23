@@ -1,0 +1,321 @@
+package services
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"mailman/internal/models"
+	"mailman/internal/repository"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+)
+
+// Mock repositories and dependencies
+type MockEmailTriggerV2Repository struct {
+	mock.Mock
+}
+
+func (m *MockEmailTriggerV2Repository) Create(trigger *models.EmailTriggerV2) error {
+	args := m.Called(trigger)
+	return args.Error(0)
+}
+
+func (m *MockEmailTriggerV2Repository) GetByID(id uint) (*models.EmailTriggerV2, error) {
+	args := m.Called(id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.EmailTriggerV2), args.Error(1)
+}
+
+func (m *MockEmailTriggerV2Repository) GetAll() ([]models.EmailTriggerV2, error) {
+	args := m.Called()
+	return args.Get(0).([]models.EmailTriggerV2), args.Error(1)
+}
+
+func (m *MockEmailTriggerV2Repository) GetByStatus(enabled bool) ([]models.EmailTriggerV2, error) {
+	args := m.Called(enabled)
+	return args.Get(0).([]models.EmailTriggerV2), args.Error(1)
+}
+
+func (m *MockEmailTriggerV2Repository) Update(trigger *models.EmailTriggerV2) error {
+	args := m.Called(trigger)
+	return args.Error(0)
+}
+
+func (m *MockEmailTriggerV2Repository) UpdateStatus(id uint, enabled bool) error {
+	args := m.Called(id, enabled)
+	return args.Error(0)
+}
+
+func (m *MockEmailTriggerV2Repository) Delete(id uint) error {
+	args := m.Called(id)
+	return args.Error(0)
+}
+
+type MockTriggerExecutionLogV2Repository struct {
+	mock.Mock
+}
+
+func (m *MockTriggerExecutionLogV2Repository) Create(log *models.TriggerExecutionLogV2) error {
+	args := m.Called(log)
+	return args.Error(0)
+}
+
+type MockSubscriptionManager struct {
+	mock.Mock
+}
+
+func (m *MockSubscriptionManager) Subscribe(req SubscribeRequest) (*Subscription, error) {
+	args := m.Called(req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*Subscription), args.Error(1)
+}
+
+func (m *MockSubscriptionManager) Unsubscribe(subscriptionID string) error {
+	args := m.Called(subscriptionID)
+	return args.Error(0)
+}
+
+type MockEventBus struct {
+	mock.Mock
+}
+
+func (m *MockEventBus) Subscribe(eventType EventType, handler EventHandler) {
+	m.Called(eventType, handler)
+}
+
+func (m *MockEventBus) Publish(event EmailEvent) {
+	m.Called(event)
+}
+
+func TestEmailTriggerService_Initialize(t *testing.T) {
+	// Create mocks
+	mockTriggerRepo := new(MockEmailTriggerV2Repository)
+	mockLogRepo := new(MockTriggerExecutionLogV2Repository)
+	mockSubscriptionManager := new(MockSubscriptionManager)
+	mockEventBus := new(MockEventBus)
+	conditionEngine := NewConditionEngine(nil)
+	pluginManager := NewPluginManager()
+	
+	// Create test triggers
+	triggers := []models.EmailTriggerV2{
+		{
+			ID:          1,
+			Name:        "Test Trigger 1",
+			Description: "Test Description 1",
+			Enabled:     true,
+			Expressions: models.TriggerExpressions{},
+			Actions:     models.TriggerActions{},
+		},
+		{
+			ID:          2,
+			Name:        "Test Trigger 2",
+			Description: "Test Description 2",
+			Enabled:     true,
+			Expressions: models.TriggerExpressions{},
+			Actions:     models.TriggerActions{},
+		},
+	}
+	
+	// Set up expectations
+	mockTriggerRepo.On("GetByStatus", true).Return(triggers, nil)
+	mockEventBus.On("Subscribe", EventTypeNewEmail, mock.AnythingOfType("func(services.EmailEvent)")).Return()
+	
+	// Set up subscription expectations
+	for _, trigger := range triggers {
+		subscription := &Subscription{
+			ID:        "sub_" + string(trigger.ID),
+			Type:      SubscriptionTypeRealtime,
+			Priority:  PriorityNormal,
+			CreatedAt: time.Now(),
+		}
+		mockSubscriptionManager.On("Subscribe", mock.MatchedBy(func(req SubscribeRequest) bool {
+			return req.Type == SubscriptionTypeRealtime && 
+				   req.Priority == PriorityNormal &&
+				   req.Callback != nil
+		})).Return(subscription, nil).Once()
+	}
+	
+	// Create service
+	service := NewEmailTriggerService(
+		mockTriggerRepo,
+		mockLogRepo,
+		mockSubscriptionManager,
+		mockEventBus,
+		conditionEngine,
+		pluginManager,
+	)
+	
+	// Call Initialize
+	err := service.Initialize()
+	
+	// Assert
+	assert.NoError(t, err)
+	mockTriggerRepo.AssertExpectations(t)
+	mockEventBus.AssertExpectations(t)
+	mockSubscriptionManager.AssertExpectations(t)
+}
+
+func TestEmailTriggerService_EnableDisableTrigger(t *testing.T) {
+	// Create mocks
+	mockTriggerRepo := new(MockEmailTriggerV2Repository)
+	mockLogRepo := new(MockTriggerExecutionLogV2Repository)
+	mockSubscriptionManager := new(MockSubscriptionManager)
+	mockEventBus := new(MockEventBus)
+	conditionEngine := NewConditionEngine(nil)
+	pluginManager := NewPluginManager()
+	
+	// Create test trigger
+	trigger := &models.EmailTriggerV2{
+		ID:          1,
+		Name:        "Test Trigger",
+		Description: "Test Description",
+		Enabled:     false,
+		Expressions: models.TriggerExpressions{},
+		Actions:     models.TriggerActions{},
+	}
+	
+	// Set up expectations for enable
+	mockTriggerRepo.On("GetByID", uint(1)).Return(trigger, nil)
+	mockTriggerRepo.On("Update", mock.MatchedBy(func(t *models.EmailTriggerV2) bool {
+		return t.ID == 1 && t.Enabled == true
+	})).Return(nil)
+	
+	subscription := &Subscription{
+		ID:        "sub_1",
+		Type:      SubscriptionTypeRealtime,
+		Priority:  PriorityNormal,
+		CreatedAt: time.Now(),
+	}
+	mockSubscriptionManager.On("Subscribe", mock.MatchedBy(func(req SubscribeRequest) bool {
+		return req.Type == SubscriptionTypeRealtime && 
+			   req.Priority == PriorityNormal &&
+			   req.Callback != nil
+	})).Return(subscription, nil)
+	
+	// Set up expectations for disable
+	mockSubscriptionManager.On("Unsubscribe", "sub_1").Return(nil)
+	
+	// Create service
+	service := NewEmailTriggerService(
+		mockTriggerRepo,
+		mockLogRepo,
+		mockSubscriptionManager,
+		mockEventBus,
+		conditionEngine,
+		pluginManager,
+	)
+	
+	// Test Enable
+	err := service.EnableTrigger(1)
+	assert.NoError(t, err)
+	
+	// Update trigger for disable test
+	trigger.Enabled = true
+	mockTriggerRepo.On("Update", mock.MatchedBy(func(t *models.EmailTriggerV2) bool {
+		return t.ID == 1 && t.Enabled == false
+	})).Return(nil)
+	
+	// Test Disable
+	err = service.DisableTrigger(1)
+	assert.NoError(t, err)
+	
+	// Assert
+	mockTriggerRepo.AssertExpectations(t)
+	mockSubscriptionManager.AssertExpectations(t)
+}
+
+func TestEmailTriggerService_ProcessEmailForTrigger(t *testing.T) {
+	// Create mocks
+	mockTriggerRepo := new(MockEmailTriggerV2Repository)
+	mockLogRepo := new(MockTriggerExecutionLogV2Repository)
+	mockSubscriptionManager := new(MockSubscriptionManager)
+	mockEventBus := new(MockEventBus)
+	conditionEngine := NewConditionEngine(nil)
+	pluginManager := NewPluginManager()
+	
+	// Create test trigger with a simple condition
+	field := "email.subject"
+	operator := models.TriggerOperator("contains")
+	value := "Test"
+	
+	trigger := &models.EmailTriggerV2{
+		ID:          1,
+		Name:        "Test Trigger",
+		Description: "Test Description",
+		Enabled:     true,
+		Expressions: models.TriggerExpressions{
+			{
+				ID:       "test-expr-1",
+				Type:     models.TriggerExpressionTypeCondition,
+				Operator: &operator,
+				Field:    &field,
+				Value:    value,
+			},
+		},
+		Actions: models.TriggerActions{},
+	}
+	
+	// Create test email that matches the condition
+	email := models.Email{
+		ID:      123,
+		Subject: "Test Email",
+		From:    []string{"sender@example.com"},
+		To:      []string{"recipient@example.com"},
+		Date:    time.Now(),
+	}
+	
+	// Set up expectations
+	mockLogRepo.On("Create", mock.MatchedBy(func(log *models.TriggerExecutionLogV2) bool {
+		return log.TriggerID == 1 && log.EmailID == 123 && log.ConditionResult == true
+	})).Return(nil)
+	
+	mockTriggerRepo.On("GetByID", uint(1)).Return(trigger, nil)
+	mockTriggerRepo.On("Update", mock.MatchedBy(func(t *models.EmailTriggerV2) bool {
+		return t.ID == 1 && t.TotalExecutions == 1
+	})).Return(nil)
+	
+	// Create service
+	service := NewEmailTriggerService(
+		mockTriggerRepo,
+		mockLogRepo,
+		mockSubscriptionManager,
+		mockEventBus,
+		conditionEngine,
+		pluginManager,
+	)
+	
+	// Call processEmailForTrigger
+	err := service.processEmailForTrigger(trigger, email)
+	
+	// Assert
+	assert.NoError(t, err)
+	mockLogRepo.AssertExpectations(t)
+	mockTriggerRepo.AssertExpectations(t)
+	
+	// Test with non-matching email
+	nonMatchingEmail := models.Email{
+		ID:      124,
+		Subject: "No Match",
+		From:    []string{"sender@example.com"},
+		To:      []string{"recipient@example.com"},
+		Date:    time.Now(),
+	}
+	
+	// Set up expectations for non-matching email
+	mockLogRepo.On("Create", mock.MatchedBy(func(log *models.TriggerExecutionLogV2) bool {
+		return log.TriggerID == 1 && log.EmailID == 124 && log.ConditionResult == false
+	})).Return(nil)
+	
+	// Call processEmailForTrigger with non-matching email
+	err = service.processEmailForTrigger(trigger, nonMatchingEmail)
+	
+	// Assert
+	assert.NoError(t, err)
+	mockLogRepo.AssertExpectations(t)
+}

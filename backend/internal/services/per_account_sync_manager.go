@@ -14,13 +14,27 @@ import (
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/utils"
+
+	"gorm.io/gorm"
 )
+
+// PickupOverride 取件轮询临时同步覆盖（纯内存，不写数据库）
+type PickupOverride struct {
+	AccountID    uint      `json:"account_id"`
+	SyncInterval int       `json:"sync_interval"` // 后端拉取邮件的间隔（秒）
+	ExpiresAt    time.Time `json:"expires_at"`     // 过期时间
+	CreatedAt    time.Time `json:"created_at"`
+}
 
 // PerAccountSyncManager 每账户独立goroutine的同步管理器
 type PerAccountSyncManager struct {
 	// 账户同步器映射
 	accountSyncers map[uint]*AccountSyncer
 	mu             sync.RWMutex
+
+	// 取件轮询临时同步覆盖（纯内存）
+	pickupOverrides   map[uint]*PickupOverride
+	pickupOverridesMu sync.RWMutex
 
 	// 配置监控
 	configMonitor *FastConfigMonitor
@@ -44,6 +58,9 @@ type PerAccountSyncManager struct {
 
 	// 通知系统
 	notificationService *EmailNotificationService
+
+	// 事件总线 - 用于触发器系统
+	eventBus *EventBus
 
 	// 监控统计
 	stats PerAccountSyncStats
@@ -97,6 +114,7 @@ func NewPerAccountSyncManager(
 	emailAccountRepo *repository.EmailAccountRepository,
 	fetcherService *FetcherService,
 	notificationService *EmailNotificationService,
+	eventBus *EventBus,
 ) *PerAccountSyncManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -105,6 +123,7 @@ func NewPerAccountSyncManager(
 
 	manager := &PerAccountSyncManager{
 		accountSyncers:      make(map[uint]*AccountSyncer),
+		pickupOverrides:     make(map[uint]*PickupOverride),
 		ctx:                 ctx,
 		cancel:              cancel,
 		semaphore:           make(chan struct{}, concurrentLimit),
@@ -116,6 +135,7 @@ func NewPerAccountSyncManager(
 		activityLogger:      GetActivityLogger(),
 		logger:              utils.NewLogger("PerAccountSyncManager"),
 		notificationService: notificationService,
+		eventBus:            eventBus,
 		stats: PerAccountSyncStats{
 			StartTime:       time.Now(),
 			ConcurrentLimit: concurrentLimit,
@@ -274,8 +294,16 @@ func (m *PerAccountSyncManager) startAccountSyncer(config *models.EmailAccountSy
 	m.logger.Debug("Starting AccountSyncer for account %d", config.AccountID)
 
 	if !config.EnableAutoSync {
-		m.logger.Debug("Auto-sync disabled for account %d, skipping", config.AccountID)
-		return nil
+		// 检查是否有取件轮询覆盖
+		m.pickupOverridesMu.RLock()
+		_, hasPickupOverride := m.pickupOverrides[config.AccountID]
+		m.pickupOverridesMu.RUnlock()
+
+		if !hasPickupOverride {
+			m.logger.Debug("Auto-sync disabled for account %d and no pickup override, skipping", config.AccountID)
+			return nil
+		}
+		m.logger.Debug("Auto-sync disabled for account %d but pickup override exists, starting syncer", config.AccountID)
 	}
 
 	m.mu.Lock()
@@ -409,7 +437,32 @@ func (m *PerAccountSyncManager) cleanupRoutine() {
 			return
 
 		case <-ticker.C:
+			// Cleanup inactive in-memory syncers
 			m.cleanupInactiveSyncers()
+
+			// Cleanup expired pickup overrides
+			m.cleanupExpiredPickupOverrides()
+
+			// Cleanup expired temporary configs from database
+			affectedIDs, err := m.syncConfigRepo.DeleteExpiredTemporaryConfigs()
+			if err != nil {
+				m.logger.Error("Failed to delete expired temporary configs: %v", err)
+			} else if len(affectedIDs) > 0 {
+				m.logger.Info("Deleted expired temporary configs for %d accounts: %v", len(affectedIDs), affectedIDs)
+				// Refresh subscriptions for affected accounts to revert to original config (or stop if disabled)
+				for _, accountID := range affectedIDs {
+					// Get effective config (will be original user/global config now)
+					config, err := m.syncConfigRepo.GetEffectiveSyncConfig(accountID)
+					if err != nil {
+						m.logger.Error("Failed to get effective config for account %d after expiration: %v", accountID, err)
+						continue
+					}
+					// Update subscription
+					if err := m.UpdateSubscription(accountID, config); err != nil {
+						m.logger.Error("Failed to update subscription for account %d after expiration: %v", accountID, err)
+					}
+				}
+			}
 		}
 	}
 }
@@ -428,6 +481,15 @@ func (m *PerAccountSyncManager) cleanupInactiveSyncers() {
 
 		// 如果同步器超过1小时没有活动且不在运行，检查配置是否仍然有效
 		if !isRunning && now.Sub(lastSync) > time.Hour {
+			// 检查是否有活跃的取件轮询覆盖
+			m.pickupOverridesMu.RLock()
+			_, hasPickupOverride := m.pickupOverrides[accountID]
+			m.pickupOverridesMu.RUnlock()
+
+			if hasPickupOverride {
+				continue // 有取件覆盖，不清理
+			}
+
 			// 检查数据库中的配置是否仍然启用
 			config, err := m.syncConfigRepo.GetByAccountID(accountID)
 			if err != nil || config == nil || !config.EnableAutoSync {
@@ -454,17 +516,91 @@ func (m *PerAccountSyncManager) GetStats() PerAccountSyncStats {
 	}
 }
 
+// SyncNowOptions 定义SyncNow的选项
+type SyncNowOptions struct {
+	CreateStrategy string // "none", "ensure", "force"
+	SyncInterval   int    // 临时同步间隔（如果创建临时Sync需要用到）
+}
+
 // SyncNow 立即同步指定账户
-func (m *PerAccountSyncManager) SyncNow(accountID uint) (*SyncResult, error) {
+func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*SyncResult, error) {
 	m.mu.RLock()
 	syncer, exists := m.accountSyncers[accountID]
 	m.mu.RUnlock()
 
-	if !exists {
+	// 1. 如果存在活跃的Syncer，且策略不是"force"，直接使用
+	if exists && opts.CreateStrategy != "force" {
+		m.logger.Debug("SyncNow: Using existing active syncer for account %d", accountID)
+		return syncer.SyncNow()
+	}
+
+	// 2. 如果不存在，或者策略是"force"
+	if !exists && (opts.CreateStrategy == "none" || opts.CreateStrategy == "") {
 		return nil, fmt.Errorf("no active syncer for account %d", accountID)
 	}
 
-	return syncer.SyncNow()
+	if opts.CreateStrategy == "force" {
+		m.logger.Info("SyncNow: Force creating ephemeral syncer for account %d (ignoring existing)", accountID)
+	} else {
+		m.logger.Info("SyncNow: Creating ephemeral syncer for account %d (Strategy: %s)", accountID, opts.CreateStrategy)
+	}
+
+	// 3. 创建临时Syncer
+	// 获取账户配置
+	config, err := m.syncConfigRepo.GetByAccountIDWithAccount(accountID)
+	if err != nil {
+		// 如果配置不存在，创建一个临时的默认配置对象
+		if err == gorm.ErrRecordNotFound {
+			m.logger.Warn("SyncNow: No config found for account %d, using default ephemeral config", accountID)
+			// 获取账户信息
+			account, err := m.emailAccountRepo.GetByID(accountID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get account %d: %w", accountID, err)
+			}
+			config = &models.EmailAccountSyncConfig{
+				AccountID:      accountID,
+				Account:        *account,
+				EnableAutoSync: false,
+				SyncInterval:   5, // Default
+				SyncFolders:    models.StringSlice{"INBOX"},
+			}
+			if opts.SyncInterval > 0 {
+				config.SyncInterval = opts.SyncInterval
+			}
+		} else {
+			return nil, fmt.Errorf("failed to get sync config: %w", err)
+		}
+	}
+
+	// 构造临时Syncer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // 确保销毁
+
+	ephemeralSyncer := &AccountSyncer{
+		AccountID: accountID,
+		Config:    *config,
+		ctx:       ctx,
+		cancel:    cancel,
+		manager:   m,
+		logger:    utils.NewLogger(fmt.Sprintf("EpheSyncer-%d", accountID)),
+		isRunning: false, // 临时运行
+	}
+
+	// 设置临时参数
+	if opts.SyncInterval > 0 {
+		ephemeralSyncer.Config.SyncInterval = opts.SyncInterval
+	}
+
+	// 4. 执行同步
+	// 直接调用SyncNow，它内部会调用doSync
+	// 注意：doSync 不依赖 Run 循环，是安全的单次执行
+	m.logger.Debug("SyncNow: Starting ephemeral sync execution")
+	result, err := ephemeralSyncer.SyncNow()
+
+	m.logger.Info("SyncNow: Ephemeral sync completed for account %d. Emails: %d, Error: %v",
+		accountID, result.EmailsSynced, err)
+
+	return result, err
 }
 
 // GetAccountSyncerStatus 获取账户同步器状态
@@ -575,7 +711,7 @@ func (as *AccountSyncer) performSync() {
 	as.logger.Debug("Starting sync cycle")
 
 	// 执行实际同步
-	err := as.doSync(start)
+	_, err := as.doSync(start)
 
 	as.mu.Lock()
 	as.LastSyncTime = time.Now()
@@ -598,7 +734,7 @@ func (as *AccountSyncer) performSync() {
 }
 
 // doSync 执行实际的邮件同步
-func (as *AccountSyncer) doSync(startTime time.Time) error {
+func (as *AccountSyncer) doSync(startTime time.Time) ([]models.Email, error) {
 	as.logger.Debug("Executing doSync")
 	// 创建超时上下文（暂时不使用，但保留用于后续扩展）
 	_, cancel := context.WithTimeout(as.ctx, 60*time.Second)
@@ -608,7 +744,7 @@ func (as *AccountSyncer) doSync(startTime time.Time) error {
 	as.logger.Debug("Getting account details")
 	account, err := as.getAccount()
 	if err != nil {
-		return fmt.Errorf("failed to get account: %w", err)
+		return nil, fmt.Errorf("failed to get account: %w", err)
 	}
 	as.logger.Debug("Account details obtained for: %s", account.EmailAddress)
 
@@ -648,16 +784,17 @@ func (as *AccountSyncer) doSync(startTime time.Time) error {
 	emails, err := as.manager.fetcherService.FetchEmailsFromMultipleMailboxes(*account, options)
 	if err != nil {
 		as.logger.Error("Failed to fetch emails: %v", err)
-		return fmt.Errorf("failed to fetch emails: %w", err)
+		return nil, fmt.Errorf("failed to fetch emails: %w", err)
 	}
 	as.logger.Debug("Fetched %d emails from server", len(emails))
 
 	// 处理邮件
-	newEmailCount, err := as.processEmails(emails)
+	newEmails, err := as.processEmails(emails)
 	if err != nil {
 		as.logger.Error("Failed to process emails: %v", err)
-		return fmt.Errorf("failed to process emails: %w", err)
+		return nil, fmt.Errorf("failed to process emails: %w", err)
 	}
+	newEmailCount := len(newEmails)
 	as.logger.Debug("Processed %d new emails", newEmailCount)
 
 	// 更新同步配置
@@ -665,10 +802,7 @@ func (as *AccountSyncer) doSync(startTime time.Time) error {
 		as.logger.Warn("Failed to update sync config: %v", err)
 	}
 
-	// 如果有新邮件，发送通知
-	if newEmailCount > 0 && as.manager.notificationService != nil {
-		as.notifyNewEmails(newEmailCount, account.EmailAddress)
-	}
+	// 注意：每封邮件的通知已在 processEmails 中单独发送
 
 	// 输出合并后的同步完成日志
 	historyId := "unknown"
@@ -679,7 +813,7 @@ func (as *AccountSyncer) doSync(startTime time.Time) error {
 	as.logger.Info("email: %s, historyId: %s, newEmails: %d, time: %v",
 		account.EmailAddress, historyId, newEmailCount, duration)
 
-	return nil
+	return newEmails, nil
 }
 
 // getAccount 获取账户信息
@@ -693,8 +827,8 @@ func (as *AccountSyncer) getAccount() (*models.EmailAccount, error) {
 }
 
 // processEmails 处理邮件
-func (as *AccountSyncer) processEmails(emails []models.Email) (int, error) {
-	newEmailCount := 0
+func (as *AccountSyncer) processEmails(emails []models.Email) ([]models.Email, error) {
+	var newEmails []models.Email
 
 	for _, email := range emails {
 		// 检查邮件是否已存在
@@ -714,10 +848,37 @@ func (as *AccountSyncer) processEmails(emails []models.Email) (int, error) {
 			continue
 		}
 
-		newEmailCount++
+		newEmails = append(newEmails, email)
+
+		// 发布新邮件事件到 EventBus，触发器系统会监听此事件
+		if as.manager.eventBus != nil {
+			event := EmailEvent{
+				Type:      EventTypeNewEmail,
+				Timestamp: time.Now(),
+				Data:      email, // 已保存到数据库的邮件（包含ID）
+			}
+			as.manager.eventBus.Publish(event)
+			as.manager.logger.Debug("Published new_email event for email ID: %d, MessageID: %s", email.ID, email.MessageID)
+		}
+
+		// 发送 WebSocket 通知，包含发送人和主题
+		if as.manager.notificationService != nil {
+			notification := EmailNotification{
+				Type:         "new_email",
+				AccountID:    email.AccountID,
+				AccountEmail: as.Config.Account.EmailAddress,
+				EmailID:      email.ID,
+				EmailCount:   1,
+				Subject:      email.Subject,
+				From:         email.FromAddress,
+				Timestamp:    time.Now(),
+			}
+			as.manager.notificationService.BroadcastNotification(notification)
+		}
+
 	}
 
-	return newEmailCount, nil
+	return newEmails, nil
 }
 
 // updateSyncConfig 更新同步配置
@@ -836,10 +997,16 @@ func (as *AccountSyncer) Stop() {
 func (as *AccountSyncer) SyncNow() (*SyncResult, error) {
 	start := time.Now()
 
-	err := as.doSync(start)
+	emails, err := as.doSync(start)
+
+	// 如果同步成功，重置错误状态和自动禁用标志
+	if err == nil {
+		as.resetErrorStatus()
+	}
 
 	result := &SyncResult{
-		EmailsSynced: 0, // 这里应该从doSync返回实际数量
+		EmailsSynced: len(emails),
+		SyncedEmails: emails,
 		Duration:     time.Since(start),
 		Error:        err,
 	}
@@ -1037,11 +1204,25 @@ func (as *AccountSyncer) resetErrorStatus() {
 		return
 	}
 
+	// 检查是否需要重置状态
+	needUpdate := false
+
 	// 如果之前有连续错误，现在重置
 	if config.ConsecutiveErrors > 0 {
 		config.ConsecutiveErrors = 0
 		config.LastErrorTime = nil
+		needUpdate = true
+	}
 
+	// 如果之前是自动禁用状态，现在恢复
+	if config.AutoDisabled {
+		config.AutoDisabled = false
+		config.DisableReason = ""
+		needUpdate = true
+		as.manager.logger.Info("Account %d auto_disabled flag reset to false after successful sync", as.AccountID)
+	}
+
+	if needUpdate {
 		if updateErr := as.manager.syncConfigRepo.CreateOrUpdate(config); updateErr != nil {
 			as.manager.logger.Error("Failed to reset error status: %v", updateErr)
 		}
@@ -1121,4 +1302,156 @@ func (m *PerAccountSyncManager) UpdateSubscription(accountID uint, config *model
 	}
 
 	return nil
+}
+
+// ============= Pickup Override 取件轮询覆盖 =============
+
+// RegisterPickupOverride 注册/续期取件轮询临时同步覆盖（纯内存，零DB写入）
+// 每次 pickup/poll 调用时触发，确保后端在 keepAliveSeconds 内持续同步该账户的邮件
+func (m *PerAccountSyncManager) RegisterPickupOverride(accountID uint, syncInterval int, keepAliveSeconds int) {
+	if syncInterval <= 0 {
+		syncInterval = 5
+	}
+	if keepAliveSeconds <= 0 {
+		keepAliveSeconds = 30
+	}
+
+	m.pickupOverridesMu.Lock()
+	existing, exists := m.pickupOverrides[accountID]
+	if exists {
+		// 续期：只更新过期时间和同步间隔
+		existing.ExpiresAt = time.Now().Add(time.Duration(keepAliveSeconds) * time.Second)
+		existing.SyncInterval = syncInterval
+		m.pickupOverridesMu.Unlock()
+		m.logger.Debug("Renewed pickup override for account %d: interval=%ds, expires_in=%ds", accountID, syncInterval, keepAliveSeconds)
+	} else {
+		// 新建覆盖
+		m.pickupOverrides[accountID] = &PickupOverride{
+			AccountID:    accountID,
+			SyncInterval: syncInterval,
+			ExpiresAt:    time.Now().Add(time.Duration(keepAliveSeconds) * time.Second),
+			CreatedAt:    time.Now(),
+		}
+		m.pickupOverridesMu.Unlock()
+		m.logger.Info("Created pickup override for account %d: interval=%ds, expires_in=%ds", accountID, syncInterval, keepAliveSeconds)
+
+		// 确保该账户有同步器在运行
+		m.ensurePickupSyncer(accountID, syncInterval)
+	}
+}
+
+// RemovePickupOverride 移除取件轮询覆盖
+func (m *PerAccountSyncManager) RemovePickupOverride(accountID uint) {
+	m.pickupOverridesMu.Lock()
+	_, exists := m.pickupOverrides[accountID]
+	delete(m.pickupOverrides, accountID)
+	m.pickupOverridesMu.Unlock()
+
+	if exists {
+		m.logger.Info("Removed pickup override for account %d", accountID)
+
+		// 检查原始配置是否启用了自动同步，如果没有则停止同步器
+		config, err := m.syncConfigRepo.GetByAccountID(accountID)
+		if err != nil || config == nil || !config.EnableAutoSync {
+			m.stopAccountSyncer(accountID)
+			m.logger.Info("Stopped syncer for account %d (no auto-sync and pickup override removed)", accountID)
+		}
+	}
+}
+
+// GetPickupOverride 获取取件轮询覆盖状态
+func (m *PerAccountSyncManager) GetPickupOverride(accountID uint) *PickupOverride {
+	m.pickupOverridesMu.RLock()
+	defer m.pickupOverridesMu.RUnlock()
+
+	override, exists := m.pickupOverrides[accountID]
+	if !exists || time.Now().After(override.ExpiresAt) {
+		return nil
+	}
+	// 返回副本防止外部修改
+	copy := *override
+	return &copy
+}
+
+// GetAllPickupOverrides 获取所有活跃的取件轮询覆盖
+func (m *PerAccountSyncManager) GetAllPickupOverrides() []*PickupOverride {
+	m.pickupOverridesMu.RLock()
+	defer m.pickupOverridesMu.RUnlock()
+
+	now := time.Now()
+	var overrides []*PickupOverride
+	for _, override := range m.pickupOverrides {
+		if now.Before(override.ExpiresAt) {
+			copy := *override
+			overrides = append(overrides, &copy)
+		}
+	}
+	return overrides
+}
+
+// ensurePickupSyncer 确保取件轮询账户有同步器在运行
+// 如果账户没有活跃的同步器，创建一个临时的
+func (m *PerAccountSyncManager) ensurePickupSyncer(accountID uint, syncInterval int) {
+	m.mu.RLock()
+	_, exists := m.accountSyncers[accountID]
+	m.mu.RUnlock()
+
+	if exists {
+		m.logger.Debug("Syncer already exists for account %d, reusing for pickup", accountID)
+		return
+	}
+
+	// 需要创建一个临时同步器
+	m.logger.Info("Creating pickup syncer for account %d", accountID)
+
+	config, err := m.syncConfigRepo.GetByAccountIDWithAccount(accountID)
+	if err != nil {
+		// 配置不存在，创建一个最小化的临时配置
+		account, accErr := m.emailAccountRepo.GetByID(accountID)
+		if accErr != nil {
+			m.logger.Error("Failed to get account %d for pickup syncer: %v", accountID, accErr)
+			return
+		}
+		config = &models.EmailAccountSyncConfig{
+			AccountID:      accountID,
+			Account:        *account,
+			EnableAutoSync: true, // 临时启用
+			SyncInterval:   syncInterval,
+			SyncFolders:    models.StringSlice{"INBOX"},
+			SyncStatus:     models.SyncStatusIdle,
+		}
+	} else {
+		// 有配置但可能未启用自动同步，临时覆盖
+		config.EnableAutoSync = true
+		config.SyncInterval = syncInterval
+	}
+
+	if err := m.startAccountSyncer(config); err != nil {
+		m.logger.Error("Failed to start pickup syncer for account %d: %v", accountID, err)
+	}
+}
+
+// cleanupExpiredPickupOverrides 清理过期的取件轮询覆盖
+func (m *PerAccountSyncManager) cleanupExpiredPickupOverrides() {
+	now := time.Now()
+	var expiredIDs []uint
+
+	m.pickupOverridesMu.Lock()
+	for accountID, override := range m.pickupOverrides {
+		if now.After(override.ExpiresAt) {
+			expiredIDs = append(expiredIDs, accountID)
+			delete(m.pickupOverrides, accountID)
+		}
+	}
+	m.pickupOverridesMu.Unlock()
+
+	// 对过期的覆盖，检查是否需要停止同步器
+	for _, accountID := range expiredIDs {
+		m.logger.Info("Pickup override expired for account %d", accountID)
+		config, err := m.syncConfigRepo.GetByAccountID(accountID)
+		if err != nil || config == nil || !config.EnableAutoSync {
+			m.stopAccountSyncer(accountID)
+			m.logger.Info("Stopped syncer for account %d (pickup override expired, no auto-sync)", accountID)
+		}
+	}
 }

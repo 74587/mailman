@@ -6,38 +6,38 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Trash2, HelpCircle } from 'lucide-react'
-import { Expression } from './condition-group'
+import { TriggerExpression as Expression } from '@/types'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 // 条件操作符
-export type ConditionOperator = 
-  'equals' | 
-  'not_equals' | 
-  'contains' | 
-  'not_contains' | 
-  'starts_with' | 
-  'ends_with' | 
-  'matches' | 
-  'greater_than' | 
-  'less_than' | 
-  'greater_equal' | 
-  'less_equal' | 
-  'in' | 
+export type ConditionOperator =
+  'equals' |
+  'not_equals' |
+  'contains' |
+  'not_contains' |
+  'starts_with' |
+  'ends_with' |
+  'matches' |
+  'greater_than' |
+  'less_than' |
+  'greater_equal' |
+  'less_equal' |
+  'in' |
   'not_in'
 
 // 条件字段
-export type ConditionField = 
-  'subject' | 
-  'from' | 
-  'to' | 
-  'cc' | 
-  'bcc' | 
-  'body' | 
-  'htmlBody' | 
-  'textBody' | 
-  'hasAttachments' | 
-  'date' | 
-  'receivedAt' | 
+export type ConditionField =
+  'subject' |
+  'from' |
+  'to' |
+  'cc' |
+  'bcc' |
+  'body' |
+  'htmlBody' |
+  'textBody' |
+  'hasAttachments' |
+  'date' |
+  'receivedAt' |
   'messageId'
 
 interface ConditionItemProps {
@@ -82,7 +82,7 @@ const fieldHelp: Record<string, string> = {
 // 使用memo包装组件以避免不必要的重新渲染
 export const OptimizedConditionItem = memo(function ConditionItem({ condition, onUpdate, onRemove }: ConditionItemProps) {
   const [showHelp, setShowHelp] = useState(false)
-  
+
   // 更新条件字段 - 使用useCallback优化
   const handleFieldChange = useCallback((value: string) => {
     onUpdate({
@@ -90,7 +90,7 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
       field: value
     })
   }, [condition, onUpdate])
-  
+
   // 更新条件操作符 - 使用useCallback优化
   const handleOperatorChange = useCallback((value: string) => {
     onUpdate({
@@ -98,7 +98,7 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
       operator: value as ConditionOperator
     })
   }, [condition, onUpdate])
-  
+
   // 更新条件值 - 使用useCallback优化
   const handleValueChange = useCallback((value: string) => {
     onUpdate({
@@ -106,7 +106,7 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
       value: value
     })
   }, [condition, onUpdate])
-  
+
   // 更新条件取反状态 - 使用useCallback优化
   const handleNotChange = useCallback((checked: boolean) => {
     onUpdate({
@@ -114,11 +114,11 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
       not: checked
     })
   }, [condition, onUpdate])
-  
+
   // 获取字段类型 - 使用useCallback优化
   const getFieldType = useCallback((field?: string): 'text' | 'boolean' | 'date' => {
     if (!field) return 'text'
-    
+
     switch (field) {
       case 'hasAttachments':
         return 'boolean'
@@ -129,16 +129,16 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
         return 'text'
     }
   }, [])
-  
+
   // 渲染值输入框 - 使用useCallback优化
   const renderValueInput = useCallback(() => {
     const fieldType = getFieldType(condition.field)
-    
+
     switch (fieldType) {
       case 'boolean':
         return (
-          <Select 
-            value={String(condition.value)} 
+          <Select
+            value={String(condition.value)}
             onValueChange={handleValueChange}
           >
             <SelectTrigger className="w-full">
@@ -170,7 +170,7 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
         )
     }
   }, [condition, getFieldType, handleValueChange])
-  
+
   return (
     <div className="grid grid-cols-12 gap-2 mb-2 items-end">
       <div className="col-span-3">
@@ -189,8 +189,8 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
             </Tooltip>
           </TooltipProvider>
         </div>
-        <Select 
-          value={condition.field} 
+        <Select
+          value={condition.field}
           onValueChange={handleFieldChange}
         >
           <SelectTrigger className="w-full">
@@ -212,7 +212,7 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
           </SelectContent>
         </Select>
       </div>
-      
+
       <div className="col-span-3">
         <div className="flex items-center gap-1">
           <Label htmlFor={`operator-${condition.id}`}>操作符</Label>
@@ -229,8 +229,8 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
             </Tooltip>
           </TooltipProvider>
         </div>
-        <Select 
-          value={condition.operator} 
+        <Select
+          value={condition.operator}
           onValueChange={handleOperatorChange}
         >
           <SelectTrigger className="w-full">
@@ -253,12 +253,12 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
           </SelectContent>
         </Select>
       </div>
-      
+
       <div className="col-span-5">
         <Label htmlFor={`value-${condition.id}`}>值</Label>
         {renderValueInput()}
       </div>
-      
+
       <div className="col-span-1 flex items-center justify-center">
         <Label htmlFor={`not-${condition.id}`} className="mr-2">取反</Label>
         <input
@@ -269,7 +269,7 @@ export const OptimizedConditionItem = memo(function ConditionItem({ condition, o
           className="h-4 w-4"
         />
       </div>
-      
+
       <div className="col-span-1">
         <Button
           type="button"

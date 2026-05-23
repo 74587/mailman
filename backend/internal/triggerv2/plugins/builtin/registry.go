@@ -8,6 +8,9 @@ import (
 // GetBuiltinPlugins 获取所有内置插件
 func GetBuiltinPlugins() []plugins.Plugin {
 	return []plugins.Plugin{
+		// 特殊条件插件
+		NewAlwaysPassPlugin(), // 始终通过 - 不过滤任何邮件
+
 		// 现有的内置插件
 		NewEmailConditionPlugin(),
 		NewEmailFilterPlugin(),
@@ -24,7 +27,23 @@ func GetBuiltinPlugins() []plugins.Plugin {
 		NewEmailForwardActionPlugin(),
 		NewEmailDeleteActionPlugin(),
 		NewEmailLabelActionPlugin(),
-		NewEmailTransformActionPlugin(),
+		NewEmailTransformActionPlugin(),   // 已废弃，保留兼容
+		NewEmailTransformActionV2Plugin(), // 新版，支持多规则和变量
+
+		// 第三方服务动作插件
+		NewTelegramBotActionPlugin(),
+		NewWebhookActionPlugin(),
+
+		// AI 处理动作插件
+		NewAIProcessActionPlugin(),
+
+		// 高级组合动作插件
+		NewVariableExtractActionPlugin(),   // 变量提取
+		NewConditionalBranchActionPlugin(), // 条件分支
+		NewParallelActionsPlugin(),         // 并行动作
+
+		// 流程控制动作插件
+		NewReturnActionPlugin(), // 中断流程
 	}
 }
 
@@ -43,44 +62,22 @@ func RegisterBuiltinPlugins(manager plugins.PluginManager) error {
 
 // GetBuiltinPluginByID 根据ID获取内置插件
 func GetBuiltinPluginByID(id string) plugins.Plugin {
-	pluginMap := map[string]func() plugins.Plugin{
-		"builtin.email_condition":   func() plugins.Plugin { return NewEmailConditionPlugin() },
-		"email_filter":              func() plugins.Plugin { return NewEmailFilterPlugin() },
-		"notification_action":       func() plugins.Plugin { return NewNotificationActionPlugin() },
-		"builtin.email_account_set": func() plugins.Plugin { return NewEmailAccountSetPlugin() },
-		"builtin.email_prefix":      func() plugins.Plugin { return NewEmailPrefixPlugin() },
-		"builtin.email_suffix":      func() plugins.Plugin { return NewEmailSuffixPlugin() },
-		"builtin.email_time_range":  func() plugins.Plugin { return NewEmailTimeRangePlugin() },
-		"builtin.email_size":        func() plugins.Plugin { return NewEmailSizePlugin() },
-		"email_forward_action":      func() plugins.Plugin { return NewEmailForwardActionPlugin() },
-		"email_delete_action":       func() plugins.Plugin { return NewEmailDeleteActionPlugin() },
-		"email_label_action":        func() plugins.Plugin { return NewEmailLabelActionPlugin() },
-		"email_transform_action":    func() plugins.Plugin { return NewEmailTransformActionPlugin() },
+	for _, p := range GetBuiltinPlugins() {
+		if p.GetInfo().ID == id {
+			return p
+		}
 	}
-
-	if factory, exists := pluginMap[id]; exists {
-		return factory()
-	}
-
 	return nil
 }
 
 // GetBuiltinPluginIDs 获取所有内置插件的ID列表
 func GetBuiltinPluginIDs() []string {
-	return []string{
-		"builtin.email_condition",
-		"email_filter",
-		"notification_action",
-		"builtin.email_account_set",
-		"builtin.email_prefix",
-		"builtin.email_suffix",
-		"builtin.email_time_range",
-		"builtin.email_size",
-		"email_forward_action",
-		"email_delete_action",
-		"email_label_action",
-		"email_transform_action",
+	all := GetBuiltinPlugins()
+	ids := make([]string, len(all))
+	for i, p := range all {
+		ids[i] = p.GetInfo().ID
 	}
+	return ids
 }
 
 // ValidateBuiltinPluginConfig 验证内置插件配置

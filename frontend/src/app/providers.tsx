@@ -2,10 +2,37 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
-import { Toaster } from 'react-hot-toast'
+import { Toaster as SonnerToaster } from 'sonner'
 import { useState } from 'react'
-import { ThemeProvider } from '@/components/theme-provider'
-import { AuthProvider } from '@/contexts/auth-context'
+import { ThemeProvider, useTheme } from '@/components/theme-provider'
+import { AuthProvider } from '@/context/auth-context'
+import { KeyboardProvider, DefaultKeybindings } from '@/context/keyboard'
+import { CommandPalette } from '@/components/command-palette/command-palette'
+import { HintModeProvider } from '@/components/hint-mode'
+import EmailNotificationToast from '@/components/notifications/email-notification-toast'
+import { ConfirmDialogProvider } from '@/hooks/use-confirm-dialog'
+
+// Sonner Toaster with theme support
+function ThemedSonnerToaster() {
+    const { theme } = useTheme()
+    // Map theme to sonner theme
+    const sonnerTheme = theme === 'system'
+        ? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : theme === 'sakura' ? 'light' : theme
+
+    return (
+        <SonnerToaster
+            position="top-right"
+            theme={sonnerTheme as 'light' | 'dark'}
+            richColors
+            closeButton
+            toastOptions={{
+                duration: 4000,
+                className: 'sonner-toast',
+            }}
+        />
+    )
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
     const [queryClient] = useState(
@@ -26,32 +53,19 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <QueryClientProvider client={queryClient}>
             <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
                 <AuthProvider>
-                    {children}
-                    <Toaster
-                        position="top-right"
-                        toastOptions={{
-                            duration: 4000,
-                            style: {
-                                background: '#363636',
-                                color: '#fff',
-                            },
-                            success: {
-                                duration: 3000,
-                                iconTheme: {
-                                    primary: '#10b981',
-                                    secondary: '#fff',
-                                },
-                            },
-                            error: {
-                                duration: 5000,
-                                iconTheme: {
-                                    primary: '#ef4444',
-                                    secondary: '#fff',
-                                },
-                            },
-                        }}
-                    />
+                    <ConfirmDialogProvider>
+                        <KeyboardProvider>
+                            <HintModeProvider>
+                                <DefaultKeybindings />
+                                {children}
+                                <CommandPalette />
+                            </HintModeProvider>
+                        </KeyboardProvider>
+                    </ConfirmDialogProvider>
+
+                    <ThemedSonnerToaster />
                 </AuthProvider>
+                <EmailNotificationToast />
             </ThemeProvider>
             <ReactQueryDevtools initialIsOpen={false} />
         </QueryClientProvider>

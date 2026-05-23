@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { triggerService } from '@/services/trigger.service'
 import { EmailTrigger, PaginationParams } from '@/types'
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 // TODO: Install react-window and react-virtualized-auto-sizer packages
 // import { FixedSizeList as List } from 'react-window'
 // import AutoSizer from 'react-virtualized-auto-sizer'
@@ -33,17 +34,17 @@ export interface VirtualizedTriggerListProps {
 }
 
 // 使用memo优化单个触发器项的渲染
-const TriggerItem = memo(({ 
-  trigger, 
-  onEdit, 
-  onView, 
-  onDelete, 
-  onStatusChange, 
+const TriggerItem = memo(({
+  trigger,
+  onEdit,
+  onView,
+  onDelete,
+  onStatusChange,
   onDebug,
   handleStatusChange,
   handleDelete
-}: { 
-  trigger: EmailTrigger, 
+}: {
+  trigger: EmailTrigger,
   onEdit?: (trigger: EmailTrigger) => void,
   onView?: (trigger: EmailTrigger) => void,
   onDelete?: (trigger: EmailTrigger) => void,
@@ -188,9 +189,9 @@ const TriggerItem = memo(({
                 )}
               </Button>
               {onDelete && (
-                <Button 
-                  variant="outline" 
-                  size="sm" 
+                <Button
+                  variant="outline"
+                  size="sm"
                   className="text-red-600"
                   onClick={() => handleDelete(trigger)}
                 >
@@ -208,13 +209,14 @@ const TriggerItem = memo(({
 
 TriggerItem.displayName = 'TriggerItem';
 
-export function VirtualizedTriggerList({ 
-  onEdit, 
-  onView, 
-  onDelete, 
-  onStatusChange, 
-  onDebug 
+export function VirtualizedTriggerList({
+  onEdit,
+  onView,
+  onDelete,
+  onStatusChange,
+  onDebug
 }: VirtualizedTriggerListProps) {
+  const { confirm } = useConfirmDialog()
   const [triggers, setTriggers] = useState<EmailTrigger[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -232,7 +234,7 @@ export function VirtualizedTriggerList({
   const loadTriggers = async () => {
     try {
       setIsLoading(true)
-      
+
       // 检查是否已缓存
       const cacheKey = getCacheKey(page, limit, searchTerm, statusFilter)
       if (cachedTriggers[cacheKey]) {
@@ -240,18 +242,18 @@ export function VirtualizedTriggerList({
         setIsLoading(false)
         return
       }
-      
+
       const params: PaginationParams = {
         page,
         limit,
         search: searchTerm || undefined,
         status: statusFilter !== 'all' ? statusFilter : undefined
       }
-      
+
       const response = await triggerService.getTriggers(params)
       setTriggers(response.data)
       setTotal(response.total)
-      
+
       // 更新缓存
       setCachedTriggers(prev => ({
         ...prev,
@@ -285,12 +287,12 @@ export function VirtualizedTriggerList({
       } else {
         await triggerService.enableTrigger(trigger.id)
       }
-      
+
       // 如果有外部处理函数，调用它
       if (onStatusChange) {
         onStatusChange(trigger, trigger.status !== 'enabled')
       }
-      
+
       // 清除缓存并重新加载数据
       setCachedTriggers({})
       loadTriggers()
@@ -301,15 +303,22 @@ export function VirtualizedTriggerList({
 
   // 处理删除
   const handleDelete = useCallback(async (trigger: EmailTrigger) => {
-    if (window.confirm(`确定要删除触发器 "${trigger.name}" 吗？`)) {
+    const confirmed = await confirm({
+      title: '删除触发器',
+      description: `确定要删除触发器 "${trigger.name}" 吗？`,
+      confirmText: '删除',
+      cancelText: '取消',
+      variant: 'destructive'
+    })
+    if (confirmed) {
       try {
         await triggerService.deleteTrigger(trigger.id)
-        
+
         // 如果有外部处理函数，调用它
         if (onDelete) {
           onDelete(trigger)
         }
-        
+
         // 清除缓存并重新加载数据
         setCachedTriggers({})
         loadTriggers()
@@ -317,7 +326,7 @@ export function VirtualizedTriggerList({
         console.error('删除触发器失败:', error)
       }
     }
-  }, [onDelete])
+  }, [onDelete, confirm])
 
   // 处理搜索 - 使用防抖
   const handleSearch = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -327,7 +336,7 @@ export function VirtualizedTriggerList({
       setSearchTerm(value)
       setPage(1) // 重置到第一页
     }, 300)
-    
+
     return () => clearTimeout(timeoutId)
   }, [])
 
@@ -341,10 +350,10 @@ export function VirtualizedTriggerList({
   const rowRenderer = useCallback(({ index, style }: { index: number, style: React.CSSProperties }) => {
     const trigger = triggers[index]
     if (!trigger) return null
-    
+
     return (
       <div style={style}>
-        <TriggerItem 
+        <TriggerItem
           trigger={trigger}
           onEdit={onEdit}
           onView={onView}

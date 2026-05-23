@@ -8,6 +8,8 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/dop251/goja"
+
 	"mailman/internal/models"
 	triggerModels "mailman/internal/triggerv2/models"
 	"mailman/internal/triggerv2/plugins"
@@ -24,9 +26,9 @@ func NewEmailTransformActionPlugin() plugins.ActionPlugin {
 	return &EmailTransformActionPlugin{
 		info: &plugins.PluginInfo{
 			ID:          "email_transform_action",
-			Name:        "邮件数据转换",
+			Name:        "[已废弃] 邮件数据转换",
 			Version:     "1.0.0",
-			Description: "修改邮件的各种属性，支持JS/Go template等转换方式",
+			Description: "⚠️ 此插件已废弃，请使用「邮件数据转换 V2」替代。支持修改邮件的各种属性，JS/Go template等转换方式。",
 			Author:      "TriggerV2 Team",
 			Website:     "https://github.com/triggerv2/plugins",
 			License:     "MIT",
@@ -490,11 +492,12 @@ func (p *EmailTransformActionPlugin) GetUISchema() *plugins.UISchema {
 			{
 				Name:        "template_content",
 				Label:       "模板内容",
-				Type:        plugins.UIFieldTypeText,
-				Description: "模板内容，支持变量：{{subject}}, {{from}}, {{to}}, {{message_id}}, {{thread_id}}, {{labels}}",
+				Type:        plugins.UIFieldTypeGoTemplate,
+				Description: "Go 模板语法，使用 {{.字段名}} 访问邮件字段",
+				Tooltip:     "可用变量：{{.Subject}}, {{.From}}, {{.To}}, {{.Body}}等。支持条件 {{if .HasAttachments}}...{{end}}、循环 {{range .Attachments}}...{{end}} 等语法",
 				Required:    false,
 				Width:       "full",
-				Placeholder: "{{subject}} - 已转换",
+				Placeholder: "{{.Subject}} - 已转换",
 				ShowIf: map[string]interface{}{
 					"transform_type": "template",
 				},
@@ -502,11 +505,12 @@ func (p *EmailTransformActionPlugin) GetUISchema() *plugins.UISchema {
 			{
 				Name:        "javascript_script",
 				Label:       "JavaScript代码",
-				Type:        plugins.UIFieldTypeCode,
-				Description: "JavaScript转换代码",
+				Type:        plugins.UIFieldTypeJavaScript,
+				Description: "JavaScript 转换代码，使用 $ 访问邮件上下文",
+				Tooltip:     "使用 $ 对象访问邮件数据，如：$.Subject, $.From[0], $.Body。支持所有 JavaScript 字符串和数组方法。最后的表达式值将作为转换结果。",
 				Required:    false,
 				Width:       "full",
-				Placeholder: "return value.toUpperCase();",
+				Placeholder: "$.Subject.toUpperCase()",
 				ShowIf: map[string]interface{}{
 					"transform_type": "javascript",
 				},
@@ -514,8 +518,9 @@ func (p *EmailTransformActionPlugin) GetUISchema() *plugins.UISchema {
 			{
 				Name:        "regex_pattern",
 				Label:       "正则表达式",
-				Type:        plugins.UIFieldTypeText,
-				Description: "要匹配的正则表达式模式",
+				Type:        plugins.UIFieldTypeRegex,
+				Description: "用于匹配和提取的正则表达式模式",
+				Tooltip:     "支持标准正则语法。常用：\\d+ 匹配数字，\\w+ 匹配单词，[a-zA-Z]+ 匹配字母，() 捕获组",
 				Required:    false,
 				Width:       "1/2",
 				Placeholder: "\\d+",
@@ -867,102 +872,102 @@ func (p *EmailTransformActionPlugin) executeGoTemplate(templateContent string, e
 	return buf.String(), nil
 }
 
-// executeJavaScript 执行JavaScript代码（简化实现）
+// executeJavaScript 使用 goja 执行 JavaScript 代码
 func (p *EmailTransformActionPlugin) executeJavaScript(scriptContent string, email *models.Email, targetField string) (string, error) {
-	// 获取当前字段值
+	// 创建 goja 运行时
+	vm := goja.New()
+
+	// 设置超时保护（5秒）
+	time.AfterFunc(5*time.Second, func() {
+		vm.Interrupt("execution timeout")
+	})
+
+	// 创建 $ 上下文对象（包含所有邮件字段）
+	emailContext := map[string]interface{}{
+		"ID":             email.ID,
+		"MessageID":      email.MessageID,
+		"Subject":        email.Subject,
+		"From":           email.From,
+		"To":             email.To,
+		"Cc":             email.Cc,
+		"Bcc":            email.Bcc,
+		"Body":           email.Body,
+		"TextBody":       email.TextBody,
+		"HTMLBody":       email.HTMLBody,
+		"Date":           email.Date,
+		"ReceivedAt":     email.ReceivedAt,
+		"MailboxName":    email.MailboxName,
+		"Flags":          email.Flags,
+		"Size":           email.Size,
+		"HasAttachments": email.HasAttachments,
+		"InReplyTo":      email.InReplyTo,
+		"References":     email.References,
+	}
+
+	// 添加附件信息（如果有）
+	if email.Attachments != nil {
+		attachments := make([]map[string]interface{}, len(email.Attachments))
+		for i, att := range email.Attachments {
+			attachments[i] = map[string]interface{}{
+				"Filename":    att.Filename,
+				"ContentType": att.ContentType,
+				"Size":        att.Size,
+			}
+		}
+		emailContext["Attachments"] = attachments
+	} else {
+		emailContext["Attachments"] = []map[string]interface{}{}
+	}
+
+	// 设置 $ 变量
+	if err := vm.Set("$", emailContext); err != nil {
+		return "", fmt.Errorf("设置上下文失败: %v", err)
+	}
+
+	// 同时设置小写版本以便兼容
+	if err := vm.Set("email", emailContext); err != nil {
+		return "", fmt.Errorf("设置email变量失败: %v", err)
+	}
+
+	// 设置当前字段值
 	currentValue := p.getEmailFieldValue(email, targetField)
-
-	// 创建JavaScript执行上下文
-	jsContext := map[string]interface{}{
-		"value":      currentValue,
-		"subject":    email.Subject,
-		"from":       strings.Join(email.From, ","),
-		"to":         strings.Join(email.To, ","),
-		"cc":         strings.Join(email.Cc, ","),
-		"bcc":        strings.Join(email.Bcc, ","),
-		"message_id": email.MessageID,
-		"body":       email.Body,
-		"html_body":  email.HTMLBody,
-		"mailbox":    email.MailboxName,
-		"flags":      strings.Join(email.Flags, ","),
-		"size":       email.Size,
-		"date":       email.Date,
-		"now":        time.Now(),
+	if err := vm.Set("value", currentValue); err != nil {
+		return "", fmt.Errorf("设置value变量失败: %v", err)
 	}
 
-	// 简化的JavaScript执行器
-	// 注意：这是一个简化实现，仅支持基本的字符串操作
-	result, err := p.executeSimpleJavaScript(scriptContent, jsContext)
+	// 设置辅助函数
+	vm.Set("lower", func(s string) string { return strings.ToLower(s) })
+	vm.Set("upper", func(s string) string { return strings.ToUpper(s) })
+	vm.Set("trim", func(s string) string { return strings.TrimSpace(s) })
+	vm.Set("contains", func(s, substr string) bool { return strings.Contains(s, substr) })
+	vm.Set("hasPrefix", func(s, prefix string) bool { return strings.HasPrefix(s, prefix) })
+	vm.Set("hasSuffix", func(s, suffix string) bool { return strings.HasSuffix(s, suffix) })
+	vm.Set("replace", func(s, old, new string) string { return strings.ReplaceAll(s, old, new) })
+	vm.Set("split", func(s, sep string) []string { return strings.Split(s, sep) })
+	vm.Set("join", func(arr []string, sep string) string { return strings.Join(arr, sep) })
+	vm.Set("now", time.Now())
+
+	// 设置 console.log（用于调试，但实际不输出）
+	vm.Set("console", map[string]interface{}{
+		"log": func(args ...interface{}) {
+			// No-op for security
+		},
+	})
+
+	// 执行脚本
+	result, err := vm.RunString(scriptContent)
 	if err != nil {
-		return "", fmt.Errorf("JavaScript执行失败: %v", err)
+		// 检查是否是超时
+		if strings.Contains(err.Error(), "timeout") {
+			return "", fmt.Errorf("执行超时")
+		}
+		return "", fmt.Errorf("执行失败: %v", err)
 	}
 
-	return result, nil
-}
-
-// executeSimpleJavaScript 简化的JavaScript执行器
-func (p *EmailTransformActionPlugin) executeSimpleJavaScript(script string, context map[string]interface{}) (string, error) {
-	// 这是一个非常简化的JavaScript执行器
-	// 在生产环境中，建议使用真正的JavaScript引擎如goja
-
-	// 获取当前值
-	value, ok := context["value"].(string)
-	if !ok {
-		return "", fmt.Errorf("无法获取当前值")
+	// 转换结果为字符串
+	if result == nil || goja.IsUndefined(result) || goja.IsNull(result) {
+		return "", nil
 	}
 
-	// 支持一些常见的JavaScript操作
-	script = strings.TrimSpace(script)
-
-	// 简单的模式匹配和执行
-	switch {
-	case strings.Contains(script, "toUpperCase()"):
-		return strings.ToUpper(value), nil
-	case strings.Contains(script, "toLowerCase()"):
-		return strings.ToLower(value), nil
-	case strings.Contains(script, "trim()"):
-		return strings.TrimSpace(value), nil
-	case strings.HasPrefix(script, "return ") && strings.HasSuffix(script, ";"):
-		// 处理简单的return语句
-		return p.executeSimpleReturnStatement(script, context)
-	default:
-		return "", fmt.Errorf("不支持的JavaScript操作: %s", script)
-	}
-}
-
-// executeSimpleReturnStatement 执行简单的return语句
-func (p *EmailTransformActionPlugin) executeSimpleReturnStatement(script string, context map[string]interface{}) (string, error) {
-	// 移除 "return " 和 ";"
-	expression := strings.TrimSpace(script)
-	expression = strings.TrimPrefix(expression, "return ")
-	expression = strings.TrimSuffix(expression, ";")
-	expression = strings.TrimSpace(expression)
-
-	value, ok := context["value"].(string)
-	if !ok {
-		return "", fmt.Errorf("无法获取当前值")
-	}
-
-	// 处理一些常见的表达式
-	switch {
-	case expression == "value.toUpperCase()":
-		return strings.ToUpper(value), nil
-	case expression == "value.toLowerCase()":
-		return strings.ToLower(value), nil
-	case expression == "value.trim()":
-		return strings.TrimSpace(value), nil
-	case strings.HasPrefix(expression, "'") && strings.HasSuffix(expression, "' + value"):
-		// 处理 'prefix' + value
-		prefix := strings.Trim(strings.TrimSuffix(expression, " + value"), "'\"")
-		return prefix + value, nil
-	case strings.HasPrefix(expression, "value + '") && strings.HasSuffix(expression, "'"):
-		// 处理 value + 'suffix'
-		suffix := strings.Trim(strings.TrimPrefix(expression, "value + "), "'\"")
-		return value + suffix, nil
-	case strings.HasPrefix(expression, "'") && strings.HasSuffix(expression, "'"):
-		// 处理纯字符串
-		return strings.Trim(expression, "'\""), nil
-	default:
-		return "", fmt.Errorf("不支持的JavaScript表达式: %s", expression)
-	}
+	return result.String(), nil
 }

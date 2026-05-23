@@ -1,21 +1,38 @@
+const CopyPlugin = require('copy-webpack-plugin')
+const path = require('path')
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     reactStrictMode: true,
-    swcMinify: false, // Disable SWC minification to avoid download issues
-    output: 'standalone',
-    experimental: {
-        swcPlugins: [], // Disable SWC plugins
-    },
-    async rewrites() {
-        return [
-            {
-                source: '/api/:path*',
-                destination: 'http://localhost:8080/api/:path*',
-            },
-        ]
-    },
+    swcMinify: true,
+    output: 'export',
+
     images: {
-        domains: ['localhost'],
+        unoptimized: true, // Required for static export
+    },
+    // Webpack configuration for Monaco Editor
+    webpack: (config, { isServer }) => {
+        // Handle Monaco editor worker files
+        if (!isServer) {
+            config.resolve.fallback = {
+                ...config.resolve.fallback,
+                fs: false,
+                path: false,
+            }
+
+            // Copy Monaco Editor files to static directory for local loading
+            config.plugins.push(
+                new CopyPlugin({
+                    patterns: [
+                        {
+                            from: path.join(__dirname, 'node_modules/monaco-editor/min/vs'),
+                            to: path.join(__dirname, 'public/monaco-editor/min/vs'),
+                        },
+                    ],
+                })
+            )
+        }
+        return config
     },
 }
 

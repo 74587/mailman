@@ -20,6 +20,8 @@ func NewEmailRepository(db *gorm.DB) *EmailRepository {
 
 // Create creates a new email
 func (r *EmailRepository) Create(email *models.Email) error {
+	// 在保存前提取纯邮箱地址
+	email.ExtractPureAddresses()
 	return r.db.Create(email).Error
 }
 
@@ -27,6 +29,10 @@ func (r *EmailRepository) Create(email *models.Email) error {
 func (r *EmailRepository) CreateBatch(emails []models.Email) error {
 	if len(emails) == 0 {
 		return nil
+	}
+	// 在保存前提取每封邮件的纯邮箱地址
+	for i := range emails {
+		emails[i].ExtractPureAddresses()
 	}
 	return r.db.CreateInBatches(emails, 100).Error
 }
@@ -151,9 +157,13 @@ func (r *EmailRepository) GetCountByMailbox(accountID uint, mailbox string) (int
 }
 
 // GetTotalCount returns the total count of all emails across all accounts
-func (r *EmailRepository) GetTotalCount() (int64, error) {
+func (r *EmailRepository) GetTotalCount(orgID uint) (int64, error) {
 	var count int64
-	err := r.db.Model(&models.Email{}).Count(&count).Error
+	query := r.db.Model(&models.Email{})
+	if orgID > 0 {
+		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", orgID))
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
@@ -161,58 +171,70 @@ func (r *EmailRepository) GetTotalCount() (int64, error) {
 func (r *EmailRepository) GetUnreadCount(accountID uint) (int64, error) {
 	var count int64
 	err := r.db.Model(&models.Email{}).
-		Where("account_id = ? AND NOT JSON_CONTAINS(flags, '\"\\\\Seen\"')", accountID).
+		Where("account_id = ? AND flags NOT LIKE ?", accountID, "%\"\\\\Seen\"%").
 		Count(&count).Error
 	return count, err
 }
 
 // GetTotalUnreadCount returns the total count of unread emails across all accounts
-func (r *EmailRepository) GetTotalUnreadCount() (int64, error) {
+func (r *EmailRepository) GetTotalUnreadCount(orgID uint) (int64, error) {
 	var count int64
-	err := r.db.Model(&models.Email{}).
-		Where("NOT JSON_CONTAINS(flags, '\"\\\\Seen\"')").
-		Count(&count).Error
+	query := r.db.Model(&models.Email{}).
+		Where("flags NOT LIKE ?", "%\"\\\\Seen\"%")
+	if orgID > 0 {
+		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", orgID))
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
 // GetTodayEmailCount returns the count of emails received today
-func (r *EmailRepository) GetTodayEmailCount() (int64, error) {
+func (r *EmailRepository) GetTodayEmailCount(orgID uint) (int64, error) {
 	today := time.Now().Truncate(24 * time.Hour)
 	tomorrow := today.Add(24 * time.Hour)
 
 	var count int64
-	err := r.db.Model(&models.Email{}).
-		Where("date >= ? AND date < ?", today, tomorrow).
-		Count(&count).Error
+	query := r.db.Model(&models.Email{}).
+		Where("date >= ? AND date < ?", today, tomorrow)
+	if orgID > 0 {
+		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", orgID))
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
 // GetYesterdayEmailCount returns the count of emails received yesterday
-func (r *EmailRepository) GetYesterdayEmailCount() (int64, error) {
+func (r *EmailRepository) GetYesterdayEmailCount(orgID uint) (int64, error) {
 	today := time.Now().Truncate(24 * time.Hour)
 	yesterday := today.Add(-24 * time.Hour)
 
 	var count int64
-	err := r.db.Model(&models.Email{}).
-		Where("date >= ? AND date < ?", yesterday, today).
-		Count(&count).Error
+	query := r.db.Model(&models.Email{}).
+		Where("date >= ? AND date < ?", yesterday, today)
+	if orgID > 0 {
+		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", orgID))
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
 // GetEmailCountUntilYesterday returns the total count of emails until yesterday 24:00
-func (r *EmailRepository) GetEmailCountUntilYesterday() (int64, error) {
+func (r *EmailRepository) GetEmailCountUntilYesterday(orgID uint) (int64, error) {
 	today := time.Now().Truncate(24 * time.Hour)
 
 	var count int64
-	err := r.db.Model(&models.Email{}).
-		Where("date < ?", today).
-		Count(&count).Error
+	query := r.db.Model(&models.Email{}).
+		Where("date < ?", today)
+	if orgID > 0 {
+		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", orgID))
+	}
+	err := query.Count(&count).Error
 	return count, err
 }
 
 // GetEmailCountUntilNow returns the total count of emails until now
-func (r *EmailRepository) GetEmailCountUntilNow() (int64, error) {
-	return r.GetTotalCount()
+func (r *EmailRepository) GetEmailCountUntilNow(orgID uint) (int64, error) {
+	return r.GetTotalCount(orgID)
 }
 
 // CheckDuplicate checks if an email with the same message ID already exists
@@ -224,20 +246,23 @@ func (r *EmailRepository) CheckDuplicate(messageID string, accountID uint) (bool
 
 // EmailSearchOptions represents search criteria for emails
 type EmailSearchOptions struct {
-	AccountID    uint
-	Limit        int
-	Offset       int
-	SortBy       string
-	StartDate    *time.Time
-	EndDate      *time.Time
-	FromQuery    string
-	ToQuery      string
-	CcQuery      string
-	SubjectQuery string
-	BodyQuery    string
-	HTMLQuery    string
-	Keyword      string // Global search across all text fields
-	MailboxName  string
+	AccountID          uint
+	OrgID              uint   // Filter emails by organization (via account)
+	Limit              int
+	Offset             int
+	SortBy             string
+	StartDate          *time.Time
+	EndDate            *time.Time
+	FromQuery          string
+	ToQuery            string
+	CcQuery            string
+	SubjectQuery       string
+	BodyQuery          string
+	HTMLQuery          string
+	Keyword            string // Global search across all text fields
+	MailboxName        string
+	Direction          string // "received", "sent", or "" for all
+	PreloadAttachments bool   // Whether to preload attachments (default false for performance)
 }
 
 // SearchEmails performs advanced search on emails with multiple criteria
@@ -248,9 +273,19 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 	// Build the base query
 	query := r.db.Model(&models.Email{})
 
+	// Preload attachments if requested
+	if options.PreloadAttachments {
+		query = query.Preload("Attachments")
+	}
+
 	// Apply account filter only if AccountID is specified (non-zero)
 	if options.AccountID > 0 {
 		query = query.Where("account_id = ?", options.AccountID)
+	}
+
+	// Apply organization filter (via account subquery)
+	if options.OrgID > 0 {
+		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", options.OrgID))
 	}
 
 	// Apply date range filter
@@ -264,6 +299,16 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 	// Apply mailbox filter
 	if options.MailboxName != "" {
 		query = query.Where("mailbox_name = ?", options.MailboxName)
+	}
+
+	// Apply direction filter (default to received if not specified)
+	if options.Direction == "all" {
+		// No filter - show all emails
+	} else if options.Direction != "" {
+		query = query.Where("direction = ?", options.Direction)
+	} else {
+		// Default: only show received emails
+		query = query.Where("direction = ? OR direction IS NULL OR direction = ''", models.EmailDirectionReceived)
 	}
 
 	// Apply text search filters
@@ -469,19 +514,23 @@ func (r *EmailRepository) GetEmailsByAccountIDSince(accountID uint, since time.T
 	return emails, err
 }
 
-// GetAllMailboxFolders retrieves all unique mailbox folders across all accounts
-func (r *EmailRepository) GetAllMailboxFolders() ([]string, error) {
+// GetAllMailboxFolders retrieves all unique mailbox folders across accounts in the org
+func (r *EmailRepository) GetAllMailboxFolders(orgID uint) ([]string, error) {
 	var folders []string
-	
-	err := r.db.Model(&models.Email{}).
+
+	query := r.db.Model(&models.Email{}).
 		Select("DISTINCT mailbox_name").
-		Where("mailbox_name IS NOT NULL AND mailbox_name != ''").
+		Where("mailbox_name IS NOT NULL AND mailbox_name != ''")
+	if orgID > 0 {
+		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", orgID))
+	}
+	err := query.
 		Order("mailbox_name ASC").
 		Pluck("mailbox_name", &folders).Error
-	
+
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return folders, nil
 }

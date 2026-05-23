@@ -56,14 +56,49 @@ func (r *SyncConfigRepository) GetEnabledConfigs() ([]models.EmailAccountSyncCon
 
 // GetEnabledConfigsWithAccounts retrieves all enabled sync configs with account details
 // Only returns configs for verified, non-deleted accounts
+// GetEnabledConfigsWithAccounts retrieves all enabled sync configs with account details
+// Also includes accounts that have active temporary sync configs (even if disabled in main config)
+// Only returns configs for verified, non-deleted accounts
 func (r *SyncConfigRepository) GetEnabledConfigsWithAccounts() ([]models.EmailAccountSyncConfig, error) {
+	// 1. Get all relevant persistent configs:
+	//    - Either explicitly enabled (enable_auto_sync = true)
+	//    - OR has a valid temporary config
 	var configs []models.EmailAccountSyncConfig
 	err := r.db.Preload("Account").Preload("Account.MailProvider").
 		Joins("JOIN email_accounts ON email_accounts.id = email_account_sync_configs.account_id").
-		Where("email_account_sync_configs.enable_auto_sync = ?", true).
 		Where("email_accounts.is_verified = ?", true).
 		Where("email_accounts.deleted_at IS NULL").
+		Where("email_account_sync_configs.enable_auto_sync = ? OR email_account_sync_configs.account_id IN (SELECT account_id FROM temporary_sync_configs WHERE expires_at > ?)", true, time.Now()).
 		Find(&configs).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Get valid temporary configs to apply overrides
+	var tempConfigs []models.TemporarySyncConfig
+	err = r.db.Where("expires_at > ?", time.Now()).Find(&tempConfigs).Error
+	if err != nil {
+		return nil, err
+	}
+
+	// Create map for fast lookup
+	tempMap := make(map[uint]models.TemporarySyncConfig)
+	for _, t := range tempConfigs {
+		tempMap[t.AccountID] = t
+	}
+
+	// 3. Apply overrides
+	// Even though we fetched them, we need to ensure the in-memory struct reflects the temporary state
+	for i := range configs {
+		if temp, exists := tempMap[configs[i].AccountID]; exists {
+			configs[i].EnableAutoSync = true // Force enable
+			configs[i].SyncInterval = temp.SyncInterval
+			configs[i].SyncFolders = temp.SyncFolders
+			configs[i].AutoDisabled = false // Reset auto-disabled state for temporary run
+			configs[i].DisableReason = ""
+		}
+	}
+
 	return configs, err
 }
 
@@ -199,24 +234,53 @@ func (r *SyncConfigRepository) ToggleAutoSync(accountID uint) error {
 }
 
 // GetSyncStats retrieves sync statistics
-func (r *SyncConfigRepository) GetSyncStats() (map[string]interface{}, error) {
-	var totalConfigs, enabledConfigs, syncingConfigs, errorConfigs int64
+func (r *SyncConfigRepository) GetSyncStats(orgID uint) (map[string]interface{}, error) {
+	var totalConfigs, activeConfigs, syncingConfigs, errorConfigs, disabledConfigs int64
 
-	r.db.Model(&models.EmailAccountSyncConfig{}).Count(&totalConfigs)
-	r.db.Model(&models.EmailAccountSyncConfig{}).Where("enable_auto_sync = ?", true).Count(&enabledConfigs)
-	r.db.Model(&models.EmailAccountSyncConfig{}).Where("sync_status = ?", "syncing").Count(&syncingConfigs)
-	r.db.Model(&models.EmailAccountSyncConfig{}).Where("last_sync_error IS NOT NULL AND last_sync_error != ''").Count(&errorConfigs)
+	// 构建基础过滤条件 (通过 JOIN email_accounts 按组织过滤)
+	buildQuery := func() *gorm.DB {
+		q := r.db.Model(&models.EmailAccountSyncConfig{}).
+			Joins("JOIN email_accounts ON email_accounts.id = email_account_sync_configs.account_id")
+		if orgID > 0 {
+			q = q.Where("email_accounts.org_id = ?", orgID)
+		}
+		return q
+	}
+
+	// 总配置数
+	buildQuery().Count(&totalConfigs)
+
+	// 活跃配置：enable_auto_sync = true 且 auto_disabled = false
+	buildQuery().
+		Where("email_account_sync_configs.enable_auto_sync = ? AND (email_account_sync_configs.auto_disabled = ? OR email_account_sync_configs.auto_disabled IS NULL)", true, false).
+		Count(&activeConfigs)
+
+	// 正在同步
+	buildQuery().
+		Where("email_account_sync_configs.sync_status = ?", "syncing").
+		Count(&syncingConfigs)
+
+	// 异常配置：sync_status = 'error' 或 auto_disabled = true
+	buildQuery().
+		Where("email_account_sync_configs.sync_status = ? OR email_account_sync_configs.auto_disabled = ?", "error", true).
+		Count(&errorConfigs)
+
+	// 已禁用：enable_auto_sync = false
+	buildQuery().
+		Where("email_account_sync_configs.enable_auto_sync = ?", false).
+		Count(&disabledConfigs)
 
 	return map[string]interface{}{
-		"total":   totalConfigs,
-		"enabled": enabledConfigs,
-		"syncing": syncingConfigs,
-		"errors":  errorConfigs,
+		"total":    totalConfigs,
+		"active":   activeConfigs,   // 启用且未被自动禁用
+		"syncing":  syncingConfigs,  // 正在同步
+		"errors":   errorConfigs,    // 异常（含自动禁用）
+		"disabled": disabledConfigs, // 手动禁用
 	}, nil
 }
 
-// GetAllWithPagination retrieves all sync configs with pagination and search
-func (r *SyncConfigRepository) GetAllWithPagination(page, limit int, search string) (int, []models.EmailAccountSyncConfig, error) {
+// GetAllWithPagination retrieves all sync configs with pagination, search, status and enabled filter
+func (r *SyncConfigRepository) GetAllWithPagination(orgID uint, page, limit int, search, status, enabled string) (int, []models.EmailAccountSyncConfig, error) {
 	var configs []models.EmailAccountSyncConfig
 	var totalCount int64
 
@@ -224,8 +288,33 @@ func (r *SyncConfigRepository) GetAllWithPagination(page, limit int, search stri
 	baseQuery := r.db.Model(&models.EmailAccountSyncConfig{}).
 		Joins("JOIN email_accounts ON email_accounts.id = email_account_sync_configs.account_id")
 
+	// 按组织过滤
+	if orgID > 0 {
+		baseQuery = baseQuery.Where("email_accounts.org_id = ?", orgID)
+	}
+
 	if search != "" {
-		baseQuery = baseQuery.Where("email_accounts.email LIKE ? OR email_accounts.name LIKE ?", "%"+search+"%", "%"+search+"%")
+		baseQuery = baseQuery.Where("email_accounts.email_address LIKE ?", "%"+search+"%")
+	}
+
+	// Apply status filter
+	if status != "" && status != "all" {
+		baseQuery = baseQuery.Where("email_account_sync_configs.sync_status = ?", status)
+	}
+
+	// Apply enabled filter
+	if enabled != "" && enabled != "all" {
+		switch enabled {
+		case "enabled":
+			// 已启用：enable_auto_sync=true 且 auto_disabled=false
+			baseQuery = baseQuery.Where("email_account_sync_configs.enable_auto_sync = ? AND (email_account_sync_configs.auto_disabled = ? OR email_account_sync_configs.auto_disabled IS NULL)", true, false)
+		case "disabled":
+			// 已禁用：enable_auto_sync=false
+			baseQuery = baseQuery.Where("email_account_sync_configs.enable_auto_sync = ?", false)
+		case "auto_disabled":
+			// 自动禁用：auto_disabled=true
+			baseQuery = baseQuery.Where("email_account_sync_configs.auto_disabled = ?", true)
+		}
 	}
 
 	// Get total count
@@ -240,9 +329,31 @@ func (r *SyncConfigRepository) GetAllWithPagination(page, limit int, search stri
 		Preload("Account.MailProvider").
 		Joins("JOIN email_accounts ON email_accounts.id = email_account_sync_configs.account_id")
 
+	// 按组织过滤
+	if orgID > 0 {
+		query = query.Where("email_accounts.org_id = ?", orgID)
+	}
+
 	// Apply search filter if provided
 	if search != "" {
-		query = query.Where("email_accounts.email LIKE ? OR email_accounts.name LIKE ?", "%"+search+"%", "%"+search+"%")
+		query = query.Where("email_accounts.email_address LIKE ?", "%"+search+"%")
+	}
+
+	// Apply status filter
+	if status != "" && status != "all" {
+		query = query.Where("email_account_sync_configs.sync_status = ?", status)
+	}
+
+	// Apply enabled filter
+	if enabled != "" && enabled != "all" {
+		switch enabled {
+		case "enabled":
+			query = query.Where("email_account_sync_configs.enable_auto_sync = ? AND (email_account_sync_configs.auto_disabled = ? OR email_account_sync_configs.auto_disabled IS NULL)", true, false)
+		case "disabled":
+			query = query.Where("email_account_sync_configs.enable_auto_sync = ?", false)
+		case "auto_disabled":
+			query = query.Where("email_account_sync_configs.auto_disabled = ?", true)
+		}
 	}
 
 	// Apply pagination and ordering
@@ -286,28 +397,92 @@ func (r *SyncConfigRepository) RecordSyncStatistics(stats *models.SyncStatistics
 
 // GetGlobalConfig retrieves global sync configuration
 func (r *SyncConfigRepository) GetGlobalConfig() (map[string]interface{}, error) {
-	// For now, return default global config
-	// In a real implementation, this would be stored in a separate table
+	var config models.GlobalSyncConfig
+
+	// Try to get the global config from database
+	err := r.db.First(&config).Error
+	if err != nil {
+		// If not found, create default config
+		if err == gorm.ErrRecordNotFound {
+			config = models.GlobalSyncConfig{
+				DefaultEnableSync:   true,
+				DefaultSyncInterval: 300,
+				DefaultSyncFolders:  models.StringSlice{"INBOX"},
+				MaxSyncWorkers:      10,
+				MaxEmailsPerSync:    100,
+			}
+			if createErr := r.db.Create(&config).Error; createErr != nil {
+				// Return defaults if creation fails
+				return map[string]interface{}{
+					"default_enable_sync":   true,
+					"default_sync_interval": 300,
+					"default_sync_folders":  []string{"INBOX"},
+					"max_sync_workers":      10,
+					"max_emails_per_sync":   100,
+				}, nil
+			}
+		} else {
+			// Other error, return defaults
+			return map[string]interface{}{
+				"default_enable_sync":   true,
+				"default_sync_interval": 300,
+				"default_sync_folders":  []string{"INBOX"},
+				"max_sync_workers":      10,
+				"max_emails_per_sync":   100,
+			}, nil
+		}
+	}
+
+	// Convert to map for backward compatibility
 	return map[string]interface{}{
-		"default_enable_sync":   true,
-		"default_sync_interval": 300,
-		"default_sync_folders":  []string{"INBOX"},
-		"max_sync_workers":      10,
-		"max_emails_per_sync":   100,
+		"default_enable_sync":   config.DefaultEnableSync,
+		"default_sync_interval": config.DefaultSyncInterval,
+		"default_sync_folders":  []string(config.DefaultSyncFolders),
+		"max_sync_workers":      config.MaxSyncWorkers,
+		"max_emails_per_sync":   config.MaxEmailsPerSync,
 	}, nil
 }
 
 // UpdateGlobalConfig updates global sync configuration
-func (r *SyncConfigRepository) UpdateGlobalConfig(config map[string]interface{}) error {
-	// For now, this is a no-op
-	// In a real implementation, this would update a global config table
-	return nil
+func (r *SyncConfigRepository) UpdateGlobalConfig(configMap map[string]interface{}) error {
+	var config models.GlobalSyncConfig
+
+	// Try to get existing config
+	err := r.db.First(&config).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// Create new config
+			config = models.GlobalSyncConfig{}
+		} else {
+			return err
+		}
+	}
+
+	// Update fields from map
+	if v, ok := configMap["default_enable_sync"].(bool); ok {
+		config.DefaultEnableSync = v
+	}
+	if v, ok := configMap["default_sync_interval"].(int); ok {
+		config.DefaultSyncInterval = v
+	}
+	if v, ok := configMap["default_sync_folders"].([]string); ok {
+		config.DefaultSyncFolders = models.StringSlice(v)
+	}
+	if v, ok := configMap["max_sync_workers"].(int); ok {
+		config.MaxSyncWorkers = v
+	}
+	if v, ok := configMap["max_emails_per_sync"].(int); ok {
+		config.MaxEmailsPerSync = v
+	}
+
+	// Save to database
+	return r.db.Save(&config).Error
 }
 
 // GetSyncStatistics retrieves sync statistics
-func (r *SyncConfigRepository) GetSyncStatistics() (map[string]interface{}, error) {
+func (r *SyncConfigRepository) GetSyncStatistics(orgID uint) (map[string]interface{}, error) {
 	// This is already implemented as GetSyncStats
-	return r.GetSyncStats()
+	return r.GetSyncStats(orgID)
 }
 
 // TemporarySyncConfig operations
@@ -331,9 +506,37 @@ func (r *SyncConfigRepository) CreateTemporaryConfig(config *models.TemporarySyn
 	return r.db.Create(config).Error
 }
 
-// DeleteExpiredTemporaryConfigs deletes all expired temporary configs
-func (r *SyncConfigRepository) DeleteExpiredTemporaryConfigs() error {
-	return r.db.Where("expires_at < ?", time.Now()).Delete(&models.TemporarySyncConfig{}).Error
+// UpdateTemporaryConfig updates an existing temporary sync config
+func (r *SyncConfigRepository) UpdateTemporaryConfig(config *models.TemporarySyncConfig) error {
+	return r.db.Save(config).Error
+}
+
+// DeleteExpiredTemporaryConfigs deletes all expired temporary configs and returns affected account IDs
+func (r *SyncConfigRepository) DeleteExpiredTemporaryConfigs() ([]uint, error) {
+	var expiredConfigs []models.TemporarySyncConfig
+	now := time.Now()
+
+	// Find expired configs first
+	if err := r.db.Where("expires_at < ?", now).Find(&expiredConfigs).Error; err != nil {
+		return nil, err
+	}
+
+	if len(expiredConfigs) == 0 {
+		return nil, nil
+	}
+
+	// Collect IDs
+	var accountIDs []uint
+	for _, config := range expiredConfigs {
+		accountIDs = append(accountIDs, config.AccountID)
+	}
+
+	// Delete them
+	if err := r.db.Where("expires_at < ?", now).Delete(&models.TemporarySyncConfig{}).Error; err != nil {
+		return nil, err
+	}
+
+	return accountIDs, nil
 }
 
 // GetEffectiveSyncConfig returns the effective sync config for an account

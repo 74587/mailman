@@ -1,3 +1,4 @@
+import { logger } from '@/lib/logger';
 import { apiClient } from '@/lib/api-client'
 
 export interface SystemConfig {
@@ -40,15 +41,15 @@ class SystemConfigService {
      * 根据键获取配置
      */
     async getConfigByKey(key: string): Promise<SystemConfig> {
-        console.log('[SystemConfigService] getConfigByKey 请求:', key)
+        logger.debug('[SystemConfigService] getConfigByKey 请求:', key)
         const response = await apiClient.get(`${this.baseUrl}/system-config/${key}`)
-        console.log('[SystemConfigService] getConfigByKey 响应:', response)
-        console.log('[SystemConfigService] response.data:', response.data)
-        console.log('[SystemConfigService] response 结构:', Object.keys(response))
-        
+        logger.debug('[SystemConfigService] getConfigByKey 响应:', response)
+        logger.debug('[SystemConfigService] response.data:', response.data)
+        logger.debug('[SystemConfigService] response 结构:', Object.keys(response))
+
         // 尝试不同的数据访问方式
         const data = response.data || response
-        console.log('[SystemConfigService] 使用的数据:', data)
+        logger.debug('[SystemConfigService] 使用的数据:', data)
         return data
     }
 
@@ -76,10 +77,10 @@ class SystemConfigService {
     async getOAuth2AutoOpenConfig(): Promise<boolean> {
         try {
             const config = await this.getConfigByKey('oauth2-auto-open')
-            console.log('[SystemConfigService] getOAuth2AutoOpenConfig - 原始配置:', config)
-            console.log('[SystemConfigService] current_value:', config.current_value, 'type:', typeof config.current_value)
+            logger.debug('[SystemConfigService] getOAuth2AutoOpenConfig - 原始配置:', config)
+            logger.debug('[SystemConfigService] current_value:', config.current_value, 'type:', typeof config.current_value)
             const result = config.current_value === true
-            console.log('[SystemConfigService] 最终返回值:', result)
+            logger.debug('[SystemConfigService] 最终返回值:', result)
             return result
         } catch (error) {
             console.warn('Failed to get OAuth2 auto-open config, using default:', error)
@@ -100,10 +101,10 @@ class SystemConfigService {
     async getDeveloperModeConfig(): Promise<boolean> {
         try {
             const config = await this.getConfigByKey('developer-mode')
-            console.log('[SystemConfigService] getDeveloperModeConfig - 原始配置:', config)
-            console.log('[SystemConfigService] current_value:', config.current_value, 'type:', typeof config.current_value)
+            logger.debug('[SystemConfigService] getDeveloperModeConfig - 原始配置:', config)
+            logger.debug('[SystemConfigService] current_value:', config.current_value, 'type:', typeof config.current_value)
             const result = config.current_value === true
-            console.log('[SystemConfigService] 最终返回值:', result)
+            logger.debug('[SystemConfigService] 最终返回值:', result)
             return result
         } catch (error) {
             console.warn('Failed to get developer mode config, using default:', error)
@@ -203,10 +204,35 @@ class SystemConfigService {
             'notification': '通知设置',
             'general': '常规设置',
             'ui': 'UI界面',
-            'security': '安全设置'
+            'security': '安全设置',
+            'keyboard': '快捷键'
         }
 
         return categoryNames[category] || category
+    }
+
+    /**
+     * 获取登录页主题（公开API，无需认证）
+     */
+    async getLoginTheme(): Promise<string> {
+        try {
+            const response = await fetch('/api/public/login-theme')
+            if (!response.ok) {
+                return 'classic'
+            }
+            const data = await response.json()
+            return data.theme || 'classic'
+        } catch (error) {
+            console.warn('Failed to get login theme, using default:', error)
+            return 'classic'
+        }
+    }
+
+    /**
+     * 设置登录页主题
+     */
+    async setLoginTheme(theme: string): Promise<void> {
+        await this.updateConfigValue('login-theme', theme)
     }
 }
 

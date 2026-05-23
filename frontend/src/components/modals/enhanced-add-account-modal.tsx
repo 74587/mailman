@@ -1,7 +1,8 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import { useState, useEffect } from 'react'
-import { X, Plus, Check, AlertCircle, Loader2, ArrowRight, ArrowLeft, CheckCircle, Clock, Settings } from 'lucide-react'
+import { Check, AlertCircle, Loader2, ArrowRight, CheckCircle, Clock, Settings } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
 import { syncConfigService } from '@/services/sync-config.service'
@@ -9,6 +10,16 @@ import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
 import { EmailAccount } from '@/types'
 import OAuth2PopupAuth from '@/components/oauth2/oauth2-popup-auth'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalFooter,
+    ModalTitle,
+    ModalDescription
+} from '@/components/ui/modal'
+import { Button } from '@/components/ui/button'
 
 interface EnhancedAddAccountModalProps {
     isOpen: boolean
@@ -100,6 +111,13 @@ export default function EnhancedAddAccountModal({
     const [showOAuth2Popup, setShowOAuth2Popup] = useState(false)
     const [oauth2Providers, setOAuth2Providers] = useState<any[]>([])
 
+    // 自定义IMAP服务器配置
+    const [isCustomProvider, setIsCustomProvider] = useState(false)
+    const [customImapServer, setCustomImapServer] = useState('')
+    const [customImapPort, setCustomImapPort] = useState(993)
+    const [customSmtpServer, setCustomSmtpServer] = useState('')
+    const [customSmtpPort, setCustomSmtpPort] = useState(587)
+
     // 工作流程步骤配置
     const steps = [
         { key: 'account', title: '添加账户', description: '配置邮件账户信息' },
@@ -184,9 +202,44 @@ export default function EnhancedAddAccountModal({
 
     // 步骤1: 创建或更新账户
     const handleCreateAccount = async () => {
-        if (!selectedProvider || !accountForm.email) {
-            onError?.('请完整填写账户信息')
-            return
+        // 如果是自定义IMAP，先创建provider
+        let providerId: number | undefined
+
+        if (isCustomProvider) {
+            if (!customImapServer || customImapPort <= 0) {
+                onError?.('请填写IMAP服务器和端口')
+                return
+            }
+            if (!accountForm.email) {
+                onError?.('请输入邮箱地址')
+                return
+            }
+
+            setLoading(true)
+            try {
+                // 使用邮箱域名作为provider名称
+                const emailDomain = accountForm.email.split('@')[1] || 'custom'
+                const providerName = `Custom-${emailDomain}-${Date.now()}`
+
+                const newProvider = await emailAccountService.createProvider({
+                    name: providerName,
+                    imapServer: customImapServer,
+                    imapPort: customImapPort,
+                    smtpServer: customSmtpServer || undefined,
+                    smtpPort: customSmtpPort || undefined
+                })
+                providerId = newProvider.id
+            } catch (error: any) {
+                onError?.(error.message || '创建自定义提供商失败')
+                setLoading(false)
+                return
+            }
+        } else {
+            if (!selectedProvider || !accountForm.email) {
+                onError?.('请完整填写账户信息')
+                return
+            }
+            providerId = selectedProvider.id
         }
 
         try {
@@ -194,7 +247,7 @@ export default function EnhancedAddAccountModal({
 
             const payload: any = {
                 email_address: accountForm.email,
-                mail_provider_id: selectedProvider.id,
+                mail_provider_id: providerId,
                 auth_type: accountForm.authType
             }
 
@@ -234,7 +287,7 @@ export default function EnhancedAddAccountModal({
             } catch (createError: any) {
                 // 如果创建失败（可能是账户已存在），尝试查找并更新现有账户
                 if (createError.message?.includes('already exists') || createError.message?.includes('重复') || createError.message?.includes('duplicate')) {
-                    console.log('Account exists, attempting to update...')
+                    logger.debug('Account exists, attempting to update...')
 
                     // 获取所有账户，查找匹配的邮箱
                     const existingAccounts = await emailAccountService.getAccounts()
@@ -243,7 +296,7 @@ export default function EnhancedAddAccountModal({
                     if (existingAccount) {
                         // 更新现有账户
                         account = await emailAccountService.updateAccount(existingAccount.id, payload)
-                        console.log('Successfully updated existing account')
+                        logger.debug('Successfully updated existing account')
                     } else {
                         throw createError
                     }
@@ -383,29 +436,14 @@ export default function EnhancedAddAccountModal({
         return selectedProvider
     }
 
-    if (!isOpen) return null
-
     return (
         <>
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 dark:bg-gray-800 max-h-[90vh] overflow-y-auto">
-                    {/* 头部 */}
-                    <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
-                        <div>
-                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-                                账户设置向导
-                            </h3>
-                            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                                {steps[currentStepIndex]?.description}
-                            </p>
-                        </div>
-                        <button
-                            onClick={handleClose}
-                            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                        >
-                            <X className="h-5 w-5" />
-                        </button>
-                    </div>
+            <Modal open={isOpen} onOpenChange={(open) => !open && handleClose()}>
+                <ModalContent size="xl" className="max-h-[90vh] flex flex-col">
+                    <ModalHeader>
+                        <ModalTitle>账户设置向导</ModalTitle>
+                        <ModalDescription>{steps[currentStepIndex]?.description}</ModalDescription>
+                    </ModalHeader>
 
                     {/* 步骤指示器 */}
                     <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
@@ -442,8 +480,7 @@ export default function EnhancedAddAccountModal({
                         </div>
                     </div>
 
-                    {/* 内容区域 */}
-                    <div className="p-6">
+                    <ModalBody>
                         <AnimatePresence mode="wait">
                             {currentStep === 'account' && (
                                 <motion.div
@@ -473,10 +510,17 @@ export default function EnhancedAddAccountModal({
                                                 邮件提供商
                                             </label>
                                             <select
-                                                value={selectedProvider?.id || ''}
+                                                value={isCustomProvider ? 'custom' : (selectedProvider?.id || '')}
                                                 onChange={(e) => {
-                                                    const provider = providers.find(p => p.id === parseInt(e.target.value))
-                                                    setSelectedProvider(provider || null)
+                                                    const value = e.target.value
+                                                    if (value === 'custom') {
+                                                        setIsCustomProvider(true)
+                                                        setSelectedProvider(null)
+                                                    } else {
+                                                        setIsCustomProvider(false)
+                                                        const provider = providers.find(p => p.id === parseInt(value))
+                                                        setSelectedProvider(provider || null)
+                                                    }
                                                 }}
                                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                                             >
@@ -486,7 +530,60 @@ export default function EnhancedAddAccountModal({
                                                         {provider.name}
                                                     </option>
                                                 ))}
+                                                <option value="custom">🔧 自定义 IMAP 服务器</option>
                                             </select>
+
+                                            {/* 自定义IMAP配置表单 */}
+                                            {isCustomProvider && (
+                                                <div className="mt-4 space-y-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900/20">
+                                                    <h4 className="text-sm font-medium text-blue-900 dark:text-blue-200">自定义 IMAP 服务器配置</h4>
+                                                    <div className="grid grid-cols-2 gap-3">
+                                                        <div>
+                                                            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">IMAP 服务器 *</label>
+                                                            <input
+                                                                type="text"
+                                                                value={customImapServer}
+                                                                onChange={(e) => setCustomImapServer(e.target.value)}
+                                                                placeholder="如 imap.example.com"
+                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                                required
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">IMAP 端口 *</label>
+                                                            <input
+                                                                type="number"
+                                                                value={customImapPort}
+                                                                onChange={(e) => setCustomImapPort(parseInt(e.target.value) || 993)}
+                                                                placeholder="993"
+                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                                required
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">SMTP 服务器</label>
+                                                            <input
+                                                                type="text"
+                                                                value={customSmtpServer}
+                                                                onChange={(e) => setCustomSmtpServer(e.target.value)}
+                                                                placeholder="如 smtp.example.com"
+                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">SMTP 端口</label>
+                                                            <input
+                                                                type="number"
+                                                                value={customSmtpPort}
+                                                                onChange={(e) => setCustomSmtpPort(parseInt(e.target.value) || 587)}
+                                                                placeholder="587"
+                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    <p className="text-xs text-gray-500 dark:text-gray-400">提示：端口 993 通常用于 IMAP SSL，端口 587 通常用于 SMTP TLS</p>
+                                                </div>
+                                            )}
                                         </div>
 
                                         <div>
@@ -771,83 +868,66 @@ export default function EnhancedAddAccountModal({
                                 </motion.div>
                             )}
                         </AnimatePresence>
-                    </div>
+                    </ModalBody>
 
-                    {/* 底部按钮 */}
-                    <div className="flex items-center justify-between p-6 bg-gray-50 dark:bg-gray-700">
-                        <button
+                    <ModalFooter className="justify-between">
+                        <Button
+                            variant="outline"
                             onClick={currentStep === 'account' ? handleClose : () => {
                                 const currentIndex = steps.findIndex(step => step.key === currentStep)
                                 if (currentIndex > 0) {
                                     setCurrentStep(steps[currentIndex - 1].key as WorkflowStep)
                                 }
                             }}
-                            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 dark:bg-gray-600 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-500"
                             disabled={loading}
                         >
                             {currentStep === 'account' ? '取消' : '上一步'}
-                        </button>
+                        </Button>
 
                         <div className="flex space-x-3">
                             {currentStep === 'account' && (
-                                <button
+                                <Button
                                     onClick={handleCreateAccount}
                                     disabled={loading || !selectedProvider || !accountForm.email || (accountForm.authType === 'password' && !accountForm.password) || (accountForm.authType === 'oauth2' && !accountForm.accessToken)}
-                                    className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                    {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                                    <span>{loading ? '创建中...' : '创建账户'}</span>
-                                </button>
+                                    {loading && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                                    {loading ? '创建中...' : '创建账户'}
+                                </Button>
                             )}
 
                             {currentStep === 'verify' && (
-                                <button
-                                    onClick={handleVerifyAccount}
-                                    disabled={loading}
-                                    className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                                    <span>{loading ? '验证中...' : '验证连接'}</span>
-                                </button>
+                                <Button onClick={handleVerifyAccount} disabled={loading}>
+                                    {loading && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                                    {loading ? '验证中...' : '验证连接'}
+                                </Button>
                             )}
 
                             {currentStep === 'sync' && (
-                                <button
-                                    onClick={handleInitialSync}
-                                    disabled={loading}
-                                    className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                                    <Clock className="h-4 w-4" />
-                                    <span>{loading ? '同步中...' : '开始同步'}</span>
-                                </button>
+                                <Button onClick={handleInitialSync} disabled={loading}>
+                                    {loading && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                                    <Clock className="h-4 w-4 mr-2" />
+                                    {loading ? '同步中...' : '开始同步'}
+                                </Button>
                             )}
 
                             {currentStep === 'config' && (
-                                <button
-                                    onClick={handleCreateSyncConfig}
-                                    disabled={loading}
-                                    className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 border border-transparent rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-                                    <Settings className="h-4 w-4" />
-                                    <span>{loading ? '配置中...' : '创建配置'}</span>
-                                </button>
+                                <Button onClick={handleCreateSyncConfig} disabled={loading}>
+                                    {loading && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
+                                    <Settings className="h-4 w-4 mr-2" />
+                                    {loading ? '配置中...' : '创建配置'}
+                                </Button>
                             )}
 
                             {currentStep === 'complete' && (
-                                <button
-                                    onClick={handleComplete}
-                                    className="flex items-center space-x-2 px-4 py-2 text-sm font-medium text-white bg-green-600 border border-transparent rounded-lg hover:bg-green-700"
-                                >
-                                    <CheckCircle className="h-4 w-4" />
-                                    <span>完成</span>
-                                </button>
+                                <Button onClick={handleComplete} className="bg-green-600 hover:bg-green-700">
+                                    <CheckCircle className="h-4 w-4 mr-2" />
+                                    完成
+                                </Button>
                             )}
                         </div>
-                    </div>
-                </div>
-            </div>
+                    </ModalFooter>
+                </ModalContent>
+            </Modal>
 
             {/* OAuth2 Popup 授权组件 */}
             {showOAuth2Popup && selectedProvider && (

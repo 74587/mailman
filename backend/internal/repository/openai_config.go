@@ -17,9 +17,13 @@ func NewOpenAIConfigRepository(db *gorm.DB) *OpenAIConfigRepository {
 }
 
 // GetActive returns the active OpenAI configuration
-func (r *OpenAIConfigRepository) GetActive() (*models.OpenAIConfig, error) {
+func (r *OpenAIConfigRepository) GetActive(orgID uint) (*models.OpenAIConfig, error) {
 	var config models.OpenAIConfig
-	err := r.db.Where("is_active = ?", true).First(&config).Error
+	query := r.db.Where("is_active = ?", true)
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.First(&config).Error
 	if err != nil {
 		return nil, err
 	}
@@ -47,9 +51,13 @@ func (r *OpenAIConfigRepository) GetByName(name string) (*models.OpenAIConfig, e
 }
 
 // List returns all OpenAI configurations
-func (r *OpenAIConfigRepository) List() ([]models.OpenAIConfig, error) {
+func (r *OpenAIConfigRepository) List(orgID uint) ([]models.OpenAIConfig, error) {
 	var configs []models.OpenAIConfig
-	err := r.db.Find(&configs).Error
+	query := r.db
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Find(&configs).Error
 	return configs, err
 }
 

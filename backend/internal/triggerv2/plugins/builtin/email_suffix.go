@@ -412,29 +412,65 @@ func (p *EmailSuffixPlugin) Evaluate(ctx *plugins.PluginContext, event *models.E
 	p.info.UsageCount++
 	p.info.LastUsed = time.Now()
 
-	// 解析邮件事件数据
-	var emailData models.EmailEventData
-	if err := event.GetData(&emailData); err != nil {
-		return &plugins.PluginResult{
-			Success:       false,
-			Error:         fmt.Sprintf("解析邮件数据失败: %v", err),
-			ExecutionTime: time.Since(startTime),
-			Timestamp:     time.Now(),
-		}, nil
+	// 解析邮件事件数据 - 支持多种格式：
+	// 1. 直接的 EmailEventData 格式
+	// 2. 嵌套的 {"email": {...}} 格式（来自 condition_engine）
+	// 优先使用 FromAddress/ToAddresses 字段（纯邮箱地址）
+	var fromEmail, toEmail string
+
+	// 首先尝试解析为嵌套格式 {"email": {...}}，包含新的 FromAddress 字段
+	var eventWrapperV2 struct {
+		Email struct {
+			FromAddress string   `json:"FromAddress"` // 纯邮箱地址
+			ToAddresses []string `json:"ToAddresses"` // 纯邮箱地址列表
+			From        []string `json:"From"`        // 旧格式（包含显示名）
+			To          []string `json:"To"`          // 旧格式（包含显示名）
+		} `json:"email"`
+	}
+	if err := event.GetData(&eventWrapperV2); err == nil {
+		// 优先使用新的纯邮箱地址字段
+		if eventWrapperV2.Email.FromAddress != "" {
+			fromEmail = eventWrapperV2.Email.FromAddress
+		} else if len(eventWrapperV2.Email.From) > 0 {
+			// 回退到旧格式，需要手动提取
+			fromEmail = extractEmailAddress(eventWrapperV2.Email.From[0])
+		}
+
+		if len(eventWrapperV2.Email.ToAddresses) > 0 {
+			toEmail = eventWrapperV2.Email.ToAddresses[0]
+		} else if len(eventWrapperV2.Email.To) > 0 {
+			// 回退到旧格式，需要手动提取
+			toEmail = extractEmailAddress(eventWrapperV2.Email.To[0])
+		}
+	}
+
+	// 如果还没有获取到地址，尝试其他格式
+	if fromEmail == "" {
+		var emailData models.EmailEventData
+		if err := event.GetData(&emailData); err == nil && emailData.From != "" {
+			fromEmail = extractEmailAddress(emailData.From)
+			toEmail = extractEmailAddress(emailData.To)
+		}
+	}
+
+	// 从 ctx.Config.Config 获取用户配置的条件（优先）
+	conditions := p.config
+	if ctx.Config != nil && ctx.Config.Config != nil {
+		conditions = ctx.Config.Config
 	}
 
 	// 获取配置
-	suffixes := p.getSuffixes()
-	matchType := p.getMatchType()
-	caseSensitive := p.getCaseSensitive()
-	matchMode := p.getMatchMode()
-	exactMatch := p.getExactMatch()
+	suffixes := p.getSuffixesFromConfig(conditions)
+	matchType := p.getMatchTypeFromConfig(conditions)
+	caseSensitive := p.getCaseSensitiveFromConfig(conditions)
+	matchMode := p.getMatchModeFromConfig(conditions)
+	exactMatch := p.getExactMatchFromConfig(conditions)
 
-	// 如果没有配置后缀，返回 false
+	// 如果没有配置后缀，返回 true（表示不过滤）
 	if len(suffixes) == 0 {
 		return &plugins.PluginResult{
 			Success:       true,
-			Data:          map[string]interface{}{"matched": false, "reason": "未配置后缀"},
+			Data:          map[string]interface{}{"matched": true, "reason": "未配置后缀，默认通过"},
 			ExecutionTime: time.Since(startTime),
 			Timestamp:     time.Now(),
 		}, nil
@@ -446,26 +482,33 @@ func (p *EmailSuffixPlugin) Evaluate(ctx *plugins.PluginContext, event *models.E
 
 	switch matchType {
 	case "from":
-		matched := p.checkSuffixMatch(emailData.From, suffixes, caseSensitive, matchMode, exactMatch)
+		matched := p.checkSuffixMatch(fromEmail, suffixes, caseSensitive, matchMode, exactMatch)
 		matches = append(matches, matched)
 		if matched {
-			reasons = append(reasons, "发件人后缀匹配")
+			reasons = append(reasons, fmt.Sprintf("发件人后缀匹配: %s", fromEmail))
+		} else {
+			reasons = append(reasons, fmt.Sprintf("发件人后缀不匹配: %s", fromEmail))
 		}
 	case "to":
-		matched := p.checkSuffixMatch(emailData.To, suffixes, caseSensitive, matchMode, exactMatch)
+		matched := p.checkSuffixMatch(toEmail, suffixes, caseSensitive, matchMode, exactMatch)
 		matches = append(matches, matched)
 		if matched {
-			reasons = append(reasons, "收件人后缀匹配")
+			reasons = append(reasons, fmt.Sprintf("收件人后缀匹配: %s", toEmail))
+		} else {
+			reasons = append(reasons, fmt.Sprintf("收件人后缀不匹配: %s", toEmail))
 		}
 	case "both":
-		fromMatched := p.checkSuffixMatch(emailData.From, suffixes, caseSensitive, matchMode, exactMatch)
-		toMatched := p.checkSuffixMatch(emailData.To, suffixes, caseSensitive, matchMode, exactMatch)
+		fromMatched := p.checkSuffixMatch(fromEmail, suffixes, caseSensitive, matchMode, exactMatch)
+		toMatched := p.checkSuffixMatch(toEmail, suffixes, caseSensitive, matchMode, exactMatch)
 		matches = append(matches, fromMatched || toMatched)
 		if fromMatched {
-			reasons = append(reasons, "发件人后缀匹配")
+			reasons = append(reasons, fmt.Sprintf("发件人后缀匹配: %s", fromEmail))
 		}
 		if toMatched {
-			reasons = append(reasons, "收件人后缀匹配")
+			reasons = append(reasons, fmt.Sprintf("收件人后缀匹配: %s", toEmail))
+		}
+		if !fromMatched && !toMatched {
+			reasons = append(reasons, fmt.Sprintf("发件人(%s)和收件人(%s)后缀均不匹配", fromEmail, toEmail))
 		}
 	}
 
@@ -473,7 +516,7 @@ func (p *EmailSuffixPlugin) Evaluate(ctx *plugins.PluginContext, event *models.E
 	finalResult := len(matches) > 0 && matches[0]
 
 	result := &plugins.PluginResult{
-		Success: true,
+		Success: finalResult, // Success 表示是否匹配
 		Data: map[string]interface{}{
 			"matched":        finalResult,
 			"reasons":        reasons,
@@ -482,6 +525,8 @@ func (p *EmailSuffixPlugin) Evaluate(ctx *plugins.PluginContext, event *models.E
 			"suffixes":       suffixes,
 			"case_sensitive": caseSensitive,
 			"exact_match":    exactMatch,
+			"from_email":     fromEmail,
+			"to_email":       toEmail,
 		},
 		ExecutionTime: time.Since(startTime),
 		Timestamp:     time.Now(),
@@ -512,12 +557,47 @@ func (p *EmailSuffixPlugin) GetRequiredFields() []string {
 
 // getSuffixes 获取后缀配置
 func (p *EmailSuffixPlugin) getSuffixes() []string {
-	if suffixes, ok := p.config["suffixes"]; ok {
-		if suffixList, ok := suffixes.([]interface{}); ok {
-			result := make([]string, 0, len(suffixList))
-			for _, suffix := range suffixList {
+	return p.getSuffixesFromConfig(p.config)
+}
+
+// getSuffixesFromConfig 从指定配置获取后缀
+func (p *EmailSuffixPlugin) getSuffixesFromConfig(config map[string]interface{}) []string {
+	if suffixes, ok := config["suffixes"]; ok {
+		switch v := suffixes.(type) {
+		case []interface{}:
+			result := make([]string, 0, len(v))
+			for _, suffix := range v {
 				if str, ok := suffix.(string); ok {
-					result = append(result, str)
+					trimmed := strings.TrimSpace(str)
+					if trimmed != "" {
+						result = append(result, trimmed)
+					}
+				}
+			}
+			return result
+		case []string:
+			result := make([]string, 0, len(v))
+			for _, str := range v {
+				trimmed := strings.TrimSpace(str)
+				if trimmed != "" {
+					result = append(result, trimmed)
+				}
+			}
+			return result
+		case string:
+			// 处理字符串类型的输入（可能是逗号分隔的多个后缀）
+			if v == "" {
+				return []string{}
+			}
+			// 支持逗号、分号、换行符分隔
+			parts := strings.FieldsFunc(v, func(r rune) bool {
+				return r == ',' || r == ';' || r == '\n'
+			})
+			result := make([]string, 0, len(parts))
+			for _, part := range parts {
+				trimmed := strings.TrimSpace(part)
+				if trimmed != "" {
+					result = append(result, trimmed)
 				}
 			}
 			return result
@@ -528,17 +608,27 @@ func (p *EmailSuffixPlugin) getSuffixes() []string {
 
 // getMatchType 获取匹配类型配置
 func (p *EmailSuffixPlugin) getMatchType() string {
-	if matchType, ok := p.config["match_type"]; ok {
+	return p.getMatchTypeFromConfig(p.config)
+}
+
+// getMatchTypeFromConfig 从指定配置获取匹配类型
+func (p *EmailSuffixPlugin) getMatchTypeFromConfig(config map[string]interface{}) string {
+	if matchType, ok := config["match_type"]; ok {
 		if str, ok := matchType.(string); ok {
 			return str
 		}
 	}
-	return "from"
+	return "to" // 默认匹配收件人
 }
 
 // getCaseSensitive 获取大小写敏感配置
 func (p *EmailSuffixPlugin) getCaseSensitive() bool {
-	if caseSensitive, ok := p.config["case_sensitive"]; ok {
+	return p.getCaseSensitiveFromConfig(p.config)
+}
+
+// getCaseSensitiveFromConfig 从指定配置获取大小写敏感配置
+func (p *EmailSuffixPlugin) getCaseSensitiveFromConfig(config map[string]interface{}) bool {
+	if caseSensitive, ok := config["case_sensitive"]; ok {
 		if b, ok := caseSensitive.(bool); ok {
 			return b
 		}
@@ -548,7 +638,12 @@ func (p *EmailSuffixPlugin) getCaseSensitive() bool {
 
 // getMatchMode 获取匹配模式配置
 func (p *EmailSuffixPlugin) getMatchMode() string {
-	if mode, ok := p.config["match_mode"]; ok {
+	return p.getMatchModeFromConfig(p.config)
+}
+
+// getMatchModeFromConfig 从指定配置获取匹配模式
+func (p *EmailSuffixPlugin) getMatchModeFromConfig(config map[string]interface{}) string {
+	if mode, ok := config["match_mode"]; ok {
 		if str, ok := mode.(string); ok {
 			return str
 		}
@@ -558,7 +653,12 @@ func (p *EmailSuffixPlugin) getMatchMode() string {
 
 // getExactMatch 获取精确匹配配置
 func (p *EmailSuffixPlugin) getExactMatch() bool {
-	if exactMatch, ok := p.config["exact_match"]; ok {
+	return p.getExactMatchFromConfig(p.config)
+}
+
+// getExactMatchFromConfig 从指定配置获取精确匹配配置
+func (p *EmailSuffixPlugin) getExactMatchFromConfig(config map[string]interface{}) bool {
+	if exactMatch, ok := config["exact_match"]; ok {
 		if b, ok := exactMatch.(bool); ok {
 			return b
 		}
@@ -627,4 +727,22 @@ func (p *EmailSuffixPlugin) anyTrue(values []bool) bool {
 		}
 	}
 	return false
+}
+
+// extractEmailAddress 从 "Name <email@domain.com>" 格式中提取纯邮箱地址
+func extractEmailAddress(address string) string {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return ""
+	}
+
+	// 尝试从 "Name <email@domain.com>" 格式中提取
+	if start := strings.Index(address, "<"); start != -1 {
+		if end := strings.Index(address, ">"); end != -1 && end > start {
+			return strings.TrimSpace(address[start+1 : end])
+		}
+	}
+
+	// 如果没有尖括号，返回整个地址（可能已经是纯邮箱）
+	return address
 }

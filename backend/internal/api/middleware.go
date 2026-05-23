@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"mailman/internal/services"
 	"mailman/internal/utils"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -106,4 +108,20 @@ func (lrw *loggingResponseWriter) Write(b []byte) (int, error) {
 		lrw.statusCode = http.StatusOK
 	}
 	return lrw.ResponseWriter.Write(b)
+}
+
+// Hijack implements http.Hijacker interface for WebSocket support
+// WebSocket upgrades require the ability to hijack the underlying TCP connection
+func (lrw *loggingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := lrw.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+// Flush implements http.Flusher interface
+func (lrw *loggingResponseWriter) Flush() {
+	if flusher, ok := lrw.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }

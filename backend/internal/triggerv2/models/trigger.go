@@ -2,9 +2,53 @@ package models
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"time"
 )
+
+// JSONMap is a custom type for storing map[string]string in database
+type JSONMap map[string]string
+
+// Scan implements the sql.Scanner interface
+func (m *JSONMap) Scan(value interface{}) error {
+	if value == nil {
+		*m = make(map[string]string)
+		return nil
+	}
+
+	bytes, ok := value.([]byte)
+	if !ok {
+		// Try string type as well
+		if str, isString := value.(string); isString {
+			bytes = []byte(str)
+		} else {
+			return fmt.Errorf("cannot convert value to bytes, got type %T", value)
+		}
+	}
+
+	if len(bytes) == 0 {
+		*m = make(map[string]string)
+		return nil
+	}
+
+	if err := json.Unmarshal(bytes, m); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Value implements the driver.Valuer interface
+func (m JSONMap) Value() (driver.Value, error) {
+	if m == nil {
+		return "{}", nil
+	}
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return string(bytes), nil
+}
 
 // TriggerV2Status 触发器状态
 type TriggerV2Status string
@@ -128,7 +172,7 @@ type TriggerV2 struct {
 	Stats TriggerV2Stats `gorm:"type:json" json:"stats"`
 
 	// 元数据
-	Metadata map[string]string `gorm:"type:json" json:"metadata,omitempty"`
+	Metadata JSONMap `gorm:"type:json" json:"metadata,omitempty"`
 
 	// 时间戳
 	CreatedAt time.Time `json:"created_at"`
@@ -297,7 +341,7 @@ func NewTriggerV2(name, description string) *TriggerV2 {
 		Stats: TriggerV2Stats{
 			CreatedAt: now,
 		},
-		Metadata:  make(map[string]string),
+		Metadata:  make(JSONMap),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -317,7 +361,7 @@ func (t *TriggerV2) CanExecute() bool {
 func (t *TriggerV2) IncrementStats(success bool, executionTime int64) {
 	oldTotal := t.Stats.TotalExecutions
 	t.Stats.TotalExecutions++
-	
+
 	if success {
 		t.Stats.SuccessfulExecutions++
 	} else {
@@ -330,7 +374,7 @@ func (t *TriggerV2) IncrementStats(success bool, executionTime int64) {
 	} else {
 		// 增量平均公式: newAvg = oldAvg + (newValue - oldAvg) / newCount
 		t.Stats.AverageExecutionTime = t.Stats.AverageExecutionTime +
-			(executionTime - t.Stats.AverageExecutionTime) / int64(t.Stats.TotalExecutions)
+			(executionTime-t.Stats.AverageExecutionTime)/int64(t.Stats.TotalExecutions)
 	}
 
 	now := time.Now()

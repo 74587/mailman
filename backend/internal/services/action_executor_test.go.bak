@@ -1,0 +1,399 @@
+package services
+
+import (
+	"errors"
+	"mailman/internal/models"
+	"testing"
+	"time"
+)
+
+// MockPlugin is a mock implementation of the Plugin interface for testing
+type MockPlugin struct {
+	name        string
+	description string
+	schema      map[string]interface{}
+	executeFunc func(config map[string]interface{}, context *PluginContext) (*PluginResult, error)
+}
+
+func (p *MockPlugin) Execute(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+	return p.executeFunc(config, context)
+}
+
+func (p *MockPlugin) GetName() string {
+	return p.name
+}
+
+func (p *MockPlugin) GetDescription() string {
+	return p.description
+}
+
+func (p *MockPlugin) GetConfigSchema() map[string]interface{} {
+	return p.schema
+}
+
+// TestActionExecutor_ExecuteActions tests the ExecuteActions method
+func TestActionExecutor_ExecuteActions(t *testing.T) {
+	// Create a mock plugin manager
+	pluginManager := NewPluginManager()
+	
+	// Register a successful mock plugin
+	successPlugin := &MockPlugin{
+		name:        "Success Plugin",
+		description: "A plugin that always succeeds",
+		schema:      map[string]interface{}{},
+		executeFunc: func(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+			return &PluginResult{
+				Success: true,
+				Data:    "Success",
+				Error:   "",
+			}, nil
+		},
+	}
+	pluginManager.RegisterPlugin("success-plugin", successPlugin)
+	
+	// Register a failing mock plugin
+	failPlugin := &MockPlugin{
+		name:        "Fail Plugin",
+		description: "A plugin that always fails",
+		schema:      map[string]interface{}{},
+		executeFunc: func(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+			return &PluginResult{
+				Success: false,
+				Data:    nil,
+				Error:   "Failed to execute",
+			}, nil
+		},
+	}
+	pluginManager.RegisterPlugin("fail-plugin", failPlugin)
+	
+	// Register an error mock plugin
+	errorPlugin := &MockPlugin{
+		name:        "Error Plugin",
+		description: "A plugin that always returns an error",
+		schema:      map[string]interface{}{},
+		executeFunc: func(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+			return nil, errors.New("execution error")
+		},
+	}
+	pluginManager.RegisterPlugin("error-plugin", errorPlugin)
+	
+	// Create an action executor
+	executor := NewActionExecutor(pluginManager)
+	
+	// Create test email
+	email := models.Email{
+		ID:      1,
+		Subject: "Test Email",
+	}
+	
+	// Test cases
+	tests := []struct {
+		name           string
+		actions        []models.TriggerAction
+		expectedCount  int
+		expectedErrors int
+	}{
+		{
+			name:           "No actions",
+			actions:        []models.TriggerAction{},
+			expectedCount:  0,
+			expectedErrors: 0,
+		},
+		{
+			name: "Single successful action",
+			actions: []models.TriggerAction{
+				{
+					ID:            "action1",
+					PluginID:      "success-plugin",
+					PluginName:    "Success Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 1,
+				},
+			},
+			expectedCount:  1,
+			expectedErrors: 0,
+		},
+		{
+			name: "Single failed action",
+			actions: []models.TriggerAction{
+				{
+					ID:            "action2",
+					PluginID:      "fail-plugin",
+					PluginName:    "Fail Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 1,
+				},
+			},
+			expectedCount:  1,
+			expectedErrors: 1,
+		},
+		{
+			name: "Single error action",
+			actions: []models.TriggerAction{
+				{
+					ID:            "action3",
+					PluginID:      "error-plugin",
+					PluginName:    "Error Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 1,
+				},
+			},
+			expectedCount:  1,
+			expectedErrors: 1,
+		},
+		{
+			name: "Multiple actions with mixed results",
+			actions: []models.TriggerAction{
+				{
+					ID:            "action4",
+					PluginID:      "success-plugin",
+					PluginName:    "Success Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 2,
+				},
+				{
+					ID:            "action5",
+					PluginID:      "fail-plugin",
+					PluginName:    "Fail Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 1,
+				},
+				{
+					ID:            "action6",
+					PluginID:      "error-plugin",
+					PluginName:    "Error Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 3,
+				},
+			},
+			expectedCount:  3,
+			expectedErrors: 2,
+		},
+		{
+			name: "Disabled action",
+			actions: []models.TriggerAction{
+				{
+					ID:            "action7",
+					PluginID:      "success-plugin",
+					PluginName:    "Success Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       false,
+					ExecutionOrder: 1,
+				},
+			},
+			expectedCount:  1,
+			expectedErrors: 1, // Disabled actions count as errors
+		},
+		{
+			name: "Non-existent plugin",
+			actions: []models.TriggerAction{
+				{
+					ID:            "action8",
+					PluginID:      "non-existent-plugin",
+					PluginName:    "Non-existent Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 1,
+				},
+			},
+			expectedCount:  1,
+			expectedErrors: 1,
+		},
+		{
+			name: "Execution order test",
+			actions: []models.TriggerAction{
+				{
+					ID:            "action9",
+					PluginID:      "success-plugin",
+					PluginName:    "Success Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 3,
+				},
+				{
+					ID:            "action10",
+					PluginID:      "success-plugin",
+					PluginName:    "Success Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 1,
+				},
+				{
+					ID:            "action11",
+					PluginID:      "success-plugin",
+					PluginName:    "Success Plugin",
+					Config:        map[string]interface{}{},
+					Enabled:       true,
+					ExecutionOrder: 2,
+				},
+			},
+			expectedCount:  3,
+			expectedErrors: 0,
+		},
+	}
+	
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results, _ := executor.ExecuteActions(tt.actions, email)
+			
+			// Check the number of results
+			if len(results) != tt.expectedCount {
+				t.Errorf("Expected %d results, got %d", tt.expectedCount, len(results))
+			}
+			
+			// Check the number of errors
+			errorCount := 0
+			for _, result := range results {
+				if !result.Success {
+					errorCount++
+				}
+			}
+			if errorCount != tt.expectedErrors {
+				t.Errorf("Expected %d errors, got %d", tt.expectedErrors, errorCount)
+			}
+			
+			// For the execution order test, check that the actions were executed in the correct order
+			if tt.name == "Execution order test" {
+				if len(results) == 3 {
+					if results[0].ActionID != "action10" || results[1].ActionID != "action11" || results[2].ActionID != "action9" {
+						t.Errorf("Actions were not executed in the correct order")
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestActionExecutor_ExecuteAction tests the ExecuteAction method
+func TestActionExecutor_ExecuteAction(t *testing.T) {
+	// Create a mock plugin manager
+	pluginManager := NewPluginManager()
+	
+	// Register a successful mock plugin
+	successPlugin := &MockPlugin{
+		name:        "Success Plugin",
+		description: "A plugin that always succeeds",
+		schema:      map[string]interface{}{},
+		executeFunc: func(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+			return &PluginResult{
+				Success: true,
+				Data:    "Success",
+				Error:   "",
+			}, nil
+		},
+	}
+	pluginManager.RegisterPlugin("success-plugin", successPlugin)
+	
+	// Create an action executor
+	executor := NewActionExecutor(pluginManager)
+	
+	// Create test email
+	email := models.Email{
+		ID:      1,
+		Subject: "Test Email",
+	}
+	
+	// Create test action
+	action := models.TriggerAction{
+		ID:            "test-action",
+		PluginID:      "success-plugin",
+		PluginName:    "Success Plugin",
+		Config:        map[string]interface{}{},
+		Enabled:       true,
+		ExecutionOrder: 1,
+	}
+	
+	// Create plugin context
+	context := &PluginContext{
+		Email: email,
+	}
+	
+	// Execute the action
+	result, err := executor.ExecuteAction(action, context)
+	
+	// Check for errors
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	
+	// Check the result
+	if !result.Success {
+		t.Errorf("Expected success, got failure")
+	}
+	if result.ActionID != "test-action" {
+		t.Errorf("Expected action ID 'test-action', got '%s'", result.ActionID)
+	}
+	if result.PluginID != "success-plugin" {
+		t.Errorf("Expected plugin ID 'success-plugin', got '%s'", result.PluginID)
+	}
+	if result.PluginName != "Success Plugin" {
+		t.Errorf("Expected plugin name 'Success Plugin', got '%s'", result.PluginName)
+	}
+	if result.Result != "Success" {
+		t.Errorf("Expected result 'Success', got '%v'", result.Result)
+	}
+}
+
+// TestActionExecutor_TestAction tests the TestAction method
+func TestActionExecutor_TestAction(t *testing.T) {
+	// Create a mock plugin manager
+	pluginManager := NewPluginManager()
+	
+	// Register a mock plugin that checks for test context
+	testPlugin := &MockPlugin{
+		name:        "Test Plugin",
+		description: "A plugin that checks for test context",
+		schema:      map[string]interface{}{},
+		executeFunc: func(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+			// In a real implementation, the context would have a test flag
+			// For this test, we'll just return success
+			return &PluginResult{
+				Success: true,
+				Data:    "Test mode",
+				Error:   "",
+			}, nil
+		},
+	}
+	pluginManager.RegisterPlugin("test-plugin", testPlugin)
+	
+	// Create an action executor
+	executor := NewActionExecutor(pluginManager)
+	
+	// Create test email
+	email := models.Email{
+		ID:      1,
+		Subject: "Test Email",
+	}
+	
+	// Create test action
+	action := models.TriggerAction{
+		ID:            "test-action",
+		PluginID:      "test-plugin",
+		PluginName:    "Test Plugin",
+		Config:        map[string]interface{}{},
+		Enabled:       true,
+		ExecutionOrder: 1,
+	}
+	
+	// Test the action
+	result, err := executor.TestAction(action, email)
+	
+	// Check for errors
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	
+	// Check the result
+	if !result.Success {
+		t.Errorf("Expected success, got failure")
+	}
+	if result.Result != "Test mode" {
+		t.Errorf("Expected result 'Test mode', got '%v'", result.Result)
+	}
+}

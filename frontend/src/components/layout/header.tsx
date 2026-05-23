@@ -1,10 +1,12 @@
 'use client'
 
-import { Bell, Search, User, LogOut, ChevronDown, Upload, Camera, UserCircle } from 'lucide-react'
+import { Bell, User, LogOut, ChevronDown, Upload, Camera, UserCircle, Building2, Check } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
-import { cn } from '@/lib/utils'
-import { useAuth } from '@/contexts/auth-context'
+import { toast } from 'sonner'
+import { useAuth } from '@/context/auth-context'
 import { authService } from '@/services/auth.service'
+import { organizationService, Organization } from '@/services/organization.service'
+import GlobalEmailSearch from './global-email-search'
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -14,6 +16,8 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
+import { getUnreadCount, subscribeToNotifications } from '@/lib/notification-store'
+import { NotificationDrawer } from '@/components/notifications/notification-drawer'
 
 // 添加全局样式
 if (typeof document !== 'undefined') {
@@ -33,7 +37,6 @@ if (typeof document !== 'undefined') {
 }
 
 export function Header() {
-    const [searchQuery, setSearchQuery] = useState('')
     const [showUserProfileModal, setShowUserProfileModal] = useState(false)
     const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
     const [isSubmitting, setIsSubmitting] = useState(false)
@@ -44,7 +47,52 @@ export function Header() {
         new_password: '',
     })
     const fileInputRef = useRef<HTMLInputElement>(null)
-    const { user, logout, refreshUser } = useAuth()
+    const { user, logout, refreshUser, currentOrganization, switchOrganization } = useAuth()
+
+    // 组织切换相关
+    const [organizations, setOrganizations] = useState<Organization[]>([])
+    const [orgLoading, setOrgLoading] = useState(false)
+
+    // 通知相关状态
+    const [showNotificationDrawer, setShowNotificationDrawer] = useState(false)
+    const [unreadCount, setUnreadCount] = useState(0)
+
+    // 订阅通知变化
+    useEffect(() => {
+        // 初始加载未读数量
+        setUnreadCount(getUnreadCount())
+
+        // 订阅变化
+        const unsubscribe = subscribeToNotifications(() => {
+            setUnreadCount(getUnreadCount())
+        })
+
+        return unsubscribe
+    }, [])
+
+    // 加载组织列表
+    useEffect(() => {
+        const loadOrgs = async () => {
+            try {
+                const orgs = await organizationService.getOrganizations()
+                setOrganizations(orgs)
+            } catch {
+                // 忽略，可能组织功能尚未部署
+            }
+        }
+        if (user) loadOrgs()
+    }, [user])
+
+    // 切换组织
+    const handleSwitchOrg = async (orgId: number) => {
+        if (orgId === currentOrganization?.id) return
+        setOrgLoading(true)
+        try {
+            await switchOrganization(orgId)
+        } finally {
+            setOrgLoading(false)
+        }
+    }
 
     // 处理头像变更
     const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -53,13 +101,13 @@ export function Header() {
 
         // 检查文件类型是否为图片
         if (!file.type.startsWith('image/')) {
-            alert('请上传图片文件')
+            toast.warning('请上传图片文件')
             return
         }
 
         // 检查文件大小，限制为2MB
         if (file.size > 2 * 1024 * 1024) {
-            alert('图片大小不能超过2MB')
+            toast.warning('图片大小不能超过2MB')
             return
         }
 
@@ -132,7 +180,7 @@ export function Header() {
 
         } catch (error) {
             console.error('更新用户信息失败:', error)
-            alert('更新用户信息失败，请重试')
+            toast.error('更新用户信息失败，请重试')
         } finally {
             setIsSubmitting(false)
         }
@@ -142,30 +190,69 @@ export function Header() {
         <header className="flex h-16 items-center border-b border-gray-200 bg-white px-6 dark:border-gray-700 dark:bg-card">
             <div className="flex flex-1 items-center justify-between">
                 {/* 搜索栏 */}
-                <div className="flex-1 max-w-lg">
-                    <div className="relative">
-                        <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
-                        <input
-                            type="text"
-                            placeholder="搜索邮件..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className={cn(
-                                "w-full rounded-lg border border-input bg-background py-2 pl-10 pr-4 text-sm",
-                                "placeholder-muted-foreground transition-colors",
-                                "focus:border-primary-500 focus:bg-background focus:outline-none focus:ring-2 focus:ring-primary-500/20",
-                                "dark:text-gray-200"
-                            )}
-                        />
-                    </div>
-                </div>
+                <GlobalEmailSearch />
 
-                {/* 右侧操作区 */}
+                {/* 组织切换器 */}
                 <div className="flex items-center space-x-4 ml-6">
+                    {organizations.length > 1 && (
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <button className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-sm">
+                                    <Building2 className="h-3.5 w-3.5 text-blue-500" />
+                                    <span className="text-gray-700 dark:text-gray-300 max-w-[120px] truncate">
+                                        {currentOrganization?.name || '选择组织'}
+                                    </span>
+                                    <ChevronDown className="h-3 w-3 text-gray-400" />
+                                </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent
+                                align="start"
+                                className="w-56 p-0 rounded-md bg-white shadow-md border border-gray-100 dark:bg-gray-800 dark:border-gray-700"
+                                sideOffset={8}
+                            >
+                                <DropdownMenuLabel className="px-3 py-2 text-xs text-gray-400 font-medium">
+                                    切换组织
+                                </DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+                                {organizations.map(org => (
+                                    <DropdownMenuItem
+                                        key={org.id}
+                                        onClick={() => handleSwitchOrg(org.id)}
+                                        className="flex items-center justify-between px-3 py-2 text-sm cursor-pointer"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <div className="w-6 h-6 rounded bg-blue-500/10 flex items-center justify-center text-blue-600 dark:text-blue-400 text-xs font-bold">
+                                                {org.name.charAt(0).toUpperCase()}
+                                            </div>
+                                            <span className="text-gray-700 dark:text-gray-300">{org.name}</span>
+                                        </div>
+                                        {currentOrganization?.id === org.id && (
+                                            <Check className="h-4 w-4 text-blue-500" />
+                                        )}
+                                    </DropdownMenuItem>
+                                ))}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    )}
+
+                    {/* 单个组织时显示名称 */}
+                    {organizations.length === 1 && currentOrganization && (
+                        <div className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-500 dark:text-gray-400">
+                            <Building2 className="h-3.5 w-3.5 text-blue-500" />
+                            <span>{currentOrganization.name}</span>
+                        </div>
+                    )}
                     {/* 通知按钮 */}
-                    <button className="relative rounded-lg p-2 text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800">
+                    <button
+                        onClick={() => setShowNotificationDrawer(true)}
+                        className="relative rounded-lg p-2 text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                    >
                         <Bell className="h-5 w-5" />
-                        <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-red-500"></span>
+                        {unreadCount > 0 && (
+                            <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] flex items-center justify-center px-1 text-[10px] font-medium bg-red-500 text-white rounded-full">
+                                {unreadCount > 99 ? '99+' : unreadCount}
+                            </span>
+                        )}
                     </button>
 
                     {/* 用户菜单 */}
@@ -333,6 +420,12 @@ export function Header() {
                     </div>
                 </div>
             )}
+
+            {/* 通知抽屉 */}
+            <NotificationDrawer
+                isOpen={showNotificationDrawer}
+                onClose={() => setShowNotificationDrawer(false)}
+            />
         </header>
     )
 }

@@ -1,12 +1,13 @@
 'use client'
 
 import { useState } from 'react'
+import { logger } from '@/lib/logger'
 
 export default function TestSidebarPage() {
     const [activeTab, setActiveTab] = useState('tab1')
 
     const handleTabChange = (tabId: string) => {
-        console.log('Tab clicked:', tabId)
+        logger.debug('Tab clicked:', tabId)
         setActiveTab(tabId)
     }
 

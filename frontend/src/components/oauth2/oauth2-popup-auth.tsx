@@ -1,4 +1,5 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import { useState, useEffect, useRef } from 'react'
 import { X, ExternalLink, RefreshCw, CheckCircle, XCircle, Clock, Copy, Settings, AlertCircle } from 'lucide-react'
@@ -6,6 +7,13 @@ import { oauth2Service } from '@/services/oauth2.service'
 import { systemConfigService } from '@/services/system-config.service'
 import { OAuth2ProviderType } from '@/types'
 import { motion, AnimatePresence } from 'framer-motion'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalTitle,
+} from '@/components/ui/modal'
 
 interface OAuth2PopupAuthProps {
     provider: OAuth2ProviderType
@@ -45,11 +53,11 @@ export default function OAuth2PopupAuth({ provider, configId, onSuccess, onCance
 
     const loadAutoOpenConfig = async () => {
         try {
-            console.log('[OAuth2PopupAuth] 开始加载OAuth2自动打开配置...')
+            logger.debug('[OAuth2PopupAuth] 开始加载OAuth2自动打开配置...')
             const autoOpen = await systemConfigService.getOAuth2AutoOpenConfig()
-            console.log('[OAuth2PopupAuth] 配置加载完成，autoOpen:', autoOpen, 'type:', typeof autoOpen)
+            logger.debug('[OAuth2PopupAuth] 配置加载完成，autoOpen:', autoOpen, 'type:', typeof autoOpen)
             setAutoOpenWindow(autoOpen)
-            console.log('[OAuth2PopupAuth] autoOpenWindow状态已更新为:', autoOpen)
+            logger.debug('[OAuth2PopupAuth] autoOpenWindow状态已更新为:', autoOpen)
         } catch (error) {
             console.error('[OAuth2PopupAuth] 加载配置失败，使用默认值:', error)
             setAutoOpenWindow(true) // 默认值
@@ -91,23 +99,23 @@ export default function OAuth2PopupAuth({ provider, configId, onSuccess, onCance
     // 启动OAuth2授权会话
     const startAuthSession = async () => {
         try {
-            console.log('[OAuth2PopupAuth] startAuthSession开始 - 当前autoOpenWindow值:', autoOpenWindow, 'type:', typeof autoOpenWindow)
+            logger.debug('[OAuth2PopupAuth] startAuthSession开始 - 当前autoOpenWindow值:', autoOpenWindow, 'type:', typeof autoOpenWindow)
             setStatus('initializing')
             const authSession = await oauth2Service.startAuthSession(provider, configId)
             setSession(authSession)
             setTimeRemaining(Math.max(0, authSession.expiresAt - Math.floor(Date.now() / 1000)))
 
             // 根据配置决定是否自动打开popup窗口
-            console.log('[OAuth2PopupAuth] 授权会话已创建，检查是否自动打开窗口...')
-            console.log('[OAuth2PopupAuth] autoOpenWindow === true:', autoOpenWindow === true)
-            console.log('[OAuth2PopupAuth] autoOpenWindow:', autoOpenWindow)
-            
+            logger.debug('[OAuth2PopupAuth] 授权会话已创建，检查是否自动打开窗口...')
+            logger.debug('[OAuth2PopupAuth] autoOpenWindow === true:', autoOpenWindow === true)
+            logger.debug('[OAuth2PopupAuth] autoOpenWindow:', autoOpenWindow)
+
             if (autoOpenWindow === true) {
-                console.log('[OAuth2PopupAuth] ✅ 配置为自动打开，正在打开授权窗口')
+                logger.debug('[OAuth2PopupAuth] ✅ 配置为自动打开，正在打开授权窗口')
                 openPopup(authSession.authUrl)
             } else {
-                console.log('[OAuth2PopupAuth] ❌ 配置为不自动打开，等待用户手动操作')
-                console.log('[OAuth2PopupAuth] 原因: autoOpenWindow =', autoOpenWindow)
+                logger.debug('[OAuth2PopupAuth] ❌ 配置为不自动打开，等待用户手动操作')
+                logger.debug('[OAuth2PopupAuth] 原因: autoOpenWindow =', autoOpenWindow)
             }
 
             // 开始轮询状态
@@ -167,11 +175,11 @@ export default function OAuth2PopupAuth({ provider, configId, onSuccess, onCance
 
                 switch (result.status) {
                     case 'success':
-                        console.log('OAuth2PopupAuth: 检测到success状态', result)
+                        logger.debug('OAuth2PopupAuth: 检测到success状态', result)
                         setStatus('success')
                         stopPolling()
                         if (result.emailAddress && result.customSettings) {
-                            console.log('OAuth2PopupAuth: 准备调用onSuccess回调', {
+                            logger.debug('OAuth2PopupAuth: 准备调用onSuccess回调', {
                                 emailAddress: result.emailAddress,
                                 customSettings: result.customSettings
                             })
@@ -180,7 +188,7 @@ export default function OAuth2PopupAuth({ provider, configId, onSuccess, onCance
                                 customSettings: result.customSettings
                             })
                         } else {
-                            console.log('OAuth2PopupAuth: 授权成功但数据不完整', result)
+                            logger.debug('OAuth2PopupAuth: 授权成功但数据不完整', result)
                             setErrorMessage('授权成功但未获取到账户信息')
                             setStatus('failed')
                             onError('授权成功但未获取到账户信息')
@@ -364,7 +372,7 @@ export default function OAuth2PopupAuth({ provider, configId, onSuccess, onCance
     useEffect(() => {
         // 只有在配置加载完成且未启动授权会话时才启动
         if (autoOpenWindow !== null && !authStartedRef.current) {
-            console.log('[OAuth2PopupAuth] 配置已加载，启动授权会话，autoOpenWindow:', autoOpenWindow)
+            logger.debug('[OAuth2PopupAuth] 配置已加载，启动授权会话，autoOpenWindow:', autoOpenWindow)
             authStartedRef.current = true
             startAuthSession()
         }
@@ -380,90 +388,70 @@ export default function OAuth2PopupAuth({ provider, configId, onSuccess, onCance
     const providerName = oauth2Service.getProviderDisplayName(provider)
 
     return (
-        <AnimatePresence>
-            <motion.div
-                className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.2 }}
-            >
-                <motion.div
-                    className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md dark:bg-gray-800"
-                    initial={{ scale: 0.9, opacity: 0, y: 20 }}
-                    animate={{ scale: 1, opacity: 1, y: 0 }}
-                    exit={{ scale: 0.9, opacity: 0, y: 20 }}
-                    transition={{ duration: 0.3, ease: "easeOut" }}
-                >
-                    {/* 标题栏 */}
-                    <div className="flex items-center justify-between mb-4">
-                        <motion.h3
-                            className="text-lg font-semibold text-gray-900 dark:text-white"
-                            initial={{ opacity: 0, x: -20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: 0.1 }}
-                        >
-                            {providerName} OAuth2 授权
-                        </motion.h3>
-                        <motion.button
-                            onClick={handleCancel}
-                            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                            whileHover={{ scale: 1.1 }}
-                            whileTap={{ scale: 0.9 }}
-                        >
-                            <X className="w-5 h-5" />
-                        </motion.button>
-                    </div>
-
-
-                    {/* 状态显示 */}
-                    <motion.div
-                        className="text-center mb-6"
-                        key={status}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.3 }}
+        <Modal open={true} onOpenChange={(open) => !open && handleCancel()}>
+            <ModalContent size="md" showCloseButton={false}>
+                {/* 标题栏 */}
+                <ModalHeader className="flex flex-row items-center justify-between space-y-0">
+                    <ModalTitle>{providerName} OAuth2 授权</ModalTitle>
+                    <button
+                        onClick={handleCancel}
+                        className="rounded-lg p-1 text-gray-400 opacity-70 transition-opacity hover:opacity-100 hover:bg-gray-100 dark:hover:bg-gray-700"
                     >
-                        <motion.div
-                            className="flex justify-center mb-3"
-                            initial={{ scale: 0.8, opacity: 0 }}
-                            animate={{ scale: 1, opacity: 1 }}
-                            transition={{ delay: 0.2, duration: 0.3 }}
-                        >
-                            {statusDisplay.icon}
-                        </motion.div>
-                        <motion.h4
-                            className={`text-lg font-medium mb-2 ${statusDisplay.color}`}
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            transition={{ delay: 0.3 }}
-                        >
-                            {statusDisplay.title}
-                        </motion.h4>
-                        <motion.p
-                            className="text-gray-600 dark:text-gray-300 text-sm"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            transition={{ delay: 0.4 }}
-                        >
-                            {statusDisplay.message}
-                        </motion.p>
+                        <X className="h-5 w-5" />
+                    </button>
+                </ModalHeader>
 
-                        {/* 倒计时 */}
-                        <AnimatePresence>
-                            {status === 'waiting' && timeRemaining > 0 && (
-                                <motion.div
-                                    className="mt-3 text-sm text-gray-500 dark:text-gray-400"
-                                    initial={{ opacity: 0, scale: 0.9 }}
-                                    animate={{ opacity: 1, scale: 1 }}
-                                    exit={{ opacity: 0, scale: 0.9 }}
-                                    transition={{ duration: 0.2 }}
-                                >
-                                    剩余时间: {formatTime(timeRemaining)}
-                                </motion.div>
-                            )}
-                        </AnimatePresence>
-                    </motion.div>
+                <ModalBody>
+                    {/* 状态显示 */}
+                    <AnimatePresence mode="wait">
+                        <motion.div
+                            className="text-center mb-6"
+                            key={status}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.3 }}
+                        >
+                            <motion.div
+                                className="flex justify-center mb-3"
+                                initial={{ scale: 0.8, opacity: 0 }}
+                                animate={{ scale: 1, opacity: 1 }}
+                                transition={{ delay: 0.2, duration: 0.3 }}
+                            >
+                                {statusDisplay.icon}
+                            </motion.div>
+                            <motion.h4
+                                className={`text-lg font-medium mb-2 ${statusDisplay.color}`}
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                transition={{ delay: 0.3 }}
+                            >
+                                {statusDisplay.title}
+                            </motion.h4>
+                            <motion.p
+                                className="text-gray-600 dark:text-gray-300 text-sm"
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                transition={{ delay: 0.4 }}
+                            >
+                                {statusDisplay.message}
+                            </motion.p>
+
+                            {/* 倒计时 */}
+                            <AnimatePresence>
+                                {status === 'waiting' && timeRemaining > 0 && (
+                                    <motion.div
+                                        className="mt-3 text-sm text-gray-500 dark:text-gray-400"
+                                        initial={{ opacity: 0, scale: 0.9 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        exit={{ opacity: 0, scale: 0.9 }}
+                                        transition={{ duration: 0.2 }}
+                                    >
+                                        剩余时间: {formatTime(timeRemaining)}
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+                        </motion.div>
+                    </AnimatePresence>
 
                     {/* 操作按钮 */}
                     <motion.div
@@ -564,8 +552,8 @@ export default function OAuth2PopupAuth({ provider, configId, onSuccess, onCance
                             </motion.button>
                         </div>
                     </motion.div>
-                </motion.div>
-            </motion.div>
-        </AnimatePresence>
+                </ModalBody>
+            </ModalContent>
+        </Modal>
     )
 }

@@ -52,12 +52,12 @@ func (h *APIHandler) GetPluginUISchemas(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// 添加内置条件
+	// 添加通用字段匹配条件
 	schemas["builtin"] = map[string]interface{}{
 		"info": map[string]interface{}{
 			"id":          "builtin",
-			"name":        "内置条件",
-			"description": "系统内置的基础条件",
+			"name":        "字段匹配器",
+			"description": "基于字段值的通用条件匹配，支持所有邮件字段",
 		},
 		"schema": getBuiltinUISchema(),
 	}
@@ -198,8 +198,11 @@ func (h *APIHandler) HandlePluginCallback(w http.ResponseWriter, r *http.Request
 	pluginID := parts[3]
 	callback := parts[5]
 
-	// 获取查询参数
+	// 获取查询参数（支持 q 和 query 两种参数名）
 	query := r.URL.Query().Get("q")
+	if query == "" {
+		query = r.URL.Query().Get("query")
+	}
 	field := r.URL.Query().Get("field")
 
 	// 特殊处理 "builtin" 插件
@@ -287,26 +290,48 @@ func (h *APIHandler) handleUIPluginCallback(w http.ResponseWriter, r *http.Reque
 		RespondWithJSON(w, http.StatusOK, options)
 
 	case "get-email-addresses":
-		// 这里应该从数据库获取
-		// 模拟数据
-		addresses := []map[string]interface{}{
-			{"value": "admin@example.com", "label": "Admin", "icon": "user-shield"},
-			{"value": "support@example.com", "label": "Support", "icon": "headset"},
-			{"value": "noreply@example.com", "label": "No Reply", "icon": "ban"},
+		// 从数据库获取邮箱地址
+		// 使用 APIHandler 的 EmailAccountRepo 查询已配置的邮箱账户
+		accounts, err := h.EmailAccountRepo.GetAll(0) // System-level for plugin callbacks
+		if err != nil {
+			RespondWithError(w, http.StatusInternalServerError, "Failed to fetch email accounts: "+err.Error())
+			return
 		}
 
-		// 过滤
-		if query != "" {
-			var filtered []map[string]interface{}
-			for _, addr := range addresses {
-				if strings.Contains(strings.ToLower(addr["value"].(string)), strings.ToLower(query)) {
-					filtered = append(filtered, addr)
+		// 构建地址列表
+		var addresses []map[string]interface{}
+		for _, account := range accounts {
+			// 如果有搜索条件，进行过滤
+			if query != "" {
+				if !strings.Contains(strings.ToLower(account.EmailAddress), strings.ToLower(query)) {
+					continue
 				}
 			}
-			addresses = filtered
+
+			// 根据邮箱域名设置图标
+			icon := "mail"
+			if strings.Contains(account.EmailAddress, "@gmail") {
+				icon = "mail"
+			} else if strings.Contains(account.EmailAddress, "@outlook") || strings.Contains(account.EmailAddress, "@hotmail") {
+				icon = "mail"
+			}
+
+			addresses = append(addresses, map[string]interface{}{
+				"value": account.EmailAddress,
+				"label": account.EmailAddress,
+				"icon":  icon,
+			})
 		}
 
-		RespondWithJSON(w, http.StatusOK, addresses)
+		// 限制返回数量，最多返回50个
+		if len(addresses) > 50 {
+			addresses = addresses[:50]
+		}
+
+		// 返回格式需要包装为 {options: [...]} 以匹配前端预期
+		RespondWithJSON(w, http.StatusOK, map[string]interface{}{
+			"options": addresses,
+		})
 
 	case "validate-field":
 		// 解析请求体
@@ -365,6 +390,7 @@ func getBuiltinUISchema() *plugins.UISchema {
 				Required:    true,
 				Width:       "1/3",
 				Options: []plugins.UIOption{
+					// 标准操作符
 					{Value: "equals", Label: "等于"},
 					{Value: "not_equals", Label: "不等于"},
 					{Value: "contains", Label: "包含"},
@@ -377,6 +403,24 @@ func getBuiltinUISchema() *plugins.UISchema {
 					{Value: "not_in", Label: "不在列表中"},
 					{Value: "exists", Label: "存在"},
 					{Value: "not_exists", Label: "不存在"},
+					// 数组专用操作符
+					{Value: "array_contains", Label: "[数组] 数组包含"},
+					{Value: "array_not_contains", Label: "[数组] 数组不包含"},
+					{Value: "any_equals", Label: "[数组] 任意元素等于"},
+					{Value: "any_contains", Label: "[数组] 任意元素包含"},
+					{Value: "any_starts_with", Label: "[数组] 任意元素开头是"},
+					{Value: "any_ends_with", Label: "[数组] 任意元素结尾是"},
+					{Value: "any_matches", Label: "[数组] 任意元素匹配正则"},
+					{Value: "any_not_matches", Label: "[数组] 任意元素不匹配正则"},
+					{Value: "all_equals", Label: "[数组] 所有元素等于"},
+					{Value: "all_contains", Label: "[数组] 所有元素包含"},
+					{Value: "all_matches", Label: "[数组] 所有元素匹配正则"},
+					{Value: "all_not_matches", Label: "[数组] 所有元素不匹配正则"},
+					{Value: "array_length_equals", Label: "[数组] 数组长度等于"},
+					{Value: "array_length_greater", Label: "[数组] 数组长度大于"},
+					{Value: "array_length_less", Label: "[数组] 数组长度小于"},
+					{Value: "array_is_empty", Label: "[数组] 数组为空"},
+					{Value: "array_is_not_empty", Label: "[数组] 数组不为空"},
 				},
 			},
 			{
@@ -390,6 +434,7 @@ func getBuiltinUISchema() *plugins.UISchema {
 			},
 		},
 		Operators: []plugins.UIOperator{
+			// 标准操作符
 			{Value: "equals", Label: "等于", ApplicableTo: []string{"text", "number", "select"}},
 			{Value: "not_equals", Label: "不等于", ApplicableTo: []string{"text", "number", "select"}},
 			{Value: "contains", Label: "包含", ApplicableTo: []string{"text"}},
@@ -402,12 +447,30 @@ func getBuiltinUISchema() *plugins.UISchema {
 			{Value: "not_in", Label: "不在列表中", ApplicableTo: []string{"text", "select"}},
 			{Value: "exists", Label: "存在", ApplicableTo: []string{"text"}},
 			{Value: "not_exists", Label: "不存在", ApplicableTo: []string{"text"}},
+			// 数组专用操作符
+			{Value: "array_contains", Label: "[数组] 数组包含", ApplicableTo: []string{"array"}},
+			{Value: "array_not_contains", Label: "[数组] 数组不包含", ApplicableTo: []string{"array"}},
+			{Value: "any_equals", Label: "[数组] 任意元素等于", ApplicableTo: []string{"array"}},
+			{Value: "any_contains", Label: "[数组] 任意元素包含", ApplicableTo: []string{"array"}},
+			{Value: "any_starts_with", Label: "[数组] 任意元素开头是", ApplicableTo: []string{"array"}},
+			{Value: "any_ends_with", Label: "[数组] 任意元素结尾是", ApplicableTo: []string{"array"}},
+			{Value: "any_matches", Label: "[数组] 任意元素匹配正则", ApplicableTo: []string{"array"}},
+			{Value: "any_not_matches", Label: "[数组] 任意元素不匹配正则", ApplicableTo: []string{"array"}},
+			{Value: "all_equals", Label: "[数组] 所有元素等于", ApplicableTo: []string{"array"}},
+			{Value: "all_contains", Label: "[数组] 所有元素包含", ApplicableTo: []string{"array"}},
+			{Value: "all_matches", Label: "[数组] 所有元素匹配正则", ApplicableTo: []string{"array"}},
+			{Value: "all_not_matches", Label: "[数组] 所有元素不匹配正则", ApplicableTo: []string{"array"}},
+			{Value: "array_length_equals", Label: "[数组] 数组长度等于", ApplicableTo: []string{"array"}},
+			{Value: "array_length_greater", Label: "[数组] 数组长度大于", ApplicableTo: []string{"array"}},
+			{Value: "array_length_less", Label: "[数组] 数组长度小于", ApplicableTo: []string{"array"}},
+			{Value: "array_is_empty", Label: "[数组] 数组为空", ApplicableTo: []string{"array"}},
+			{Value: "array_is_not_empty", Label: "[数组] 数组不为空", ApplicableTo: []string{"array"}},
 		},
 		Layout:            "horizontal",
 		AllowCustomFields: true,
 		AllowNesting:      true,
 		MaxNestingLevel:   5,
-		HelpText:          "配置基础的条件判断规则",
+		HelpText:          "配置基础的条件判断规则。对于数组类型的字段（如 From, To, Flags），请使用带 [数组] 前缀的操作符。",
 	}
 }
 

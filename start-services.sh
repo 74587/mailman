@@ -4,8 +4,8 @@ echo "Starting Mailman services..."
 
 # Set environment variables
 export FRONTEND_PORT=3000
-export BACKEND_PORT=9090
-export SERVER_PORT=9090
+export BACKEND_PORT=8080
+export SERVER_PORT=8080
 
 # Create log directories
 mkdir -p /tmp

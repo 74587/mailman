@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { logger } from '@/lib/logger'
 import { MainLayout } from '@/components/layout/main-layout'
 import {
     Mail, Users, Clock, TrendingUp, AlertCircle, CheckCircle, Activity,
@@ -9,6 +10,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { emailAccountService } from '@/services/email-account.service'
+import { emailService, EmailStatsResponse } from '@/services/email.service'
 import { EmailAccount } from '@/types'
 import { activityService, ActivityLog } from '@/services/activity.service'
 
@@ -16,6 +18,25 @@ import { activityService, ActivityLog } from '@/services/activity.service'
 const iconMap = {
     Mail, Send, Trash2, UserPlus, UserCheck, UserX, CheckCircle, RefreshCw,
     Play, XCircle, Bell, BellOff, Cpu, FileText, LogIn, LogOut, Activity
+}
+
+// 计算相对时间
+function getRelativeTime(dateStr: string | null | undefined): string {
+    if (!dateStr) return '—'
+    try {
+        const date = new Date(dateStr)
+        const now = new Date()
+        const diffMs = now.getTime() - date.getTime()
+        const diffMin = Math.floor(diffMs / 60000)
+        if (diffMin < 1) return '刚刚'
+        if (diffMin < 60) return `${diffMin}分钟前`
+        const diffHour = Math.floor(diffMin / 60)
+        if (diffHour < 24) return `${diffHour}小时前`
+        const diffDay = Math.floor(diffHour / 24)
+        return `${diffDay}天前`
+    } catch {
+        return '—'
+    }
 }
 
 // 统计卡片组件
@@ -90,16 +111,30 @@ export default function DashboardPage() {
     const [accounts, setAccounts] = useState<EmailAccount[]>([])
     const [activities, setActivities] = useState<ActivityLog[]>([])
     const [loading, setLoading] = useState(true)
+    const [todayEmails, setTodayEmails] = useState<number>(0)
+    const [todayGrowthRate, setTodayGrowthRate] = useState<number>(0)
+    const [lastSyncTime, setLastSyncTime] = useState<string>('—')
 
     useEffect(() => {
         loadAccounts()
         loadActivities()
+        loadStats()
     }, [])
 
     const loadAccounts = async () => {
         try {
             const data = await emailAccountService.getAccounts()
             setAccounts(data)
+            // Compute last sync time from accounts
+            if (data.length > 0) {
+                const syncTimes = data
+                    .filter((a: EmailAccount) => a.lastSync)
+                    .map((a: EmailAccount) => new Date(a.lastSync!).getTime())
+                if (syncTimes.length > 0) {
+                    const mostRecent = new Date(Math.max(...syncTimes)).toISOString()
+                    setLastSyncTime(getRelativeTime(mostRecent))
+                }
+            }
         } catch (error) {
             console.error('Failed to load accounts:', error)
         } finally {
@@ -107,11 +142,21 @@ export default function DashboardPage() {
         }
     }
 
+    const loadStats = async () => {
+        try {
+            const stats: EmailStatsResponse = await emailService.getEmailStats()
+            setTodayEmails(stats.todayEmails)
+            setTodayGrowthRate(stats.todayGrowthRate)
+        } catch (error) {
+            console.error('Failed to load email stats:', error)
+        }
+    }
+
     const loadActivities = async () => {
         try {
-            console.log('Loading activities...')
+            logger.debug('Loading activities...')
             const data = await activityService.getRecentActivities(5)
-            console.log('Activities loaded:', data)
+            logger.debug('Activities loaded:', data)
             setActivities(data)
         } catch (error) {
             console.error('Failed to load activities:', error)
@@ -121,6 +166,9 @@ export default function DashboardPage() {
     }
 
     const activeAccounts = accounts.filter(a => a.status === 'active').length
+    const todayTrend = todayGrowthRate !== 0
+        ? `${todayGrowthRate >= 0 ? '+' : ''}${todayGrowthRate.toFixed(1)}%`
+        : undefined
 
     return (
         <MainLayout>
@@ -149,14 +197,14 @@ export default function DashboardPage() {
                     />
                     <StatCard
                         title="今日邮件"
-                        value="128"
+                        value={todayEmails}
                         icon={Mail}
-                        trend="+12%"
+                        trend={todayTrend}
                         color="warning"
                     />
                     <StatCard
                         title="最后同步"
-                        value="5分钟前"
+                        value={lastSyncTime}
                         icon={Clock}
                         color="primary"
                     />

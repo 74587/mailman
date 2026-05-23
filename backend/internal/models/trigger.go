@@ -30,6 +30,33 @@ type TriggerConditionConfig struct {
 	Timeout *int   `json:"timeout,omitempty"` // 超时时间（秒）
 }
 
+// Scan implements the sql.Scanner interface
+func (tc *TriggerConditionConfig) Scan(value interface{}) error {
+	if value == nil {
+		*tc = TriggerConditionConfig{}
+		return nil
+	}
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
+		return fmt.Errorf("cannot scan %T into TriggerConditionConfig", value)
+	}
+	return json.Unmarshal(bytes, tc)
+}
+
+// Value implements the driver.Valuer interface
+func (tc TriggerConditionConfig) Value() (driver.Value, error) {
+	bytes, err := json.Marshal(tc)
+	if err != nil {
+		return nil, err
+	}
+	return string(bytes), nil
+}
+
 // TriggerActionConfig 触发动作配置
 type TriggerActionConfig struct {
 	Type        TriggerActionType `json:"type"`                  // 动作类型
@@ -50,8 +77,13 @@ func (ta *TriggerActionsV1) Scan(value interface{}) error {
 		*ta = []TriggerActionConfig{}
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
 		return fmt.Errorf("cannot scan %T into TriggerActionsV1", value)
 	}
 	if len(bytes) == 0 {
@@ -66,7 +98,11 @@ func (ta TriggerActionsV1) Value() (driver.Value, error) {
 	if len(ta) == 0 {
 		return "[]", nil
 	}
-	return json.Marshal(ta)
+	bytes, err := json.Marshal(ta)
+	if err != nil {
+		return nil, err
+	}
+	return string(bytes), nil
 }
 
 // // Scan implements the sql.Scanner interface
@@ -101,17 +137,17 @@ type EmailTrigger struct {
 	CheckInterval int `gorm:"not null;default:30" json:"check_interval"` // 检查间隔（秒）
 
 	// 过滤参数（复用EmailFilter结构）
-	EmailAddress  string            `json:"email_address,omitempty"`                   // 邮箱地址过滤
-	StartDate     *time.Time        `json:"start_date,omitempty"`                      // 开始日期
-	EndDate       *time.Time        `json:"end_date,omitempty"`                        // 结束日期
-	Subject       string            `json:"subject,omitempty"`                         // 主题过滤
-	From          string            `json:"from,omitempty"`                            // 发件人过滤
-	To            string            `json:"to,omitempty"`                              // 收件人过滤
-	HasAttachment *bool             `json:"has_attachment,omitempty"`                  // 是否有附件
-	Unread        *bool             `json:"unread,omitempty"`                          // 是否未读
-	Labels        StringSlice       `gorm:"type:json" json:"labels,omitempty"`         // 标签过滤
-	Folders       StringSlice       `gorm:"type:json" json:"folders,omitempty"`        // 文件夹列表
-	CustomFilters map[string]string `gorm:"type:json" json:"custom_filters,omitempty"` // 自定义过滤器
+	EmailAddress  string      `json:"email_address,omitempty"`                   // 邮箱地址过滤
+	StartDate     *time.Time  `json:"start_date,omitempty"`                      // 开始日期
+	EndDate       *time.Time  `json:"end_date,omitempty"`                        // 结束日期
+	Subject       string      `json:"subject,omitempty"`                         // 主题过滤
+	From          string      `json:"from,omitempty"`                            // 发件人过滤
+	To            string      `json:"to,omitempty"`                              // 收件人过滤
+	HasAttachment *bool       `json:"has_attachment,omitempty"`                  // 是否有附件
+	Unread        *bool       `json:"unread,omitempty"`                          // 是否未读
+	Labels        StringSlice `gorm:"type:json" json:"labels,omitempty"`         // 标签过滤
+	Folders       StringSlice `gorm:"type:json" json:"folders,omitempty"`        // 文件夹列表
+	CustomFilters JSONMap     `gorm:"type:json" json:"custom_filters,omitempty"` // 自定义过滤器
 
 	// 触发条件和动作
 	Condition TriggerConditionConfig `gorm:"type:json;not null" json:"condition"` // 触发条件
@@ -161,8 +197,13 @@ func (tar *TriggerActionResults) Scan(value interface{}) error {
 		*tar = []TriggerActionResult{}
 		return nil
 	}
-	bytes, ok := value.([]byte)
-	if !ok {
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
 		return nil
 	}
 	return json.Unmarshal(bytes, tar)
@@ -173,7 +214,11 @@ func (tar TriggerActionResults) Value() (driver.Value, error) {
 	if len(tar) == 0 {
 		return "[]", nil
 	}
-	return json.Marshal(tar)
+	bytes, err := json.Marshal(tar)
+	if err != nil {
+		return nil, err
+	}
+	return string(bytes), nil
 }
 
 // TriggerExecutionLog 触发器执行日志

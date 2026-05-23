@@ -5,11 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"mailman/internal/models"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -158,11 +159,11 @@ func (s *OAuth2Service) cleanupOldCacheEntries(providerType, clientID, newRefres
 	// 删除过期的缓存条目
 	for _, key := range keysToDelete {
 		delete(s.tokenCache, key)
-		fmt.Printf("OAuth2: Cleaned up old cache entry: %s\n", key)
+		debugPrintf("OAuth2: Cleaned up old cache entry: %s\n", key)
 	}
 
 	if len(keysToDelete) > 0 {
-		fmt.Printf("OAuth2: Cleaned up %d old cache entries for provider %s\n", len(keysToDelete), providerType)
+		debugPrintf("OAuth2: Cleaned up %d old cache entries for provider %s\n", len(keysToDelete), providerType)
 	}
 }
 
@@ -195,7 +196,9 @@ func (s *OAuth2Service) RefreshAccessTokenWithCacheAndProxy(providerType, client
 		// 检查token是否还有效（提前5分钟过期）
 		if time.Now().Before(entry.ExpiresAt.Add(-5 * time.Minute)) {
 			s.cacheMutex.RUnlock()
-			fmt.Printf("OAuth2: Using cached token for account %d, expires at: %v\n", accountID, entry.ExpiresAt)
+			if isDebugMode() {
+				debugPrintf("OAuth2: Using cached token for account %d, expires at: %v\n", accountID, entry.ExpiresAt)
+			}
 			return entry.AccessToken, nil
 		}
 	}
@@ -211,7 +214,9 @@ func (s *OAuth2Service) RefreshAccessTokenWithCacheAndProxy(providerType, client
 	if entry, exists := s.tokenCache[cacheKey]; exists {
 		if time.Now().Before(entry.ExpiresAt.Add(-5 * time.Minute)) {
 			s.cacheMutex.RUnlock()
-			fmt.Printf("OAuth2: Using cached token after lock for account %d, expires at: %v\n", accountID, entry.ExpiresAt)
+			if isDebugMode() {
+				debugPrintf("OAuth2: Using cached token after lock for account %d, expires at: %v\n", accountID, entry.ExpiresAt)
+			}
 			return entry.AccessToken, nil
 		}
 	}
@@ -222,13 +227,13 @@ func (s *OAuth2Service) RefreshAccessTokenWithCacheAndProxy(providerType, client
 	if entry, exists := s.tokenCache[cacheKey]; exists {
 		if time.Since(entry.RefreshTime) < 30*time.Second {
 			s.cacheMutex.RUnlock()
-			fmt.Printf("OAuth2: Throttling refresh for account %d, last refresh: %v\n", accountID, entry.RefreshTime)
+			debugPrintf("OAuth2: Throttling refresh for account %d, last refresh: %v\n", accountID, entry.RefreshTime)
 			return "", fmt.Errorf("token refresh throttled, please wait a moment")
 		}
 	}
 	s.cacheMutex.RUnlock()
 
-	fmt.Printf("OAuth2: Refreshing token for account %d (provider: %s) with proxy: %s\n", accountID, providerType, proxy)
+	debugPrintf("OAuth2: Refreshing token for account %d (provider: %s) with proxy: %s\n", accountID, providerType, proxy)
 
 	// 刷新token - 使用代理支持的方法
 	newAccessToken, newRefreshToken, err := s.RefreshAccessTokenForProviderWithProxy(providerType, clientID, clientSecret, refreshToken, proxy)
@@ -238,21 +243,21 @@ func (s *OAuth2Service) RefreshAccessTokenWithCacheAndProxy(providerType, client
 
 	// 如果有新的refresh token，更新到数据库
 	if newRefreshToken != "" && s.db != nil {
-		fmt.Printf("OAuth2: Updating refresh token for account %d (new token length: %d)\n", accountID, len(newRefreshToken))
+		debugPrintf("OAuth2: Updating refresh token for account %d (new token length: %d)\n", accountID, len(newRefreshToken))
 
 		// 正确更新CustomSettings中的refresh_token字段
 		// 先获取当前的CustomSettings
 		var account models.EmailAccount
 		if err := s.db.Where("id = ?", accountID).First(&account).Error; err != nil {
-			fmt.Printf("OAuth2: Failed to fetch account for refresh token update %d: %v\n", accountID, err)
+			debugPrintf("OAuth2: Failed to fetch account for refresh token update %d: %v\n", accountID, err)
 		} else {
-			fmt.Printf("OAuth2: Retrieved account %d, current CustomSettings keys: %v\n",
+			debugPrintf("OAuth2: Retrieved account %d, current CustomSettings keys: %v\n",
 				accountID, getMapKeys(account.CustomSettings))
 
 			// 确保CustomSettings不为nil
 			if account.CustomSettings == nil {
 				account.CustomSettings = make(models.JSONMap)
-				fmt.Printf("OAuth2: Initialized nil CustomSettings for account %d\n", accountID)
+				debugPrintf("OAuth2: Initialized nil CustomSettings for account %d\n", accountID)
 			}
 
 			// 保存旧的refresh token用于日志
@@ -267,9 +272,9 @@ func (s *OAuth2Service) RefreshAccessTokenWithCacheAndProxy(providerType, client
 				Update("custom_settings", account.CustomSettings)
 
 			if result.Error != nil {
-				fmt.Printf("OAuth2: Failed to update refresh token in CustomSettings for account %d: %v\n", accountID, result.Error)
+				debugPrintf("OAuth2: Failed to update refresh token in CustomSettings for account %d: %v\n", accountID, result.Error)
 			} else {
-				fmt.Printf("OAuth2: Successfully updated refresh token in CustomSettings for account %d (old: %d chars, new: %d chars)\n",
+				debugPrintf("OAuth2: Successfully updated refresh token in CustomSettings for account %d (old: %d chars, new: %d chars)\n",
 					accountID, len(oldRefreshToken), len(newRefreshToken))
 			}
 		}
@@ -299,7 +304,7 @@ func (s *OAuth2Service) RefreshAccessTokenWithCacheAndProxy(providerType, client
 	// 清理可能存在的旧缓存条目（基于旧的refresh token）
 	s.cleanupOldCacheEntries(providerType, clientID, refreshToken)
 
-	fmt.Printf("OAuth2: Token refreshed and cached for account %d\n", accountID)
+	debugPrintf("OAuth2: Token refreshed and cached for account %d\n", accountID)
 	return newAccessToken, nil
 }
 
@@ -325,8 +330,8 @@ func (s *OAuth2Service) RefreshAccessTokenForProvider(providerType string, clien
 	}
 
 	// Log the request for debugging (hide sensitive data)
-	fmt.Printf("OAuth2: Refreshing token for provider: %s, client_id: %s\n", providerType, clientID)
-	fmt.Printf("OAuth2: Refresh token length: %d\n", len(refreshToken))
+	debugPrintf("OAuth2: Refreshing token for provider: %s, client_id: %s\n", providerType, clientID)
+	debugPrintf("OAuth2: Refresh token length: %d\n", len(refreshToken))
 
 	data := url.Values{}
 	data.Set("client_id", clientID)
@@ -338,9 +343,9 @@ func (s *OAuth2Service) RefreshAccessTokenForProvider(providerType string, clien
 	// For Microsoft public clients, client_secret should be empty or not included
 	if clientSecret != "" {
 		data.Set("client_secret", clientSecret)
-		fmt.Printf("OAuth2: Using confidential client (with client_secret) for %s\n", providerType)
+		debugPrintf("OAuth2: Using confidential client (with client_secret) for %s\n", providerType)
 	} else {
-		fmt.Printf("OAuth2: Using public client (no client_secret) for %s\n", providerType)
+		debugPrintf("OAuth2: Using public client (no client_secret) for %s\n", providerType)
 	}
 
 	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
@@ -356,18 +361,18 @@ func (s *OAuth2Service) RefreshAccessTokenForProvider(providerType string, clien
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
 	// Log response status for debugging
-	fmt.Printf("OAuth2: Response status: %d\n", resp.StatusCode)
+	debugPrintf("OAuth2: Response status: %d\n", resp.StatusCode)
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
 		// Log raw response if JSON parsing fails
-		fmt.Printf("OAuth2: Failed to parse JSON. Raw response: %s\n", string(body))
+		debugPrintf("OAuth2: Failed to parse JSON. Raw response: %s\n", string(body))
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -396,13 +401,13 @@ func (s *OAuth2Service) RefreshAccessTokenForProvider(providerType string, clien
 	accessToken, ok := result["access_token"].(string)
 	if !ok {
 		// Log the entire response for debugging
-		fmt.Printf("OAuth2: No access_token in response. Full response: %+v\n", result)
+		debugPrintf("OAuth2: No access_token in response. Full response: %+v\n", result)
 		return "", fmt.Errorf("access_token not found in response")
 	}
 
 	// 获取过期时间信息
 	expiresIn, _ := result["expires_in"].(float64)
-	fmt.Printf("OAuth2: Successfully obtained access token (length: %d), expires in: %.0f seconds\n", len(accessToken), expiresIn)
+	debugPrintf("OAuth2: Successfully obtained access token (length: %d), expires in: %.0f seconds\n", len(accessToken), expiresIn)
 
 	return accessToken, nil
 }
@@ -424,8 +429,8 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	}
 
 	// Log the request for debugging (hide sensitive data)
-	fmt.Printf("OAuth2: Refreshing token for provider: %s, client_id: %s with proxy: %s\n", providerType, clientID, proxy)
-	fmt.Printf("OAuth2: Refresh token length: %d\n", len(refreshToken))
+	debugPrintf("OAuth2: Refreshing token for provider: %s, client_id: %s with proxy: %s\n", providerType, clientID, proxy)
+	debugPrintf("OAuth2: Refresh token length: %d\n", len(refreshToken))
 
 	data := url.Values{}
 	data.Set("client_id", clientID)
@@ -437,9 +442,9 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	// For Microsoft public clients, client_secret should be empty or not included
 	if clientSecret != "" {
 		data.Set("client_secret", clientSecret)
-		fmt.Printf("OAuth2 Proxy: Using confidential client (with client_secret) for %s\n", providerType)
+		debugPrintf("OAuth2 Proxy: Using confidential client (with client_secret) for %s\n", providerType)
 	} else {
-		fmt.Printf("OAuth2 Proxy: Using public client (no client_secret) for %s\n", providerType)
+		debugPrintf("OAuth2 Proxy: Using public client (no client_secret) for %s\n", providerType)
 	}
 
 	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
@@ -461,18 +466,18 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to read response: %w", err)
 	}
 
 	// Log response status for debugging
-	fmt.Printf("OAuth2: Response status: %d\n", resp.StatusCode)
+	debugPrintf("OAuth2: Response status: %d\n", resp.StatusCode)
 
 	var result map[string]interface{}
 	if err := json.Unmarshal(body, &result); err != nil {
 		// Log raw response if JSON parsing fails
-		fmt.Printf("OAuth2: Failed to parse JSON. Raw response: %s\n", string(body))
+		debugPrintf("OAuth2: Failed to parse JSON. Raw response: %s\n", string(body))
 		return "", "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -501,7 +506,7 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	accessToken, ok := result["access_token"].(string)
 	if !ok {
 		// Log the entire response for debugging
-		fmt.Printf("OAuth2: No access_token in response. Full response: %+v\n", result)
+		debugPrintf("OAuth2: No access_token in response. Full response: %+v\n", result)
 		return "", "", fmt.Errorf("access_token not found in response")
 	}
 
@@ -509,14 +514,14 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	newRefreshToken = ""
 	if newRefresh, ok := result["refresh_token"].(string); ok && newRefresh != "" {
 		newRefreshToken = newRefresh
-		fmt.Printf("OAuth2: New refresh token provided (length: %d)\n", len(newRefreshToken))
+		debugPrintf("OAuth2: New refresh token provided (length: %d)\n", len(newRefreshToken))
 	} else {
-		fmt.Printf("OAuth2: No new refresh token provided, keeping existing one\n")
+		debugPrintf("OAuth2: No new refresh token provided, keeping existing one\n")
 	}
 
 	// 获取过期时间信息
 	expiresIn, _ := result["expires_in"].(float64)
-	fmt.Printf("OAuth2: Successfully obtained access token (length: %d), expires in: %.0f seconds\n", len(accessToken), expiresIn)
+	debugPrintf("OAuth2: Successfully obtained access token (length: %d), expires in: %.0f seconds\n", len(accessToken), expiresIn)
 
 	return accessToken, newRefreshToken, nil
 }
@@ -584,7 +589,7 @@ func (s *OAuth2Service) ExchangeCodeForTokens(providerType, clientID, clientSecr
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -632,21 +637,38 @@ func NewOAuth2SASLClient(email, accessToken string) sasl.Client {
 	}
 }
 
+// isDebugMode 检查是否处于调试模式
+func isDebugMode() bool {
+	level := strings.ToUpper(os.Getenv("LOG_LEVEL"))
+	return level == "DEBUG"
+}
+
+// debugPrintf 仅在 DEBUG 模式下输出日志
+func debugPrintf(format string, args ...interface{}) {
+	if isDebugMode() {
+		fmt.Printf(format, args...)
+	}
+}
+
 // Start begins the SASL authentication
 func (c *OAuth2SASLClient) Start() (mech string, ir []byte, err error) {
 	mech = "XOAUTH2"
 	ir = []byte(fmt.Sprintf("user=%s\x01auth=Bearer %s\x01\x01", c.email, c.accessToken))
-	fmt.Printf("OAuth2 SASL: Starting authentication for %s\n", c.email)
-	fmt.Printf("OAuth2 SASL: Access token length: %d\n", len(c.accessToken))
-	fmt.Printf("OAuth2 SASL: Initial response length: %d\n", len(ir))
+	if isDebugMode() {
+		fmt.Printf("OAuth2 SASL: Starting authentication for %s\n", c.email)
+		fmt.Printf("OAuth2 SASL: Access token length: %d\n", len(c.accessToken))
+		fmt.Printf("OAuth2 SASL: Initial response length: %d\n", len(ir))
+	}
 	return
 }
 
 // Next continues the SASL authentication
 func (c *OAuth2SASLClient) Next(challenge []byte) (response []byte, err error) {
-	fmt.Printf("OAuth2 SASL: Next called with challenge length: %d\n", len(challenge))
-	if len(challenge) > 0 {
-		fmt.Printf("OAuth2 SASL: Challenge content: %s\n", string(challenge))
+	if isDebugMode() {
+		fmt.Printf("OAuth2 SASL: Next called with challenge length: %d\n", len(challenge))
+		if len(challenge) > 0 {
+			fmt.Printf("OAuth2 SASL: Challenge content: %s\n", string(challenge))
+		}
 	}
 	// OAuth2 doesn't require additional steps
 	return nil, nil

@@ -111,7 +111,7 @@ export function FieldPreviewPanel({
     return (
         <div
             ref={constraintsRef}
-            className="fixed inset-0 pointer-events-none z-[60]"
+            className="fixed inset-0 pointer-events-none z-[65]"
         >
             <motion.div
                 ref={panelRef}

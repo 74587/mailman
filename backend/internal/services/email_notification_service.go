@@ -14,6 +14,7 @@ type EmailNotification struct {
 	Type         string    `json:"type"`
 	AccountID    uint      `json:"account_id"`
 	AccountEmail string    `json:"account_email"`
+	EmailID      uint      `json:"email_id,omitempty"`
 	EmailCount   int       `json:"email_count"`
 	Subject      string    `json:"subject,omitempty"`
 	From         string    `json:"from,omitempty"`
@@ -72,7 +73,7 @@ func (s *EmailNotificationService) RegisterClient(clientID string, conn *websock
 	// 启动客户端处理goroutine
 	go s.handleClient(client)
 
-	// 发送最近的通知历史
+	// 发送最近的通知历史（前端有去重机制，不会重复显示）
 	s.sendRecentHistory(client)
 }
 
@@ -134,8 +135,14 @@ func (s *EmailNotificationService) handleClient(client *WebSocketClient) {
 		client.Conn.Close()
 	}()
 
-	// 设置读写超时
-	client.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	// 设置 Pong Handler - 当收到 Pong 时重置读取超时
+	client.Conn.SetPongHandler(func(string) error {
+		client.Conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
+
+	// 设置初始读取超时（心跳间隔 54秒 + 缓冲时间）
+	client.Conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 	client.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 
 	// 启动写入goroutine
@@ -151,8 +158,8 @@ func (s *EmailNotificationService) handleClient(client *WebSocketClient) {
 			break
 		}
 
-		// 重置读取超时
-		client.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		// 收到任何消息都重置读取超时
+		client.Conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 	}
 }
 

@@ -1,7 +1,9 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { Search, Filter, Mail, Paperclip, Star, Archive, Trash2, RefreshCw, Code, X, ChevronDown, Printer } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { emailService, EmailSearchParams } from '@/services/email.service'
 import { emailAccountService } from '@/services/email-account.service'
@@ -9,6 +11,7 @@ import { Email, EmailAccount } from '@/types'
 import { formatDate, truncate } from '@/lib/utils'
 import SyncAccountModal from '@/components/modals/sync-account-modal'
 import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 
 // 邮件列表项组件
 function EmailItem({
@@ -144,10 +147,12 @@ function EmailDetail({ email }: { email: Email | null }) {
     };
 
     // 删除邮件（从当前列表中移除）
-    const deleteEmail = () => {
+    const deleteEmail = async () => {
         if (!email) return;
 
-        if (confirm('确定要删除这封邮件吗？\n注意：这只会从当前列表中移除，不会从服务器删除。')) {
+        // 由于 EmailDetail 是内部组件，不能使用 hook，直接使用 window.confirm
+        // TODO: 考虑将确认逻辑提升到父组件
+        if (window.confirm('确定要删除这封邮件吗？\n注意：这只会从当前列表中移除，不会从服务器删除。')) {
             // 触发父组件的删除逻辑
             const event = new CustomEvent('deleteEmail', { detail: { emailId: email.ID } });
             window.dispatchEvent(event);
@@ -276,7 +281,7 @@ ${email.HTMLBody ? '--- HTML Content ---\n\n' + email.HTMLBody + '\n\n--- Plain 
                                     <Paperclip className="w-4 h-4" />
                                     <span>{attachment.filename}</span>
                                     <span className="text-xs text-gray-500 dark:text-gray-400">
-                                        ({Math.round(attachment.size / 1024)} KB)
+                                        ({Math.round((attachment.size || 0) / 1024)} KB)
                                     </span>
                                 </div>
                             </div>
@@ -316,6 +321,9 @@ export default function EmailsTab() {
         mailbox: ''
     })
 
+    // 邮件方向筛选: 收件箱/发件箱/全部
+    const [directionFilter, setDirectionFilter] = useState<'received' | 'sent' | 'all'>('received')
+
     // 添加搜索防抖定时器引用
     const searchDebounceTimer = useRef<NodeJS.Timeout | null>(null)
     const accountSearchDebounceTimer = useRef<NodeJS.Timeout | null>(null)
@@ -328,7 +336,7 @@ export default function EmailsTab() {
     const isValidEmail = (email: string): boolean => {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
         const result = emailRegex.test(email.trim())
-        console.log('邮箱验证结果:', email, result)
+        logger.debug('邮箱验证结果:', email, result)
         return result
     }
 
@@ -354,7 +362,7 @@ export default function EmailsTab() {
                 email: accountEmail,
                 timestamp: new Date().getTime()
             }));
-            console.log('[EmailsTab] 保存账户信息到localStorage:', accountId, accountEmail);
+            logger.debug('[EmailsTab] 保存账户信息到localStorage:', accountId, accountEmail);
         } catch (error) {
             console.error('[EmailsTab] 无法保存账户信息到localStorage:', error);
         }
@@ -391,7 +399,7 @@ export default function EmailsTab() {
 
     // 处理从账户管理页面切换过来的账户选择
     const handleAccountSelection = useCallback((data: any) => {
-        console.log('[EmailsTab] 回调函数收到账户选择数据:', data);
+        logger.debug('[EmailsTab] 回调函数收到账户选择数据:', data);
 
         if (data?.selectedAccountId) {
             const accountId = data.selectedAccountId;
@@ -399,7 +407,7 @@ export default function EmailsTab() {
 
             // 如果有邮箱地址，直接设置账户并加载邮件
             if (accountEmail) {
-                console.log('[EmailsTab] 从回调设置账户:', accountEmail, 'ID:', accountId);
+                logger.debug('[EmailsTab] 从回调设置账户:', accountEmail, 'ID:', accountId);
 
                 // 同时保存到localStorage，作为备份
                 saveAccountToStorage(accountId, accountEmail);
@@ -431,7 +439,7 @@ export default function EmailsTab() {
 
     // 注册回调函数，在组件挂载完成时调用
     useEffect(() => {
-        console.log('[EmailsTab] 注册onReady回调函数');
+        logger.debug('[EmailsTab] 注册onReady回调函数');
 
         // 注册回调函数
         registerTabCallback('emails', 'onReady', handleAccountSelection);
@@ -444,7 +452,7 @@ export default function EmailsTab() {
 
         // 组件卸载时清理回调
         return () => {
-            console.log('[EmailsTab] 卸载组件，注销onReady回调');
+            logger.debug('[EmailsTab] 卸载组件，注销onReady回调');
             unregisterTabCallback('emails', 'onReady');
         };
     }, [handleAccountSelection]);
@@ -453,7 +461,7 @@ export default function EmailsTab() {
         // 首先检查是否有从账户管理页面传递过来的账户信息
         const switchTabData = (window as any).switchTabData;
         if (switchTabData && switchTabData.selectedAccountId && switchTabData.selectedAccountEmail) {
-            console.log('[loadAccounts] 检测到全局变量中的 switchTabData:', switchTabData);
+            logger.debug('[loadAccounts] 检测到全局变量中的 switchTabData:', switchTabData);
 
             // 直接设置选中的账户，并返回，不进行任何自动选择
             setSelectedAccount(switchTabData.selectedAccountId);
@@ -472,11 +480,11 @@ export default function EmailsTab() {
 
             // 显式处理搜索参数，确保非空时传递
             const searchParam = accountSearchQuery ? accountSearchQuery.trim() : '';
-            console.log('搜索参数:', searchParam);
+            logger.debug('搜索参数:', searchParam);
 
             // 检查是否是邮箱格式
             const isEmail = isValidEmail(searchParam);
-            console.log('账户搜索框输入是否为邮箱:', isEmail);
+            logger.debug('账户搜索框输入是否为邮箱:', isEmail);
 
             // 使用分页API搜索账户，强制传递search参数（即使为空）
             const response = await emailAccountService.getAccountsPaginated({
@@ -485,14 +493,14 @@ export default function EmailsTab() {
                 search: searchParam
             })
 
-            console.log('请求URL参数:', `page=${page}&limit=10&search=${encodeURIComponent(searchParam)}`);
-            console.log('账户API响应:', response);
+            logger.debug('请求URL参数:', `page=${page}&limit=10&search=${encodeURIComponent(searchParam)}`);
+            logger.debug('账户API响应:', response);
 
             const data = response.data;
 
             // 如果搜索的是邮箱地址但没有找到账户，切换到邮箱搜索模式
             if (isEmail && searchParam && data.length === 0 && page === 1) {
-                console.log('🔄 检测到邮箱地址但无对应账户，切换到邮箱搜索模式');
+                logger.debug('🔄 检测到邮箱地址但无对应账户，切换到邮箱搜索模式');
                 setIsEmailSearchMode(true);
                 setEmailSearchTarget(searchParam);
                 // 清除选中的账户
@@ -521,12 +529,12 @@ export default function EmailsTab() {
 
             // 处理账户选择
             if (data.length > 0) {
-                console.log('[loadAccounts] 处理账户选择，isInitialLoad:', isInitialLoad);
-                console.log('[loadAccounts] 当前 selectedAccount:', selectedAccount);
+                logger.debug('[loadAccounts] 处理账户选择，isInitialLoad:', isInitialLoad);
+                logger.debug('[loadAccounts] 当前 selectedAccount:', selectedAccount);
 
                 // 检查是否有 __skipAccountSelection 标记
                 if ((window as any).__skipAccountSelection) {
-                    console.log('[loadAccounts] 检测到 __skipAccountSelection 标记，跳过账户选择');
+                    logger.debug('[loadAccounts] 检测到 __skipAccountSelection 标记，跳过账户选择');
                     return;
                 }
 
@@ -536,7 +544,7 @@ export default function EmailsTab() {
                 const targetAccountEmail = (window as any).__targetAccountEmail;
 
                 if (fromAccountsTab && targetAccountId && targetAccountEmail) {
-                    console.log('[loadAccounts] 从账户管理页面切换过来，保持选中状态:', targetAccountEmail);
+                    logger.debug('[loadAccounts] 从账户管理页面切换过来，保持选中状态:', targetAccountEmail);
                     // 清除标记
                     delete (window as any).__fromAccountsTab;
                     delete (window as any).__targetAccountId;
@@ -547,44 +555,44 @@ export default function EmailsTab() {
 
                 // 首先检查是否有待处理的账户选择
                 const pendingAccountId = (window as any).__pendingSelectedAccountId;
-                console.log('[loadAccounts] 待处理的账户ID:', pendingAccountId);
+                logger.debug('[loadAccounts] 待处理的账户ID:', pendingAccountId);
 
                 if (pendingAccountId) {
                     // 查找所有账户中是否有匹配的
                     const allAccounts = page === 1 ? data : [...accounts, ...data];
                     const account = allAccounts.find(acc => acc.id === pendingAccountId);
                     if (account) {
-                        console.log('[loadAccounts] 找到待选择的账户:', account.emailAddress);
+                        logger.debug('[loadAccounts] 找到待选择的账户:', account.emailAddress);
                         setSelectedAccount(pendingAccountId);
                         setSelectedAccountLabel(account.emailAddress);
                         delete (window as any).__pendingSelectedAccountId;
                         return; // 找到了就直接返回，不执行后续逻辑
                     } else {
-                        console.log('[loadAccounts] 未找到待选择的账户');
+                        logger.debug('[loadAccounts] 未找到待选择的账户');
                         // 保留待选择ID，可能在后续页面中
                     }
                 }
 
                 // 检查是否应该跳过账户选择 - 使用React状态
                 if (skipAccountSelection) {
-                    console.log('[loadAccounts] 检测到skipAccountSelection状态为true，跳过账户选择');
+                    logger.debug('[loadAccounts] 检测到skipAccountSelection状态为true，跳过账户选择');
                     return;
                 }
 
                 // 只有在初次加载且没有选中账户时，才选择第一个
                 if (isInitialLoad && !selectedAccount && !pendingAccountId) {
-                    console.log('[loadAccounts] 没有选中的账户，选择第一个:', data[0].emailAddress);
+                    logger.debug('[loadAccounts] 没有选中的账户，选择第一个:', data[0].emailAddress);
 
                     // 如果有全局变量中的switchTabData，即使处于初始加载也不选择第一个账户
                     if ((window as any).switchTabData) {
-                        console.log('[loadAccounts] 由于存在switchTabData，跳过自动选择第一个账户');
+                        logger.debug('[loadAccounts] 由于存在switchTabData，跳过自动选择第一个账户');
                         return;
                     }
 
                     setSelectedAccount(data[0].id);
                     setSelectedAccountLabel(data[0].emailAddress);
                 } else if (selectedAccount) {
-                    console.log('[loadAccounts] 已有选中的账户，保持不变');
+                    logger.debug('[loadAccounts] 已有选中的账户，保持不变');
                 }
             }
         } catch (error) {
@@ -598,7 +606,7 @@ export default function EmailsTab() {
         if (accountListRef.current && hasMoreAccounts && !accountsLoading) {
             const { scrollTop, scrollHeight, clientHeight } = accountListRef.current;
             if (scrollTop + clientHeight >= scrollHeight - 10) {
-                console.log('账户列表触发滚动加载，当前页:', currentPage, '下一页:', currentPage + 1);
+                logger.debug('账户列表触发滚动加载，当前页:', currentPage, '下一页:', currentPage + 1);
                 setCurrentPage(currentPage + 1);
                 loadAccounts(currentPage + 1);
             }
@@ -610,7 +618,7 @@ export default function EmailsTab() {
         setFoldersLoading(true);
         try {
             const response = await emailService.getEmailFolders();
-            console.log('文件夹API响应:', response);
+            logger.debug('文件夹API响应:', response);
 
             // 正确解析API返回的数据格式: {"count":2,"folders":["INBOX","[Gmail]/所有邮件"]}
             if (response && response.folders && Array.isArray(response.folders)) {
@@ -634,7 +642,7 @@ export default function EmailsTab() {
     };
 
     useEffect(() => {
-        console.log('[EmailsTab] 首次加载组件时运行初始化逻辑');
+        logger.debug('[EmailsTab] 首次加载组件时运行初始化逻辑');
 
         // 加载文件夹列表
         loadFolders();
@@ -643,20 +651,20 @@ export default function EmailsTab() {
         const savedAccount = getAccountFromStorage();
 
         if (savedAccount) {
-            console.log('[EmailsTab] 从localStorage获取到账户信息:', savedAccount);
+            logger.debug('[EmailsTab] 从localStorage获取到账户信息:', savedAccount);
             setSelectedAccount(savedAccount.id);
             setSelectedAccountLabel(savedAccount.email);
             // 设置跳过账户选择的标记，避免loadAccounts覆盖这个设置
             setSkipAccountSelection(true);
         } else {
             // 没有保存的账户，默认加载所有邮件
-            console.log('[EmailsTab] 没有保存的账户，默认加载所有邮件');
+            logger.debug('[EmailsTab] 没有保存的账户，默认加载所有邮件');
             loadEmails(1, true);
         }
 
         // 设置2秒延迟，然后加载账户列表
         const timer = setTimeout(() => {
-            console.log('[EmailsTab] 2秒延迟后加载账户列表');
+            logger.debug('[EmailsTab] 2秒延迟后加载账户列表');
             loadAccounts(1, true);
         }, 2000);
 
@@ -664,7 +672,7 @@ export default function EmailsTab() {
     }, []);
 
     const searchEmailsByToQuery = async (email: string, page = 1, isInitialLoad = false) => {
-        console.log('🔍 使用邮箱地址搜索邮件:', email, 'page:', page);
+        logger.debug('🔍 使用邮箱地址搜索邮件:', email, 'page:', page);
 
         if (isInitialLoad) {
             setLoading(true);
@@ -684,11 +692,11 @@ export default function EmailsTab() {
                 to_query: email // 使用to_query参数搜索收件人
             };
 
-            console.log('邮箱搜索参数:', params);
+            logger.debug('邮箱搜索参数:', params);
 
             // 调用搜索API
             const response = await emailService.getAllEmails(params);
-            console.log('邮箱搜索API响应:', response);
+            logger.debug('邮箱搜索API响应:', response);
 
             let emailsData = null;
 
@@ -705,14 +713,14 @@ export default function EmailsTab() {
                     emailsData = [];
                 }
 
-                console.log('提取的邮件数据:', emailsData);
+                logger.debug('提取的邮件数据:', emailsData);
 
                 // 数据后处理
                 if (emailsData && Array.isArray(emailsData)) {
                     // 辅助函数：递归查找数组字段
                     const findArray = (obj: any, path = ''): any[] | null => {
                         if (Array.isArray(obj)) {
-                            console.log(`找到数组字段 ${path}:`, obj);
+                            logger.debug(`找到数组字段 ${path}:`, obj);
                             return obj;
                         }
                         if (obj && typeof obj === 'object') {
@@ -733,7 +741,7 @@ export default function EmailsTab() {
                         Bcc: findArray(email.Bcc) || (email.Bcc ? [email.Bcc] : [])
                     }));
 
-                    console.log('处理后的邮件数据:', processedEmails);
+                    logger.debug('处理后的邮件数据:', processedEmails);
 
                     if (isInitialLoad || page === 1) {
                         setEmails(processedEmails);
@@ -750,7 +758,7 @@ export default function EmailsTab() {
                         setSelectedEmail(processedEmails[0]);
                     }
 
-                    console.log(`✅ 邮箱搜索成功，找到 ${processedEmails.length} 封邮件`);
+                    logger.debug(`✅ 邮箱搜索成功，找到 ${processedEmails.length} 封邮件`);
                 } else {
                     console.warn('邮件数据不是数组:', emailsData);
                     if (isInitialLoad) {
@@ -790,11 +798,11 @@ export default function EmailsTab() {
     const applyFilters = () => {
         // 检查是否在邮箱搜索模式
         if (isEmailSearchMode && emailSearchTarget) {
-            console.log('应用筛选 - 邮箱搜索模式，目标邮箱:', emailSearchTarget);
+            logger.debug('应用筛选 - 邮箱搜索模式，目标邮箱:', emailSearchTarget);
             // 在邮箱搜索模式下，使用特殊的搜索逻辑
             searchEmailsByToQuery(emailSearchTarget, 1, true);
         } else if (selectedAccount) {
-            console.log('应用筛选 - 账户模式，选中账户:', selectedAccount);
+            logger.debug('应用筛选 - 账户模式，选中账户:', selectedAccount);
             // 构建筛选参数
             const filterParams: EmailSearchParams = {
                 limit: 20,
@@ -826,7 +834,7 @@ export default function EmailsTab() {
                     setLoading(false)
                 })
         } else {
-            console.log('应用筛选 - 全局模式');
+            logger.debug('应用筛选 - 全局模式');
             // 全局搜索，传递所有筛选参数
             const filterParams: EmailSearchParams = {
                 limit: 20,
@@ -845,7 +853,7 @@ export default function EmailsTab() {
             if (filterOptions.mailbox) filterParams.mailbox = filterOptions.mailbox
             if (searchQuery) filterParams.keyword = searchQuery
 
-            console.log('全局搜索筛选参数:', filterParams);
+            logger.debug('全局搜索筛选参数:', filterParams);
 
             setLoading(true)
             emailService.getAllEmails(filterParams)
@@ -885,7 +893,7 @@ export default function EmailsTab() {
     }
 
     const processEmailsResponse = (response: any, isInitialLoad = false) => {
-        console.log('处理邮件API响应:', response);
+        logger.debug('处理邮件API响应:', response);
 
         let emailsData = null;
 
@@ -902,7 +910,7 @@ export default function EmailsTab() {
                 emailsData = [];
             }
 
-            console.log('提取的邮件数据:', emailsData);
+            logger.debug('提取的邮件数据:', emailsData);
 
             // 数据后处理
             if (emailsData && Array.isArray(emailsData)) {
@@ -933,12 +941,12 @@ export default function EmailsTab() {
     };
 
     const loadEmails = useCallback(async (page = 1, isInitialLoad = false) => {
-        console.log('[loadEmails] 开始加载邮件，page:', page, 'isInitialLoad:', isInitialLoad);
-        console.log('[loadEmails] 当前状态 - selectedAccount:', selectedAccount, 'isEmailSearchMode:', isEmailSearchMode, 'emailSearchTarget:', emailSearchTarget);
+        logger.debug('[loadEmails] 开始加载邮件，page:', page, 'isInitialLoad:', isInitialLoad);
+        logger.debug('[loadEmails] 当前状态 - selectedAccount:', selectedAccount, 'isEmailSearchMode:', isEmailSearchMode, 'emailSearchTarget:', emailSearchTarget);
 
         // 检查是否在邮箱搜索模式
         if (isEmailSearchMode && emailSearchTarget) {
-            console.log('[loadEmails] 当前在邮箱搜索模式，调用searchEmailsByToQuery');
+            logger.debug('[loadEmails] 当前在邮箱搜索模式，调用searchEmailsByToQuery');
             searchEmailsByToQuery(emailSearchTarget, page, isInitialLoad);
             return;
         }
@@ -958,14 +966,15 @@ export default function EmailsTab() {
                 limit: limit,
                 offset: offset,
                 sort_by: 'date_desc',
-                keyword: searchQuery || undefined
+                keyword: searchQuery || undefined,
+                direction: directionFilter // 添加方向筛选
             };
 
             if (selectedAccount) {
-                console.log('[loadEmails] 使用选中账户加载邮件:', selectedAccount);
+                logger.debug('[loadEmails] 使用选中账户加载邮件:', selectedAccount);
                 response = await emailService.getEmails(selectedAccount, params);
             } else {
-                console.log('[loadEmails] 使用全局模式加载邮件');
+                logger.debug('[loadEmails] 使用全局模式加载邮件');
                 response = await emailService.getAllEmails(params);
             }
 
@@ -995,7 +1004,7 @@ export default function EmailsTab() {
                         Bcc: Array.isArray(email.Bcc) ? email.Bcc : (email.Bcc ? [email.Bcc] : [])
                     }));
 
-                    console.log('[loadEmails] 处理后的邮件数据:', processedEmails.length, '条');
+                    logger.debug('[loadEmails] 处理后的邮件数据:', processedEmails.length, '条');
 
                     if (isInitialLoad || page === 1) {
                         setEmails(processedEmails);
@@ -1038,7 +1047,7 @@ export default function EmailsTab() {
                 setEmailsLoading(false);
             }
         }
-    }, [selectedAccount, searchQuery, isEmailSearchMode, emailSearchTarget]);
+    }, [selectedAccount, searchQuery, isEmailSearchMode, emailSearchTarget, directionFilter]);
 
     const handleEmailsListScroll = () => {
         if (emailsListRef.current && hasMoreEmails && !emailsLoading) {
@@ -1052,7 +1061,7 @@ export default function EmailsTab() {
     useEffect(() => {
         // 当选中账户改变时，重新加载邮件
         if (selectedAccount !== null) {
-            console.log('[useEffect] selectedAccount 改变，重新加载邮件:', selectedAccount);
+            logger.debug('[useEffect] selectedAccount 改变，重新加载邮件:', selectedAccount);
             // 重置邮箱搜索模式
             setIsEmailSearchMode(false);
             setEmailSearchTarget(null);
@@ -1102,7 +1111,7 @@ export default function EmailsTab() {
         if (pendingAccountId && accounts.length > 0) {
             const account = accounts.find(acc => acc.id === pendingAccountId);
             if (account) {
-                console.log('[useEffect] 在新的账户列表中找到待选择的账户:', account.emailAddress);
+                logger.debug('[useEffect] 在新的账户列表中找到待选择的账户:', account.emailAddress);
                 setSelectedAccount(pendingAccountId);
                 setSelectedAccountLabel(account.emailAddress);
                 delete (window as any).__pendingSelectedAccountId;
@@ -1111,7 +1120,7 @@ export default function EmailsTab() {
     }, [accounts]);
 
     const loadAllAccountsForSelection = async (targetAccountId: number) => {
-        console.log('[loadAllAccountsForSelection] 尝试加载所有账户以找到目标账户:', targetAccountId);
+        logger.debug('[loadAllAccountsForSelection] 尝试加载所有账户以找到目标账户:', targetAccountId);
         try {
             let allAccounts: EmailAccount[] = [];
             let currentPage = 1;
@@ -1130,7 +1139,7 @@ export default function EmailsTab() {
                 // 检查是否找到目标账户
                 const targetAccount = pageAccounts.find(acc => acc.id === targetAccountId);
                 if (targetAccount) {
-                    console.log('[loadAllAccountsForSelection] 找到目标账户:', targetAccount.emailAddress);
+                    logger.debug('[loadAllAccountsForSelection] 找到目标账户:', targetAccount.emailAddress);
                     setAccounts(prev => {
                         // 去重合并
                         const existingIds = new Set(prev.map(acc => acc.id));
@@ -1225,7 +1234,7 @@ export default function EmailsTab() {
                                                     }
 
                                                     accountSearchDebounceTimer.current = setTimeout(() => {
-                                                        console.log('防抖搜索触发，搜索词:', value);
+                                                        logger.debug('防抖搜索触发，搜索词:', value);
                                                         setCurrentPage(1);
                                                         loadAccounts(1, true);
                                                     }, 300);
@@ -1373,8 +1382,54 @@ export default function EmailsTab() {
                     )}
                 </div>
 
-                {/* 第二行：搜索框 + 高级筛选 + 活跃筛选指示器 */}
+                {/* 第二行：方向筛选 + 搜索框 + 高级筛选 + 活跃筛选指示器 */}
                 <div className="flex items-center gap-3">
+                    {/* 邮件方向筛选 */}
+                    <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
+                        <button
+                            className={cn(
+                                "px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
+                                directionFilter === 'received'
+                                    ? "bg-white dark:bg-gray-600 text-blue-600 dark:text-blue-400 shadow-sm"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
+                            )}
+                            onClick={() => {
+                                setDirectionFilter('received')
+                                loadEmails(1, true)
+                            }}
+                        >
+                            📥 收件箱
+                        </button>
+                        <button
+                            className={cn(
+                                "px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
+                                directionFilter === 'sent'
+                                    ? "bg-white dark:bg-gray-600 text-blue-600 dark:text-blue-400 shadow-sm"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
+                            )}
+                            onClick={() => {
+                                setDirectionFilter('sent')
+                                loadEmails(1, true)
+                            }}
+                        >
+                            📤 发件箱
+                        </button>
+                        <button
+                            className={cn(
+                                "px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
+                                directionFilter === 'all'
+                                    ? "bg-white dark:bg-gray-600 text-blue-600 dark:text-blue-400 shadow-sm"
+                                    : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
+                            )}
+                            onClick={() => {
+                                setDirectionFilter('all')
+                                loadEmails(1, true)
+                            }}
+                        >
+                            📬 全部
+                        </button>
+                    </div>
+
                     {/* 搜索框 */}
                     <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">搜索:</span>
@@ -1395,21 +1450,21 @@ export default function EmailsTab() {
                                     }
 
                                     searchDebounceTimer.current = setTimeout(() => {
-                                        console.log('邮件搜索防抖触发，搜索词:', value);
+                                        logger.debug('邮件搜索防抖触发，搜索词:', value);
 
                                         // 检查是否是邮箱格式
                                         const isEmail = isValidEmail(value);
-                                        console.log('输入是否为邮箱格式:', isEmail);
+                                        logger.debug('输入是否为邮箱格式:', isEmail);
 
                                         if (isEmail && value.trim()) {
                                             // 如果是邮箱格式，切换到邮箱搜索模式
-                                            console.log('🔄 切换到邮箱搜索模式，目标邮箱:', value);
+                                            logger.debug('🔄 切换到邮箱搜索模式，目标邮箱:', value);
                                             setIsEmailSearchMode(true);
                                             setEmailSearchTarget(value.trim());
                                             searchEmailsByToQuery(value.trim(), 1, true);
                                         } else {
                                             // 否则使用常规搜索
-                                            console.log('使用常规搜索模式');
+                                            logger.debug('使用常规搜索模式');
                                             setIsEmailSearchMode(false);
                                             setEmailSearchTarget(null);
                                             if (selectedAccount) {
@@ -1439,12 +1494,12 @@ export default function EmailsTab() {
                                         if (value) {
                                             const isEmail = isValidEmail(value);
                                             if (isEmail) {
-                                                console.log('回车键触发邮箱搜索:', value);
+                                                logger.debug('回车键触发邮箱搜索:', value);
                                                 setIsEmailSearchMode(true);
                                                 setEmailSearchTarget(value);
                                                 searchEmailsByToQuery(value, 1, true);
                                             } else {
-                                                console.log('回车键触发常规搜索:', value);
+                                                logger.debug('回车键触发常规搜索:', value);
                                                 setIsEmailSearchMode(false);
                                                 setEmailSearchTarget(null);
                                                 if (selectedAccount) {
@@ -1476,18 +1531,18 @@ export default function EmailsTab() {
                             className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium transition-colors flex items-center gap-1.5"
                             onClick={() => {
                                 const value = searchQuery.trim();
-                                console.log('手动触发搜索，搜索词:', value);
+                                logger.debug('手动触发搜索，搜索词:', value);
 
                                 // 检查是否是邮箱格式
                                 const isEmail = isValidEmail(value);
 
                                 if (isEmail && value) {
-                                    console.log('🔄 手动触发邮箱搜索模式，目标邮箱:', value);
+                                    logger.debug('🔄 手动触发邮箱搜索模式，目标邮箱:', value);
                                     setIsEmailSearchMode(true);
                                     setEmailSearchTarget(value);
                                     searchEmailsByToQuery(value, 1, true);
                                 } else {
-                                    console.log('手动触发常规搜索模式');
+                                    logger.debug('手动触发常规搜索模式');
                                     setIsEmailSearchMode(false);
                                     setEmailSearchTarget(null);
                                     if (selectedAccount) {
@@ -1510,7 +1565,7 @@ export default function EmailsTab() {
                                             end_date: filterOptions.endDate || undefined
                                         };
 
-                                        console.log('手动搜索参数:', searchParams);
+                                        logger.debug('手动搜索参数:', searchParams);
 
                                         emailService.getAllEmails(searchParams)
                                             .then(response => {
@@ -1764,7 +1819,7 @@ export default function EmailsTab() {
                     }}
                     onError={(error) => {
                         console.error('同步失败:', error);
-                        alert('同步失败: ' + error);
+                        toast.error('同步失败: ' + error);
                     }}
                 />
             )}

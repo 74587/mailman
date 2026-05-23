@@ -6,13 +6,13 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Expression } from './condition-group'
+import { TriggerExpression } from '@/types'
 import { AlertCircle, CheckCircle2, RefreshCw, Code, Mail } from 'lucide-react'
 import { expressionsToText, expressionsToJson } from './condition-utils'
 
 interface ConditionTestProps {
-  expressions: Expression[]
-  onTest: (expressions: Expression[], testData: any) => Promise<any>
+  expressions: TriggerExpression[]
+  onTest: (expressions: TriggerExpression[], testData: any) => Promise<any>
 }
 
 // 默认测试数据模板
@@ -40,13 +40,13 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState('editor')
-  
+
   // 执行测试
   const handleTest = async () => {
     try {
       setIsLoading(true)
       setError(null)
-      
+
       // 解析测试数据
       let parsedData
       try {
@@ -55,10 +55,10 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
         setError('测试数据JSON格式无效，请检查格式')
         return
       }
-      
+
       // 执行测试
       const result = await onTest(expressions, parsedData)
-      
+
       // 设置测试结果
       setTestResult(result)
     } catch (err) {
@@ -69,20 +69,20 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
       setIsLoading(false)
     }
   }
-  
+
   // 重置测试数据
   const resetTestData = () => {
     setTestData(JSON.stringify(DEFAULT_TEST_DATA, null, 2))
     setTestResult(null)
     setError(null)
   }
-  
+
   // 渲染测试结果
   const renderTestResult = () => {
     if (!testResult) return null
-    
+
     const { result, details } = testResult
-    
+
     return (
       <div className="mt-4 space-y-4">
         <div className={`p-4 rounded-md ${result ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
@@ -97,7 +97,7 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
             </span>
           </div>
         </div>
-        
+
         <Tabs defaultValue="tree" className="w-full">
           <TabsList>
             <TabsTrigger value="tree">树形视图</TabsTrigger>
@@ -118,20 +118,20 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
       </div>
     )
   }
-  
+
   // 递归渲染评估树
   const renderEvaluationTree = (details: any, level = 0) => {
     if (!details) return null
-    
+
     const paddingLeft = `${level * 16}px`
-    
+
     if (details.type === 'group') {
       return (
         <div style={{ paddingLeft }}>
           <div className="flex items-center">
             <span className={`font-medium ${details.result ? 'text-green-600' : 'text-red-600'}`}>
-              {details.operator?.toUpperCase()} 组 
-              {details.not && ' (取反)'} - 
+              {details.operator?.toUpperCase()} 组
+              {details.not && ' (取反)'} -
               {details.result ? ' 满足' : ' 不满足'}
             </span>
           </div>
@@ -167,7 +167,7 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
       )
     }
   }
-  
+
   // 渲染条件表达式预览
   const renderExpressionPreview = () => {
     return (
@@ -177,16 +177,16 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
       </div>
     )
   }
-  
+
   // 渲染测试数据编辑器
   const renderTestDataEditor = () => {
     return (
       <div className="space-y-2">
         <div className="flex justify-between items-center">
           <Label htmlFor="test-data">测试数据 (JSON格式)</Label>
-          <Button 
-            type="button" 
-            variant="outline" 
+          <Button
+            type="button"
+            variant="outline"
             size="sm"
             onClick={resetTestData}
           >
@@ -207,7 +207,7 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
       </div>
     )
   }
-  
+
   // 渲染邮件预览
   const renderEmailPreview = () => {
     let emailData
@@ -220,7 +220,7 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
         </div>
       )
     }
-    
+
     return (
       <div className="border rounded-md p-4">
         <div className="border-b pb-2 mb-2">
@@ -247,7 +247,7 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
       </div>
     )
   }
-  
+
   return (
     <Card>
       <CardHeader>
@@ -259,7 +259,7 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
       <CardContent>
         <div className="space-y-4">
           {renderExpressionPreview()}
-          
+
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="editor">
@@ -278,22 +278,22 @@ export function ConditionTest({ expressions, onTest }: ConditionTestProps) {
               {renderEmailPreview()}
             </TabsContent>
           </Tabs>
-          
+
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-md">
               {error}
             </div>
           )}
-          
-          <Button 
-            type="button" 
+
+          <Button
+            type="button"
             onClick={handleTest}
             disabled={isLoading}
             className="w-full"
           >
             {isLoading ? '测试中...' : '测试条件'}
           </Button>
-          
+
           {testResult && renderTestResult()}
         </div>
       </CardContent>

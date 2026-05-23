@@ -1,6 +1,10 @@
 package services
 
 import (
+	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"regexp"
@@ -9,7 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"mailman/internal/expression"
 	"mailman/internal/models"
+	v2models "mailman/internal/triggerv2/models"
+	"mailman/internal/triggerv2/plugins"
 
 	"github.com/patrickmn/go-cache"
 )
@@ -28,17 +35,29 @@ type ConditionEngine struct {
 	cacheMutex sync.RWMutex
 	// 正则表达式缓存
 	regexCache map[string]*regexp.Regexp
+	// 插件管理器
+	pluginManager plugins.PluginManager
+	// 表达式引擎管理器
+	expressionManager *expression.Manager
 }
 
 // NewConditionEngine creates a new ConditionEngine
-func NewConditionEngine() *ConditionEngine {
+func NewConditionEngine(pluginManager plugins.PluginManager) *ConditionEngine {
+	// Initialize expression manager with all engines
+	exprManager, err := expression.CreateAndInitManager()
+	if err != nil {
+		log.Printf("[ConditionEngine] Warning: Failed to initialize expression manager: %v", err)
+		exprManager = expression.NewManager()
+	}
+
 	engine := &ConditionEngine{
-		operators: make(map[string]Operator),
-		functions: make(map[string]Function),
-		// 创建缓存，默认过期时间5分钟，每10分钟清理一次过期项
-		resultCache:     cache.New(5*time.Minute, 10*time.Minute),
-		fieldValueCache: cache.New(5*time.Minute, 10*time.Minute),
-		regexCache:      make(map[string]*regexp.Regexp),
+		operators:         make(map[string]Operator),
+		functions:         make(map[string]Function),
+		resultCache:       cache.New(5*time.Minute, 10*time.Minute),
+		fieldValueCache:   cache.New(5*time.Minute, 10*time.Minute),
+		regexCache:        make(map[string]*regexp.Regexp),
+		pluginManager:     pluginManager,
+		expressionManager: exprManager,
 	}
 
 	// 注册默认操作符
@@ -87,7 +106,7 @@ func NewEvaluationContext(email models.Email) *EvaluationContext {
 func (e *ConditionEngine) Evaluate(expression models.TriggerExpression, context *EvaluationContext) (bool, models.JSONMap, error) {
 	log.Printf("[ConditionEngine] Evaluating expression: %s", expression.ID)
 
-	// 生成缓存键
+	// 生成缓存键（使用表达式内容的 MD5 哈希，确保内容变化会产生不同的键）
 	cacheKey := e.generateCacheKey(expression, context)
 
 	// 尝试从缓存获取结果
@@ -98,7 +117,7 @@ func (e *ConditionEngine) Evaluate(expression models.TriggerExpression, context 
 			Result  bool
 			Details models.JSONMap
 		})
-		log.Printf("[ConditionEngine] Cache hit for expression: %s", expression.ID)
+		log.Printf("[ConditionEngine] Cache hit for expression: %s (key: %s)", expression.ID, cacheKey[:16])
 		return result.Result, result.Details, nil
 	}
 	e.cacheMutex.RUnlock()
@@ -115,6 +134,12 @@ func (e *ConditionEngine) Evaluate(expression models.TriggerExpression, context 
 	case models.TriggerExpressionTypeGroup:
 		// 条件组表达式
 		result, details, err = e.evaluateGroup(expression, context)
+	case models.TriggerExpressionTypePlugin:
+		// 插件表达式
+		result, details, err = e.evaluatePlugin(expression, context)
+	case models.TriggerExpressionTypeExpression:
+		// 自定义表达式 (JavaScript, CEL, Go-Template, JSONPath)
+		result, details, err = e.evaluateExpression(expression, context)
 	default:
 		return false, models.JSONMap{
 			"expressionId": expression.ID,
@@ -135,15 +160,39 @@ func (e *ConditionEngine) Evaluate(expression models.TriggerExpression, context 
 			Details: details,
 		}, cache.DefaultExpiration)
 		e.cacheMutex.Unlock()
+		log.Printf("[ConditionEngine] Cached result for expression: %s (key: %s)", expression.ID, cacheKey[:16])
 	}
 
 	return result, details, err
 }
 
 // generateCacheKey 生成缓存键
+// 使用表达式完整内容 + 评估上下文数据的 MD5 哈希，确保任何变化都产生不同的缓存键
 func (e *ConditionEngine) generateCacheKey(expression models.TriggerExpression, context *EvaluationContext) string {
-	// 使用表达式ID和邮件ID作为缓存键
-	return fmt.Sprintf("%s:%d", expression.ID, context.Email.ID)
+	// 构建一个包含所有相关信息的结构
+	cacheData := struct {
+		Expression models.TriggerExpression `json:"expression"`
+		EmailID    uint                     `json:"emailId"`
+		Data       map[string]interface{}   `json:"data"`
+	}{
+		Expression: expression,
+		EmailID:    context.Email.ID,
+		Data:       context.Data,
+	}
+
+	// 将整个结构序列化为 JSON
+	cacheJson, err := json.Marshal(cacheData)
+	if err != nil {
+		// 如果序列化失败，使用表达式 ID 和时间戳作为回退（不缓存）
+		return fmt.Sprintf("%s:%d:%d", expression.ID, context.Email.ID, time.Now().UnixNano())
+	}
+
+	// 计算 MD5 哈希
+	hash := md5.Sum(cacheJson)
+	hashStr := hex.EncodeToString(hash[:])
+
+	// 返回 邮件ID:哈希 作为缓存键
+	return fmt.Sprintf("%d:%s", context.Email.ID, hashStr)
 }
 
 // evaluateCondition 评估单一条件表达式
@@ -339,6 +388,476 @@ func (e *ConditionEngine) evaluateGroup(expression models.TriggerExpression, con
 		"message": message,
 		"not":     fmt.Sprintf("%v", expression.Not != nil && *expression.Not),
 	}, nil
+}
+
+// evaluatePlugin 评估插件表达式
+func (e *ConditionEngine) evaluatePlugin(expression models.TriggerExpression, evalCtx *EvaluationContext) (bool, models.JSONMap, error) {
+	if expression.PluginID == nil {
+		return false, models.JSONMap{
+			"expressionId": expression.ID,
+			"type":         string(expression.Type),
+			"result":       "false",
+			"message":      "Missing plugin ID",
+		}, fmt.Errorf("missing plugin ID")
+	}
+
+	pluginID := *expression.PluginID
+
+	// Handle "builtin" plugin specially - use built-in operators
+	if pluginID == "builtin" {
+		return e.evaluateBuiltinPlugin(expression, evalCtx)
+	}
+
+	// For actual plugins, check if plugin manager is available
+	if e.pluginManager == nil {
+		return false, models.JSONMap{
+			"expressionId": expression.ID,
+			"type":         string(expression.Type),
+			"result":       "false",
+			"message":      "Plugin manager not initialized",
+		}, fmt.Errorf("plugin manager not initialized")
+	}
+
+	// 创建插件上下文与事件
+	// 将 models.Email 转换为 v2models.Event
+
+	// Extract first From address
+	fromStr := ""
+	if len(evalCtx.Email.From) > 0 {
+		fromStr = evalCtx.Email.From[0]
+	}
+
+	// Extract first To address
+	toStr := ""
+	if len(evalCtx.Email.To) > 0 {
+		toStr = evalCtx.Email.To[0]
+	}
+
+	// Create properly populated EmailEventData
+	emailData := v2models.EmailEventData{
+		Email:         &evalCtx.Email,
+		EmailID:       evalCtx.Email.ID,
+		AccountID:     evalCtx.Email.AccountID,
+		Subject:       evalCtx.Email.Subject,
+		From:          fromStr,
+		To:            toStr,
+		MessageID:     evalCtx.Email.MessageID,
+		ReceivedAt:    evalCtx.Email.ReceivedAt,
+		HasAttachment: evalCtx.Email.HasAttachments,
+		IsRead:        !contains(evalCtx.Email.Flags, "UNREAD"),
+		Labels:        evalCtx.Email.Flags,
+		EventType:     "received",
+	}
+
+	// Merge any additional context data
+	if evalCtx.Data != nil {
+		emailData.Changes = make(map[string]interface{})
+		for k, v := range evalCtx.Data {
+			emailData.Changes[k] = v
+		}
+	}
+
+	// 构造 V2 Event
+	event := &v2models.Event{
+		Type: v2models.EventTypeEmailReceived,
+	}
+	event.SetData(emailData)
+
+	// 获取插件配置
+	config, _ := e.pluginManager.GetPluginConfig(pluginID)
+
+	// 如果有 expression.Fields，将其合并到插件配置中
+	// 这些是用户在 UI 中配置的条件值
+	if config == nil {
+		config = &plugins.PluginConfig{
+			Config: make(map[string]interface{}),
+		}
+	}
+	if config.Config == nil {
+		config.Config = make(map[string]interface{})
+	}
+	// 将 expression.Fields 合并到配置中
+	if expression.Fields != nil {
+		for k, v := range expression.Fields {
+			config.Config[k] = v
+		}
+	}
+
+	pluginCtx := &plugins.PluginContext{
+		Context:  context.Background(),
+		PluginID: pluginID,
+		Event:    event,
+		Config:   config,
+	}
+	// Note: pluginManager.ExecuteCondition relies on properly initialized context?
+	// It relies on Config, etc.
+	// But `ExecuteCondition` fetches plugin and executes.
+
+	// 执行条件插件
+	// 注意：这里假设 pluginId 对应的插件实现了 ConditionPlugin 接口
+	// 如果是 filter 插件，可能需要 ExecuteFilter。
+	// 但 Trigger V2 的 "Condition" 阶段通常对应 ConditionPlugin.
+	pluginResult, err := e.pluginManager.ExecuteCondition(pluginID, pluginCtx, event)
+	if err != nil {
+		return false, models.JSONMap{
+			"expressionId": expression.ID,
+			"type":         string(expression.Type),
+			"pluginId":     pluginID,
+			"result":       "false",
+			"message":      fmt.Sprintf("Plugin execution failed: %v", err),
+		}, fmt.Errorf("plugin execution failed: %w", err)
+	}
+
+	result := pluginResult.Success
+
+	// 处理否定条件
+	if expression.Not != nil && *expression.Not {
+		result = !result
+	}
+
+	details := models.JSONMap{
+		"expressionId": expression.ID,
+		"type":         string(expression.Type),
+		"pluginId":     pluginID,
+		"result":       fmt.Sprintf("%v", result),
+		"not":          fmt.Sprintf("%v", expression.Not != nil && *expression.Not),
+	}
+
+	// Merge plugin result data into details
+	if pluginResult.Data != nil {
+		for k, v := range pluginResult.Data {
+			details[k] = fmt.Sprintf("%v", v)
+		}
+	}
+
+	return result, details, nil
+}
+
+// evaluateBuiltinPlugin evaluates a plugin-type expression using built-in operators
+// This is used when pluginId is "builtin" - extracts field/operator/value from the Fields map
+func (e *ConditionEngine) evaluateBuiltinPlugin(expression models.TriggerExpression, evalCtx *EvaluationContext) (bool, models.JSONMap, error) {
+	// Extract field, operator, value from Fields map
+	var fieldName, operatorName string
+	var expectedValue interface{}
+
+	if expression.Fields != nil {
+		if f, ok := expression.Fields["field"].(string); ok {
+			fieldName = f
+		}
+		if op, ok := expression.Fields["operator"].(string); ok {
+			operatorName = op
+		}
+		expectedValue = expression.Fields["value"]
+	}
+
+	if fieldName == "" || operatorName == "" {
+		return false, models.JSONMap{
+			"expressionId": expression.ID,
+			"type":         string(expression.Type),
+			"pluginId":     "builtin",
+			"result":       "false",
+			"message":      fmt.Sprintf("Missing field or operator: field=%s, operator=%s", fieldName, operatorName),
+		}, fmt.Errorf("missing field or operator in builtin plugin expression")
+	}
+
+	// Get the field value from the evaluation context
+	// The field name may include dot notation for nested fields (e.g., "Account.isVerified")
+	fieldValue, err := e.getFieldValueByPath(fieldName, evalCtx)
+	if err != nil {
+		// Field not found, treat as false
+		return false, models.JSONMap{
+			"expressionId": expression.ID,
+			"type":         string(expression.Type),
+			"pluginId":     "builtin",
+			"field":        fieldName,
+			"operator":     operatorName,
+			"result":       "false",
+			"message":      fmt.Sprintf("Field not found: %s", fieldName),
+		}, nil
+	}
+
+	// Get the operator
+	op, exists := e.operators[operatorName]
+	if !exists {
+		return false, models.JSONMap{
+			"expressionId": expression.ID,
+			"type":         string(expression.Type),
+			"pluginId":     "builtin",
+			"field":        fieldName,
+			"operator":     operatorName,
+			"result":       "false",
+			"message":      fmt.Sprintf("Unknown operator: %s", operatorName),
+		}, fmt.Errorf("unknown operator: %s", operatorName)
+	}
+
+	// Evaluate the condition
+	log.Printf("[ConditionEngine] Evaluating builtin condition: field=%s, operator=%s, fieldValue=%v, expectedValue=%v",
+		fieldName, operatorName, fieldValue, expectedValue)
+	result, err := op.Evaluate(fieldValue, expectedValue)
+	log.Printf("[ConditionEngine] Evaluation result: field=%s, operator=%s, result=%v, err=%v",
+		fieldName, operatorName, result, err)
+	if err != nil {
+		return false, models.JSONMap{
+			"expressionId": expression.ID,
+			"type":         string(expression.Type),
+			"pluginId":     "builtin",
+			"field":        fieldName,
+			"operator":     operatorName,
+			"fieldValue":   fmt.Sprintf("%v", fieldValue),
+			"value":        fmt.Sprintf("%v", expectedValue),
+			"result":       "false",
+			"message":      fmt.Sprintf("Evaluation error: %v", err),
+		}, nil
+	}
+
+	// Handle negation
+	if expression.Not != nil && *expression.Not {
+		result = !result
+	}
+
+	return result, models.JSONMap{
+		"expressionId": expression.ID,
+		"type":         string(expression.Type),
+		"pluginId":     "builtin",
+		"field":        fieldName,
+		"operator":     operatorName,
+		"fieldValue":   fmt.Sprintf("%v", fieldValue),
+		"value":        fmt.Sprintf("%v", expectedValue),
+		"result":       fmt.Sprintf("%v", result),
+		"not":          fmt.Sprintf("%v", expression.Not != nil && *expression.Not),
+	}, nil
+}
+
+// evaluateExpression evaluates a custom expression (JavaScript, CEL, Go-Template, JSONPath)
+func (e *ConditionEngine) evaluateExpression(expr models.TriggerExpression, evalCtx *EvaluationContext) (bool, models.JSONMap, error) {
+	if expr.PluginID == nil {
+		return false, models.JSONMap{
+			"expressionId": expr.ID,
+			"type":         string(expr.Type),
+			"result":       "false",
+			"message":      "Missing pluginId (expression engine type)",
+		}, fmt.Errorf("missing pluginId in expression")
+	}
+
+	pluginID := *expr.PluginID
+	log.Printf("[ConditionEngine] Evaluating expression: pluginId=%s, id=%s", pluginID, expr.ID)
+
+	// Extract expression engine type from pluginId
+	// Expected format: "expr.javascript", "expr.cel", "expr.go-template", "expr.jsonpath"
+	var engineType expression.EngineType
+	switch pluginID {
+	case "expr.javascript":
+		engineType = expression.EngineTypeJavaScript
+	case "expr.cel":
+		engineType = expression.EngineTypeCEL
+	case "expr.go-template":
+		engineType = expression.EngineTypeGoTemplate
+	case "expr.jsonpath":
+		engineType = expression.EngineTypeJSONPath
+	default:
+		return false, models.JSONMap{
+			"expressionId": expr.ID,
+			"type":         string(expr.Type),
+			"pluginId":     pluginID,
+			"result":       "false",
+			"message":      fmt.Sprintf("Unknown expression engine type: %s", pluginID),
+		}, fmt.Errorf("unknown expression engine type: %s", pluginID)
+	}
+
+	// Get the expression code from Fields
+	var exprCode string
+	if expr.Fields != nil {
+		if code, ok := expr.Fields["expression"].(string); ok {
+			exprCode = code
+		}
+	}
+
+	if exprCode == "" {
+		return false, models.JSONMap{
+			"expressionId": expr.ID,
+			"type":         string(expr.Type),
+			"pluginId":     pluginID,
+			"result":       "false",
+			"message":      "Missing expression code",
+		}, fmt.Errorf("missing expression code in Fields")
+	}
+
+	log.Printf("[ConditionEngine] Expression code: %s", exprCode)
+
+	// Build evaluation context with email data
+	exprData := make(map[string]interface{})
+
+	// Convert attachments to a slice of maps for easier access in expressions
+	attachments := make([]map[string]interface{}, len(evalCtx.Email.Attachments))
+	for i, att := range evalCtx.Email.Attachments {
+		attachments[i] = map[string]interface{}{
+			"filename":    att.Filename,
+			"contentType": att.ContentType,
+			"size":        att.Size,
+		}
+	}
+
+	// Build the email context object (accessible via $ symbol)
+	emailContext := map[string]interface{}{
+		"Subject":         evalCtx.Email.Subject,
+		"From":            evalCtx.Email.From,
+		"To":              evalCtx.Email.To,
+		"Cc":              evalCtx.Email.Cc,
+		"Bcc":             evalCtx.Email.Bcc,
+		"Date":            evalCtx.Email.Date,
+		"ReceivedAt":      evalCtx.Email.ReceivedAt,
+		"MessageID":       evalCtx.Email.MessageID,
+		"InReplyTo":       evalCtx.Email.InReplyTo,
+		"References":      evalCtx.Email.References,
+		"HTMLBody":        evalCtx.Email.HTMLBody,
+		"TextBody":        evalCtx.Email.TextBody,
+		"Body":            evalCtx.Email.TextBody, // Alias for convenience
+		"HasAttachments":  evalCtx.Email.HasAttachments,
+		"AttachmentCount": len(evalCtx.Email.Attachments),
+		"Headers":         evalCtx.Email.Headers,
+		"Attachments":     attachments,
+	}
+
+	// Add the $ symbol as the main context accessor
+	exprData["$"] = emailContext
+
+	// Also add email fields as top-level variables for backwards compatibility
+	exprData["Subject"] = evalCtx.Email.Subject
+	exprData["From"] = evalCtx.Email.From
+	exprData["To"] = evalCtx.Email.To
+	exprData["Cc"] = evalCtx.Email.Cc
+	exprData["Bcc"] = evalCtx.Email.Bcc
+	exprData["Date"] = evalCtx.Email.Date
+	exprData["ReceivedAt"] = evalCtx.Email.ReceivedAt
+	exprData["MessageID"] = evalCtx.Email.MessageID
+	exprData["InReplyTo"] = evalCtx.Email.InReplyTo
+	exprData["References"] = evalCtx.Email.References
+	exprData["HTMLBody"] = evalCtx.Email.HTMLBody
+	exprData["TextBody"] = evalCtx.Email.TextBody
+	exprData["Body"] = evalCtx.Email.TextBody // Alias for convenience
+	exprData["HasAttachments"] = evalCtx.Email.HasAttachments
+	exprData["AttachmentCount"] = len(evalCtx.Email.Attachments)
+	exprData["Headers"] = evalCtx.Email.Headers
+	exprData["Attachments"] = attachments
+
+	// Add the full email object for advanced access
+	exprData["email"] = evalCtx.Email
+
+	// Merge any additional context data (also add to $ context)
+	if evalCtx.Data != nil {
+		for k, v := range evalCtx.Data {
+			exprData[k] = v
+			emailContext[k] = v
+		}
+	}
+
+	// Create expression evaluation context
+	exprContext := expression.NewEvaluationContext(exprData)
+
+	// Evaluate the expression
+	if e.expressionManager == nil {
+		return false, models.JSONMap{
+			"expressionId": expr.ID,
+			"type":         string(expr.Type),
+			"pluginId":     pluginID,
+			"result":       "false",
+			"message":      "Expression manager not initialized",
+		}, fmt.Errorf("expression manager not initialized")
+	}
+
+	result, err := e.expressionManager.EvaluateBoolean(engineType, exprCode, exprContext)
+	if err != nil {
+		log.Printf("[ConditionEngine] Expression evaluation failed: %v", err)
+		return false, models.JSONMap{
+			"expressionId": expr.ID,
+			"type":         string(expr.Type),
+			"pluginId":     pluginID,
+			"expression":   exprCode,
+			"result":       "false",
+			"message":      fmt.Sprintf("Expression evaluation failed: %v", err),
+		}, nil // Return nil error to allow the trigger to continue, just with false result
+	}
+
+	log.Printf("[ConditionEngine] Expression evaluation result: %v", result)
+
+	// Handle negation
+	if expr.Not != nil && *expr.Not {
+		result = !result
+	}
+
+	return result, models.JSONMap{
+		"expressionId": expr.ID,
+		"type":         string(expr.Type),
+		"pluginId":     pluginID,
+		"expression":   exprCode,
+		"result":       fmt.Sprintf("%v", result),
+		"not":          fmt.Sprintf("%v", expr.Not != nil && *expr.Not),
+	}, nil
+}
+
+// getFieldValueByPath retrieves a field value using dot notation path from evaluation context
+func (e *ConditionEngine) getFieldValueByPath(path string, evalCtx *EvaluationContext) (interface{}, error) {
+	log.Printf("[ConditionEngine] getFieldValueByPath called with path: %s", path)
+	parts := strings.Split(path, ".")
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("empty field path")
+	}
+
+	// Get root object from context.Data
+	rootName := parts[0]
+	log.Printf("[ConditionEngine] Looking for root field: %s in context.Data keys: %v", rootName, func() []string {
+		keys := make([]string, 0, len(evalCtx.Data))
+		for k := range evalCtx.Data {
+			keys = append(keys, k)
+		}
+		return keys
+	}())
+	current, exists := evalCtx.Data[rootName]
+	if !exists {
+		// Try to get it from email fields
+		if rootName == "email" {
+			return e.getFieldValue(path, evalCtx)
+		}
+		log.Printf("[ConditionEngine] Root field not found: %s", rootName)
+		return nil, fmt.Errorf("root field not found: %s", rootName)
+	}
+	log.Printf("[ConditionEngine] Found root field value: %v (type: %T)", current, current)
+
+	// Navigate through nested fields
+	for i := 1; i < len(parts); i++ {
+		partName := parts[i]
+		switch v := current.(type) {
+		case map[string]interface{}:
+			if val, ok := v[partName]; ok {
+				current = val
+			} else {
+				return nil, fmt.Errorf("field not found: %s", partName)
+			}
+		default:
+			// Try to access struct fields using JSON marshaling
+			jsonBytes, err := json.Marshal(current)
+			if err != nil {
+				return nil, fmt.Errorf("cannot access field %s on non-map type", partName)
+			}
+			var objMap map[string]interface{}
+			if err := json.Unmarshal(jsonBytes, &objMap); err != nil {
+				return nil, fmt.Errorf("cannot access field %s on non-map type", partName)
+			}
+			if val, ok := objMap[partName]; ok {
+				current = val
+			} else {
+				// Try lowercase version
+				if val, ok := objMap[strings.ToLower(partName)]; ok {
+					current = val
+				} else {
+					return nil, fmt.Errorf("field not found: %s", partName)
+				}
+			}
+		}
+	}
+
+	log.Printf("[ConditionEngine] getFieldValueByPath returning: %v", current)
+	return current, nil
 }
 
 // EvaluateExpressions evaluates a list of trigger expressions against an evaluation context
@@ -562,6 +1081,25 @@ func (e *ConditionEngine) registerDefaultOperators() {
 	e.RegisterOperator(&MatchesOperator{engine: e})
 	e.RegisterOperator(&InOperator{})
 	e.RegisterOperator(&NotInOperator{})
+
+	// 注册数组专用操作符
+	e.RegisterOperator(&ArrayContainsOperator{})
+	e.RegisterOperator(&ArrayNotContainsOperator{})
+	e.RegisterOperator(&AnyEqualsOperator{})
+	e.RegisterOperator(&AnyContainsOperator{})
+	e.RegisterOperator(&AnyStartsWithOperator{})
+	e.RegisterOperator(&AnyEndsWithOperator{})
+	e.RegisterOperator(&AnyMatchesOperator{})
+	e.RegisterOperator(&AnyNotMatchesOperator{})
+	e.RegisterOperator(&AllEqualsOperator{})
+	e.RegisterOperator(&AllContainsOperator{})
+	e.RegisterOperator(&AllMatchesOperator{})
+	e.RegisterOperator(&AllNotMatchesOperator{})
+	e.RegisterOperator(&ArrayLengthEqualsOperator{})
+	e.RegisterOperator(&ArrayLengthGreaterOperator{})
+	e.RegisterOperator(&ArrayLengthLessOperator{})
+	e.RegisterOperator(&ArrayIsEmptyOperator{})
+	e.RegisterOperator(&ArrayIsNotEmptyOperator{})
 }
 
 // registerDefaultFunctions 注册默认函数
@@ -1037,3 +1575,338 @@ func (f *IsNotEmptyFunction) GetArgCount() int { return 1 }
 func stringPtr(s string) *string {
 	return &s
 }
+
+// ===================== 数组专用操作符 =====================
+
+// toSlice 将值转换为字符串切片
+func toSlice(value interface{}) []string {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case []interface{}:
+		result := make([]string, len(v))
+		for i, item := range v {
+			result[i] = fmt.Sprintf("%v", item)
+		}
+		return result
+	default:
+		return []string{fmt.Sprintf("%v", value)}
+	}
+}
+
+// getArrayLength 获取数组长度
+func getArrayLength(value interface{}) int {
+	switch v := value.(type) {
+	case []string:
+		return len(v)
+	case []interface{}:
+		return len(v)
+	default:
+		return 0
+	}
+}
+
+// isArray 检查值是否为数组
+func isArray(value interface{}) bool {
+	switch value.(type) {
+	case []string, []interface{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// ArrayContainsOperator 数组包含操作符 - 检查数组中是否存在某个值
+type ArrayContainsOperator struct{}
+
+func (o *ArrayContainsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if item == rightStr {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *ArrayContainsOperator) GetName() string { return "array_contains" }
+
+// ArrayNotContainsOperator 数组不包含操作符
+type ArrayNotContainsOperator struct{}
+
+func (o *ArrayNotContainsOperator) Evaluate(left, right interface{}) (bool, error) {
+	op := &ArrayContainsOperator{}
+	result, err := op.Evaluate(left, right)
+	if err != nil {
+		return false, err
+	}
+	return !result, nil
+}
+
+func (o *ArrayNotContainsOperator) GetName() string { return "array_not_contains" }
+
+// AnyEqualsOperator 任意元素等于操作符
+type AnyEqualsOperator struct{}
+
+func (o *AnyEqualsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if item == rightStr {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyEqualsOperator) GetName() string { return "any_equals" }
+
+// AnyContainsOperator 任意元素包含操作符
+type AnyContainsOperator struct{}
+
+func (o *AnyContainsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if strings.Contains(item, rightStr) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyContainsOperator) GetName() string { return "any_contains" }
+
+// AnyStartsWithOperator 任意元素开头是操作符
+type AnyStartsWithOperator struct{}
+
+func (o *AnyStartsWithOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if strings.HasPrefix(item, rightStr) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyStartsWithOperator) GetName() string { return "any_starts_with" }
+
+// AnyEndsWithOperator 任意元素结尾是操作符
+type AnyEndsWithOperator struct{}
+
+func (o *AnyEndsWithOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	rightStr := fmt.Sprintf("%v", right)
+
+	for _, item := range arr {
+		if strings.HasSuffix(item, rightStr) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyEndsWithOperator) GetName() string { return "any_ends_with" }
+
+// AnyMatchesOperator 任意元素匹配正则操作符
+type AnyMatchesOperator struct{}
+
+func (o *AnyMatchesOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	pattern := fmt.Sprintf("%v", right)
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	for _, item := range arr {
+		if re.MatchString(item) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyMatchesOperator) GetName() string { return "any_matches" }
+
+// AnyNotMatchesOperator 任意元素不匹配正则操作符
+type AnyNotMatchesOperator struct{}
+
+func (o *AnyNotMatchesOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	pattern := fmt.Sprintf("%v", right)
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	for _, item := range arr {
+		if !re.MatchString(item) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (o *AnyNotMatchesOperator) GetName() string { return "any_not_matches" }
+
+// AllEqualsOperator 所有元素等于操作符
+type AllEqualsOperator struct{}
+
+func (o *AllEqualsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	if len(arr) == 0 {
+		return false, nil
+	}
+
+	rightStr := fmt.Sprintf("%v", right)
+	for _, item := range arr {
+		if item != rightStr {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (o *AllEqualsOperator) GetName() string { return "all_equals" }
+
+// AllContainsOperator 所有元素包含操作符
+type AllContainsOperator struct{}
+
+func (o *AllContainsOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	if len(arr) == 0 {
+		return false, nil
+	}
+
+	rightStr := fmt.Sprintf("%v", right)
+	for _, item := range arr {
+		if !strings.Contains(item, rightStr) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (o *AllContainsOperator) GetName() string { return "all_contains" }
+
+// AllMatchesOperator 所有元素匹配正则操作符
+type AllMatchesOperator struct{}
+
+func (o *AllMatchesOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	if len(arr) == 0 {
+		return false, nil
+	}
+
+	pattern := fmt.Sprintf("%v", right)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	for _, item := range arr {
+		if !re.MatchString(item) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (o *AllMatchesOperator) GetName() string { return "all_matches" }
+
+// AllNotMatchesOperator 所有元素不匹配正则操作符
+type AllNotMatchesOperator struct{}
+
+func (o *AllNotMatchesOperator) Evaluate(left, right interface{}) (bool, error) {
+	arr := toSlice(left)
+	if len(arr) == 0 {
+		return false, nil
+	}
+
+	pattern := fmt.Sprintf("%v", right)
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false, fmt.Errorf("invalid regex pattern: %v", err)
+	}
+
+	for _, item := range arr {
+		if re.MatchString(item) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (o *AllNotMatchesOperator) GetName() string { return "all_not_matches" }
+
+// ArrayLengthEqualsOperator 数组长度等于操作符
+type ArrayLengthEqualsOperator struct{}
+
+func (o *ArrayLengthEqualsOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	rightNum, err := strconv.Atoi(fmt.Sprintf("%v", right))
+	if err != nil {
+		return false, fmt.Errorf("right value must be a number: %v", err)
+	}
+	return length == rightNum, nil
+}
+
+func (o *ArrayLengthEqualsOperator) GetName() string { return "array_length_equals" }
+
+// ArrayLengthGreaterOperator 数组长度大于操作符
+type ArrayLengthGreaterOperator struct{}
+
+func (o *ArrayLengthGreaterOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	rightNum, err := strconv.Atoi(fmt.Sprintf("%v", right))
+	if err != nil {
+		return false, fmt.Errorf("right value must be a number: %v", err)
+	}
+	return length > rightNum, nil
+}
+
+func (o *ArrayLengthGreaterOperator) GetName() string { return "array_length_greater" }
+
+// ArrayLengthLessOperator 数组长度小于操作符
+type ArrayLengthLessOperator struct{}
+
+func (o *ArrayLengthLessOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	rightNum, err := strconv.Atoi(fmt.Sprintf("%v", right))
+	if err != nil {
+		return false, fmt.Errorf("right value must be a number: %v", err)
+	}
+	return length < rightNum, nil
+}
+
+func (o *ArrayLengthLessOperator) GetName() string { return "array_length_less" }
+
+// ArrayIsEmptyOperator 数组为空操作符
+type ArrayIsEmptyOperator struct{}
+
+func (o *ArrayIsEmptyOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	return length == 0, nil
+}
+
+func (o *ArrayIsEmptyOperator) GetName() string { return "array_is_empty" }
+
+// ArrayIsNotEmptyOperator 数组不为空操作符
+type ArrayIsNotEmptyOperator struct{}
+
+func (o *ArrayIsNotEmptyOperator) Evaluate(left, right interface{}) (bool, error) {
+	length := getArrayLength(left)
+	return length > 0, nil
+}
+
+func (o *ArrayIsNotEmptyOperator) GetName() string { return "array_is_not_empty" }

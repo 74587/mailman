@@ -4,6 +4,7 @@ import React, { useState, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { apiClient } from '@/lib/api-client'
 import {
     Filter,
     Play,
@@ -11,15 +12,38 @@ import {
     XCircle,
     AlertCircle,
     Eye,
-    X
+    ChevronRight,
+    ChevronLeft,
+    Database,
+    FlaskConical
 } from 'lucide-react'
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog"
 import { FilterSection } from '@/components/filter-action-trigger/filter-section'
+import { FilterTestDialog } from './filter-test-dialog'
+import { AncestorProvider, BreadcrumbItem } from '@/components/ui/sticky-breadcrumb'
 
 interface ExpressionStepProps {
     data: any
     onDataChange: (key: string, value: any) => void
-    onNext: () => void
-    onPrevious: () => void
+    onNext?: () => void
+    onPrevious?: () => void
+    onExpressionSelect?: (expression: any) => void
+    onEvaluate?: (expressionId: string, expression: any) => Promise<void>
+    evaluationResults?: Record<string, {
+        expressionId: string
+        result: boolean
+        details?: any
+        error?: string
+        timestamp: number
+    }>
+    isEvaluating?: string | null
+    readOnly?: boolean
+    stepNumber?: number  // 可选的步骤编号
 }
 
 interface TestResult {
@@ -28,10 +52,24 @@ interface TestResult {
     details?: any
 }
 
-export default function ExpressionStep({ data, onDataChange, onNext, onPrevious }: ExpressionStepProps) {
+const STEP_NAMES = ['第一步', '第二步', '第三步', '第四步']
+
+export default function ExpressionStep({
+    data,
+    onDataChange,
+    onNext,
+    onPrevious,
+    onExpressionSelect,
+    onEvaluate,
+    evaluationResults,
+    isEvaluating,
+    readOnly,
+    stepNumber
+}: ExpressionStepProps) {
     const [isTestingExpression, setIsTestingExpression] = useState(false)
     const [testResult, setTestResult] = useState<TestResult | null>(null)
     const [showDataPreview, setShowDataPreview] = useState(false)
+    const [showFilterTestDialog, setShowFilterTestDialog] = useState(false)
 
     const expressions = data.expressions || []
     const emailData = data.emailData?.sampleData || {}
@@ -65,35 +103,30 @@ export default function ExpressionStep({ data, onDataChange, onNext, onPrevious 
         setTestResult(null)
 
         try {
-            const response = await fetch('/api/expressions/test', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    expressions,
-                    testData: emailData
-                })
+            const result = await apiClient.post<any>('/v2/triggers/test-condition', {
+                expressions,
+                testData: emailData
             })
 
-            if (response.ok) {
-                const result = await response.json()
+            // V2 返回 { result: boolean, evaluation: object }
+            if (result.result === true) {
                 setTestResult({
-                    passed: result.passed,
-                    message: result.passed ? '表达式测试通过' : '表达式测试失败',
-                    details: result.details
+                    passed: true,
+                    message: '表达式测试通过 (匹配成功)',
+                    details: result.evaluation
                 })
             } else {
                 setTestResult({
                     passed: false,
-                    message: '表达式测试失败'
+                    message: '条件不满足 (未匹配)',
+                    details: result.evaluation
                 })
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error('测试表达式失败:', error)
             setTestResult({
                 passed: false,
-                message: '测试过程中发生错误'
+                message: error.message || '测试过程中发生错误'
             })
         } finally {
             setIsTestingExpression(false)
@@ -102,16 +135,23 @@ export default function ExpressionStep({ data, onDataChange, onNext, onPrevious 
 
     // 检查是否可以继续下一步
     const canProceed = () => {
-        return expressions.length > 0 && testResult?.passed
+        // 检查根条件组内是否有条件
+        // 如果没有任何条件，要求用户至少添加一个
+        if (expressions.length === 0) return false
+        const rootGroup = expressions[0]
+        if (!rootGroup || !rootGroup.conditions || rootGroup.conditions.length === 0) {
+            return false
+        }
+        return true
     }
 
     return (
-        <div className="relative">
+        <div className="relative space-y-6">
             <Card>
                 <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                         <Filter className="h-5 w-5" />
-                        第二步：配置过滤表达式
+                        {stepNumber !== undefined ? `${STEP_NAMES[stepNumber]}：配置过滤表达式` : '配置过滤表达式'}
                     </CardTitle>
                     <p className="text-sm text-gray-600 dark:text-gray-400">
                         配置邮件过滤条件并测试匹配结果
@@ -119,132 +159,94 @@ export default function ExpressionStep({ data, onDataChange, onNext, onPrevious 
                 </CardHeader>
                 <CardContent className="space-y-6">
 
-                    {/* 过滤器配置 */}
+                    {/* 过滤器配置 - 使用 AncestorProvider 提供步骤级别的面包屑上下文 */}
+                    {/* skipFromPath=true 使"过滤条件"不显示在面包屑中 */}
                     <div className="space-y-4">
-                        <FilterSection
-                            filters={expressions}
-                            onChange={handleExpressionsChange}
-                            testData={emailData}
-                        />
+                        <AncestorProvider currentItem={{
+                            id: 'expression-step',
+                            type: 'root' as const,
+                            label: '过滤条件',
+                            description: `${expressions.length} 个条件组`,
+                            level: 0
+                        }} skipFromPath={true}>
+                            <FilterSection
+                                filters={expressions}
+                                onChange={handleExpressionsChange}
+                                testData={emailData}
+                                onExpressionSelect={onExpressionSelect}
+                                onEvaluate={onEvaluate}
+                                evaluationResults={evaluationResults}
+                                isEvaluating={isEvaluating}
+                            />
+                        </AncestorProvider>
                     </div>
-
-                    {/* 测试按钮和结果 */}
-                    <div className="space-y-4">
-                        <div className="flex items-center gap-4">
-                            <Button
-                                onClick={testExpressions}
-                                disabled={isTestingExpression || expressions.length === 0}
-                                variant="outline"
-                                size="sm"
-                            >
-                                <Play className={`h-4 w-4 mr-2 ${isTestingExpression ? 'animate-spin' : ''}`} />
-                                {isTestingExpression ? '测试中...' : '测试表达式'}
-                            </Button>
-
-                            {expressions.length > 0 && (
-                                <Badge variant="secondary" className="text-xs">
-                                    {expressions.length} 个过滤条件
-                                </Badge>
-                            )}
-                        </div>
-
-                        {/* 测试结果 */}
-                        {testResult && (
-                            <div className={`p-4 rounded-lg ${testResult.passed
-                                ? 'bg-green-50 dark:bg-green-900/20'
-                                : 'bg-red-50 dark:bg-red-900/20'
-                                }`}>
-                                <div className={`flex items-center gap-2 ${testResult.passed
-                                    ? 'text-green-700 dark:text-green-300'
-                                    : 'text-red-700 dark:text-red-300'
-                                    }`}>
-                                    {testResult.passed ? (
-                                        <CheckCircle className="h-4 w-4" />
-                                    ) : (
-                                        <XCircle className="h-4 w-4" />
-                                    )}
-                                    <span className="font-medium">{testResult.message}</span>
-                                </div>
-                                {testResult.details && (
-                                    <div className="mt-2 text-sm opacity-80">
-                                        <pre className="whitespace-pre-wrap">
-                                            {JSON.stringify(testResult.details, null, 2)}
-                                        </pre>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                    </div>
-
-                    {/* 提示信息 */}
-                    {expressions.length === 0 && (
-                        <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-                            <div className="flex items-center gap-2 text-blue-700 dark:text-blue-300">
-                                <AlertCircle className="h-4 w-4" />
-                                <span className="font-medium">提示</span>
-                            </div>
-                            <p className="text-sm text-blue-600 dark:text-blue-400 mt-1">
-                                点击"添加过滤器"开始配置邮件过滤条件。您可以基于邮件的主题、发件人、收件人、内容等属性创建过滤规则。
-                            </p>
-                        </div>
-                    )}
-
-                    {expressions.length > 0 && !testResult && (
-                        <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
-                            <div className="flex items-center gap-2 text-yellow-700 dark:text-yellow-300">
-                                <AlertCircle className="h-4 w-4" />
-                                <span className="font-medium">请测试表达式</span>
-                            </div>
-                            <p className="text-sm text-yellow-600 dark:text-yellow-400 mt-1">
-                                配置完成后，请点击"测试表达式"验证过滤条件是否正确。
-                            </p>
-                        </div>
-                    )}
-
                 </CardContent>
             </Card>
 
-            {/* 悬浮数据预览按钮 */}
-            {emailData && Object.keys(emailData).length > 0 && (
-                <Button
-                    onClick={() => setShowDataPreview(true)}
-                    className="fixed bottom-6 right-6 z-50 rounded-full shadow-lg"
-                    size="sm"
-                >
-                    <Eye className="h-4 w-4 mr-2" />
-                    数据预览
-                </Button>
-            )}
+            {/* 底部导航栏 - 只有当提供了 onNext/onPrevious 时才显示 */}
+            {(onNext || onPrevious) && (
+                <div className="flex justify-between items-center pt-4">
+                    <Button
+                        variant="outline"
+                        onClick={onPrevious}
+                        disabled={!onPrevious}
+                    >
+                        <ChevronLeft className="w-4 h-4 mr-2" />
+                        上一步
+                    </Button>
 
-            {/* 悬浮数据预览模态框 */}
-            {showDataPreview && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-2xl w-full mx-4 max-h-96 overflow-y-auto">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-lg font-semibold">邮件数据预览</h3>
-                            <Button
-                                onClick={() => setShowDataPreview(false)}
-                                variant="ghost"
-                                size="sm"
-                            >
-                                <X className="h-4 w-4" />
-                            </Button>
-                        </div>
-                        <div className="space-y-4">
-                            <div className="flex items-center gap-2">
-                                <Badge variant="outline" className="text-xs">
-                                    {data.emailData?.source === 'api' ? '从API获取' : '手动输入'}
-                                </Badge>
-                            </div>
-                            <div className="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                                <pre className="text-sm whitespace-pre-wrap">
-                                    {JSON.stringify(emailData, null, 2)}
-                                </pre>
-                            </div>
-                        </div>
+                    <div className="flex items-center gap-3">
+                        {/* 测试过滤效果按钮 */}
+                        <Button
+                            variant="outline"
+                            onClick={() => setShowFilterTestDialog(true)}
+                            disabled={!canProceed()}
+                            className="border-primary-200 dark:border-primary-800 hover:bg-primary-50 dark:hover:bg-primary-900/20"
+                        >
+                            <Database className="w-4 h-4 mr-2" />
+                            测试过滤效果
+                        </Button>
+
+                        <Button
+                            onClick={onNext}
+                            disabled={!canProceed() || !onNext}
+                            className={canProceed() ? "bg-primary-600 hover:bg-primary-700 text-white" : ""}
+                        >
+                            下一步
+                            <ChevronRight className="w-4 h-4 ml-2" />
+                        </Button>
                     </div>
                 </div>
             )}
+
+
+
+            {/* 数据预览 Dialog */}
+            <Dialog open={showDataPreview} onOpenChange={setShowDataPreview}>
+                <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col">
+                    <DialogHeader>
+                        <DialogTitle>邮件数据预览</DialogTitle>
+                    </DialogHeader>
+                    <div className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900 rounded p-4 border dark:border-gray-700 mt-2">
+                        <div className="flex flex-wrap gap-2 mb-4">
+                            <Badge variant="outline">
+                                来源: {data.emailData?.source === 'api' ? 'API搜索' : '手动输入'}
+                            </Badge>
+                            {emailData.ID && <Badge variant="outline">ID: {emailData.ID}</Badge>}
+                        </div>
+                        <pre className="text-xs font-mono whitespace-pre-wrap text-gray-800 dark:text-gray-200">
+                            {JSON.stringify(emailData, null, 2)}
+                        </pre>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            {/* 过滤测试对话框 */}
+            <FilterTestDialog
+                open={showFilterTestDialog}
+                onOpenChange={setShowFilterTestDialog}
+                expressions={expressions}
+            />
         </div>
     )
 }

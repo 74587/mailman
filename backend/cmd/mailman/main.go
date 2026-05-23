@@ -14,6 +14,9 @@ import (
 	"mailman/internal/api"
 	"mailman/internal/config"
 	"mailman/internal/database"
+	"mailman/internal/interceptor"
+	interceptorPlugins "mailman/internal/interceptor/plugins"
+	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/services"
 	"mailman/internal/triggerv2/plugins"
@@ -86,6 +89,12 @@ func main() {
 	oauth2GlobalConfigRepo := repository.NewOAuth2GlobalConfigRepository(db)
 	oauth2AuthSessionRepo := repository.NewOAuth2AuthSessionRepository(db)
 	systemConfigRepo := repository.NewSystemConfigRepository(db)
+	tagRepo := repository.NewTagRepository(db)
+
+	// Organization & RBAC repositories
+	orgRepo := repository.NewOrganizationRepository(db)
+	orgMemberRepo := repository.NewOrgMemberRepository(db)
+	roleRepo := repository.NewRoleRepository(db)
 
 	// Seed default mail providers
 	if err := mailProviderRepo.SeedDefaultProviders(); err != nil {
@@ -126,16 +135,14 @@ func main() {
 	// 不再启动旧系统: incrementalSyncManager.Start()
 	mainLogger.Info("旧版同步管理器已禁用，新版每账户独立同步正在使用中")
 
-	// Initialize subscription manager (needed for trigger service)
-	subscriptionManager := services.NewSubscriptionManager()
+	// 使用EmailFetchScheduler的SubscriptionManager，确保TriggerService和DispatchEmailEvent共享同一实例
+	subscriptionManager := emailFetchScheduler.GetSubscriptionManager()
 
-	// Initialize trigger service
-	mainLogger.Info("正在初始化触发器服务...")
+	// [DEPRECATED] V1 TriggerService 已弃用，使用 V2 EmailTriggerService
+	// triggerService 变量保留用于 API handler 等兼容性需求
+	mainLogger.Info("V1 触发器服务已弃用，使用V2 EmailTriggerService")
 	triggerService := services.NewTriggerService(triggerRepo, triggerLogRepo, emailRepo, subscriptionManager)
-	if err := triggerService.Start(); err != nil {
-		mainLogger.Error("Failed to start trigger service: %v", err)
-		log.Fatalf("Failed to start trigger service: %v", err)
-	}
+	_ = triggerService // 避免 unused 警告，仅保留兼容性
 
 	// Initialize Plugin Manager
 	mainLogger.Info("Initializing plugin manager...")
@@ -149,22 +156,97 @@ func main() {
 		mainLogger.Info("All builtin plugins registered successfully")
 	}
 
+	// Initialize Interceptor System
+	mainLogger.Info("Initializing interceptor system...")
+	interceptorRepo := repository.NewInterceptorRepository(db)
+
+	// Auto-migrate interceptor tables
+	if err := interceptorRepo.AutoMigrate(); err != nil {
+		mainLogger.Error("Failed to migrate interceptor tables: %v", err)
+	} else {
+		mainLogger.Info("Interceptor tables migrated successfully")
+	}
+
+	// Create interceptor manager
+	interceptorManager := interceptor.NewManager()
+
+	// Register logging interceptor plugin
+	loggingInterceptorPlugin := interceptorPlugins.NewLoggingInterceptor()
+	// 设置日志保存回调，将日志持久化到数据库
+	loggingInterceptorPlugin.SetLogSaver(func(logEntry *models.InterceptorLog) error {
+		return interceptorRepo.CreateLog(logEntry)
+	})
+	if err := interceptorManager.RegisterPlugin(loggingInterceptorPlugin); err != nil {
+		mainLogger.Error("Failed to register logging interceptor: %v", err)
+	} else {
+		mainLogger.Info("Logging interceptor plugin registered with database persistence")
+	}
+
+	// Load enabled interceptor configs from database
+	if interceptors, err := interceptorRepo.ListEnabled(); err == nil {
+		configs := make([]*interceptor.InterceptorConfig, len(interceptors))
+		for i, ic := range interceptors {
+			configs[i] = &interceptor.InterceptorConfig{
+				ID:            ic.ID,
+				Name:          ic.Name,
+				Description:   ic.Description,
+				PluginID:      ic.PluginID,
+				Enabled:       ic.Enabled,
+				Order:         ic.Order,
+				Phases:        ic.Phases,
+				Filter:        ic.Filter,
+				ErrorHandling: ic.ErrorHandling,
+				SkipConfig:    ic.SkipConfig,
+				Execution:     ic.Execution,
+				PluginConfig:  ic.PluginConfig,
+				Scope:         ic.Scope,
+				TriggerID:     ic.TriggerID,
+				ExtractorID:   ic.ExtractorID,
+			}
+		}
+		if len(configs) > 0 {
+			if err := interceptorManager.LoadConfigs(configs); err != nil {
+				mainLogger.Error("Failed to load interceptor configs: %v", err)
+			} else {
+				mainLogger.Info("Loaded %d interceptor configs", len(configs))
+			}
+		}
+	} else {
+		mainLogger.Warn("Failed to load interceptor configs: %v", err)
+	}
+
+	// Create Interceptor API Handler
+	interceptorHandler := api.NewInterceptorHandler(interceptorRepo, interceptorManager)
+
+	// Initialize Interceptor Log Cleanup Service
+	interceptorLogCleanupService := services.NewInterceptorLogCleanupService(db, 30) // 默认30天
+	interceptorLogCleanupService.Start()
+
 	// Initialize EventBus and ConditionEngine
 	eventBus := services.NewEventBus()
-	conditionEngine := services.NewConditionEngine()
+	conditionEngine := services.NewConditionEngine(pluginManager)
 
-	// Initialize services.PluginManager for EmailTriggerService
-	servicesPluginManager := services.NewPluginManager()
-
-	// Initialize EmailTriggerService for V2
+	// Initialize EmailTriggerService for V2 (using TriggerV2 PluginManager via adapter)
+	pluginManagerAdapter := services.NewPluginManagerV2Adapter(pluginManager)
 	emailTriggerService := services.NewEmailTriggerService(
 		emailTriggerV2Repo,
 		triggerExecutionLogV2Repo,
 		subscriptionManager,
 		eventBus,
 		conditionEngine,
-		servicesPluginManager,
+		pluginManagerAdapter,
 	)
+
+	// Note: SetInterceptorManager is handled internally by the trigger service
+	_ = interceptorManager // Used by interceptorHandler below
+
+	// Initialize V2 EmailTriggerService (set up trigger subscriptions)
+	mainLogger.Info("正在初始化 V2 EmailTriggerService...")
+	if err := emailTriggerService.Initialize(); err != nil {
+		mainLogger.Error("Failed to initialize email trigger service: %v", err)
+		log.Fatalf("Failed to initialize email trigger service: %v", err)
+	}
+	mainLogger.Info("V2 EmailTriggerService 初始化完成")
 
 	// Initialize Email Notification Service
 	mainLogger.Info("正在初始化邮件通知服务...")
@@ -179,6 +261,7 @@ func main() {
 		emailAccountRepo,
 		fetcherService,
 		emailNotificationService,
+		eventBus, // 传递EventBus使触发器系统能接收新邮件事件
 	)
 	if err := perAccountSyncManager.Start(); err != nil {
 		mainLogger.Error("Failed to start per-account sync manager: %v", err)
@@ -198,8 +281,20 @@ func main() {
 		return
 	}
 
+	// Initialize Email Sender Service
+	mainLogger.Info("正在初始化邮件发送服务...")
+	emailSenderService := services.NewEmailSenderService(
+		db,
+		emailAccountRepo,
+		oauth2Service,
+		activityLogger,
+	)
+
 	// Initialize API handler
 	apiHandler := api.NewAPIHandler(fetcherService, parserService, emailAccountRepo, mailProviderRepo, emailRepo, incrementalSyncRepo, emailFetchScheduler, pluginManager, incrementalSyncManager, perAccountSyncManager)
+
+	// Initialize Email Send handler
+	emailSendHandler := api.NewEmailSendHandlers(emailSenderService)
 
 	// Initialize OpenAI handler
 	openAIHandler := api.NewOpenAIHandler(openAIConfigRepo, aiPromptTemplateRepo, extractorTemplateRepo)
@@ -207,8 +302,14 @@ func main() {
 	// Initialize Auth handler
 	authHandler := api.NewAuthHandler(authService, userRepo)
 
-	// Initialize Sync handlers（使用新的PerAccountSyncManager）
-	syncHandlers := api.NewSyncHandlers(syncConfigRepo, perAccountSyncManager, mailboxRepo, fetcherService, emailAccountRepo, db)
+	// Initialize Sync handlers（使用SyncConfigRepository和PerAccountSyncManager）
+	syncHandlers := api.NewSyncHandlers(syncConfigRepo, emailAccountRepo, perAccountSyncManager, fetcherService)
+
+	// Initialize Pickup service and handler
+	extractorSvc := services.NewExtractorService()
+	extractorSvcV2 := services.NewExtractorServiceV2(db)
+	pickupService := services.NewPickupService(emailRepo, extractorSvc, extractorSvcV2, perAccountSyncManager)
+	pickupHandler := api.NewPickupHandler(pickupService)
 
 	// Initialize Session handler
 	sessionHandler := api.NewSessionHandler(authService)
@@ -232,10 +333,22 @@ func main() {
 	mainLogger.Info("正在初始化WebSocket处理器...")
 	webSocketHandler := api.NewWebSocketHandler(emailNotificationService)
 
+	// Initialize Tag handlers
+	mainLogger.Info("正在初始化标签处理器...")
+	tagHandlers := api.NewTagHandlers(tagRepo, emailAccountRepo)
+
 	// Initialize default AI prompt templates
 	if err := aiPromptTemplateRepo.InitializeDefaultTemplates(); err != nil {
 		mainLogger.Warn("Failed to initialize default AI prompt templates: %v", err)
 	}
+
+	// Initialize Organization handler
+	mainLogger.Info("正在初始化组织管理处理器...")
+	orgHandler := api.NewOrganizationHandler(orgRepo, orgMemberRepo, roleRepo, userRepo)
+
+	// Initialize User Management handler (super admin only)
+	mainLogger.Info("正在初始化用户管理处理器...")
+	userMgmtHandler := api.NewUserManagementHandler(userRepo, orgMemberRepo, roleRepo)
 
 	// Create router with authentication
 	router := api.NewRouterWithAuth(
@@ -248,12 +361,22 @@ func main() {
 		oauth2Handler,
 		systemConfigHandler,
 		webSocketHandler,
+		emailSendHandler,
+		interceptorHandler,
+		tagHandlers,
+		pickupHandler,
+		orgHandler,
+		userMgmtHandler,
 		authService,
 		emailTriggerService,
 		emailTriggerV2Repo,
 		triggerExecutionLogV2Repo,
-		servicesPluginManager,
+		emailRepo,
+		pluginManager,
 		conditionEngine,
+		orgRepo,
+		orgMemberRepo,
+		roleRepo,
 	)
 
 	// Create HTTP server
@@ -289,9 +412,12 @@ func main() {
 	mainLogger.Info("Stopping activity logger...")
 	activityLogger.Stop()
 
-	// Stop trigger service first
-	mainLogger.Info("Stopping trigger service...")
-	triggerService.Stop()
+	// Stop interceptor log cleanup service
+	interceptorLogCleanupService.Stop()
+
+	// Stop V2 trigger service first
+	mainLogger.Info("Stopping V2 EmailTriggerService...")
+	emailTriggerService.Shutdown()
 
 	// Stop incremental sync manager
 	mainLogger.Info("Stopping incremental sync manager...")

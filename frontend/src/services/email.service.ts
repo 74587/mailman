@@ -1,3 +1,4 @@
+import { logger } from '@/lib/logger';
 import { apiClient } from '@/lib/api-client'
 import { Email } from '@/types'
 
@@ -16,6 +17,7 @@ export interface EmailSearchParams {
     html_query?: string
     keyword?: string
     mailbox?: string
+    direction?: string // 'received' | 'sent' | 'all'
 }
 
 // 提取请求类型
@@ -129,11 +131,20 @@ export interface MailboxSyncResult {
 
 // 邮件统计响应
 export interface EmailStatsResponse {
+    // 账户统计
+    totalAccounts: number;
+    verifiedAccounts: number;
+    syncingAccounts: number;
+    errorAccounts: number;
+    // 邮件统计
     totalEmails: number;
     unreadEmails: number;
     todayEmails: number;
     totalGrowthRate: number;  // 总邮件增长率
     todayGrowthRate: number;  // 今日邮件增长率
+    // 触发器统计
+    totalTriggers: number;
+    enabledTriggers: number;
 }
 
 class EmailService {
@@ -147,14 +158,14 @@ class EmailService {
         })
 
         const response = await apiClient.get(`/account-emails/list/${accountId}?${queryParams}`)
-        console.log(response)
+        logger.debug(response)
         return response
     }
 
     // 获取单个邮件详情
     async getEmail(emailId: number) {
         const response = await apiClient.get(`/emails/${emailId}`)
-        return response.data
+        return response
     }
 
     // 提取邮件内容（全局）
@@ -208,7 +219,7 @@ class EmailService {
 
     // 搜索邮件（支持可选账户ID和to_query参数）
     async searchEmails(params: EmailSearchParams = {}, accountId?: number) {
-        console.log('📧 searchEmails 调用，参数:', {
+        logger.debug('📧 searchEmails 调用，参数:', {
             params,
             accountId,
             hasToQuery: !!params.to_query
@@ -224,19 +235,19 @@ class EmailService {
         // 添加其他搜索参数
         Object.entries(params).forEach(([key, value]) => {
             if (value !== undefined && value !== '') {
-                console.log(`添加查询参数: ${key}=${value}`)
+                logger.debug(`添加查询参数: ${key}=${value}`)
                 queryParams.append(key, value.toString())
             }
         })
 
         const apiUrl = `/emails/search?${queryParams}`
-        console.log('🔍 最终API URL:', apiUrl)
-        console.log('🔍 查询参数详情:', queryParams.toString())
+        logger.debug('🔍 最终API URL:', apiUrl)
+        logger.debug('🔍 查询参数详情:', queryParams.toString())
 
         try {
             // 使用新的搜索API
             const response = await apiClient.get(apiUrl)
-            console.log('✅ Search emails API 响应成功:', response)
+            logger.debug('✅ Search emails API 响应成功:', response)
             return response
         } catch (error) {
             console.error('❌ Search emails API 错误:', error)

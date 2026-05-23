@@ -51,10 +51,10 @@ mysql:
   enabled: true
 
   auth:
-    rootPassword: "devroot123"
+    rootPassword: ""  # Set via --set or existingSecret
     database: mailman_dev
     username: mailman
-    password: "devmailman123"
+    password: ""  # Set via --set or existingSecret
 
   primary:
     resources:

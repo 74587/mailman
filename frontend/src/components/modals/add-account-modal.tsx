@@ -1,13 +1,23 @@
 'use client'
+import { logger } from '@/lib/logger';
 
 import { useState, useEffect, useRef } from 'react'
-import { X, Plus, FileText, AlertCircle, Check } from 'lucide-react'
+import { Plus, FileText, AlertCircle, Check, Clock } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
+import { syncConfigService } from '@/services/sync-config.service'
 import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
-import { createPortal } from 'react-dom'
 import OAuth2PopupAuth from '@/components/oauth2/oauth2-popup-auth'
+import {
+    Modal,
+    ModalContent,
+    ModalHeader,
+    ModalBody,
+    ModalFooter,
+    ModalTitle
+} from '@/components/ui/modal'
+import { Button } from '@/components/ui/button'
 
 interface AddAccountModalProps {
     isOpen: boolean
@@ -17,6 +27,7 @@ interface AddAccountModalProps {
     presetProvider?: string
     presetAuthType?: string
     autoTriggerOAuth2?: boolean
+    presetBatchMode?: boolean
 }
 
 interface MailProvider {
@@ -49,10 +60,64 @@ interface BatchAccountData {
     email: string
     password: string
     clientId: string
+    accessToken: string
     refreshToken: string
+    recoveryEmail?: string
+    recoveryPassword?: string
     isValid: boolean
     error?: string
 }
+
+// 批量导入格式模板
+interface BatchFormatTemplate {
+    id: string
+    name: string
+    description: string
+    fieldMapping: ('email' | 'password' | 'clientId' | 'accessToken' | 'refreshToken' | 'recoveryEmail' | 'recoveryPassword')[]
+    requiredFields: number
+}
+
+const BATCH_FORMAT_TEMPLATES: BatchFormatTemplate[] = [
+    {
+        id: 'standard',
+        name: '标准格式',
+        description: '邮箱----密码----Client ID----Refresh Token',
+        fieldMapping: ['email', 'password', 'clientId', 'refreshToken'],
+        requiredFields: 4
+    },
+    {
+        id: 'format_with_recovery',
+        name: '完整格式(含辅邮)',
+        description: '邮箱----密码----Client ID----令牌----辅邮----辅邮密码',
+        fieldMapping: ['email', 'password', 'clientId', 'refreshToken', 'recoveryEmail', 'recoveryPassword'],
+        requiredFields: 4
+    },
+    {
+        id: 'oauth2_format',
+        name: 'OAuth2格式',
+        description: '账号----密码----刷新令牌----Client ID',
+        fieldMapping: ['email', 'password', 'refreshToken', 'clientId'],
+        requiredFields: 4
+    },
+    {
+        id: 'token_format',
+        name: '令牌格式',
+        description: '信箱----密碼----Client ID----令牌',
+        fieldMapping: ['email', 'password', 'clientId', 'refreshToken'],
+        requiredFields: 4
+    }
+]
+
+// 同步间隔选项
+const SYNC_INTERVALS = [
+    { value: 30, label: '30秒' },
+    { value: 60, label: '1分钟' },
+    { value: 300, label: '5分钟' },
+    { value: 600, label: '10分钟' },
+    { value: 900, label: '15分钟' },
+    { value: 1800, label: '30分钟' },
+    { value: 3600, label: '1小时' },
+]
 
 export default function AddAccountModal({
     isOpen,
@@ -61,10 +126,9 @@ export default function AddAccountModal({
     onError,
     presetProvider,
     presetAuthType,
-    autoTriggerOAuth2
+    autoTriggerOAuth2,
+    presetBatchMode
 }: AddAccountModalProps) {
-    const [isVisible, setIsVisible] = useState(false)
-    const [isAnimating, setIsAnimating] = useState(false)
     const [activeTab, setActiveTab] = useState<'single' | 'batch'>('single')
     const [providers, setProviders] = useState<MailProvider[]>([])
     const [selectedProvider, setSelectedProvider] = useState<number | null>(null)
@@ -76,7 +140,6 @@ export default function AddAccountModal({
     const [showOAuth2Popup, setShowOAuth2Popup] = useState(false)
     const [oauth2Configs, setOauth2Configs] = useState<any[]>([])
     const [loadingOAuth2Configs, setLoadingOAuth2Configs] = useState(false)
-    const modalRoot = typeof document !== 'undefined' ? document.body : null
 
     // 用于动画高度过渡的ref
     const contentRef = useRef<HTMLDivElement>(null)
@@ -104,31 +167,28 @@ export default function AddAccountModal({
     const [showSingleParse, setShowSingleParse] = useState(false)
     const [gettingOAuth2Auth, setGettingOAuth2Auth] = useState(false)
 
-    // 批量添加
     const [batchAuthType] = useState<'token'>('token')
     const [batchSeparator, setBatchSeparator] = useState('----')
     const [batchText, setBatchText] = useState('')
     const [batchAccounts, setBatchAccounts] = useState<BatchAccountData[]>([])
     const [showBatchPreview, setShowBatchPreview] = useState(false)
+    const [selectedFormatTemplate, setSelectedFormatTemplate] = useState<string>('standard')
 
-    // 处理模态框动画和body类
+    // 批量添加后的同步配置
+    const [enableSyncAfterAdd, setEnableSyncAfterAdd] = useState(true)
+    const [syncInterval, setSyncInterval] = useState(300)
+
+    // 自定义IMAP服务器配置
+    const [isCustomProvider, setIsCustomProvider] = useState(false)
+    const [customImapServer, setCustomImapServer] = useState('')
+    const [customImapPort, setCustomImapPort] = useState(993)
+    const [customSmtpServer, setCustomSmtpServer] = useState('')
+    const [customSmtpPort, setCustomSmtpPort] = useState(587)
+
+    // 处理模态框打开时加载数据
     useEffect(() => {
         if (isOpen) {
-            setIsVisible(true)
-            setTimeout(() => setIsAnimating(true), 10)
             loadProviders()
-            // 添加类以锁定body滚动
-            document.body.classList.add('modal-open')
-        } else {
-            setIsAnimating(false)
-            setTimeout(() => setIsVisible(false), 300)
-            // 移除类以恢复body滚动
-            document.body.classList.remove('modal-open')
-        }
-
-        // 清理函数
-        return () => {
-            document.body.classList.remove('modal-open')
         }
     }, [isOpen])
 
@@ -153,6 +213,11 @@ export default function AddAccountModal({
                         ...prev,
                         authType: presetAuthType as 'password' | 'oauth2'
                     }))
+                }
+
+                // 如果需要自动触发批量模式（仅Outlook支持）
+                if (presetBatchMode && provider.type === 'outlook') {
+                    setActiveTab('batch')
                 }
 
                 // 如果需要自动触发OAuth2
@@ -300,13 +365,13 @@ export default function AddAccountModal({
                 clientId: result.customSettings.client_id || ''
             }
 
-            console.log('OAuth2授权结果:', result)
-            console.log('准备回填的表单数据:', newFormData)
+            logger.debug('OAuth2授权结果:', result)
+            logger.debug('准备回填的表单数据:', newFormData)
 
             setSingleForm(newFormData)
 
             // 显示成功提示
-            console.log('OAuth2授权成功，数据已回填到表单')
+            logger.debug('OAuth2授权成功，数据已回填到表单')
         } catch (error) {
             console.error('Failed to fill OAuth2 data:', error)
             onError?.('OAuth2数据回填失败')
@@ -349,25 +414,60 @@ export default function AddAccountModal({
     const parseBatchText = () => {
         const lines = batchText.trim().split('\n').filter(line => line.trim())
         const accounts: BatchAccountData[] = []
+        const template = BATCH_FORMAT_TEMPLATES.find(t => t.id === selectedFormatTemplate) || BATCH_FORMAT_TEMPLATES[0]
 
         lines.forEach((line, index) => {
             const parts = line.split(batchSeparator)
-            if (parts.length >= 4) {
-                accounts.push({
-                    email: parts[0].trim(),
-                    password: parts[1].trim(),
-                    clientId: parts[2].trim(),
-                    refreshToken: parts[3].trim(),
+            if (parts.length >= template.requiredFields) {
+                const accountData: BatchAccountData = {
+                    email: '',
+                    password: '',
+                    clientId: '',
+                    accessToken: '',
+                    refreshToken: '',
                     isValid: true
+                }
+
+                // 根据模板映射字段
+                template.fieldMapping.forEach((fieldName, fieldIndex) => {
+                    if (fieldIndex < parts.length) {
+                        const value = parts[fieldIndex].trim()
+                        switch (fieldName) {
+                            case 'email':
+                                accountData.email = value
+                                break
+                            case 'password':
+                                accountData.password = value
+                                break
+                            case 'clientId':
+                                accountData.clientId = value
+                                break
+                            case 'accessToken':
+                                accountData.accessToken = value
+                                break
+                            case 'refreshToken':
+                                accountData.refreshToken = value
+                                break
+                            case 'recoveryEmail':
+                                accountData.recoveryEmail = value
+                                break
+                            case 'recoveryPassword':
+                                accountData.recoveryPassword = value
+                                break
+                        }
+                    }
                 })
+
+                accounts.push(accountData)
             } else {
                 accounts.push({
                     email: line,
                     password: '',
                     clientId: '',
+                    accessToken: '',
                     refreshToken: '',
                     isValid: false,
-                    error: `第 ${index + 1} 行格式错误：需要4个字段，但只有 ${parts.length} 个`
+                    error: `第 ${index + 1} 行格式错误：需要${template.requiredFields}个字段，但只有 ${parts.length} 个`
                 })
             }
         })
@@ -378,18 +478,45 @@ export default function AddAccountModal({
 
     // 提交单个账户
     const handleSingleSubmit = async () => {
-        if (!selectedProvider) {
+        // 如果是自定义IMAP，先创建provider
+        let providerId = selectedProvider
+
+        if (isCustomProvider) {
+            if (!customImapServer || customImapPort <= 0) {
+                onError?.('请填写IMAP服务器和端口')
+                return
+            }
+
+            setLoading(true)
+            try {
+                // 使用邮箱域名作为provider名称
+                const emailDomain = singleForm.email.split('@')[1] || 'custom'
+                const providerName = `Custom-${emailDomain}-${Date.now()}`
+
+                const newProvider = await emailAccountService.createProvider({
+                    name: providerName,
+                    imapServer: customImapServer,
+                    imapPort: customImapPort,
+                    smtpServer: customSmtpServer || undefined,
+                    smtpPort: customSmtpPort || undefined
+                })
+                providerId = newProvider.id
+            } catch (error: any) {
+                onError?.(error.message || '创建自定义提供商失败')
+                setLoading(false)
+                return
+            }
+        } else if (!selectedProvider) {
             onError?.('请选择邮件提供商')
             return
         }
 
         setLoading(true)
         try {
-            const provider = getSelectedProvider()
             const payload: any = {
                 email_address: singleForm.email,
                 auth_type: singleForm.authType,
-                mail_provider_id: selectedProvider
+                mail_provider_id: providerId
             }
 
             // 如果使用OAuth2且有指定的配置ID，则添加到payload中
@@ -455,26 +582,61 @@ export default function AddAccountModal({
         setLoading(true)
         let successCount = 0
         let failCount = 0
+        const successfulAccountIds: number[] = []
 
         try {
             for (const account of validAccounts) {
                 try {
+                    const customSettings: Record<string, string> = {
+                        client_id: account.clientId,
+                        refresh_token: account.refreshToken
+                    }
+
+                    // 如果有 accessToken 则使用，否则使用 password 作为 access_token
+                    if (account.accessToken) {
+                        customSettings.access_token = account.accessToken
+                    } else if (account.password) {
+                        customSettings.access_token = account.password
+                    }
+
+                    // 如果有辅邮信息，存储到 custom_settings
+                    if (account.recoveryEmail) {
+                        customSettings.recovery_email = account.recoveryEmail
+                    }
+                    if (account.recoveryPassword) {
+                        customSettings.recovery_password = account.recoveryPassword
+                    }
+
                     const payload: any = {
                         email_address: account.email,
                         auth_type: 'oauth2',
                         mail_provider_id: selectedProvider,
-                        custom_settings: {
-                            access_token: account.password, // 这里password字段实际是access_token
-                            client_id: account.clientId,
-                            refresh_token: account.refreshToken
-                        }
+                        custom_settings: customSettings
                     }
 
-                    await emailAccountService.createAccount(payload)
+                    const result = await emailAccountService.createAccount(payload)
+                    successfulAccountIds.push(result.id)
                     successCount++
                 } catch (error) {
                     failCount++
                     console.error(`Failed to add account ${account.email}:`, error)
+                }
+            }
+
+            // 批量配置同步（如果启用）
+            if (enableSyncAfterAdd && successfulAccountIds.length > 0) {
+                try {
+                    await syncConfigService.batchCreateOrUpdateAccountSyncConfig(
+                        successfulAccountIds,
+                        {
+                            enable_auto_sync: true,
+                            sync_interval: syncInterval
+                        }
+                    )
+                    logger.debug(`成功为 ${successfulAccountIds.length} 个账户配置同步`)
+                } catch (syncError) {
+                    console.error('批量配置同步失败:', syncError)
+                    // 同步配置失败不影响账户创建的结果
                 }
             }
 
@@ -483,7 +645,8 @@ export default function AddAccountModal({
             }
 
             if (failCount > 0) {
-                onError?.(`成功添加 ${successCount} 个账户，失败 ${failCount} 个`)
+                const syncMsg = enableSyncAfterAdd ? '（已配置自动同步）' : ''
+                onError?.(`成功添加 ${successCount} 个账户，失败 ${failCount} 个${syncMsg}`)
             } else {
                 handleClose()
             }
@@ -495,106 +658,40 @@ export default function AddAccountModal({
     }
 
     const handleClose = () => {
-        setIsAnimating(false)
-        setTimeout(() => {
-            // 重置表单
-            setSingleForm({
-                email: '',
-                authType: 'password',
-                password: '',
-                clientId: '',
-                accessToken: '',
-                refreshToken: '',
-                useProxy: false,
-                proxyUrl: '',
-                proxyUsername: '',
-                proxyPassword: '',
-                isDomainMail: false,
-                domain: '',
-                oauth2ProviderConfigId: undefined
-            })
-            setBatchText('')
-            setBatchAccounts([])
-            setShowBatchPreview(false)
-            setSingleParseText('')
-            setShowSingleParse(false)
-            setActiveTab('single')
-            onClose()
-        }, 300)
+        // 重置表单
+        setSingleForm({
+            email: '',
+            authType: 'password',
+            password: '',
+            clientId: '',
+            accessToken: '',
+            refreshToken: '',
+            useProxy: false,
+            proxyUrl: '',
+            proxyUsername: '',
+            proxyPassword: '',
+            isDomainMail: false,
+            domain: '',
+            oauth2ProviderConfigId: undefined
+        })
+        setBatchText('')
+        setBatchAccounts([])
+        setShowBatchPreview(false)
+        setSingleParseText('')
+        setShowSingleParse(false)
+        setActiveTab('single')
+        onClose()
     }
 
-    if (!isVisible || !modalRoot) return null
+    return (
+        <>
+            <Modal open={isOpen} onOpenChange={(open) => !open && handleClose()}>
+                <ModalContent size="xl" className="flex flex-col max-h-[90vh]">
+                    <ModalHeader>
+                        <ModalTitle>添加邮箱账户</ModalTitle>
+                    </ModalHeader>
 
-    // 使用Portal渲染模态框到body
-    return createPortal(
-        <div className="modal-backdrop">
-            <style jsx global>{`
-                body.modal-open {
-                    overflow: hidden;
-                }
-                .modal-backdrop {
-                    position: fixed;
-                    top: 0;
-                    left: 0;
-                    right: 0;
-                    bottom: 0;
-                    z-index: 50;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    padding: 1rem;
-                    background-color: ${isAnimating ? 'rgba(0, 0, 0, 0.5)' : 'rgba(0, 0, 0, 0)'};
-                    transition: background-color 0.3s ease;
-                }
-                .modal-content {
-                    max-height: 90vh;
-                    border-radius: 0.75rem;
-                    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-                    overflow: hidden;
-                    transform: ${isAnimating ? 'scale(1)' : 'scale(0.95)'};
-                    opacity: ${isAnimating ? '1' : '0'};
-                    transition: all 0.3s ease;
-                }
-                .modal-body {
-                    max-height: calc(90vh - 120px);
-                    overflow-y: auto;
-                    overscroll-behavior: contain;
-                }
-                .modal-body::-webkit-scrollbar {
-                    width: 6px;
-                }
-                .modal-body::-webkit-scrollbar-track {
-                    background: transparent;
-                }
-                .modal-body::-webkit-scrollbar-thumb {
-                    background-color: rgba(156, 163, 175, 0.5);
-                    border-radius: 3px;
-                }
-            `}</style>
-            <div
-                className="modal-backdrop"
-                onClick={(e) => {
-                    if (e.target === e.currentTarget) {
-                        handleClose();
-                    }
-                }}
-            >
-                <div className="modal-content w-full max-w-3xl bg-white dark:bg-gray-800 flex flex-col">
-                    {/* 标题栏 */}
-                    <div className="flex items-center justify-between border-b border-gray-200 p-6 dark:border-gray-700">
-                        <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                            添加邮箱账户
-                        </h2>
-                        <button
-                            onClick={handleClose}
-                            className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"
-                        >
-                            <X className="h-5 w-5" />
-                        </button>
-                    </div>
-
-                    {/* 主内容容器 - 优化滚动行为 */}
-                    <div className="modal-body flex-1">
+                    <ModalBody>
                         <div
                             className="transition-all duration-300 ease-in-out"
                             style={{
@@ -614,21 +711,29 @@ export default function AddAccountModal({
                                         </div>
                                     ) : (
                                         <select
-                                            value={selectedProvider || ''}
+                                            value={isCustomProvider ? 'custom' : (selectedProvider || '')}
                                             onChange={async (e) => {
-                                                const id = parseInt(e.target.value)
-                                                setSelectedProvider(id)
-                                                // 根据提供商类型设置默认认证方式
-                                                const provider = providers.find(p => p.id === id)
-                                                if (provider?.type === 'outlook') {
-                                                    setSingleForm(prev => ({ ...prev, authType: 'oauth2', oauth2ProviderConfigId: undefined }))
-                                                } else {
+                                                const value = e.target.value
+                                                if (value === 'custom') {
+                                                    setIsCustomProvider(true)
+                                                    setSelectedProvider(null)
                                                     setSingleForm(prev => ({ ...prev, authType: 'password', oauth2ProviderConfigId: undefined }))
-                                                }
+                                                } else {
+                                                    setIsCustomProvider(false)
+                                                    const id = parseInt(value)
+                                                    setSelectedProvider(id)
+                                                    // 根据提供商类型设置默认认证方式
+                                                    const provider = providers.find(p => p.id === id)
+                                                    if (provider?.type === 'outlook') {
+                                                        setSingleForm(prev => ({ ...prev, authType: 'oauth2', oauth2ProviderConfigId: undefined }))
+                                                    } else {
+                                                        setSingleForm(prev => ({ ...prev, authType: 'password', oauth2ProviderConfigId: undefined }))
+                                                    }
 
-                                                // 加载对应的OAuth2配置
-                                                if (provider) {
-                                                    await loadOAuth2Configs(provider.type)
+                                                    // 加载对应的OAuth2配置
+                                                    if (provider) {
+                                                        await loadOAuth2Configs(provider.type)
+                                                    }
                                                 }
                                             }}
                                             className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
@@ -640,7 +745,60 @@ export default function AddAccountModal({
                                                     {provider.name} ({provider.type})
                                                 </option>
                                             ))}
+                                            <option value="custom">🔧 自定义 IMAP 服务器</option>
                                         </select>
+                                    )}
+
+                                    {/* 自定义IMAP配置表单 */}
+                                    {isCustomProvider && (
+                                        <div className="mt-4 space-y-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900/20">
+                                            <h4 className="text-sm font-medium text-blue-900 dark:text-blue-200">自定义 IMAP 服务器配置</h4>
+                                            <div className="grid grid-cols-2 gap-3">
+                                                <div>
+                                                    <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">IMAP 服务器 *</label>
+                                                    <input
+                                                        type="text"
+                                                        value={customImapServer}
+                                                        onChange={(e) => setCustomImapServer(e.target.value)}
+                                                        placeholder="如 imap.example.com"
+                                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                        required
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">IMAP 端口 *</label>
+                                                    <input
+                                                        type="number"
+                                                        value={customImapPort}
+                                                        onChange={(e) => setCustomImapPort(parseInt(e.target.value) || 993)}
+                                                        placeholder="993"
+                                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                        required
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">SMTP 服务器</label>
+                                                    <input
+                                                        type="text"
+                                                        value={customSmtpServer}
+                                                        onChange={(e) => setCustomSmtpServer(e.target.value)}
+                                                        placeholder="如 smtp.example.com"
+                                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">SMTP 端口</label>
+                                                    <input
+                                                        type="number"
+                                                        value={customSmtpPort}
+                                                        onChange={(e) => setCustomSmtpPort(parseInt(e.target.value) || 587)}
+                                                        placeholder="587"
+                                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                    />
+                                                </div>
+                                            </div>
+                                            <p className="text-xs text-gray-500 dark:text-gray-400">提示：端口 993 通常用于 IMAP SSL，端口 587 通常用于 SMTP TLS</p>
+                                        </div>
                                     )}
                                 </div>
 
@@ -1067,6 +1225,27 @@ export default function AddAccountModal({
                                                         </div>
                                                     ) : (
                                                         <>
+                                                            {/* 格式模板选择器 */}
+                                                            <div className="mb-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 p-4">
+                                                                <label className="mb-2 block text-sm font-medium text-blue-900 dark:text-blue-200">
+                                                                    选择数据格式
+                                                                </label>
+                                                                <select
+                                                                    value={selectedFormatTemplate}
+                                                                    onChange={(e) => setSelectedFormatTemplate(e.target.value)}
+                                                                    className="w-full rounded-lg border border-blue-200 dark:border-blue-800 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:bg-gray-700"
+                                                                >
+                                                                    {BATCH_FORMAT_TEMPLATES.map(template => (
+                                                                        <option key={template.id} value={template.id}>
+                                                                            {template.name}
+                                                                        </option>
+                                                                    ))}
+                                                                </select>
+                                                                <p className="mt-2 text-xs text-blue-700 dark:text-blue-300">
+                                                                    {BATCH_FORMAT_TEMPLATES.find(t => t.id === selectedFormatTemplate)?.description}
+                                                                </p>
+                                                            </div>
+
                                                             <div className="flex items-center space-x-4">
                                                                 <div className="flex-1">
                                                                     <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -1101,12 +1280,49 @@ export default function AddAccountModal({
                                                                     value={batchText}
                                                                     onChange={(e) => setBatchText(e.target.value)}
                                                                     className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 font-mono text-sm"
-                                                                    placeholder={`邮箱${batchSeparator}Access Token${batchSeparator}Client ID${batchSeparator}Refresh Token`}
+                                                                    placeholder={BATCH_FORMAT_TEMPLATES.find(t => t.id === selectedFormatTemplate)?.description.replace(/----/g, batchSeparator)}
                                                                     rows={8}
                                                                 />
                                                                 <p className="mt-1 text-xs text-gray-500">
-                                                                    格式：邮箱{batchSeparator}Access Token{batchSeparator}Client ID{batchSeparator}Refresh Token
+                                                                    格式：{BATCH_FORMAT_TEMPLATES.find(t => t.id === selectedFormatTemplate)?.description.replace(/----/g, batchSeparator)}
                                                                 </p>
+                                                            </div>
+
+                                                            {/* 同步配置选项 */}
+                                                            <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+                                                                <div className="flex items-center justify-between">
+                                                                    <div className="flex items-center space-x-2">
+                                                                        <Clock className="h-4 w-4 text-gray-500" />
+                                                                        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                                            添加后启用自动同步
+                                                                        </label>
+                                                                    </div>
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={enableSyncAfterAdd}
+                                                                        onChange={(e) => setEnableSyncAfterAdd(e.target.checked)}
+                                                                        className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                                                    />
+                                                                </div>
+
+                                                                {enableSyncAfterAdd && (
+                                                                    <div className="flex items-center space-x-3">
+                                                                        <label className="text-sm text-gray-600 dark:text-gray-400">
+                                                                            同步间隔：
+                                                                        </label>
+                                                                        <select
+                                                                            value={syncInterval}
+                                                                            onChange={(e) => setSyncInterval(parseInt(e.target.value))}
+                                                                            className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                                        >
+                                                                            {SYNC_INTERVALS.map(interval => (
+                                                                                <option key={interval.value} value={interval.value}>
+                                                                                    {interval.label}
+                                                                                </option>
+                                                                            ))}
+                                                                        </select>
+                                                                    </div>
+                                                                )}
                                                             </div>
 
                                                             <button
@@ -1168,42 +1384,40 @@ export default function AddAccountModal({
                                 </div>
                             </div>
                         </div>
+                    </ModalBody>
 
-                        {/* 底部操作栏 */}
-                        <div className="flex items-center justify-end space-x-3 border-t border-gray-200 p-6 dark:border-gray-700">
-                            <button
-                                onClick={handleClose}
-                                className="rounded-lg border border-gray-300 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
-                                disabled={loading}
-                            >
-                                取消
-                            </button>
-                            <button
-                                onClick={activeTab === 'single' ? handleSingleSubmit : handleBatchSubmit}
-                                disabled={
-                                    loading ||
-                                    !selectedProvider ||
-                                    (activeTab === 'single' && !singleForm.email) ||
-                                    (activeTab === 'batch' && (!showBatchPreview || batchAccounts.filter(a => a.isValid).length === 0))
-                                }
-                                className="flex items-center space-x-2 rounded-lg bg-primary-600 px-4 py-2 text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
-                            >
-                                {loading ? (
-                                    <>
-                                        <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
-                                        <span>处理中...</span>
-                                    </>
-                                ) : (
-                                    <>
-                                        <Plus className="h-4 w-4" />
-                                        <span>{activeTab === 'single' ? '添加账户' : `批量添加 (${batchAccounts.filter(a => a.isValid).length})`}</span>
-                                    </>
-                                )}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+                    <ModalFooter>
+                        <Button
+                            variant="outline"
+                            onClick={handleClose}
+                            disabled={loading}
+                        >
+                            取消
+                        </Button>
+                        <Button
+                            onClick={activeTab === 'single' ? handleSingleSubmit : handleBatchSubmit}
+                            disabled={
+                                loading ||
+                                !selectedProvider ||
+                                (activeTab === 'single' && !singleForm.email) ||
+                                (activeTab === 'batch' && (!showBatchPreview || batchAccounts.filter(a => a.isValid).length === 0))
+                            }
+                        >
+                            {loading ? (
+                                <>
+                                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent mr-2"></div>
+                                    <span>处理中...</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Plus className="h-4 w-4 mr-2" />
+                                    <span>{activeTab === 'single' ? '添加账户' : `批量添加 (${batchAccounts.filter(a => a.isValid).length})`}</span>
+                                </>
+                            )}
+                        </Button>
+                    </ModalFooter>
+                </ModalContent>
+            </Modal>
 
             {/* OAuth2 Popup 授权组件 */}
             {showOAuth2Popup && selectedProvider && (
@@ -1215,6 +1429,6 @@ export default function AddAccountModal({
                     onError={handleOAuth2Error}
                 />
             )}
-        </div>
-        , modalRoot)
+        </>
+    )
 }

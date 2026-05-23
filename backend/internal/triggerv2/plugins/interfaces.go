@@ -103,6 +103,9 @@ type PluginResult struct {
 	Data    map[string]interface{} `json:"data"`
 	Error   string                 `json:"error"`
 
+	// 流程控制
+	StopPipeline bool `json:"stop_pipeline"` // 是否中断后续流程
+
 	// 元数据
 	ExecutionTime time.Duration `json:"execution_time"`
 	MemoryUsage   int64         `json:"memory_usage"`

@@ -1,17 +1,38 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { Settings, Save, RotateCcw, AlertCircle, CheckCircle, Info } from 'lucide-react'
+import { useEffect, useState, useRef } from 'react'
+import {
+    Settings, Save, RotateCcw, AlertCircle, Search,
+    Sun, Moon, Monitor, LayoutGrid, Keyboard, Sliders,
+    ChevronRight, Check, LogIn, Sparkles, Palette, Smile
+} from 'lucide-react'
+import { toast } from 'sonner'
 import { systemConfigService, SystemConfig } from '@/services/system-config.service'
-import { ThemeTest } from '@/components/theme-test'
+import { KeyboardShortcutsSettings } from '@/components/settings/keyboard-shortcuts-settings'
+import { MenuVisibilitySettings } from '@/components/settings/menu-visibility-settings'
+import { useTheme } from '@/components/theme-provider'
 import { cn } from '@/lib/utils'
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
+import { useAuth } from '@/context/auth-context'
+
+// 设置分区定义
+const sections = [
+    { id: 'appearance', name: '外观', icon: Sun, description: '主题与显示偏好' },
+    { id: 'menu', name: '菜单管理', icon: LayoutGrid, description: '侧边栏菜单配置' },
+    { id: 'shortcuts', name: '快捷键', icon: Keyboard, description: '键盘快捷键设置' },
+    { id: 'configs', name: '高级配置', icon: Sliders, description: '系统参数调整' },
+] as const
+
+type SectionId = typeof sections[number]['id']
 
 export default function SystemConfigTab() {
+    const { confirm } = useConfirmDialog()
+    const { theme, setTheme } = useTheme()
+    const [activeSection, setActiveSection] = useState<SectionId>('appearance')
     const [configs, setConfigs] = useState<SystemConfig[]>([])
     const [loading, setLoading] = useState(true)
     const [saving, setSaving] = useState<string | null>(null)
     const [searchQuery, setSearchQuery] = useState('')
-    const [selectedCategory, setSelectedCategory] = useState<string>('all')
     const [modifiedConfigs, setModifiedConfigs] = useState<Record<string, any>>({})
 
     useEffect(() => {
@@ -31,273 +52,430 @@ export default function SystemConfigTab() {
     }
 
     const handleConfigChange = (key: string, value: any) => {
-        setModifiedConfigs(prev => ({
-            ...prev,
-            [key]: value
-        }))
+        setModifiedConfigs(prev => ({ ...prev, [key]: value }))
     }
 
     const handleSaveConfig = async (config: SystemConfig) => {
         const modifiedValue = modifiedConfigs[config.key]
         if (modifiedValue === undefined) return
 
-        // 验证配置值
         const validation = systemConfigService.validateConfigValue(config, modifiedValue)
         if (!validation.valid) {
-            alert(`配置值无效: ${validation.error}`)
+            toast.error(`配置值无效: ${validation.error}`)
             return
         }
 
         try {
             setSaving(config.key)
             await systemConfigService.updateConfigValue(config.key, modifiedValue)
-
-            // 更新本地状态
             setConfigs(prev => prev.map(c =>
-                c.key === config.key
-                    ? { ...c, current_value: modifiedValue }
-                    : c
+                c.key === config.key ? { ...c, current_value: modifiedValue } : c
             ))
-
-            // 清除修改状态
             setModifiedConfigs(prev => {
-                const newModified = { ...prev }
-                delete newModified[config.key]
-                return newModified
+                const n = { ...prev }
+                delete n[config.key]
+                return n
             })
-
-        } catch (error) {
-            console.error('Failed to save config:', error)
-            alert('保存配置失败')
+            toast.success('配置已保存')
+        } catch {
+            toast.error('保存配置失败')
         } finally {
             setSaving(null)
         }
     }
 
     const handleResetConfig = async (config: SystemConfig) => {
-        if (!confirm(`确定要重置"${config.name}"为默认值吗？`)) return
+        const confirmed = await confirm({
+            title: '重置配置',
+            description: `确定要重置"${config.name}"为默认值吗？`,
+            confirmText: '重置',
+            cancelText: '取消'
+        })
+        if (!confirmed) return
 
         try {
             setSaving(config.key)
             const resetConfig = await systemConfigService.resetConfigToDefault(config.key)
-
-            // 更新本地状态
-            setConfigs(prev => prev.map(c =>
-                c.key === config.key ? resetConfig : c
-            ))
-
-            // 清除修改状态
+            setConfigs(prev => prev.map(c => c.key === config.key ? resetConfig : c))
             setModifiedConfigs(prev => {
-                const newModified = { ...prev }
-                delete newModified[config.key]
-                return newModified
+                const n = { ...prev }
+                delete n[config.key]
+                return n
             })
-
-        } catch (error) {
-            console.error('Failed to reset config:', error)
-            alert('重置配置失败')
+            toast.success('配置已重置为默认值')
+        } catch {
+            toast.error('重置配置失败')
         } finally {
             setSaving(null)
         }
     }
 
-    // 获取当前显示值
     const getCurrentValue = (config: SystemConfig) => {
-        return modifiedConfigs[config.key] !== undefined
-            ? modifiedConfigs[config.key]
-            : config.current_value
+        return modifiedConfigs[config.key] !== undefined ? modifiedConfigs[config.key] : config.current_value
     }
 
-    // 检查配置是否被修改
     const isConfigModified = (config: SystemConfig) => {
         return modifiedConfigs[config.key] !== undefined
     }
 
-    // 过滤配置
-    const filteredConfigs = (configs || []).filter(config => {
-        const matchesSearch = config.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            config.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            config.key.toLowerCase().includes(searchQuery.toLowerCase())
+    const modifiedCount = Object.keys(modifiedConfigs).length
 
-        const matchesCategory = selectedCategory === 'all' || config.category === selectedCategory
-
-        return matchesSearch && matchesCategory && config.is_visible
+    // 按分类分组后的配置（仅 visible）
+    const visibleConfigs = (configs || []).filter(c => c.is_visible)
+    const filteredConfigs = visibleConfigs.filter(c => {
+        if (!searchQuery) return true
+        const q = searchQuery.toLowerCase()
+        return c.name.toLowerCase().includes(q) || c.description.toLowerCase().includes(q) || c.key.toLowerCase().includes(q)
     })
-
-    // 按分类分组
-    const groupedConfigs = systemConfigService.groupConfigsByCategory(filteredConfigs)
-    const categories = Object.keys(groupedConfigs).sort()
-
-    // 获取所有可用分类
-    const allCategories = Array.from(new Set((configs || []).map(c => c.category).filter(Boolean)))
-
-    // 渲染配置输入组件
-    const renderConfigInput = (config: SystemConfig) => {
-        const currentValue = getCurrentValue(config)
-        const isModified = isConfigModified(config)
-
-        switch (config.value_type) {
-            case 'boolean':
-                return (
-                    <div className="flex items-center space-x-3">
-                        <label className="flex items-center space-x-2 cursor-pointer">
-                            <input
-                                type="checkbox"
-                                checked={currentValue === true}
-                                onChange={(e) => handleConfigChange(config.key, e.target.checked)}
-                                disabled={!config.is_editable}
-                                className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                            />
-                            <span className="text-sm font-medium text-gray-900 dark:text-white">
-                                {currentValue ? '启用' : '禁用'}
-                            </span>
-                        </label>
-                    </div>
-                )
-
-            case 'string':
-                return (
-                    <input
-                        type="text"
-                        value={currentValue || ''}
-                        onChange={(e) => handleConfigChange(config.key, e.target.value)}
-                        disabled={!config.is_editable}
-                        className="w-full rounded-lg border border-gray-300 bg-white py-2 px-3 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-50"
-                        placeholder={config.default_value?.toString() || ''}
-                    />
-                )
-
-            case 'number':
-                return (
-                    <input
-                        type="number"
-                        value={currentValue || 0}
-                        onChange={(e) => handleConfigChange(config.key, parseInt(e.target.value))}
-                        disabled={!config.is_editable}
-                        className="w-full rounded-lg border border-gray-300 bg-white py-2 px-3 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-50"
-                    />
-                )
-
-            case 'float':
-                return (
-                    <input
-                        type="number"
-                        step="0.01"
-                        value={currentValue || 0}
-                        onChange={(e) => handleConfigChange(config.key, parseFloat(e.target.value))}
-                        disabled={!config.is_editable}
-                        className="w-full rounded-lg border border-gray-300 bg-white py-2 px-3 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-50"
-                    />
-                )
-
-            case 'json':
-                return (
-                    <textarea
-                        value={JSON.stringify(currentValue, null, 2) || ''}
-                        onChange={(e) => {
-                            try {
-                                const parsedValue = JSON.parse(e.target.value)
-                                handleConfigChange(config.key, parsedValue)
-                            } catch {
-                                // 允许输入不完整的JSON，等用户完成编辑
-                            }
-                        }}
-                        disabled={!config.is_editable}
-                        rows={4}
-                        className="w-full rounded-lg border border-gray-300 bg-white py-2 px-3 text-sm font-mono focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-50"
-                        placeholder="请输入有效的JSON格式"
-                    />
-                )
-
-            default:
-                return (
-                    <div className="text-sm text-gray-500 dark:text-gray-400">
-                        不支持的配置类型: {config.value_type}
-                    </div>
-                )
-        }
-    }
+    const grouped = systemConfigService.groupConfigsByCategory(filteredConfigs)
+    const categoryKeys = Object.keys(grouped).sort()
 
     if (loading) {
         return (
             <div className="flex items-center justify-center py-20">
                 <div className="text-center">
-                    <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-primary-600 border-t-transparent"></div>
-                    <p className="text-gray-500 dark:text-gray-400">加载中...</p>
+                    <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-blue-500 border-t-transparent" />
+                    <p className="text-sm text-gray-400">加载配置中...</p>
                 </div>
             </div>
         )
     }
 
     return (
-        <div className="space-y-6">
-            {/* 页面标题 */}
-            <div className="flex items-center space-x-3">
-                <Settings className="h-6 w-6 text-primary-600" />
-                <h1 className="text-2xl font-bold text-gray-900 dark:text-white">系统配置</h1>
+        <div className="flex gap-6 min-h-[calc(100vh-10rem)]">
+            {/* 左侧导航 */}
+            <div className="w-56 flex-shrink-0">
+                <div className="sticky top-4 space-y-1">
+                    <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-4 px-3 flex items-center gap-2">
+                        <Settings className="h-5 w-5 text-blue-500" />
+                        系统配置
+                    </h1>
+
+                    {sections.map(section => {
+                        const Icon = section.icon
+                        const isActive = activeSection === section.id
+                        return (
+                            <button
+                                key={section.id}
+                                onClick={() => setActiveSection(section.id)}
+                                className={cn(
+                                    'w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all duration-150',
+                                    isActive
+                                        ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                                        : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-200'
+                                )}
+                            >
+                                <Icon className={cn('h-4 w-4 flex-shrink-0', isActive ? 'text-blue-500' : '')} />
+                                <div className="min-w-0">
+                                    <div className={cn('text-sm font-medium truncate', isActive ? 'text-blue-600 dark:text-blue-400' : '')}>
+                                        {section.name}
+                                    </div>
+                                    <div className="text-[11px] text-gray-400 dark:text-gray-500 truncate">{section.description}</div>
+                                </div>
+                                {isActive && <ChevronRight className="h-3.5 w-3.5 ml-auto text-blue-400 flex-shrink-0" />}
+                            </button>
+                        )
+                    })}
+
+                    {/* 未保存提示 */}
+                    {modifiedCount > 0 && (
+                        <div className="mt-4 mx-1 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                            <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                                <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+                                <span className="text-xs font-medium">{modifiedCount} 项未保存</span>
+                            </div>
+                        </div>
+                    )}
+                </div>
             </div>
 
-            {/* 主题测试组件 - 用于调试主题切换 */}
-            <ThemeTest />
+            {/* 右侧内容区 */}
+            <div className="flex-1 min-w-0">
+                {activeSection === 'appearance' && <AppearanceSection theme={theme} setTheme={setTheme} />}
+                {activeSection === 'menu' && <MenuVisibilitySettings />}
+                {activeSection === 'shortcuts' && <KeyboardShortcutsSettings />}
+                {activeSection === 'configs' && (
+                    <ConfigsSection
+                        configs={filteredConfigs}
+                        grouped={grouped}
+                        categoryKeys={categoryKeys}
+                        searchQuery={searchQuery}
+                        setSearchQuery={setSearchQuery}
+                        getCurrentValue={getCurrentValue}
+                        isConfigModified={isConfigModified}
+                        saving={saving}
+                        onSave={handleSaveConfig}
+                        onReset={handleResetConfig}
+                        onChange={handleConfigChange}
+                    />
+                )}
+            </div>
+        </div>
+    )
+}
 
-            {/* 搜索和筛选 */}
+/* ─────────────────────────────────────────────────────────────── */
+/* 外观设置 Section                                                 */
+/* ─────────────────────────────────────────────────────────────── */
+
+function AppearanceSection({ theme, setTheme }: { theme: string; setTheme: (t: any) => void }) {
+    const { isSuperAdmin } = useAuth()
+    const [loginTheme, setLoginTheme] = useState<string>('classic')
+    const [loginThemeLoading, setLoginThemeLoading] = useState(true)
+    const [loginThemeSaving, setLoginThemeSaving] = useState(false)
+
+    useEffect(() => {
+        if (isSuperAdmin) {
+            systemConfigService.getLoginTheme().then(t => {
+                setLoginTheme(t)
+                setLoginThemeLoading(false)
+            })
+        }
+    }, [isSuperAdmin])
+
+    const handleLoginThemeChange = async (newTheme: string) => {
+        setLoginThemeSaving(true)
+        try {
+            await systemConfigService.setLoginTheme(newTheme)
+            setLoginTheme(newTheme)
+            toast.success('登录页主题已更新')
+        } catch {
+            toast.error('更新登录页主题失败')
+        } finally {
+            setLoginThemeSaving(false)
+        }
+    }
+
+    const themes = [
+        { id: 'light', name: '浅色模式', desc: '适合明亮环境', icon: Sun, preview: 'from-white to-gray-100 border-gray-200' },
+        { id: 'dark', name: '深色模式', desc: '减少眼睛疲劳', icon: Moon, preview: 'from-gray-800 to-gray-900 border-gray-700' },
+        { id: 'system', name: '跟随系统', desc: '自动匹配系统主题', icon: Monitor, preview: 'from-white to-gray-900 border-gray-300' },
+    ]
+
+    const loginThemes = [
+        {
+            id: 'classic',
+            name: '经典',
+            desc: '蓝紫渐变 + 粒子效果',
+            icon: Palette,
+            previewGradient: 'from-blue-100 via-indigo-50 to-purple-100',
+            previewBorder: 'border-blue-200',
+        },
+        {
+            id: 'elegant',
+            name: '优雅',
+            desc: '深空玻璃态 + 3D效果',
+            icon: Sparkles,
+            previewGradient: 'from-gray-900 via-blue-900 to-purple-900',
+            previewBorder: 'border-blue-500/30',
+        },
+        {
+            id: 'playful',
+            name: '趣味互动',
+            desc: '小玩偶遮眼动画 🙈',
+            icon: Smile,
+            previewGradient: 'from-yellow-50 via-orange-50 to-purple-50',
+            previewBorder: 'border-orange-200',
+        },
+    ]
+
+    return (
+        <div className="space-y-6">
+            <div>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">外观</h2>
+                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">自定义应用的视觉风格</p>
+            </div>
+
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/50 overflow-hidden">
+                <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700/50">
+                    <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">主题</h3>
+                    <p className="mt-0.5 text-xs text-gray-400">选择你喜欢的色彩方案</p>
+                </div>
+                <div className="p-5 grid grid-cols-3 gap-4">
+                    {themes.map(t => {
+                        const Icon = t.icon
+                        const isActive = theme === t.id
+                        return (
+                            <button
+                                key={t.id}
+                                onClick={() => setTheme(t.id)}
+                                className={cn(
+                                    'relative group rounded-xl border-2 p-4 transition-all duration-200 text-left',
+                                    isActive
+                                        ? 'border-blue-500 bg-blue-500/5 dark:bg-blue-500/10 shadow-sm shadow-blue-500/10'
+                                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm'
+                                )}
+                            >
+                                {/* 预览条 */}
+                                <div className={cn(
+                                    'h-16 rounded-lg bg-gradient-to-br mb-3 border',
+                                    t.preview
+                                )} />
+
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <div className="flex items-center gap-1.5">
+                                            <Icon className={cn(
+                                                'h-3.5 w-3.5',
+                                                isActive ? 'text-blue-500' : 'text-gray-400'
+                                            )} />
+                                            <span className={cn(
+                                                'text-sm font-medium',
+                                                isActive ? 'text-blue-600 dark:text-blue-400' : 'text-gray-700 dark:text-gray-300'
+                                            )}>
+                                                {t.name}
+                                            </span>
+                                        </div>
+                                        <p className="mt-0.5 text-[11px] text-gray-400">{t.desc}</p>
+                                    </div>
+                                    {isActive && (
+                                        <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center flex-shrink-0">
+                                            <Check className="h-3 w-3 text-white" />
+                                        </div>
+                                    )}
+                                </div>
+                            </button>
+                        )
+                    })}
+                </div>
+            </div>
+
+            {/* 登录页主题 - 仅超级管理员可见 */}
+            {isSuperAdmin && (
+                <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/50 overflow-hidden">
+                    <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700/50">
+                        <div className="flex items-center gap-2">
+                            <LogIn className="h-4 w-4 text-blue-500" />
+                            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">登录页主题</h3>
+                        </div>
+                        <p className="mt-0.5 text-xs text-gray-400">设置系统默认登录页面的视觉风格（仅超级管理员可修改）</p>
+                    </div>
+                    <div className="p-5 grid grid-cols-3 gap-4">
+                        {loginThemeLoading ? (
+                            <div className="col-span-3 py-8 flex items-center justify-center">
+                                <div className="h-6 w-6 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+                            </div>
+                        ) : (
+                            loginThemes.map(lt => {
+                                const Icon = lt.icon
+                                const isActive = loginTheme === lt.id
+                                return (
+                                    <button
+                                        key={lt.id}
+                                        onClick={() => handleLoginThemeChange(lt.id)}
+                                        disabled={loginThemeSaving}
+                                        className={cn(
+                                            'relative group rounded-xl border-2 p-4 transition-all duration-200 text-left disabled:opacity-60',
+                                            isActive
+                                                ? 'border-blue-500 bg-blue-500/5 dark:bg-blue-500/10 shadow-sm shadow-blue-500/10'
+                                                : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm'
+                                        )}
+                                    >
+                                        {/* 预览条 */}
+                                        <div className={cn(
+                                            'h-16 rounded-lg bg-gradient-to-br mb-3 border',
+                                            lt.previewGradient,
+                                            lt.previewBorder
+                                        )} />
+
+                                        <div className="flex items-center justify-between">
+                                            <div>
+                                                <div className="flex items-center gap-1.5">
+                                                    <Icon className={cn(
+                                                        'h-3.5 w-3.5',
+                                                        isActive ? 'text-blue-500' : 'text-gray-400'
+                                                    )} />
+                                                    <span className={cn(
+                                                        'text-sm font-medium',
+                                                        isActive ? 'text-blue-600 dark:text-blue-400' : 'text-gray-700 dark:text-gray-300'
+                                                    )}>
+                                                        {lt.name}
+                                                    </span>
+                                                </div>
+                                                <p className="mt-0.5 text-[11px] text-gray-400">{lt.desc}</p>
+                                            </div>
+                                            {isActive && (
+                                                <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center flex-shrink-0">
+                                                    <Check className="h-3 w-3 text-white" />
+                                                </div>
+                                            )}
+                                        </div>
+                                    </button>
+                                )
+                            })
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    )
+}
+
+/* ─────────────────────────────────────────────────────────────── */
+/* 高级配置 Section                                                 */
+/* ─────────────────────────────────────────────────────────────── */
+
+interface ConfigsSectionProps {
+    configs: SystemConfig[]
+    grouped: Record<string, SystemConfig[]>
+    categoryKeys: string[]
+    searchQuery: string
+    setSearchQuery: (q: string) => void
+    getCurrentValue: (c: SystemConfig) => any
+    isConfigModified: (c: SystemConfig) => boolean
+    saving: string | null
+    onSave: (c: SystemConfig) => void
+    onReset: (c: SystemConfig) => void
+    onChange: (key: string, value: any) => void
+}
+
+function ConfigsSection({
+    configs, grouped, categoryKeys, searchQuery, setSearchQuery,
+    getCurrentValue, isConfigModified, saving, onSave, onReset, onChange
+}: ConfigsSectionProps) {
+    return (
+        <div className="space-y-6">
             <div className="flex items-center justify-between">
-                <div className="w-96">
+                <div>
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">高级配置</h2>
+                    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">系统运行参数，修改后需保存生效</p>
+                </div>
+                {/* 搜索 */}
+                <div className="relative w-64">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
                     <input
                         type="text"
                         placeholder="搜索配置项..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-4 pr-4 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                        className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                     />
-                </div>
-                <div className="flex items-center space-x-3">
-                    <select
-                        value={selectedCategory}
-                        onChange={(e) => setSelectedCategory(e.target.value)}
-                        className="rounded-lg border border-gray-300 bg-white py-2 px-3 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                    >
-                        <option value="all">所有分类</option>
-                        {allCategories.map(category => (
-                            <option key={category} value={category}>
-                                {systemConfigService.getCategoryDisplayName(category)}
-                            </option>
-                        ))}
-                    </select>
                 </div>
             </div>
 
-            {/* 配置列表 */}
-            {Object.keys(modifiedConfigs).length > 0 && (
-                <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 p-4">
-                    <div className="flex items-center space-x-2">
-                        <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400" />
-                        <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">
-                            您有 {Object.keys(modifiedConfigs).length} 项未保存的配置更改
-                        </p>
-                    </div>
-                </div>
-            )}
+            {categoryKeys.length > 0 ? (
+                <div className="space-y-4">
+                    {categoryKeys.map(category => (
+                        <div key={category} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800/50 overflow-hidden">
+                            {/* 分类头部 */}
+                            <div className="px-5 py-3 bg-gray-50/80 dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700/50">
+                                <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wide">
+                                    {systemConfigService.getCategoryDisplayName(category)}
+                                </h3>
+                            </div>
 
-            {selectedCategory === 'all' && categories.length > 1 ? (
-                // 按分类显示
-                <div className="space-y-8">
-                    {categories.map(category => (
-                        <div key={category} className="space-y-4">
-                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white border-b border-gray-200 dark:border-gray-700 pb-2">
-                                {systemConfigService.getCategoryDisplayName(category)}
-                            </h2>
-                            <div className="grid gap-6">
-                                {groupedConfigs[category].map(config => (
-                                    <ConfigItem
+                            {/* 配置项列表 */}
+                            <div className="divide-y divide-gray-100 dark:divide-gray-700/50">
+                                {grouped[category].map(config => (
+                                    <ConfigRow
                                         key={config.key}
                                         config={config}
                                         currentValue={getCurrentValue(config)}
                                         isModified={isConfigModified(config)}
                                         isSaving={saving === config.key}
-                                        onSave={() => handleSaveConfig(config)}
-                                        onReset={() => handleResetConfig(config)}
-                                        renderInput={() => renderConfigInput(config)}
+                                        onSave={() => onSave(config)}
+                                        onReset={() => onReset(config)}
+                                        onChange={onChange}
                                     />
                                 ))}
                             </div>
@@ -305,29 +483,10 @@ export default function SystemConfigTab() {
                     ))}
                 </div>
             ) : (
-                // 单一分类或搜索结果
-                <div className="grid gap-6">
-                    {filteredConfigs.map(config => (
-                        <ConfigItem
-                            key={config.key}
-                            config={config}
-                            currentValue={getCurrentValue(config)}
-                            isModified={isConfigModified(config)}
-                            isSaving={saving === config.key}
-                            onSave={() => handleSaveConfig(config)}
-                            onReset={() => handleResetConfig(config)}
-                            renderInput={() => renderConfigInput(config)}
-                        />
-                    ))}
-                </div>
-            )}
-
-            {filteredConfigs.length === 0 && !loading && (
-                <div className="text-center py-12">
-                    <Settings className="mx-auto h-12 w-12 text-gray-400" />
-                    <h3 className="mt-4 text-lg font-medium text-gray-900 dark:text-white">没有找到配置项</h3>
-                    <p className="mt-2 text-gray-500 dark:text-gray-400">
-                        {searchQuery ? '尝试其他搜索词' : '当前分类下没有可用的配置项'}
+                <div className="text-center py-16">
+                    <Search className="mx-auto h-10 w-10 text-gray-300 dark:text-gray-600" />
+                    <p className="mt-3 text-sm text-gray-400">
+                        {searchQuery ? '没有匹配的配置项' : '暂无可用配置项'}
                     </p>
                 </div>
             )}
@@ -335,105 +494,169 @@ export default function SystemConfigTab() {
     )
 }
 
-// 配置项组件
-interface ConfigItemProps {
+/* ─────────────────────────────────────────────────────────────── */
+/* 单行配置项                                                        */
+/* ─────────────────────────────────────────────────────────────── */
+
+interface ConfigRowProps {
     config: SystemConfig
     currentValue: any
     isModified: boolean
     isSaving: boolean
     onSave: () => void
     onReset: () => void
-    renderInput: () => React.ReactNode
+    onChange: (key: string, value: any) => void
 }
 
-function ConfigItem({ config, currentValue, isModified, isSaving, onSave, onReset, renderInput }: ConfigItemProps) {
+function ConfigRow({ config, currentValue, isModified, isSaving, onSave, onReset, onChange }: ConfigRowProps) {
     return (
         <div className={cn(
-            "rounded-lg border bg-white p-6 transition-all dark:bg-gray-800",
-            isModified
-                ? "border-primary-500 bg-primary-50 dark:border-primary-400 dark:bg-primary-900/20"
-                : "border-gray-200 dark:border-gray-700"
+            'px-5 py-4 transition-colors',
+            isModified ? 'bg-blue-50/50 dark:bg-blue-500/5' : 'hover:bg-gray-50/50 dark:hover:bg-gray-700/20'
         )}>
-            <div className="flex items-start justify-between">
-                <div className="flex-1 space-y-4">
-                    {/* 配置信息 */}
-                    <div>
-                        <div className="flex items-center space-x-3">
-                            <h3 className="text-lg font-medium text-gray-900 dark:text-white">
-                                {config.name}
-                            </h3>
-                            {isModified && (
-                                <span className="inline-flex items-center rounded-full bg-yellow-100 px-2.5 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400">
-                                    已修改
-                                </span>
-                            )}
-                            {!config.is_editable && (
-                                <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-400">
-                                    只读
-                                </span>
-                            )}
-                        </div>
-
-                        <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-                            {config.description}
-                        </p>
-
-                        <div className="mt-2 flex items-center space-x-4 text-xs text-gray-500 dark:text-gray-400">
-                            <span>键名: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">{config.key}</code></span>
-                            <span>类型: {config.value_type}</span>
-                            <span>默认值: {systemConfigService.formatConfigValue({ ...config, current_value: config.default_value })}</span>
-                        </div>
-                    </div>
-
-                    {/* 配置输入 */}
-                    <div className="space-y-2">
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                            当前值
-                        </label>
-                        {renderInput()}
-                    </div>
-                </div>
-
-                {/* 操作按钮 */}
-                {config.is_editable && (
-                    <div className="flex items-center space-x-2 ml-6">
-                        {isModified && (
-                            <button
-                                onClick={onSave}
-                                disabled={isSaving}
-                                className="flex items-center space-x-1 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:opacity-50"
-                            >
-                                {isSaving ? (
-                                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                                ) : (
-                                    <Save className="h-4 w-4" />
-                                )}
-                                <span>保存</span>
-                            </button>
+            <div className="flex items-start justify-between gap-4">
+                {/* 左：信息 */}
+                <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                            {config.name}
+                        </h4>
+                        {!config.is_editable && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-400 font-medium flex-shrink-0">
+                                只读
+                            </span>
                         )}
-
-                        <button
-                            onClick={onReset}
-                            disabled={isSaving}
-                            className="flex items-center space-x-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700 disabled:opacity-50"
-                            title="重置为默认值"
-                        >
-                            <RotateCcw className="h-4 w-4" />
-                            <span>重置</span>
-                        </button>
+                        {isModified && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 flex-shrink-0" title="已修改" />
+                        )}
                     </div>
-                )}
-            </div>
-
-            {/* 修改提示 */}
-            {isModified && (
-                <div className="mt-4 pt-4 border-t border-primary-200 dark:border-primary-800">
-                    <div className="flex items-center space-x-2 text-sm text-primary-700 dark:text-primary-300">
-                        <Info className="h-4 w-4" />
-                        <span>配置已修改但未保存，点击"保存"按钮确认更改</span>
-                    </div>
+                    <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500 line-clamp-1">{config.description}</p>
+                    <div className="mt-1 text-[11px] text-gray-300 dark:text-gray-600 font-mono">{config.key}</div>
                 </div>
-            )}
+
+                {/* 右：控件 + 操作 */}
+                <div className="flex items-center gap-2 flex-shrink-0">
+                    {/* 输入控件 */}
+                    <div className="w-48">
+                        <ConfigInput config={config} currentValue={currentValue} onChange={onChange} />
+                    </div>
+
+                    {/* 操作按钮 */}
+                    {config.is_editable && (
+                        <div className="flex items-center gap-1">
+                            {isModified && (
+                                <button
+                                    onClick={onSave}
+                                    disabled={isSaving}
+                                    className="p-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
+                                    title="保存"
+                                >
+                                    {isSaving ? (
+                                        <div className="h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-white border-t-transparent" />
+                                    ) : (
+                                        <Save className="h-3.5 w-3.5" />
+                                    )}
+                                </button>
+                            )}
+                            <button
+                                onClick={onReset}
+                                disabled={isSaving}
+                                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"
+                                title="重置为默认值"
+                            >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
         </div>
     )
+}
+
+/* ─────────────────────────────────────────────────────────────── */
+/* 配置输入控件                                                      */
+/* ─────────────────────────────────────────────────────────────── */
+
+function ConfigInput({
+    config, currentValue, onChange
+}: { config: SystemConfig; currentValue: any; onChange: (key: string, val: any) => void }) {
+    const inputClass = 'w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 py-1.5 px-2.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 disabled:opacity-50 transition-colors'
+
+    switch (config.value_type) {
+        case 'boolean':
+            return (
+                <div className="flex justify-end">
+                    <button
+                        onClick={() => config.is_editable && onChange(config.key, !currentValue)}
+                        disabled={!config.is_editable}
+                        className={cn(
+                            'relative w-10 h-[22px] rounded-full transition-colors duration-200 disabled:opacity-50',
+                            currentValue ? 'bg-blue-500' : 'bg-gray-200 dark:bg-gray-600'
+                        )}
+                    >
+                        <span className={cn(
+                            'absolute top-[2px] w-[18px] h-[18px] rounded-full bg-white shadow-sm transition-transform duration-200',
+                            currentValue ? 'left-[20px]' : 'left-[2px]'
+                        )} />
+                    </button>
+                </div>
+            )
+
+        case 'string':
+            return (
+                <input
+                    type="text"
+                    value={currentValue || ''}
+                    onChange={(e) => onChange(config.key, e.target.value)}
+                    disabled={!config.is_editable}
+                    className={inputClass}
+                    placeholder={config.default_value?.toString() || ''}
+                />
+            )
+
+        case 'number':
+            return (
+                <input
+                    type="number"
+                    value={currentValue || 0}
+                    onChange={(e) => onChange(config.key, parseInt(e.target.value))}
+                    disabled={!config.is_editable}
+                    className={inputClass}
+                />
+            )
+
+        case 'float':
+            return (
+                <input
+                    type="number"
+                    step="0.01"
+                    value={currentValue || 0}
+                    onChange={(e) => onChange(config.key, parseFloat(e.target.value))}
+                    disabled={!config.is_editable}
+                    className={inputClass}
+                />
+            )
+
+        case 'json':
+            return (
+                <textarea
+                    value={JSON.stringify(currentValue, null, 2) || ''}
+                    onChange={(e) => {
+                        try {
+                            onChange(config.key, JSON.parse(e.target.value))
+                        } catch {
+                            // 允许输入不完整的 JSON
+                        }
+                    }}
+                    disabled={!config.is_editable}
+                    rows={2}
+                    className={cn(inputClass, 'font-mono text-xs resize-none')}
+                    placeholder="JSON"
+                />
+            )
+
+        default:
+            return <span className="text-xs text-gray-400">不支持的类型</span>
+    }
 }

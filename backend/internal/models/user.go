@@ -13,6 +13,8 @@ type User struct {
 	Email        string     `gorm:"uniqueIndex;not null;type:varchar(255)" json:"email"`
 	PasswordHash string     `gorm:"not null" json:"-"`       // Never expose password hash in JSON
 	Avatar       string     `gorm:"type:text" json:"avatar"` // Base64 encoded image
+	IsSuperAdmin bool       `gorm:"default:false" json:"is_super_admin"` // 超级管理员
+	CurrentOrgID *uint      `gorm:"index" json:"current_org_id,omitempty"` // 当前活跃组织
 	IsActive     bool       `gorm:"default:true" json:"is_active"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`

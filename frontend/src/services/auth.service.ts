@@ -21,6 +21,8 @@ export interface LoginResponse {
         email: string;
         avatar?: string;
         is_admin: boolean;
+        is_super_admin: boolean;
+        current_org_id?: number;
         created_at: string;
     };
 }
@@ -31,7 +33,38 @@ export interface User {
     email: string;
     avatar?: string;
     is_admin: boolean;
+    is_super_admin: boolean;
+    current_org_id?: number;
     created_at: string;
+}
+
+export interface AuthOrganization {
+    id: number;
+    name: string;
+    slug: string;
+    description?: string;
+    isActive: boolean;
+}
+
+export interface AuthRole {
+    id: number;
+    name: string;
+    description?: string;
+    isSystem: boolean;
+}
+
+export interface AuthPermission {
+    id: number;
+    resource: string;
+    action: string;
+    description?: string;
+}
+
+export interface AuthMeResponse {
+    user: User;
+    currentOrganization?: AuthOrganization;
+    currentRole?: AuthRole;
+    permissions?: AuthPermission[];
 }
 
 class AuthService {
@@ -65,12 +98,41 @@ class AuthService {
         }
     }
 
-    // 获取当前用户信息
+    // 获取当前用户信息（兼容新旧 API 格式）
     async getCurrentUser(): Promise<User> {
-        const response = await apiClient.get<User>('/auth/me');
-        // 更新本地存储的用户信息
+        const response = await apiClient.get<AuthMeResponse | User>('/auth/me');
+        // 新 API 返回 { user, currentOrganization, ... }
+        if ('user' in response && response.user) {
+            localStorage.setItem('user', JSON.stringify(response.user));
+            localStorage.setItem('auth_context', JSON.stringify(response));
+            return response.user;
+        }
+        // 旧 API 直接返回 User 对象
         localStorage.setItem('user', JSON.stringify(response));
+        return response as User;
+    }
+
+    // 获取完整的认证上下文（包含组织、角色、权限）
+    async getAuthContext(): Promise<AuthMeResponse> {
+        const response = await apiClient.get<AuthMeResponse>('/auth/me');
+        localStorage.setItem('auth_context', JSON.stringify(response));
+        if (response.user) {
+            localStorage.setItem('user', JSON.stringify(response.user));
+        }
         return response;
+    }
+
+    // 获取本地缓存的认证上下文
+    getLocalAuthContext(): AuthMeResponse | null {
+        const contextStr = localStorage.getItem('auth_context');
+        if (contextStr) {
+            try {
+                return JSON.parse(contextStr);
+            } catch {
+                return null;
+            }
+        }
+        return null;
     }
 
     // 检查是否已登录

@@ -43,6 +43,12 @@ export interface EmailAccount {
     // 前端添加的字段
     status?: 'active' | 'inactive' | 'error';
     lastSync?: string;
+    lastSyncAt?: string;  // 后端返回的字段名
+    // 错误状态
+    errorStatus?: string;
+    errorMessage?: string;
+    // 标签 - 从后端返回的Tag结构
+    tags?: Tag[];
 }
 
 // 前端显示用的简化类型
@@ -93,6 +99,7 @@ export interface Email {
     HTMLBody?: string;
     RawMessage?: string; // 原始邮件报文
     Attachments?: EmailAttachment[] | null;
+    HasAttachments?: boolean; // 是否有附件
     MailboxName: string;
     Flags?: string[];
     Size: number;
@@ -106,12 +113,21 @@ export interface Email {
 }
 
 export interface EmailAttachment {
-    id: number;
-    email_id: number;
-    filename: string;
-    content_type: string;
-    size: number;
+    // snake_case (legacy/frontend style)
+    id?: number;
+    email_id?: number;
+    filename?: string;
+    content_type?: string;
+    size?: number;
     content?: string;
+    // PascalCase (API response style)
+    ID?: number;
+    EmailID?: number;
+    Filename?: string;
+    MIMEType?: string;
+    ContentType?: string;
+    Size?: number;
+    Content?: string;
 }
 
 export interface Attachment {
@@ -224,6 +240,19 @@ export interface PaginationParams {
     status?: string;  // 添加状态字段，用于状态过滤
 }
 
+// 账户过滤参数 (扩展后端支持的所有参数)
+export interface AccountFilterParams extends PaginationParams {
+    provider_id?: number;      // 按供应商ID过滤
+    tag_ids?: string;          // 按标签ID过滤，逗号分隔
+    tag_filter_mode?: 'or' | 'and';  // 标签过滤模式
+    is_verified?: boolean;     // 按验证状态过滤
+    error_status?: string;     // 按错误状态过滤
+    created_after?: string;    // 创建时间起始 (RFC3339)
+    created_before?: string;   // 创建时间结束 (RFC3339)
+    last_sync_after?: string;  // 最后同步时间起始 (RFC3339)
+    last_sync_before?: string; // 最后同步时间结束 (RFC3339)
+}
+
 export interface PaginatedResponse<T> {
     data: T[];
     total: number;
@@ -317,6 +346,7 @@ export interface EmailTrigger {
     check_interval: number // 检查间隔（秒）
 
     // 过滤参数（复用EmailFilter结构）
+    expressions?: TriggerExpression[] // V2 表达式树 (UI支持)
     email_address?: string // 邮箱地址过滤
     start_date?: string // 开始日期
     end_date?: string // 结束日期
@@ -381,6 +411,30 @@ export interface TriggerActionResult {
     execution_ms: number
 }
 
+// ExecutionStep 执行追踪中的单个步骤
+export interface ExecutionStep {
+    id: string
+    type: 'filter' | 'action'
+    name: string
+    pluginId: string
+    startTime: string
+    endTime: string
+    duration: number  // 毫秒
+    success: boolean
+    input: Record<string, any>
+    output: Record<string, any>
+    error?: string
+}
+
+// ExecutionTrace 完整的执行追踪
+export interface ExecutionTrace {
+    steps: ExecutionStep[]
+    totalSteps: number
+    startTime: string
+    endTime: string
+    totalMs: number
+}
+
 export interface TriggerExecutionLog {
     id: number
     trigger_id: number
@@ -406,6 +460,9 @@ export interface TriggerExecutionLog {
 
     // 错误信息
     error_message?: string
+
+    // 执行追踪数据 (Base64 编码的 JSON)
+    execution_trace_data?: string
 
     // 时间戳
     created_at: string
@@ -545,6 +602,58 @@ export interface OAuth2AccountInfo {
     expires_at: number
 }
 
+// V2 Trigger Types
+export type TriggerExpressionType = 'group' | 'condition' | 'plugin' | 'expression';
+export type TriggerOperator = 'and' | 'or' | 'not' | 'equals' | 'contains' | 'startswith' | 'endswith' | 'matches' | 'in' | 'notin' | 'greater_than' | 'less_than';
+
+// Expression engine types
+export type ExpressionEngineType = 'expr.javascript' | 'expr.cel' | 'expr.go_template' | 'expr.jsonpath';
+
+export interface TriggerExpression {
+    id: string;
+    type: TriggerExpressionType;
+    operator?: string;
+    field?: string;
+    value?: any;
+    conditions?: TriggerExpression[];
+    not?: boolean;
+    // For plugin and expression types
+    pluginId?: string;
+    fields?: Record<string, any>;
+}
+
+export interface TriggerActionV2 {
+    id: string;
+    pluginId: string;
+    pluginName: string;
+    config: Record<string, any>;
+    enabled: boolean;
+    executionOrder: number;
+}
+
+export interface EmailTriggerV2 {
+    id: number;
+    name: string;
+    description?: string;
+    enabled: boolean;
+    expressions: TriggerExpression[];
+    actions: TriggerActionV2[];
+    totalExecutions: number;
+    successExecutions: number;
+    lastExecutedAt?: string;
+    lastError?: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface CreateTriggerV2Request {
+    name: string;
+    description?: string;
+    enabled: boolean;
+    expressions: TriggerExpression[];
+    actions: TriggerActionV2[];
+}
+
 export interface CreateOAuth2AccountRequest {
     email_address: string
     provider: OAuth2ProviderType
@@ -552,3 +661,273 @@ export interface CreateOAuth2AccountRequest {
     refresh_token: string
     expires_at: number
 }
+
+// ==================== Extractor Template V2 Types ====================
+
+// 取件模板V2输出格式
+export type ExtractorOutputFormat = 'text' | 'json' | 'array' | 'object';
+
+// 输出配置
+export interface ExtractorOutputConfig {
+    format: ExtractorOutputFormat;
+    field?: string;         // 从动作链输出中提取的字段名
+    template?: string;      // 输出模板（用于格式化）
+    description?: string;   // 输出字段描述
+}
+
+// 取件模板V2
+export interface ExtractorTemplateV2 {
+    id: number;
+    name: string;
+    description?: string;
+    enabled: boolean;
+    expressions: TriggerExpression[];       // 复用触发器表达式
+    actions: TriggerActionV2[];             // 复用触发器动作
+    outputConfig: ExtractorOutputConfig;
+    category?: string;
+    tags?: string[];
+    totalExtractions: number;
+    successExtractions: number;
+    lastExtractedAt?: string;
+    lastError?: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
+// 创建取件模板V2请求
+export interface CreateExtractorTemplateV2Request {
+    name: string;
+    description?: string;
+    enabled: boolean;
+    expressions: TriggerExpression[];
+    actions: TriggerActionV2[];
+    outputConfig: ExtractorOutputConfig;
+    category?: string;
+    tags?: string[];
+}
+
+// 更新取件模板V2请求
+export interface UpdateExtractorTemplateV2Request {
+    name?: string;
+    description?: string;
+    enabled?: boolean;
+    expressions?: TriggerExpression[];
+    actions?: TriggerActionV2[];
+    outputConfig?: ExtractorOutputConfig;
+    category?: string;
+    tags?: string[];
+}
+
+// 测试取件模板V2请求
+export interface TestExtractorV2Request {
+    expressions: TriggerExpression[];
+    actions: TriggerActionV2[];
+    outputConfig: ExtractorOutputConfig;
+    emailId?: number;
+    customEmail?: {
+        from: string;
+        to: string;
+        cc?: string;
+        subject: string;
+        body: string;
+        htmlBody?: string;
+        headers?: Record<string, string>;
+    };
+}
+
+// 动作执行结果
+export interface ActionExecutionResult {
+    actionId: string;
+    pluginId: string;
+    pluginName: string;
+    success: boolean;
+    startTime: string;
+    endTime: string;
+    duration: number;
+    input?: Record<string, any>;
+    output?: Record<string, any>;
+    result?: any;
+    error?: string;
+}
+
+// 提取执行状态
+export type ExtractionV2Status = 'success' | 'failed' | 'no_match' | 'partial' | 'skipped';
+
+// 提取结果
+export interface ExtractionResult {
+    success: boolean;
+    status: ExtractionV2Status;
+    filterMatched: boolean;
+    extractedValue?: any;
+    actionResults?: ActionExecutionResult[];
+    executionTrace?: ExecutionTrace;
+    duration: number;
+    error?: string;
+}
+
+// 调试提取结果
+export interface DebugExtractionResult extends ExtractionResult {
+    filterEvaluation?: Record<string, any>;
+    stepResults?: StepDebugResult[];
+}
+
+// 单步调试结果
+export interface StepDebugResult {
+    stepIndex: number;
+    stepType: 'filter' | 'action';
+    stepName: string;
+    input?: Record<string, any>;
+    output?: Record<string, any>;
+    success: boolean;
+    duration: number;
+    error?: string;
+}
+
+// 提取日志V2
+export interface ExtractionLogV2 {
+    id: number;
+    templateId: number;
+    templateName: string;
+    emailId: number;
+    status: ExtractionV2Status;
+    startTime: string;
+    endTime: string;
+    duration: number;
+    filterMatched: boolean;
+    filterEvaluation?: string;
+    extractedResult?: string;
+    actionResults?: ActionExecutionResult[];
+    error?: string;
+    executionTraceData?: string;
+    createdAt: string;
+}
+
+// 分页响应
+export interface PaginatedExtractorTemplateV2Response {
+    templates: ExtractorTemplateV2[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+}
+
+export interface PaginatedExtractionLogV2Response {
+    logs: ExtractionLogV2[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+}
+
+// ==================== Tag System Types ====================
+
+// 标签组选择类型
+export type TagGroupSelectionType = 'single' | 'multiple';
+
+// 标签组
+export interface TagGroup {
+    id: number;
+    name: string;
+    description?: string;
+    selectionType: TagGroupSelectionType;
+    color?: string;
+    sortOrder: number;
+    createdAt: string;
+    updatedAt: string;
+}
+
+// 标签
+export interface Tag {
+    id: number;
+    groupId: number;
+    name: string;
+    color?: string;
+    sortOrder: number;
+    group?: TagGroup;  // 预加载的标签组
+    createdAt: string;
+    updatedAt: string;
+}
+
+// 简化的标签信息（用于列表）
+export interface TagSimple {
+    id: number;
+    groupId: number;
+    name: string;
+    color?: string;
+    sortOrder: number;
+}
+
+// 带标签组信息的标签
+export interface TagWithGroup {
+    id: number;
+    groupId: number;
+    groupName: string;
+    name: string;
+    color?: string;
+}
+
+// 带标签的标签组
+export interface TagGroupWithTags {
+    id: number;
+    name: string;
+    description?: string;
+    selectionType: TagGroupSelectionType;
+    color?: string;
+    sortOrder: number;
+    tags: TagSimple[];
+    createdAt: string;
+    updatedAt: string;
+}
+
+// 创建标签组请求
+export interface CreateTagGroupRequest {
+    name: string;
+    description?: string;
+    selectionType?: TagGroupSelectionType;
+    color?: string;
+    sortOrder?: number;
+}
+
+// 更新标签组请求
+export interface UpdateTagGroupRequest {
+    name?: string;
+    description?: string;
+    selectionType?: TagGroupSelectionType;
+    color?: string;
+    sortOrder?: number;
+}
+
+// 创建标签请求
+export interface CreateTagRequest {
+    groupId: number;
+    name: string;
+    color?: string;
+    sortOrder?: number;
+}
+
+// 更新标签请求
+export interface UpdateTagRequest {
+    name?: string;
+    color?: string;
+    sortOrder?: number;
+}
+
+// 设置账户标签请求
+export interface SetAccountTagsRequest {
+    tagIds: number[];
+}
+
+// 批量账户标签操作请求
+export interface BatchAccountTagsRequest {
+    accountIds: number[];
+    tagIds: number[];
+}
+
+// 批量添加/移除单个标签请求
+export interface BatchAddRemoveTagRequest {
+    accountIds: number[];
+    tagId: number;
+}
+
+// 标签使用统计
+export type TagUsageStats = Record<number, number>;

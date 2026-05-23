@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { apiClient } from '@/lib/api-client'
+import { logger } from '@/lib/logger'
 import { ActionPipeline } from './action-pipeline'
 import { ActionConfigPanel } from './action-config-panel'
 import { ActionResultsPanel } from './action-results-panel'
@@ -115,7 +116,7 @@ export function ActionDebuggerEnhanced({ actions, onChange }: ActionDebuggerEnha
                     supportedEventTypes: ['email_received'] // 默认支持邮件接收事件
                 }))
 
-            console.log('获取到的动作插件:', formattedPlugins)
+            logger.debug('获取到的动作插件:', formattedPlugins)
             setAvailablePlugins(formattedPlugins)
         } catch (error) {
             console.error('获取动作插件失败:', error)

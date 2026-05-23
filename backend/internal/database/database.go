@@ -16,6 +16,7 @@ import (
 )
 
 var DB *gorm.DB
+var dbDriver string
 
 // Config holds database configuration
 type Config struct {
@@ -47,6 +48,8 @@ func Initialize(config Config) error {
 	gormConfig := &gorm.Config{
 		Logger: newLogger,
 	}
+
+	dbDriver = config.Driver
 
 	switch config.Driver {
 	case "sqlite":
@@ -93,6 +96,7 @@ func Migrate() error {
 		&models.User{},
 		&models.UserSession{},
 		&models.EmailAccountSyncConfig{},
+		&models.TemporarySyncConfig{},
 		&models.GlobalSyncConfig{},
 		&models.SyncStatistics{},
 		&models.ActivityLog{},
@@ -100,6 +104,22 @@ func Migrate() error {
 		&models.TriggerExecutionLog{},
 		&models.OAuth2AuthSession{},
 		&models.SystemConfig{},
+		&models.FilterTemplate{},
+		&models.ActionTemplate{},
+		&models.EmailTriggerV2{},
+		&models.TriggerExecutionLogV2{},
+		&models.ExtractorTemplateV2{},
+		&models.ExtractionLogV2{},
+		// Tag system tables
+		&models.TagGroup{},
+		&models.Tag{},
+		&models.EmailAccountTag{},
+		// Organization & RBAC tables
+		&models.Organization{},
+		&models.Role{},
+		&models.Permission{},
+		&models.RolePermission{},
+		&models.OrgMember{},
 	); err != nil {
 		return fmt.Errorf("failed to migrate tables: %w", err)
 	}
@@ -107,6 +127,11 @@ func Migrate() error {
 	// 单独处理OAuth2GlobalConfig的迁移
 	if err := migrateOAuth2GlobalConfig(); err != nil {
 		return fmt.Errorf("failed to migrate OAuth2GlobalConfig: %w", err)
+	}
+
+	// 初始化组织/角色/权限默认数据
+	if err := seedOrganizationDefaults(); err != nil {
+		return fmt.Errorf("failed to seed organization defaults: %w", err)
 	}
 
 	return nil
@@ -132,8 +157,14 @@ func migrateOAuth2GlobalConfig() error {
 			return fmt.Errorf("failed to add name column: %w", err)
 		}
 
-		// 为现有记录更新name字段
-		if err := DB.Exec("UPDATE o_auth2_global_configs SET name = 'Default ' || provider_type || ' Config' WHERE name IS NULL OR name = ''").Error; err != nil {
+		// 为现有记录更新name字段（MySQL 使用 CONCAT，SQLite/PostgreSQL 使用 ||）
+		var updateSQL string
+		if dbDriver == "mysql" {
+			updateSQL = "UPDATE o_auth2_global_configs SET name = CONCAT('Default ', provider_type, ' Config') WHERE name IS NULL OR name = ''"
+		} else {
+			updateSQL = "UPDATE o_auth2_global_configs SET name = 'Default ' || provider_type || ' Config' WHERE name IS NULL OR name = ''"
+		}
+		if err := DB.Exec(updateSQL).Error; err != nil {
 			return fmt.Errorf("failed to update name field for existing records: %w", err)
 		}
 	}
@@ -144,37 +175,32 @@ func migrateOAuth2GlobalConfig() error {
 
 // migrateOAuth2ProviderTypeConstraint 处理provider_type字段的约束迁移
 func migrateOAuth2ProviderTypeConstraint() error {
-	// 检查是否存在provider_type的唯一约束（通过尝试插入重复数据来检测）
-	var count int64
-	DB.Model(&models.OAuth2GlobalConfig{}).Count(&count)
+	var indexCount int64
 
-	// 如果表中有数据，先检查约束
-	if count > 0 {
-		// 获取现有的一条记录来测试
-		var existingConfig models.OAuth2GlobalConfig
-		if err := DB.First(&existingConfig).Error; err == nil {
-			// 尝试创建一个具有相同provider_type的临时记录来测试唯一约束
-			testConfig := models.OAuth2GlobalConfig{
-				Name:         "test_constraint_check",
-				ProviderType: existingConfig.ProviderType,
-				ClientID:     "test",
-				ClientSecret: "test",
-				RedirectURI:  "http://test.com",
-				Scopes:       models.StringSlice{"test"},
-				IsEnabled:    false,
-			}
+	switch dbDriver {
+	case "sqlite":
+		DB.Raw(`SELECT COUNT(*) FROM sqlite_master
+			WHERE type = 'index'
+			AND tbl_name = 'o_auth2_global_configs'
+			AND sql LIKE '%UNIQUE%'
+			AND sql LIKE '%provider_type%'`).Scan(&indexCount)
+	case "postgres":
+		DB.Raw(`SELECT COUNT(*) FROM pg_indexes
+			WHERE tablename = 'o_auth2_global_configs'
+			AND indexdef LIKE '%UNIQUE%'
+			AND indexdef LIKE '%provider_type%'`).Scan(&indexCount)
+	case "mysql":
+		DB.Raw(`SELECT COUNT(*) FROM information_schema.statistics
+			WHERE table_schema = DATABASE()
+			AND table_name = 'o_auth2_global_configs'
+			AND column_name = 'provider_type'
+			AND non_unique = 0`).Scan(&indexCount)
+	default:
+		return fmt.Errorf("unsupported database driver for migration: %s", dbDriver)
+	}
 
-			// 尝试插入，如果失败说明有唯一约束
-			if err := DB.Create(&testConfig).Error; err != nil {
-				if err.Error() == "UNIQUE constraint failed: o_auth2_global_configs.provider_type" {
-					// 存在唯一约束，需要重建表
-					return recreateOAuth2ConfigTable()
-				}
-			} else {
-				// 插入成功，删除测试记录
-				DB.Delete(&testConfig)
-			}
-		}
+	if indexCount > 0 {
+		return recreateOAuth2ConfigTable()
 	}
 
 	return nil
@@ -216,6 +242,11 @@ func GetDB() *gorm.DB {
 	return DB
 }
 
+// GetDBDriver returns the current database driver name
+func GetDBDriver() string {
+	return dbDriver
+}
+
 // Close closes the database connection
 func Close() error {
 	sqlDB, err := DB.DB()
@@ -223,4 +254,181 @@ func Close() error {
 		return err
 	}
 	return sqlDB.Close()
+}
+
+// seedOrganizationDefaults 初始化组织、角色、权限的默认数据
+func seedOrganizationDefaults() error {
+	// 检查是否已经初始化过（通过检查默认组织是否存在）
+	var orgCount int64
+	DB.Model(&models.Organization{}).Count(&orgCount)
+	if orgCount > 0 {
+		// 已有组织数据，跳过初始化
+		return nil
+	}
+
+	log.Println("[Migration] Seeding organization defaults...")
+
+	// 1. 创建默认组织
+	defaultOrg := models.Organization{
+		Name:     "Default Organization",
+		Slug:     "default",
+		Description: "系统默认组织，包含所有已有数据",
+		IsActive: true,
+	}
+	if err := DB.Create(&defaultOrg).Error; err != nil {
+		return fmt.Errorf("failed to create default organization: %w", err)
+	}
+	log.Printf("[Migration] Created default organization (ID=%d)", defaultOrg.ID)
+
+	// 2. 创建系统角色
+	systemRoles := []models.Role{
+		{Name: models.RoleSuperAdmin, Description: "超级管理员，管理所有组织和用户", IsSystem: true},
+		{Name: models.RoleOrgOwner, Description: "组织拥有者，拥有组织的完全控制权", IsSystem: true},
+		{Name: models.RoleOrgAdmin, Description: "组织管理员，管理组织资源和成员", IsSystem: true},
+		{Name: models.RoleMember, Description: "普通成员，可以查看和使用资源", IsSystem: true},
+		{Name: models.RoleViewer, Description: "只读成员，只能查看资源", IsSystem: true},
+	}
+	for i := range systemRoles {
+		if err := DB.Create(&systemRoles[i]).Error; err != nil {
+			return fmt.Errorf("failed to create role %s: %w", systemRoles[i].Name, err)
+		}
+	}
+	log.Printf("[Migration] Created %d system roles", len(systemRoles))
+
+	// 3. 创建权限
+	permissions := []models.Permission{
+		// 组织管理
+		{Resource: models.ResourceOrganization, Action: models.ActionCreate, Description: "创建组织"},
+		{Resource: models.ResourceOrganization, Action: models.ActionRead, Description: "查看组织"},
+		{Resource: models.ResourceOrganization, Action: models.ActionUpdate, Description: "更新组织"},
+		{Resource: models.ResourceOrganization, Action: models.ActionDelete, Description: "删除组织"},
+		// 成员管理
+		{Resource: models.ResourceOrgMember, Action: models.ActionCreate, Description: "添加成员"},
+		{Resource: models.ResourceOrgMember, Action: models.ActionRead, Description: "查看成员"},
+		{Resource: models.ResourceOrgMember, Action: models.ActionUpdate, Description: "更新成员角色"},
+		{Resource: models.ResourceOrgMember, Action: models.ActionDelete, Description: "移除成员"},
+		// 邮箱账户
+		{Resource: models.ResourceEmailAccount, Action: models.ActionCreate, Description: "创建邮箱账户"},
+		{Resource: models.ResourceEmailAccount, Action: models.ActionRead, Description: "查看邮箱账户"},
+		{Resource: models.ResourceEmailAccount, Action: models.ActionUpdate, Description: "更新邮箱账户"},
+		{Resource: models.ResourceEmailAccount, Action: models.ActionDelete, Description: "删除邮箱账户"},
+		// 邮件
+		{Resource: models.ResourceEmail, Action: models.ActionRead, Description: "查看邮件"},
+		{Resource: models.ResourceEmail, Action: models.ActionCreate, Description: "发送邮件"},
+		// 触发器
+		{Resource: models.ResourceTrigger, Action: models.ActionCreate, Description: "创建触发器"},
+		{Resource: models.ResourceTrigger, Action: models.ActionRead, Description: "查看触发器"},
+		{Resource: models.ResourceTrigger, Action: models.ActionUpdate, Description: "更新触发器"},
+		{Resource: models.ResourceTrigger, Action: models.ActionDelete, Description: "删除触发器"},
+		// 模板
+		{Resource: models.ResourceTemplate, Action: models.ActionCreate, Description: "创建模板"},
+		{Resource: models.ResourceTemplate, Action: models.ActionRead, Description: "查看模板"},
+		{Resource: models.ResourceTemplate, Action: models.ActionUpdate, Description: "更新模板"},
+		{Resource: models.ResourceTemplate, Action: models.ActionDelete, Description: "删除模板"},
+		// AI 配置
+		{Resource: models.ResourceAIConfig, Action: models.ActionManage, Description: "管理 AI 配置"},
+		{Resource: models.ResourceAIConfig, Action: models.ActionRead, Description: "查看 AI 配置"},
+		// 系统配置
+		{Resource: models.ResourceSystemConfig, Action: models.ActionManage, Description: "管理系统配置"},
+		{Resource: models.ResourceSystemConfig, Action: models.ActionRead, Description: "查看系统配置"},
+		// 同步配置
+		{Resource: models.ResourceSyncConfig, Action: models.ActionManage, Description: "管理同步配置"},
+		{Resource: models.ResourceSyncConfig, Action: models.ActionRead, Description: "查看同步配置"},
+	}
+	for i := range permissions {
+		if err := DB.Create(&permissions[i]).Error; err != nil {
+			return fmt.Errorf("failed to create permission %s:%s: %w", permissions[i].Resource, permissions[i].Action, err)
+		}
+	}
+	log.Printf("[Migration] Created %d permissions", len(permissions))
+
+	// 4. 创建角色-权限映射
+	// 构建角色名到ID的映射
+	roleMap := make(map[string]uint)
+	for _, r := range systemRoles {
+		roleMap[r.Name] = r.ID
+	}
+
+	// 构建权限resource:action到ID的映射
+	permMap := make(map[string]uint)
+	for _, p := range permissions {
+		permMap[p.Resource+":"+p.Action] = p.ID
+	}
+
+	// 获取所有权限ID
+	allPermIDs := make([]uint, 0, len(permissions))
+	for _, p := range permissions {
+		allPermIDs = append(allPermIDs, p.ID)
+	}
+
+	// Super Admin: 拥有所有权限
+	for _, permID := range allPermIDs {
+		DB.Create(&models.RolePermission{RoleID: roleMap[models.RoleSuperAdmin], PermissionID: permID})
+	}
+
+	// Org Owner: 除了系统配置和创建/删除组织外的所有权限
+	for _, p := range permissions {
+		if p.Resource == models.ResourceSystemConfig && p.Action == models.ActionManage {
+			continue
+		}
+		if p.Resource == models.ResourceOrganization && (p.Action == models.ActionCreate || p.Action == models.ActionDelete) {
+			continue
+		}
+		DB.Create(&models.RolePermission{RoleID: roleMap[models.RoleOrgOwner], PermissionID: p.ID})
+	}
+
+	// Org Admin: 资源管理权限 + 成员管理，不能删除/更新组织本身
+	for _, p := range permissions {
+		if p.Resource == models.ResourceSystemConfig && p.Action == models.ActionManage {
+			continue
+		}
+		if p.Resource == models.ResourceOrganization {
+			if p.Action != models.ActionRead {
+				continue
+			}
+		}
+		DB.Create(&models.RolePermission{RoleID: roleMap[models.RoleOrgAdmin], PermissionID: p.ID})
+	}
+
+	// Member: 读取权限 + 发送邮件
+	for _, p := range permissions {
+		if p.Action == models.ActionRead {
+			DB.Create(&models.RolePermission{RoleID: roleMap[models.RoleMember], PermissionID: p.ID})
+		}
+		if p.Resource == models.ResourceEmail && p.Action == models.ActionCreate {
+			DB.Create(&models.RolePermission{RoleID: roleMap[models.RoleMember], PermissionID: p.ID})
+		}
+	}
+
+	// Viewer: 只有读取权限
+	for _, p := range permissions {
+		if p.Action == models.ActionRead {
+			DB.Create(&models.RolePermission{RoleID: roleMap[models.RoleViewer], PermissionID: p.ID})
+		}
+	}
+
+	log.Println("[Migration] Role-permission mappings created")
+
+	// 5. 将现有第一个用户（如果存在）升级为超级管理员并加入默认组织
+	var firstUser models.User
+	if err := DB.Order("id ASC").First(&firstUser).Error; err == nil {
+		// 设置为超级管理员
+		DB.Model(&firstUser).Updates(map[string]interface{}{
+			"is_super_admin": true,
+			"current_org_id": defaultOrg.ID,
+		})
+
+		// 添加到默认组织，角色为 org_owner
+		orgMember := models.OrgMember{
+			OrgID:    defaultOrg.ID,
+			UserID:   firstUser.ID,
+			RoleID:   roleMap[models.RoleOrgOwner],
+			JoinedAt: firstUser.CreatedAt,
+		}
+		DB.Create(&orgMember)
+		log.Printf("[Migration] Upgraded user '%s' to super_admin and org_owner", firstUser.Username)
+	}
+
+	log.Println("[Migration] Organization defaults seeded successfully")
+	return nil
 }

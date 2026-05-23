@@ -1,8 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useAuth } from '@/contexts/auth-context'
+import { useAuth } from '@/context/auth-context'
 import { usePathname, useRouter } from 'next/navigation'
+import { logger } from '@/lib/logger'
 
 export function AuthDebug() {
     const { user, isAuthenticated, isLoading } = useAuth()
@@ -14,7 +15,7 @@ export function AuthDebug() {
         const log = (message: string) => {
             const timestamp = new Date().toISOString()
             const logEntry = `[${timestamp}] ${message}`
-            console.log(logEntry)
+            logger.debug(logEntry)
             setLogs(prev => [...prev, logEntry])
         }
 
