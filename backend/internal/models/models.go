@@ -263,7 +263,7 @@ type Email struct {
 	Body           string      `gorm:"type:text"`
 	TextBody       string      `gorm:"type:text"` // 纯文本内容
 	HTMLBody       string      `gorm:"type:text"`
-	RawMessage     string      `gorm:"type:longtext"` // 存储原始邮件报文
+	RawMessage     string      `gorm:"type:text"` // 存储原始邮件报文
 	InReplyTo      string      // In-Reply-To header
 	References     StringSlice `gorm:"type:json"` // References header
 	Headers        JSONMap     `gorm:"type:json"` // 其他邮件头
@@ -331,7 +331,7 @@ type Attachment struct {
 	EmailID     uint   `gorm:"not null"`
 	Email       Email  `gorm:"foreignKey:EmailID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 	Filename    string `gorm:"not null"`
-	Content     []byte `gorm:"type:blob"`
+	Content     []byte
 	MIMEType    string
 	ContentType string // 内容类型
 	Size        int64
