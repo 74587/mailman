@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"mailman/internal/database"
 	"mailman/internal/models"
 	"time"
 
@@ -202,12 +203,26 @@ func (r *SyncConfigRepository) ResetStuckSyncingStatus() error {
 // GetConfigsNeedingSync retrieves configs that need syncing based on interval
 func (r *SyncConfigRepository) GetConfigsNeedingSync() ([]models.EmailAccountSyncConfig, error) {
 	var configs []models.EmailAccountSyncConfig
+
+	// Build driver-aware time comparison
+	var timeCondition string
+	switch database.GetDBDriver() {
+	case "sqlite":
+		timeCondition = "last_sync_time IS NULL OR last_sync_time < datetime('now', '-' || sync_interval || ' seconds')"
+	case "postgres":
+		timeCondition = "last_sync_time IS NULL OR last_sync_time < NOW() - (sync_interval || ' seconds')::interval"
+	case "mysql":
+		timeCondition = "last_sync_time IS NULL OR last_sync_time < DATE_SUB(NOW(), INTERVAL sync_interval SECOND)"
+	default:
+		timeCondition = "last_sync_time IS NULL"
+	}
+
 	err := r.db.
 		Preload("Account").
 		Preload("Account.MailProvider").
 		Where("enable_auto_sync = ?", true).
 		Where("sync_status = ?", "idle").
-		Where("last_sync_time IS NULL OR last_sync_time < datetime('now', '-' || sync_interval || ' seconds')").
+		Where(timeCondition).
 		Find(&configs).Error
 	return configs, err
 }
@@ -604,19 +619,47 @@ func (r *SyncConfigRepository) GetConfigChecksumMap() (map[uint]string, error) {
 
 	var checksums []ConfigChecksum
 
-	// 计算配置的MD5校验和
-	query := `
-		SELECT 
-			account_id,
-			MD5(CONCAT(
-				COALESCE(enable_auto_sync::text, ''),
-				COALESCE(sync_interval::text, ''),
-				COALESCE(sync_folders::text, ''),
-				COALESCE(updated_at::text, '')
-			)) as checksum
-		FROM email_account_sync_config 
-		WHERE enable_auto_sync = true
-	`
+	// Build driver-aware checksum query
+	var query string
+	switch database.GetDBDriver() {
+	case "postgres":
+		query = `
+			SELECT 
+				account_id,
+				MD5(CONCAT(
+					COALESCE(enable_auto_sync::text, ''),
+					COALESCE(sync_interval::text, ''),
+					COALESCE(sync_folders::text, ''),
+					COALESCE(updated_at::text, '')
+				)) as checksum
+			FROM email_account_sync_configs 
+			WHERE enable_auto_sync = true
+		`
+	case "mysql":
+		query = `
+			SELECT 
+				account_id,
+				MD5(CONCAT(
+					COALESCE(CAST(enable_auto_sync AS CHAR), ''),
+					COALESCE(CAST(sync_interval AS CHAR), ''),
+					COALESCE(CAST(sync_folders AS CHAR), ''),
+					COALESCE(CAST(updated_at AS CHAR), '')
+				)) as checksum
+			FROM email_account_sync_configs 
+			WHERE enable_auto_sync = true
+		`
+	default: // sqlite - no MD5 function, use simple concatenation
+		query = `
+			SELECT 
+				account_id,
+				(COALESCE(CAST(enable_auto_sync AS TEXT), '') || 
+				 COALESCE(CAST(sync_interval AS TEXT), '') || 
+				 COALESCE(CAST(sync_folders AS TEXT), '') || 
+				 COALESCE(CAST(updated_at AS TEXT), '')) as checksum
+			FROM email_account_sync_configs 
+			WHERE enable_auto_sync = 1
+		`
+	}
 
 	err := r.db.Raw(query).Scan(&checksums).Error
 	if err != nil {
