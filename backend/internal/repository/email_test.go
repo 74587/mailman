@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"mailman/internal/models"
+	"strings"
 	"testing"
 
 	"gorm.io/driver/postgres"
@@ -79,6 +81,93 @@ func TestBuildOrderClauseAllowsOnlyMappedColumns(t *testing.T) {
 				t.Fatalf("buildOrderClause() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestBuildEmailOrderClauseQuotesReservedColumns(t *testing.T) {
+	db := mustOpenTestDB(t, postgres.Open(
+		"host=localhost user=test password=test dbname=test port=5432 sslmode=disable",
+	))
+
+	tests := []struct {
+		name      string
+		sortBy    string
+		includeID bool
+		expected  string
+	}{
+		{
+			name:      "reserved recipient column",
+			sortBy:    "to DESC",
+			includeID: true,
+			expected:  `"to" DESC, "id" DESC`,
+		},
+		{
+			name:     "api style sort token",
+			sortBy:   "date_asc",
+			expected: `"date" ASC`,
+		},
+		{
+			name:     "camel case alias",
+			sortBy:   "receivedAt asc",
+			expected: `"received_at" ASC`,
+		},
+		{
+			name:     "invalid column falls back to date",
+			sortBy:   "to; DROP TABLE emails DESC",
+			expected: `"date" DESC`,
+		},
+		{
+			name:      "existing id sort is not duplicated",
+			sortBy:    "received_at DESC, id ASC",
+			includeID: true,
+			expected:  `"received_at" DESC, "id" ASC`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildEmailOrderClause(db, tt.sortBy, tt.includeID)
+			if got != tt.expected {
+				t.Fatalf("buildEmailOrderClause() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEmailSearchQueryPostgresQuotesRecipientFields(t *testing.T) {
+	db := mustOpenTestDB(t, postgres.Open(
+		"host=localhost user=test password=test dbname=test port=5432 sslmode=disable",
+	))
+	repo := NewEmailRepository(db)
+
+	var emails []models.Email
+	stmt := repo.buildEmailSearchQuery(EmailSearchOptions{
+		AccountID: 1,
+		ToQuery:   "target@example.com",
+	}).
+		Order(buildEmailOrderClause(db, "to DESC", false)).
+		Limit(10).
+		Find(&emails).Statement
+	sql := stmt.SQL.String()
+
+	for _, fragment := range []string{
+		`"to_addresses"::text LIKE`,
+		`"to"::text LIKE`,
+		`ORDER BY "to" DESC`,
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("generated SQL %q does not contain %q", sql, fragment)
+		}
+	}
+
+	for _, unsafeFragment := range []string{
+		` to LIKE`,
+		`ORDER BY to `,
+		` to_addresses LIKE`,
+	} {
+		if strings.Contains(sql, unsafeFragment) {
+			t.Fatalf("generated SQL %q contains unsafe fragment %q", sql, unsafeFragment)
+		}
 	}
 }
 

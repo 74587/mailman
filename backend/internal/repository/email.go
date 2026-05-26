@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"mailman/internal/models"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -25,6 +26,119 @@ type EmailDashboardStats struct {
 // NewEmailRepository creates a new EmailRepository
 func NewEmailRepository(db *gorm.DB) *EmailRepository {
 	return &EmailRepository{db: db}
+}
+
+var emailSortColumns = map[string]string{
+	"id":              "id",
+	"message_id":      "message_id",
+	"account_id":      "account_id",
+	"subject":         "subject",
+	"from":            "from",
+	"to":              "to",
+	"cc":              "cc",
+	"from_address":    "from_address",
+	"to_addresses":    "to_addresses",
+	"cc_addresses":    "cc_addresses",
+	"date":            "date",
+	"received_at":     "received_at",
+	"mailbox_name":    "mailbox_name",
+	"size":            "size",
+	"direction":       "direction",
+	"created_at":      "created_at",
+	"updated_at":      "updated_at",
+	"has_attachments": "has_attachments",
+}
+
+func normalizeEmailSortColumn(column string) string {
+	column = strings.Trim(strings.ToLower(column), "`\" ")
+	column = strings.ReplaceAll(column, "-", "_")
+
+	switch column {
+	case "messageid":
+		return "message_id"
+	case "accountid":
+		return "account_id"
+	case "fromaddress":
+		return "from_address"
+	case "toaddresses":
+		return "to_addresses"
+	case "ccaddresses":
+		return "cc_addresses"
+	case "receivedat":
+		return "received_at"
+	case "mailboxname":
+		return "mailbox_name"
+	case "createdat":
+		return "created_at"
+	case "updatedat":
+		return "updated_at"
+	case "hasattachments":
+		return "has_attachments"
+	default:
+		return column
+	}
+}
+
+func parseEmailSortPart(part string) (column string, direction string) {
+	part = strings.TrimSpace(part)
+	if part == "" {
+		return "", ""
+	}
+
+	normalized := strings.ReplaceAll(part, "-", "_")
+	lower := strings.ToLower(normalized)
+	if strings.HasSuffix(lower, "_desc") {
+		return normalizeEmailSortColumn(lower[:len(lower)-len("_desc")]), "DESC"
+	}
+	if strings.HasSuffix(lower, "_asc") {
+		return normalizeEmailSortColumn(lower[:len(lower)-len("_asc")]), "ASC"
+	}
+
+	fields := strings.Fields(part)
+	if len(fields) == 0 {
+		return "", ""
+	}
+
+	direction = "DESC"
+	if len(fields) > 1 && strings.EqualFold(fields[1], "asc") {
+		direction = "ASC"
+	}
+
+	return normalizeEmailSortColumn(fields[0]), direction
+}
+
+func buildEmailOrderClause(db *gorm.DB, sortBy string, includeID bool) string {
+	clauses := make([]string, 0, 2)
+	usedColumns := make(map[string]bool)
+
+	for _, part := range strings.Split(sortBy, ",") {
+		column, direction := parseEmailSortPart(part)
+		if column == "" {
+			continue
+		}
+		mappedColumn, ok := emailSortColumns[column]
+		if !ok {
+			continue
+		}
+
+		clauses = append(clauses, fmt.Sprintf("%s %s", quoteColumn(db, mappedColumn), direction))
+		usedColumns[mappedColumn] = true
+	}
+
+	if len(clauses) == 0 {
+		clauses = append(clauses, fmt.Sprintf("%s DESC", quoteColumn(db, "date")))
+		usedColumns["date"] = true
+	}
+
+	if includeID && !usedColumns["id"] {
+		clauses = append(clauses, fmt.Sprintf("%s DESC", quoteColumn(db, "id")))
+	}
+
+	return strings.Join(clauses, ", ")
+}
+
+func emailRecipientLikeExpr(db *gorm.DB) string {
+	return fmt.Sprintf("(%s OR %s)", textLikeExpr(db, "to_addresses"), textLikeExpr(db, "to"))
 }
 
 // Create creates a new email
@@ -80,7 +194,7 @@ func (r *EmailRepository) GetByAccount(accountID uint, limit, offset int) ([]mod
 // GetByAccountWithSort retrieves all emails for a specific account with custom sorting
 func (r *EmailRepository) GetByAccountWithSort(accountID uint, limit, offset int, sortBy string) ([]models.Email, error) {
 	var emails []models.Email
-	query := r.db.Where("account_id = ?", accountID).Order(sortBy)
+	query := r.db.Where("account_id = ?", accountID).Order(buildEmailOrderClause(r.db, sortBy, false))
 
 	if limit > 0 {
 		query = query.Limit(limit)
@@ -101,7 +215,7 @@ func (r *EmailRepository) GetByAccountAndMailbox(accountID uint, mailbox string,
 // GetByAccountAndMailboxWithSort retrieves emails for a specific account and mailbox with custom sorting
 func (r *EmailRepository) GetByAccountAndMailboxWithSort(accountID uint, mailbox string, limit, offset int, sortBy string) ([]models.Email, error) {
 	var emails []models.Email
-	query := r.db.Where("account_id = ? AND mailbox_name = ?", accountID, mailbox).Order(sortBy)
+	query := r.db.Where("account_id = ? AND mailbox_name = ?", accountID, mailbox).Order(buildEmailOrderClause(r.db, sortBy, false))
 
 	if limit > 0 {
 		query = query.Limit(limit)
@@ -118,7 +232,7 @@ func (r *EmailRepository) GetByAccountAndMailboxWithSort(accountID uint, mailbox
 func (r *EmailRepository) GetByDateRange(accountID uint, startDate, endDate time.Time) ([]models.Email, error) {
 	var emails []models.Email
 	err := r.db.Where("account_id = ? AND date BETWEEN ? AND ?", accountID, startDate, endDate).
-		Order("date DESC").Find(&emails).Error
+		Order(buildEmailOrderClause(r.db, "date DESC", false)).Find(&emails).Error
 	return emails, err
 }
 
@@ -132,7 +246,7 @@ func (r *EmailRepository) Search(accountID uint, query string) ([]models.Email, 
 		searchPattern,
 		searchPattern,
 	).
-		Order("date DESC").Find(&emails).Error
+		Order(buildEmailOrderClause(r.db, "date DESC", false)).Find(&emails).Error
 	return emails, err
 }
 
@@ -304,18 +418,8 @@ type EmailSearchOptions struct {
 	PreloadAttachments bool   // Whether to preload attachments (default false for performance)
 }
 
-// SearchEmails performs advanced search on emails with multiple criteria
-func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Email, int64, error) {
-	var emails []models.Email
-	var totalCount int64
-
-	// Build the base query
+func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gorm.DB {
 	query := r.db.Model(&models.Email{})
-
-	// Preload attachments if requested
-	if options.PreloadAttachments {
-		query = query.Preload("Attachments")
-	}
 
 	// Apply account filter only if AccountID is specified (non-zero)
 	if options.AccountID > 0 {
@@ -358,10 +462,10 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 			fmt.Sprintf(
 				"subject LIKE ? OR %s OR %s OR %s OR body LIKE ? OR html_body LIKE ?",
 				textLikeExpr(r.db, "from"),
-				textLikeExpr(r.db, "to"),
+				emailRecipientLikeExpr(r.db),
 				textLikeExpr(r.db, "cc"),
 			),
-			keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern,
+			keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern,
 		)
 	} else {
 		// Individual field searches
@@ -370,12 +474,10 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 			query = query.Where(textLikeExpr(r.db, "from"), fromPattern)
 		}
 		if options.ToQuery != "" {
-			// Search across the entire To field JSON array using LIKE for SQLite compatibility
 			toPattern := "%" + options.ToQuery + "%"
-			query = query.Where(textLikeExpr(r.db, "to"), toPattern)
+			query = query.Where(emailRecipientLikeExpr(r.db), toPattern, toPattern)
 		}
 		if options.CcQuery != "" {
-			// Search across the entire CC field JSON array using LIKE for SQLite compatibility
 			ccPattern := "%" + options.CcQuery + "%"
 			query = query.Where(textLikeExpr(r.db, "cc"), ccPattern)
 		}
@@ -393,6 +495,21 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 		}
 	}
 
+	return query
+}
+
+// SearchEmails performs advanced search on emails with multiple criteria
+func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Email, int64, error) {
+	var emails []models.Email
+	var totalCount int64
+
+	query := r.buildEmailSearchQuery(options)
+
+	// Preload attachments if requested
+	if options.PreloadAttachments {
+		query = query.Preload("Attachments")
+	}
+
 	// Get total count for pagination
 	countQuery := query
 	err := countQuery.Count(&totalCount).Error
@@ -401,11 +518,7 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 	}
 
 	// Apply sorting
-	sortBy := options.SortBy
-	if sortBy == "" {
-		sortBy = "date DESC"
-	}
-	query = query.Order(sortBy)
+	query = query.Order(buildEmailOrderClause(r.db, options.SortBy, false))
 
 	// Apply pagination
 	if options.Limit > 0 {
@@ -434,76 +547,7 @@ func (r *EmailRepository) NewEmailCursor(options EmailSearchOptions, batchSize i
 		batchSize = 100 // Default batch size
 	}
 
-	// Build the base query (same as SearchEmails)
-	query := r.db.Model(&models.Email{})
-
-	// Only filter by account ID if it's specified (non-zero)
-	if options.AccountID != 0 {
-		query = query.Where("account_id = ?", options.AccountID)
-	}
-
-	// Apply date range filter
-	if options.StartDate != nil {
-		query = query.Where("date >= ?", *options.StartDate)
-	}
-	if options.EndDate != nil {
-		query = query.Where("date <= ?", *options.EndDate)
-	}
-
-	// Apply mailbox filter
-	if options.MailboxName != "" {
-		query = query.Where("mailbox_name = ?", options.MailboxName)
-	}
-
-	// Apply text search filters
-	if options.Keyword != "" {
-		// Global keyword search across all text fields
-		keywordPattern := "%" + options.Keyword + "%"
-		query = query.Where(
-			fmt.Sprintf(
-				"subject LIKE ? OR %s OR %s OR %s OR body LIKE ? OR html_body LIKE ?",
-				textLikeExpr(r.db, "from"),
-				textLikeExpr(r.db, "to"),
-				textLikeExpr(r.db, "cc"),
-			),
-			keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern,
-		)
-	} else {
-		// Individual field searches
-		if options.FromQuery != "" {
-			fromPattern := "%" + options.FromQuery + "%"
-			query = query.Where(textLikeExpr(r.db, "from"), fromPattern)
-		}
-		if options.ToQuery != "" {
-			toPattern := "%" + options.ToQuery + "%"
-			query = query.Where(textLikeExpr(r.db, "to"), toPattern)
-		}
-		if options.CcQuery != "" {
-			ccPattern := "%" + options.CcQuery + "%"
-			query = query.Where(textLikeExpr(r.db, "cc"), ccPattern)
-		}
-		if options.SubjectQuery != "" {
-			subjectPattern := "%" + options.SubjectQuery + "%"
-			query = query.Where("subject LIKE ?", subjectPattern)
-		}
-		if options.BodyQuery != "" {
-			bodyPattern := "%" + options.BodyQuery + "%"
-			query = query.Where("body LIKE ?", bodyPattern)
-		}
-		if options.HTMLQuery != "" {
-			htmlPattern := "%" + options.HTMLQuery + "%"
-			query = query.Where("html_body LIKE ?", htmlPattern)
-		}
-	}
-
-	// Apply sorting (always include ID for consistent cursor pagination)
-	sortBy := options.SortBy
-	if sortBy == "" {
-		sortBy = "date DESC, id DESC"
-	} else {
-		sortBy += ", id DESC"
-	}
-	query = query.Order(sortBy)
+	query := r.buildEmailSearchQuery(options).Order(buildEmailOrderClause(r.db, options.SortBy, true))
 
 	return &EmailCursor{
 		db:        r.db,
@@ -558,7 +602,7 @@ func (c *EmailCursor) Close() error {
 func (r *EmailRepository) GetEmailsByAccountIDSince(accountID uint, since time.Time) ([]models.Email, error) {
 	var emails []models.Email
 	err := r.db.Where("account_id = ? AND date >= ?", accountID, since).
-		Order("date DESC").
+		Order(buildEmailOrderClause(r.db, "date DESC", false)).
 		Find(&emails).Error
 	return emails, err
 }
