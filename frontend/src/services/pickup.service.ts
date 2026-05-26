@@ -56,7 +56,6 @@ export const pickupService = {
      * 合并「续期同步」「搜索邮件」「执行提取」为一个原子操作
      */
     async poll(request: PickupPollRequest): Promise<PickupPollResponse> {
-        const response = await apiClient.post('/pickup/poll', request)
-        return response.data
+        return apiClient.post<PickupPollResponse>('/pickup/poll', request)
     },
 }

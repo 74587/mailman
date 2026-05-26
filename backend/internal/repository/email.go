@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 	"mailman/internal/models"
 	"time"
 
@@ -11,6 +12,14 @@ import (
 // EmailRepository handles database operations for Email
 type EmailRepository struct {
 	db *gorm.DB
+}
+
+type EmailDashboardStats struct {
+	TotalEmails          int64
+	UnreadEmails         int64
+	TodayEmails          int64
+	YesterdayEmails      int64
+	EmailsUntilYesterday int64
 }
 
 // NewEmailRepository creates a new EmailRepository
@@ -117,7 +126,12 @@ func (r *EmailRepository) GetByDateRange(accountID uint, startDate, endDate time
 func (r *EmailRepository) Search(accountID uint, query string) ([]models.Email, error) {
 	var emails []models.Email
 	searchPattern := "%" + query + "%"
-	err := r.db.Where("account_id = ? AND (subject LIKE ? OR from LIKE ?)", accountID, searchPattern, searchPattern).
+	err := r.db.Where(
+		fmt.Sprintf("account_id = ? AND (subject LIKE ? OR %s)", textLikeExpr(r.db, "from")),
+		accountID,
+		searchPattern,
+		searchPattern,
+	).
 		Order("date DESC").Find(&emails).Error
 	return emails, err
 }
@@ -237,6 +251,31 @@ func (r *EmailRepository) GetEmailCountUntilNow(orgID uint) (int64, error) {
 	return r.GetTotalCount(orgID)
 }
 
+func (r *EmailRepository) GetDashboardStats(orgID uint, today, tomorrow time.Time) (EmailDashboardStats, error) {
+	yesterday := today.AddDate(0, 0, -1)
+
+	var stats EmailDashboardStats
+	query := r.db.Model(&models.Email{}).Select(
+		`COUNT(*) AS total_emails,
+		COALESCE(SUM(CASE WHEN flags NOT LIKE ? THEN 1 ELSE 0 END), 0) AS unread_emails,
+		COALESCE(SUM(CASE WHEN date >= ? AND date < ? THEN 1 ELSE 0 END), 0) AS today_emails,
+		COALESCE(SUM(CASE WHEN date >= ? AND date < ? THEN 1 ELSE 0 END), 0) AS yesterday_emails,
+		COALESCE(SUM(CASE WHEN date < ? THEN 1 ELSE 0 END), 0) AS emails_until_yesterday`,
+		"%\"\\\\Seen\"%",
+		today,
+		tomorrow,
+		yesterday,
+		today,
+		today,
+	)
+	if orgID > 0 {
+		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", orgID))
+	}
+
+	err := query.Scan(&stats).Error
+	return stats, err
+}
+
 // CheckDuplicate checks if an email with the same message ID already exists
 func (r *EmailRepository) CheckDuplicate(messageID string, accountID uint) (bool, error) {
 	var count int64
@@ -247,7 +286,7 @@ func (r *EmailRepository) CheckDuplicate(messageID string, accountID uint) (bool
 // EmailSearchOptions represents search criteria for emails
 type EmailSearchOptions struct {
 	AccountID          uint
-	OrgID              uint   // Filter emails by organization (via account)
+	OrgID              uint // Filter emails by organization (via account)
 	Limit              int
 	Offset             int
 	SortBy             string
@@ -316,24 +355,29 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 		// Global keyword search across all text fields
 		keywordPattern := "%" + options.Keyword + "%"
 		query = query.Where(
-			"subject LIKE ? OR JSON_EXTRACT(`from`, '$[0]') LIKE ? OR `to` LIKE ? OR cc LIKE ? OR body LIKE ? OR html_body LIKE ?",
+			fmt.Sprintf(
+				"subject LIKE ? OR %s OR %s OR %s OR body LIKE ? OR html_body LIKE ?",
+				textLikeExpr(r.db, "from"),
+				textLikeExpr(r.db, "to"),
+				textLikeExpr(r.db, "cc"),
+			),
 			keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern,
 		)
 	} else {
 		// Individual field searches
 		if options.FromQuery != "" {
 			fromPattern := "%" + options.FromQuery + "%"
-			query = query.Where("JSON_EXTRACT(`from`, '$[0]') LIKE ?", fromPattern)
+			query = query.Where(textLikeExpr(r.db, "from"), fromPattern)
 		}
 		if options.ToQuery != "" {
 			// Search across the entire To field JSON array using LIKE for SQLite compatibility
 			toPattern := "%" + options.ToQuery + "%"
-			query = query.Where("`to` LIKE ?", toPattern)
+			query = query.Where(textLikeExpr(r.db, "to"), toPattern)
 		}
 		if options.CcQuery != "" {
 			// Search across the entire CC field JSON array using LIKE for SQLite compatibility
 			ccPattern := "%" + options.CcQuery + "%"
-			query = query.Where("cc LIKE ?", ccPattern)
+			query = query.Where(textLikeExpr(r.db, "cc"), ccPattern)
 		}
 		if options.SubjectQuery != "" {
 			subjectPattern := "%" + options.SubjectQuery + "%"
@@ -416,22 +460,27 @@ func (r *EmailRepository) NewEmailCursor(options EmailSearchOptions, batchSize i
 		// Global keyword search across all text fields
 		keywordPattern := "%" + options.Keyword + "%"
 		query = query.Where(
-			"subject LIKE ? OR JSON_EXTRACT(`from`, '$[0]') LIKE ? OR JSON_EXTRACT(`to`, '$[0]') LIKE ? OR JSON_EXTRACT(cc, '$[0]') LIKE ? OR body LIKE ? OR html_body LIKE ?",
+			fmt.Sprintf(
+				"subject LIKE ? OR %s OR %s OR %s OR body LIKE ? OR html_body LIKE ?",
+				textLikeExpr(r.db, "from"),
+				textLikeExpr(r.db, "to"),
+				textLikeExpr(r.db, "cc"),
+			),
 			keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern,
 		)
 	} else {
 		// Individual field searches
 		if options.FromQuery != "" {
 			fromPattern := "%" + options.FromQuery + "%"
-			query = query.Where("JSON_EXTRACT(`from`, '$[0]') LIKE ?", fromPattern)
+			query = query.Where(textLikeExpr(r.db, "from"), fromPattern)
 		}
 		if options.ToQuery != "" {
 			toPattern := "%" + options.ToQuery + "%"
-			query = query.Where("JSON_EXTRACT(`to`, '$[0]') LIKE ?", toPattern)
+			query = query.Where(textLikeExpr(r.db, "to"), toPattern)
 		}
 		if options.CcQuery != "" {
 			ccPattern := "%" + options.CcQuery + "%"
-			query = query.Where("JSON_EXTRACT(cc, '$[0]') LIKE ?", ccPattern)
+			query = query.Where(textLikeExpr(r.db, "cc"), ccPattern)
 		}
 		if options.SubjectQuery != "" {
 			subjectPattern := "%" + options.SubjectQuery + "%"

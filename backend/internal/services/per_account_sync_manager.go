@@ -22,7 +22,7 @@ import (
 type PickupOverride struct {
 	AccountID    uint      `json:"account_id"`
 	SyncInterval int       `json:"sync_interval"` // 后端拉取邮件的间隔（秒）
-	ExpiresAt    time.Time `json:"expires_at"`     // 过期时间
+	ExpiresAt    time.Time `json:"expires_at"`    // 过期时间
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -87,6 +87,7 @@ type AccountSyncer struct {
 	// 状态
 	isRunning bool
 	mu        sync.RWMutex
+	syncMu    sync.Mutex
 
 	// 统计
 	syncCount     int64
@@ -691,6 +692,17 @@ func (as *AccountSyncer) performSync() {
 	as.logger.Debug("Preparing to perform sync")
 	start := time.Now()
 
+	as.syncMu.Lock()
+	defer as.syncMu.Unlock()
+
+	as.mu.RLock()
+	recentSync := !as.LastSyncTime.IsZero() && time.Since(as.LastSyncTime) < 2*time.Second
+	as.mu.RUnlock()
+	if recentSync {
+		as.logger.Debug("Skipping timer sync because a sync just completed")
+		return
+	}
+
 	// 获取并发许可
 	select {
 	case as.manager.semaphore <- struct{}{}:
@@ -897,7 +909,18 @@ func (as *AccountSyncer) updateSyncConfig(endTime time.Time, hasNewEmails bool) 
 	// 注意：故意不修改config.LastHistoryID，保持Gmail API的更新
 
 	as.logger.Debug("Updating sync config - preserving History ID: %s", config.LastHistoryID)
-	return as.manager.syncConfigRepo.CreateOrUpdate(config)
+	if err := as.manager.syncConfigRepo.CreateOrUpdate(config); err != nil {
+		return err
+	}
+
+	as.mu.Lock()
+	as.Config.LastSyncTime = config.LastSyncTime
+	as.Config.LastSyncEndTime = config.LastSyncEndTime
+	as.Config.SyncStatus = config.SyncStatus
+	as.Config.LastHistoryID = config.LastHistoryID
+	as.mu.Unlock()
+
+	return nil
 }
 
 // notifyNewEmails 发送新邮件通知
@@ -967,19 +990,37 @@ func (as *AccountSyncer) resetTimer(nextTime time.Time) {
 // UpdateConfig 更新配置
 func (as *AccountSyncer) UpdateConfig(newConfig models.EmailAccountSyncConfig) {
 	as.mu.Lock()
-	defer as.mu.Unlock()
-
 	oldInterval := as.Config.SyncInterval
 	as.Config = newConfig
+	intervalChanged := oldInterval != newConfig.SyncInterval
+	as.mu.Unlock()
 
 	// 如果同步间隔改变，重置定时器
-	if oldInterval != newConfig.SyncInterval {
+	if intervalChanged {
 		nextSync := as.calculateNextSyncTime()
 		as.resetTimer(nextSync)
 
 		as.manager.logger.Info("Updated sync interval for account %d from %ds to %ds",
 			as.AccountID, oldInterval, newConfig.SyncInterval)
 	}
+}
+
+// ApplyPickupOverride applies a temporary pickup sync interval without persisting config changes.
+func (as *AccountSyncer) ApplyPickupOverride(syncInterval int) {
+	if syncInterval <= 0 {
+		syncInterval = 5
+	}
+
+	as.mu.Lock()
+	as.Config.EnableAutoSync = true
+	as.Config.SyncInterval = syncInterval
+	if len(as.Config.SyncFolders) == 0 {
+		as.Config.SyncFolders = models.StringSlice{"INBOX"}
+	}
+	as.LastSyncTime = time.Now().Add(-time.Duration(syncInterval+1) * time.Second)
+	as.mu.Unlock()
+
+	as.resetTimer(time.Now().Add(1 * time.Second))
 }
 
 // Stop 停止同步器
@@ -997,12 +1038,45 @@ func (as *AccountSyncer) Stop() {
 func (as *AccountSyncer) SyncNow() (*SyncResult, error) {
 	start := time.Now()
 
+	as.syncMu.Lock()
+	defer as.syncMu.Unlock()
+
+	// 获取并发许可
+	select {
+	case as.manager.semaphore <- struct{}{}:
+		as.logger.Debug("Semaphore acquired for immediate sync")
+		defer func() {
+			<-as.manager.semaphore
+			as.logger.Debug("Semaphore released for immediate sync")
+		}()
+	case <-time.After(5 * time.Second):
+		err := fmt.Errorf("failed to acquire semaphore for immediate sync")
+		as.logger.Warn(err.Error())
+		return &SyncResult{
+			Duration: time.Since(start),
+			Error:    err,
+		}, err
+	}
+
+	atomic.AddInt64(&as.syncCount, 1)
+	atomic.AddInt64(&as.manager.stats.TotalSyncs, 1)
+
 	emails, err := as.doSync(start)
 
-	// 如果同步成功，重置错误状态和自动禁用标志
-	if err == nil {
+	as.mu.Lock()
+	as.LastSyncTime = time.Now()
+	if err != nil {
+		atomic.AddInt64(&as.errorCount, 1)
+		atomic.AddInt64(&as.manager.stats.TotalErrors, 1)
+		as.lastError = err
+		as.lastErrorTime = time.Now()
+		as.logger.Error("Immediate sync failed: %v", err)
+		as.handleSyncError(err)
+	} else {
+		as.lastError = nil
 		as.resetErrorStatus()
 	}
+	as.mu.Unlock()
 
 	result := &SyncResult{
 		EmailsSynced: len(emails),
@@ -1334,10 +1408,10 @@ func (m *PerAccountSyncManager) RegisterPickupOverride(accountID uint, syncInter
 		}
 		m.pickupOverridesMu.Unlock()
 		m.logger.Info("Created pickup override for account %d: interval=%ds, expires_in=%ds", accountID, syncInterval, keepAliveSeconds)
-
-		// 确保该账户有同步器在运行
-		m.ensurePickupSyncer(accountID, syncInterval)
 	}
+
+	// 每次续期都确保同步器正在运行，并临时应用 pickup 同步间隔。
+	m.ensurePickupSyncer(accountID, syncInterval)
 }
 
 // RemovePickupOverride 移除取件轮询覆盖
@@ -1393,11 +1467,12 @@ func (m *PerAccountSyncManager) GetAllPickupOverrides() []*PickupOverride {
 // 如果账户没有活跃的同步器，创建一个临时的
 func (m *PerAccountSyncManager) ensurePickupSyncer(accountID uint, syncInterval int) {
 	m.mu.RLock()
-	_, exists := m.accountSyncers[accountID]
+	syncer, exists := m.accountSyncers[accountID]
 	m.mu.RUnlock()
 
 	if exists {
-		m.logger.Debug("Syncer already exists for account %d, reusing for pickup", accountID)
+		syncer.ApplyPickupOverride(syncInterval)
+		m.logger.Debug("Syncer already exists for account %d, applied pickup override", accountID)
 		return
 	}
 
@@ -1424,6 +1499,8 @@ func (m *PerAccountSyncManager) ensurePickupSyncer(accountID uint, syncInterval 
 		// 有配置但可能未启用自动同步，临时覆盖
 		config.EnableAutoSync = true
 		config.SyncInterval = syncInterval
+		pickupLastSync := time.Now().Add(-time.Duration(syncInterval+1) * time.Second)
+		config.LastSyncTime = &pickupLastSync
 	}
 
 	if err := m.startAccountSyncer(config); err != nil {

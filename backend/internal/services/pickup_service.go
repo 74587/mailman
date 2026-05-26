@@ -13,14 +13,14 @@ type PickupPollRequest struct {
 	AccountID        uint   `json:"account_id"`
 	KeepAliveSeconds int    `json:"keep_alive_seconds"` // 临时同步覆盖有效期(秒)，建议 30-120
 	SyncInterval     int    `json:"sync_interval"`      // 后端拉取邮件间隔(秒)，默认 5
-	Since            string `json:"since"`               // ISO8601 搜索起始时间
-	ToQuery          string `json:"to_query,omitempty"`  // 收件人过滤
-	Limit            int    `json:"limit,omitempty"`     // 返回数量限制，默认 10
+	Since            string `json:"since"`              // ISO8601 搜索起始时间
+	ToQuery          string `json:"to_query,omitempty"` // 收件人过滤
+	Limit            int    `json:"limit,omitempty"`    // 返回数量限制，默认 10
 
 	// 提取模式（三选一，可都不传表示只搜索不提取）
-	TemplateID    *uint                       `json:"template_id,omitempty"`    // 方式1: 引用已有V2模板
-	InlineActions *InlineActionsConfig        `json:"inline_actions,omitempty"` // 方式2: 内联V2动作
-	SimpleExtract *SimpleExtractConfig        `json:"simple_extract,omitempty"` // 方式3: 简单提取（V1风格）
+	TemplateID    *uint                `json:"template_id,omitempty"`    // 方式1: 引用已有V2模板
+	InlineActions *InlineActionsConfig `json:"inline_actions,omitempty"` // 方式2: 内联V2动作
+	SimpleExtract *SimpleExtractConfig `json:"simple_extract,omitempty"` // 方式3: 简单提取（V1风格）
 }
 
 // InlineActionsConfig 内联V2动作配置
@@ -96,6 +96,19 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 
 	// 2. 注册/续期取件轮询覆盖（纯内存，零DB写入）
 	s.syncManager.RegisterPickupOverride(req.AccountID, req.SyncInterval, req.KeepAliveSeconds)
+
+	// pickup 需要尽量返回刚到达的邮件；注册临时覆盖后立即同步一次，再查数据库。
+	syncResult, syncErr := s.syncManager.SyncNow(req.AccountID, SyncNowOptions{
+		CreateStrategy: "ensure",
+		SyncInterval:   req.SyncInterval,
+	})
+	if syncErr != nil {
+		s.logger.Warn("Pickup immediate sync failed for account %d: %v", req.AccountID, syncErr)
+	} else if syncResult != nil && syncResult.Error != nil {
+		s.logger.Warn("Pickup immediate sync completed with error for account %d: %v", req.AccountID, syncResult.Error)
+	} else if syncResult != nil {
+		s.logger.Debug("Pickup immediate sync completed for account %d: synced %d emails", req.AccountID, syncResult.EmailsSynced)
+	}
 
 	// 3. 解析搜索起始时间
 	var startDate *time.Time

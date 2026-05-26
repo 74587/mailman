@@ -14,6 +14,29 @@ type EmailAccountRepository struct {
 	db *gorm.DB
 }
 
+type AccountDashboardStats struct {
+	TotalAccounts    int64
+	VerifiedAccounts int64
+	ErrorAccounts    int64
+}
+
+var emailAccountSortColumns = map[string]string{
+	"emailAddress":     "email_address",
+	"email_address":    "email_address",
+	"createdAt":        "created_at",
+	"created_at":       "created_at",
+	"updatedAt":        "updated_at",
+	"updated_at":       "updated_at",
+	"lastSyncAt":       "last_sync_at",
+	"last_sync_at":     "last_sync_at",
+	"isVerified":       "is_verified",
+	"is_verified":      "is_verified",
+	"errorStatus":      "error_status",
+	"error_status":     "error_status",
+	"mailProviderId":   "mail_provider_id",
+	"mail_provider_id": "mail_provider_id",
+}
+
 // AccountFilterParams contains all filter parameters for account queries
 type AccountFilterParams struct {
 	Search         string     // 搜索邮箱地址
@@ -131,6 +154,23 @@ func (r *EmailAccountRepository) GetAll(orgID uint) ([]models.EmailAccount, erro
 	return accounts, err
 }
 
+func (r *EmailAccountRepository) GetDashboardStats(orgID uint) (AccountDashboardStats, error) {
+	var stats AccountDashboardStats
+	query := r.db.Model(&models.EmailAccount{}).Select(
+		`COUNT(*) AS total_accounts,
+		COALESCE(SUM(CASE WHEN is_verified = ? THEN 1 ELSE 0 END), 0) AS verified_accounts,
+		COALESCE(SUM(CASE WHEN error_status IS NOT NULL AND error_status != '' AND error_status != ? THEN 1 ELSE 0 END), 0) AS error_accounts`,
+		true,
+		models.ErrorStatusNormal,
+	)
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+
+	err := query.Scan(&stats).Error
+	return stats, err
+}
+
 // GetAllPaginated retrieves email accounts with pagination
 func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, sortBy, sortOrder string, search string) ([]models.EmailAccount, int64, error) {
 	var accounts []models.EmailAccount
@@ -143,12 +183,7 @@ func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, so
 	if limit < 1 {
 		limit = 10
 	}
-	if sortBy == "" {
-		sortBy = "created_at"
-	}
-	if sortOrder != "asc" && sortOrder != "desc" {
-		sortOrder = "desc"
-	}
+	orderClause := buildOrderClause(r.db, sortBy, sortOrder, emailAccountSortColumns, "created_at")
 
 	// 计算偏移量
 	offset := (page - 1) * limit
@@ -181,7 +216,7 @@ func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, so
 	}
 
 	err := queryForData.
-		Order(sortBy + " " + sortOrder).
+		Order(orderClause).
 		Limit(limit).
 		Offset(offset).
 		Find(&accounts).Error
@@ -202,35 +237,7 @@ func (r *EmailAccountRepository) GetAllPaginatedFiltered(orgID uint, page, limit
 		limit = 10
 	}
 
-	// 排序字段映射: 前端camelCase -> 数据库snake_case
-	sortFieldMap := map[string]string{
-		"emailAddress":     "email_address",
-		"createdAt":        "created_at",
-		"created_at":       "created_at",
-		"updatedAt":        "updated_at",
-		"updated_at":       "updated_at",
-		"lastSyncAt":       "last_sync_at",
-		"last_sync_at":     "last_sync_at",
-		"isVerified":       "is_verified",
-		"is_verified":      "is_verified",
-		"errorStatus":      "error_status",
-		"error_status":     "error_status",
-		"mailProviderId":   "mail_provider_id",
-		"mail_provider_id": "mail_provider_id",
-	}
-
-	// 转换排序字段
-	if sortBy == "" {
-		sortBy = "created_at"
-	} else if mapped, ok := sortFieldMap[sortBy]; ok {
-		sortBy = mapped
-	} else {
-		// 默认使用 created_at，防止 SQL 注入
-		sortBy = "created_at"
-	}
-	if sortOrder != "asc" && sortOrder != "desc" {
-		sortOrder = "desc"
-	}
+	orderClause := buildOrderClause(r.db, sortBy, sortOrder, emailAccountSortColumns, "created_at")
 
 	// 计算偏移量
 	offset := (page - 1) * limit
@@ -360,7 +367,7 @@ func (r *EmailAccountRepository) GetAllPaginatedFiltered(orgID uint, page, limit
 	}
 
 	err := queryForData.
-		Order(sortBy + " " + sortOrder).
+		Order(orderClause).
 		Limit(limit).
 		Offset(offset).
 		Find(&accounts).Error
@@ -380,12 +387,7 @@ func (r *EmailAccountRepository) GetAllPaginatedWithTags(orgID uint, page, limit
 	if limit < 1 {
 		limit = 10
 	}
-	if sortBy == "" {
-		sortBy = "created_at"
-	}
-	if sortOrder != "asc" && sortOrder != "desc" {
-		sortOrder = "desc"
-	}
+	orderClause := buildOrderClause(r.db, sortBy, sortOrder, emailAccountSortColumns, "created_at")
 	if tagFilterMode != "and" && tagFilterMode != "or" {
 		tagFilterMode = "or"
 	}
@@ -455,7 +457,7 @@ func (r *EmailAccountRepository) GetAllPaginatedWithTags(orgID uint, page, limit
 	}
 
 	err := queryForData.
-		Order(sortBy + " " + sortOrder).
+		Order(orderClause).
 		Limit(limit).
 		Offset(offset).
 		Find(&accounts).Error

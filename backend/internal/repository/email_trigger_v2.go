@@ -14,6 +14,22 @@ type EmailTriggerV2Repository struct {
 	db *gorm.DB
 }
 
+var emailTriggerV2SortColumns = map[string]string{
+	"name":               "name",
+	"enabled":            "enabled",
+	"priority":           "priority",
+	"createdAt":          "created_at",
+	"created_at":         "created_at",
+	"updatedAt":          "updated_at",
+	"updated_at":         "updated_at",
+	"lastExecutedAt":     "last_executed_at",
+	"last_executed_at":   "last_executed_at",
+	"totalExecutions":    "total_executions",
+	"total_executions":   "total_executions",
+	"successExecutions":  "success_executions",
+	"success_executions": "success_executions",
+}
+
 // NewEmailTriggerV2Repository creates a new EmailTriggerV2Repository
 func NewEmailTriggerV2Repository(db *gorm.DB) *EmailTriggerV2Repository {
 	return &EmailTriggerV2Repository{db: db}
@@ -72,8 +88,7 @@ func (r *EmailTriggerV2Repository) GetAllPaginated(page, limit int, sortBy, sort
 	}
 
 	// Apply sorting
-	orderClause := sortBy + " " + sortOrder
-	query = query.Order(orderClause)
+	query = query.Order(buildOrderClause(r.db, sortBy, sortOrder, emailTriggerV2SortColumns, "created_at"))
 
 	// Apply pagination
 	offset := (page - 1) * limit

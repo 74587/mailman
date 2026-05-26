@@ -914,18 +914,12 @@ type EmailStatsResponse struct {
 func (h *APIHandler) GetEmailStatsHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := GetCurrentOrgID(r)
 	// === 账户统计 ===
-	accounts, err := h.EmailAccountRepo.GetAll(orgID)
 	var totalAccounts, verifiedAccounts, syncingAccounts, errorAccounts int64
+	accountStats, err := h.EmailAccountRepo.GetDashboardStats(orgID)
 	if err == nil {
-		totalAccounts = int64(len(accounts))
-		for _, acct := range accounts {
-			if acct.IsVerified {
-				verifiedAccounts++
-			}
-			if acct.ErrorStatus != "" && acct.ErrorStatus != "normal" {
-				errorAccounts++
-			}
-		}
+		totalAccounts = accountStats.TotalAccounts
+		verifiedAccounts = accountStats.VerifiedAccounts
+		errorAccounts = accountStats.ErrorAccounts
 	}
 
 	// 同步中的账户数：通过 PerAccountSyncManager 获取
@@ -935,29 +929,18 @@ func (h *APIHandler) GetEmailStatsHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// === 邮件统计 ===
-	totalEmails, err := h.EmailRepo.GetTotalCount(orgID)
-	if err != nil {
-		totalEmails = 0
-	}
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	tomorrowStart := todayStart.AddDate(0, 0, 1)
 
-	unreadEmails, err := h.EmailRepo.GetTotalUnreadCount(orgID)
-	if err != nil {
-		unreadEmails = 0
-	}
-
-	todayEmails, err := h.EmailRepo.GetTodayEmailCount(orgID)
-	if err != nil {
-		todayEmails = 0
-	}
-
-	yesterdayEmails, err := h.EmailRepo.GetYesterdayEmailCount(orgID)
-	if err != nil {
-		yesterdayEmails = 0
-	}
-
-	emailsUntilYesterday, err := h.EmailRepo.GetEmailCountUntilYesterday(orgID)
-	if err != nil {
-		emailsUntilYesterday = 0
+	emailStats, err := h.EmailRepo.GetDashboardStats(orgID, todayStart, tomorrowStart)
+	var totalEmails, unreadEmails, todayEmails, yesterdayEmails, emailsUntilYesterday int64
+	if err == nil {
+		totalEmails = emailStats.TotalEmails
+		unreadEmails = emailStats.UnreadEmails
+		todayEmails = emailStats.TodayEmails
+		yesterdayEmails = emailStats.YesterdayEmails
+		emailsUntilYesterday = emailStats.EmailsUntilYesterday
 	}
 
 	// 计算总邮件增长率

@@ -12,6 +12,14 @@ type ExtractorTemplateRepository struct {
 	db *gorm.DB
 }
 
+var extractorTemplateSortColumns = map[string]string{
+	"name":       "name",
+	"createdAt":  "created_at",
+	"created_at": "created_at",
+	"updatedAt":  "updated_at",
+	"updated_at": "updated_at",
+}
+
 // NewExtractorTemplateRepository creates a new ExtractorTemplateRepository
 func NewExtractorTemplateRepository(db *gorm.DB) *ExtractorTemplateRepository {
 	return &ExtractorTemplateRepository{db: db}
@@ -98,13 +106,7 @@ func (r *ExtractorTemplateRepository) GetAllPaginated(page, limit int, sortBy, s
 	}
 
 	// 添加排序
-	if sortBy != "" {
-		order := sortBy + " " + sortOrder
-		query = query.Order(order)
-	} else {
-		// 默认按创建时间降序排序
-		query = query.Order("created_at desc")
-	}
+	query = query.Order(buildOrderClause(r.db, sortBy, sortOrder, extractorTemplateSortColumns, "created_at"))
 
 	// 添加分页
 	offset := (page - 1) * limit

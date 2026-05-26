@@ -450,9 +450,10 @@ export default function MailPickupV2Tab() {
         ))
 
         listeningStateRef.current[emailToListen.email] = {
-            email: emailToListen.email, startTime: listeningStartTime, config: emailToListen.config,
+            monitorId: id, email: emailToListen.email, startTime: listeningStartTime, config: emailToListen.config,
             isListening: true, checksPerformed: 0, accountId, templateId: emailToListen.selectedTemplateId,
             extractMode: emailToListen.extractMode, simpleExtract: emailToListen.simpleExtract,
+            processedEmailIds: new Set<number>(),
         }
 
         setTimeout(() => { if (accountId !== null) checkEmailsAndExecute(emailToListen.email, accountId) }, 100)
@@ -514,10 +515,15 @@ export default function MailPickupV2Tab() {
             const pollResult = await pickupService.poll(pollRequest)
 
             if (pollResult?.emails?.length > 0) {
+                const processedEmailIds: Set<number> = listeningState.processedEmailIds ?? new Set<number>()
+                const newEmailsFromResponse = pollResult.emails.filter((emailItem: Email) => !processedEmailIds.has(emailItem.ID))
+                pollResult.emails.forEach((emailItem: Email) => processedEmailIds.add(emailItem.ID))
+                listeningState.processedEmailIds = processedEmailIds
+
                 setMonitoredEmails(prev => prev.map(m => {
                     if (m.email !== email) return m
                     const existingIds = new Set(m.receivedEmails.map(e => e.ID))
-                    const newEmails = pollResult.emails.filter((e: Email) => !existingIds.has(e.ID))
+                    const newEmails = newEmailsFromResponse.filter((e: Email) => !existingIds.has(e.ID))
                     const newResults = new Map(m.executionResults)
                     if (pollResult.extractions) {
                         for (const extraction of pollResult.extractions) {
@@ -535,6 +541,12 @@ export default function MailPickupV2Tab() {
                     }
                     return { ...m, receivedEmails: [...newEmails, ...m.receivedEmails], executionResults: newResults }
                 }))
+                if (newEmailsFromResponse.length > 0 && listeningState.monitorId) {
+                    const latestEmail = newEmailsFromResponse[0]
+                    setSelectedEmailId(listeningState.monitorId)
+                    setSelectedEmail(latestEmail)
+                    setViewMode(latestEmail.HTMLBody ? 'html' : 'text')
+                }
             }
 
             const elapsedSeconds = Math.round((new Date().getTime() - listeningState.startTime.getTime()) / 1000)

@@ -14,6 +14,10 @@ type InterceptorRepository struct {
 	db *gorm.DB
 }
 
+var interceptorSortColumns = map[string]string{
+	"order": "order",
+}
+
 // NewInterceptorRepository 创建拦截器仓库
 func NewInterceptorRepository(db *gorm.DB) *InterceptorRepository {
 	return &InterceptorRepository{db: db}
@@ -52,7 +56,7 @@ func (r *InterceptorRepository) HardDelete(id uint) error {
 // List 获取所有拦截器
 func (r *InterceptorRepository) List(orgID uint) ([]models.Interceptor, error) {
 	var interceptors []models.Interceptor
-	query := r.db.Order("\"order\" ASC")
+	query := r.db.Order(buildOrderClause(r.db, "order", "asc", interceptorSortColumns, "order"))
 	if orgID > 0 {
 		query = query.Where("org_id = ?", orgID)
 	}
@@ -63,7 +67,9 @@ func (r *InterceptorRepository) List(orgID uint) ([]models.Interceptor, error) {
 // ListByScope 按作用域获取拦截器
 func (r *InterceptorRepository) ListByScope(scope models.InterceptorScope) ([]models.Interceptor, error) {
 	var interceptors []models.Interceptor
-	err := r.db.Where("scope = ?", scope).Order("\"order\" ASC").Find(&interceptors).Error
+	err := r.db.Where("scope = ?", scope).
+		Order(buildOrderClause(r.db, "order", "asc", interceptorSortColumns, "order")).
+		Find(&interceptors).Error
 	return interceptors, err
 }
 
@@ -76,7 +82,8 @@ func (r *InterceptorRepository) ListGlobal() ([]models.Interceptor, error) {
 func (r *InterceptorRepository) ListByTriggerID(triggerID uint) ([]models.Interceptor, error) {
 	var interceptors []models.Interceptor
 	err := r.db.Where("scope = ? AND trigger_id = ?", models.InterceptorScopeLocal, triggerID).
-		Order("\"order\" ASC").Find(&interceptors).Error
+		Order(buildOrderClause(r.db, "order", "asc", interceptorSortColumns, "order")).
+		Find(&interceptors).Error
 	return interceptors, err
 }
 
@@ -84,14 +91,17 @@ func (r *InterceptorRepository) ListByTriggerID(triggerID uint) ([]models.Interc
 func (r *InterceptorRepository) ListByExtractorID(extractorID uint) ([]models.Interceptor, error) {
 	var interceptors []models.Interceptor
 	err := r.db.Where("scope = ? AND extractor_id = ?", models.InterceptorScopeLocal, extractorID).
-		Order("\"order\" ASC").Find(&interceptors).Error
+		Order(buildOrderClause(r.db, "order", "asc", interceptorSortColumns, "order")).
+		Find(&interceptors).Error
 	return interceptors, err
 }
 
 // ListEnabled 获取所有启用的拦截器
 func (r *InterceptorRepository) ListEnabled() ([]models.Interceptor, error) {
 	var interceptors []models.Interceptor
-	err := r.db.Where("enabled = ?", true).Order("\"order\" ASC").Find(&interceptors).Error
+	err := r.db.Where("enabled = ?", true).
+		Order(buildOrderClause(r.db, "order", "asc", interceptorSortColumns, "order")).
+		Find(&interceptors).Error
 	return interceptors, err
 }
 
@@ -99,7 +109,8 @@ func (r *InterceptorRepository) ListEnabled() ([]models.Interceptor, error) {
 func (r *InterceptorRepository) ListEnabledGlobal() ([]models.Interceptor, error) {
 	var interceptors []models.Interceptor
 	err := r.db.Where("enabled = ? AND scope = ?", true, models.InterceptorScopeGlobal).
-		Order("\"order\" ASC").Find(&interceptors).Error
+		Order(buildOrderClause(r.db, "order", "asc", interceptorSortColumns, "order")).
+		Find(&interceptors).Error
 	return interceptors, err
 }
 

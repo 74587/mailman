@@ -13,6 +13,22 @@ type TriggerRepository struct {
 	db *gorm.DB
 }
 
+var triggerSortColumns = map[string]string{
+	"name":               "name",
+	"status":             "status",
+	"priority":           "priority",
+	"createdAt":          "created_at",
+	"created_at":         "created_at",
+	"updatedAt":          "updated_at",
+	"updated_at":         "updated_at",
+	"lastExecutedAt":     "last_executed_at",
+	"last_executed_at":   "last_executed_at",
+	"totalExecutions":    "total_executions",
+	"total_executions":   "total_executions",
+	"successExecutions":  "success_executions",
+	"success_executions": "success_executions",
+}
+
 // NewTriggerRepository creates a new TriggerRepository
 func NewTriggerRepository(db *gorm.DB) *TriggerRepository {
 	return &TriggerRepository{db: db}
@@ -73,8 +89,7 @@ func (r *TriggerRepository) GetAllPaginated(page, limit int, sortBy, sortOrder, 
 	}
 
 	// Apply sorting
-	orderClause := sortBy + " " + sortOrder
-	query = query.Order(orderClause)
+	query = query.Order(buildOrderClause(r.db, sortBy, sortOrder, triggerSortColumns, "created_at"))
 
 	// Apply pagination
 	offset := (page - 1) * limit
