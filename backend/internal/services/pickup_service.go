@@ -5,6 +5,7 @@ import (
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/utils"
+	"strings"
 	"time"
 )
 
@@ -32,9 +33,11 @@ type InlineActionsConfig struct {
 
 // SimpleExtractConfig 简单提取配置（兼容V1风格）
 type SimpleExtractConfig struct {
-	Field   string `json:"field"`   // body, subject, from, html_body
-	Type    string `json:"type"`    // regex, js, gotemplate
-	Pattern string `json:"pattern"` // 正则表达式或脚本
+	Field      string `json:"field"`                 // body, subject, from, html_body
+	Type       string `json:"type"`                  // regex, js, gotemplate
+	Pattern    string `json:"pattern"`               // 正则表达式或脚本
+	MatchMode  string `json:"match_mode,omitempty"`  // all, first, last, index
+	MatchIndex *int   `json:"match_index,omitempty"` // 0-based index; negative indexes count from the end
 }
 
 // PickupPollResponse 取件轮询响应
@@ -101,6 +104,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	syncResult, syncErr := s.syncManager.SyncNow(req.AccountID, SyncNowOptions{
 		CreateStrategy: "ensure",
 		SyncInterval:   req.SyncInterval,
+		Source:         EmailIngestSourcePickup,
 	})
 	if syncErr != nil {
 		s.logger.Warn("Pickup immediate sync failed for account %d: %v", req.AccountID, syncErr)
@@ -247,7 +251,8 @@ func (s *PickupService) extractWithSimple(emails []models.Email, config *SimpleE
 	}
 	// 对于 regex 类型，pattern 同时作为 match 和 extract
 	if config.Type == "regex" {
-		extractorConfig.Match = &config.Pattern
+		matchPattern := strings.SplitN(config.Pattern, "|||", 2)[0]
+		extractorConfig.Match = &matchPattern
 	}
 
 	for _, email := range emails {
@@ -261,12 +266,14 @@ func (s *PickupService) extractWithSimple(emails []models.Email, config *SimpleE
 			item.Status = "failed"
 			item.Error = err.Error()
 		} else if result != nil && len(result.Matches) > 0 {
-			item.Success = true
-			item.Status = "success"
-			if len(result.Matches) == 1 {
-				item.ExtractedValue = result.Matches[0]
+			value, ok := selectSimpleExtractValue(result.Matches, config)
+			if ok {
+				item.Success = true
+				item.Status = "success"
+				item.ExtractedValue = value
 			} else {
-				item.ExtractedValue = result.Matches
+				item.Success = false
+				item.Status = "no_match"
 			}
 		} else {
 			item.Success = false
@@ -277,4 +284,47 @@ func (s *PickupService) extractWithSimple(emails []models.Email, config *SimpleE
 	}
 
 	return results
+}
+
+func selectSimpleExtractValue(matches []string, config *SimpleExtractConfig) (interface{}, bool) {
+	if len(matches) == 0 {
+		return nil, false
+	}
+
+	mode := ""
+	if config != nil {
+		mode = strings.ToLower(strings.TrimSpace(config.MatchMode))
+		if mode == "" && config.MatchIndex != nil {
+			mode = "index"
+		}
+	}
+
+	switch mode {
+	case "", "all":
+		if len(matches) == 1 {
+			return matches[0], true
+		}
+		return matches, true
+	case "first":
+		return matches[0], true
+	case "last":
+		return matches[len(matches)-1], true
+	case "index":
+		index := 0
+		if config != nil && config.MatchIndex != nil {
+			index = *config.MatchIndex
+		}
+		if index < 0 {
+			index = len(matches) + index
+		}
+		if index < 0 || index >= len(matches) {
+			return nil, false
+		}
+		return matches[index], true
+	default:
+		if len(matches) == 1 {
+			return matches[0], true
+		}
+		return matches, true
+	}
 }

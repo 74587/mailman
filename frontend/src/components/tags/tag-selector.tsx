@@ -243,6 +243,8 @@ interface InlineTagSelectorProps {
     currentTags: { id: number; groupId: number; name: string; color?: string; group?: { name: string } }[]  // 接受后端返回的Tag结构
     onTagsChange?: () => void  // 简化为无参数回调，由父组件刷新
     size?: 'sm' | 'md'
+    maxDisplayTags?: number
+    className?: string
 }
 
 export function InlineTagSelector({
@@ -250,6 +252,8 @@ export function InlineTagSelector({
     currentTags,
     onTagsChange,
     size = 'sm',
+    maxDisplayTags,
+    className,
 }: InlineTagSelectorProps) {
     const [tagGroups, setTagGroups] = useState<TagGroupWithTags[]>([])
     const [loading, setLoading] = useState(true)
@@ -328,7 +332,7 @@ export function InlineTagSelector({
             <DropdownMenuTrigger asChild>
                 <button
                     type="button"
-                    className="flex items-center gap-1 text-left cursor-pointer"
+                    className={cn("flex max-w-full min-w-0 items-center gap-1 text-left cursor-pointer", className)}
                     disabled={saving}
                     onClick={(e) => {
                         e.stopPropagation()
@@ -336,7 +340,16 @@ export function InlineTagSelector({
                     }}
                 >
                     {displayTags.length > 0 ? (
-                        <GroupedTagBadgeList tags={displayTags} size={size} />
+                        maxDisplayTags ? (
+                            <TagBadgeList
+                                tags={displayTags}
+                                size={size}
+                                maxDisplay={maxDisplayTags}
+                                className="max-w-full flex-nowrap overflow-hidden"
+                            />
+                        ) : (
+                            <GroupedTagBadgeList tags={displayTags} size={size} />
+                        )
                     ) : (
                         <span className="text-xs text-muted-foreground hover:text-foreground hover:underline">
                             + 添加标签

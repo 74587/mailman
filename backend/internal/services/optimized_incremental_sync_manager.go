@@ -11,6 +11,8 @@ import (
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/utils"
+
+	"gorm.io/gorm"
 )
 
 // OptimizedIncrementalSyncManager 优化版增量同步管理器
@@ -21,6 +23,7 @@ type OptimizedIncrementalSyncManager struct {
 	emailRepo      *repository.EmailRepository
 	mailboxRepo    *repository.MailboxRepository
 	fetcher        *FetcherService
+	ingestService  *EmailIngestService
 
 	// 账户同步配置缓存 (accountID -> config)
 	syncConfigs map[uint]models.EmailAccountSyncConfig
@@ -75,6 +78,7 @@ func NewOptimizedIncrementalSyncManager(
 		emailRepo:      emailRepo,
 		mailboxRepo:    mailboxRepo,
 		fetcher:        fetcher,
+		ingestService:  NewEmailIngestService(emailRepo, nil, nil, nil, nil),
 		syncConfigs:    make(map[uint]models.EmailAccountSyncConfig),
 		lastSyncTimes:  make(map[uint]time.Time),
 		syncQueue:      make(chan syncJob, 1000), // 队列缓冲区扩容到1000
@@ -85,6 +89,46 @@ func NewOptimizedIncrementalSyncManager(
 		batchSize:      10,              // 每批处理10个账户
 		pollInterval:   2 * time.Second, // 轮询间隔2秒，保证能够及时检查所有同步间隔
 		dbTimeout:      5 * time.Second, // 数据库操作5秒超时
+	}
+}
+
+// SetEmailIngestService replaces the default persistence-only ingest service with the app-wide ingest pipeline.
+func (m *OptimizedIncrementalSyncManager) SetEmailIngestService(ingestService *EmailIngestService) {
+	if ingestService != nil {
+		m.ingestService = ingestService
+	}
+}
+
+func (m *OptimizedIncrementalSyncManager) createSyncRun(accountID uint, source EmailIngestSource, startTime time.Time) *models.SyncRun {
+	if m.syncConfigRepo == nil {
+		return nil
+	}
+	run := &models.SyncRun{
+		AccountID: accountID,
+		Source:    string(normalizeEmailIngestSource(source)),
+		Status:    models.SyncRunStatusRunning,
+		StartedAt: startTime,
+		Metadata: models.JSONMap{
+			"sync_manager": "optimized_incremental",
+		},
+	}
+	if err := m.syncConfigRepo.CreateSyncRun(run); err != nil {
+		m.logger.Warn("Failed to create sync run: %v", err)
+		return nil
+	}
+	return run
+}
+
+func (m *OptimizedIncrementalSyncManager) finishSyncRun(run *models.SyncRun, emailsFetched int, newEmails int, syncErr error) {
+	if run == nil || m.syncConfigRepo == nil {
+		return
+	}
+	status := models.SyncRunStatusSuccess
+	if syncErr != nil {
+		status = models.SyncRunStatusFailed
+	}
+	if err := m.syncConfigRepo.FinishSyncRun(run.ID, status, emailsFetched, newEmails, syncErr); err != nil {
+		m.logger.Warn("Failed to finish sync run %d: %v", run.ID, err)
 	}
 }
 
@@ -270,6 +314,13 @@ func (m *OptimizedIncrementalSyncManager) syncWorker() {
 // processAccountSync 处理单个账户的同步
 func (m *OptimizedIncrementalSyncManager) processAccountSync(job syncJob) {
 	accountID := job.accountID
+	syncRun := m.createSyncRun(accountID, EmailIngestSourceAutoSync, job.triggerTime)
+	emailsFetched := 0
+	newEmailCount := 0
+	var syncErr error
+	defer func() {
+		m.finishSyncRun(syncRun, emailsFetched, newEmailCount, syncErr)
+	}()
 
 	// 创建带超时的上下文
 	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
@@ -311,21 +362,22 @@ func (m *OptimizedIncrementalSyncManager) processAccountSync(job syncJob) {
 	var startDate *time.Time
 	var endDate time.Time = time.Now()
 
-	if configWithAccount.LastSyncEndTime != nil {
+	lastSyncEndTime := m.getAccountCursorLastSyncEndTime(accountID, configWithAccount.LastSyncEndTime)
+	if lastSyncEndTime != nil {
 		// 增量同步：使用上次同步结束时间减5分钟作为开始时间
 		// 5分钟缓冲区确保不会因为邮件送达延迟而遗漏邮件
-		lastEndMinus5Min := configWithAccount.LastSyncEndTime.Add(-5 * time.Minute)
+		lastEndMinus5Min := lastSyncEndTime.Add(-5 * time.Minute)
 
 		// 但不超过24小时前，避免处理过多历史邮件
 		twentyFourHoursAgo := time.Now().Add(-24 * time.Hour)
 		if lastEndMinus5Min.Before(twentyFourHoursAgo) {
 			startDate = &twentyFourHoursAgo
 			m.logger.Info("Using 24h fallback for account %d: last_sync_end_time too old (%v)",
-				accountID, configWithAccount.LastSyncEndTime)
+				accountID, lastSyncEndTime)
 		} else {
 			startDate = &lastEndMinus5Min
 			m.logger.Info("Using 5-minute buffer for account %d: start from %v (end_time: %v)",
-				accountID, lastEndMinus5Min, configWithAccount.LastSyncEndTime)
+				accountID, lastEndMinus5Min, lastSyncEndTime)
 		}
 	} else {
 		// 首次同步，从24小时前开始
@@ -352,13 +404,21 @@ func (m *OptimizedIncrementalSyncManager) processAccountSync(job syncJob) {
 
 	if err != nil {
 		m.logger.Error("Error fetching emails for account %d: %v", accountID, err)
+		syncErr = err
 		// 更新同步状态为错误
 		m.updateSyncStatus(accountID, models.SyncStatusError, err.Error())
 		return
 	}
+	emailsFetched = len(emails)
 
 	// 处理获取到的邮件
-	emailsProcessed, hasNewEmails, err := m.handleSyncBatch(emails)
+	emailsProcessed, hasNewEmails, err := m.handleSyncBatch(emails, EmailIngestSourceAutoSync)
+	if err != nil {
+		syncErr = err
+		m.updateSyncStatus(accountID, models.SyncStatusError, err.Error())
+		return
+	}
+	newEmailCount = len(emailsProcessed)
 
 	// 更新最后同步时间（即使没有新邮件也更新）
 	// 传入同步的结束时间，确保时间窗口准确
@@ -442,7 +502,8 @@ func (m *OptimizedIncrementalSyncManager) fetchEmails(ctx context.Context, req F
 		if isGmailAccount {
 			m.logger.Warn("Gmail incremental sync failed, attempting fallback to full sync: %v", err)
 
-			// Reset History ID to force full sync
+			// Reset History ID to force full sync.
+			shouldRetry := false
 			syncConfig, getErr := m.syncConfigRepo.GetByAccountID(account.ID)
 			if getErr == nil && syncConfig.LastHistoryID != "" {
 				m.logger.Info("Resetting History ID '%s' to trigger full sync", syncConfig.LastHistoryID)
@@ -450,7 +511,20 @@ func (m *OptimizedIncrementalSyncManager) fetchEmails(ctx context.Context, req F
 				if updateErr := m.syncConfigRepo.Update(syncConfig); updateErr != nil {
 					m.logger.Error("Failed to reset History ID for fallback: %v", updateErr)
 				}
+				shouldRetry = true
+			}
+			cursor, cursorErr := m.syncConfigRepo.GetAccountSyncCursor(account.ID, models.SyncCursorProviderGmail)
+			if cursorErr == nil && cursor.LastHistoryID != "" {
+				m.logger.Info("Resetting cursor History ID '%s' to trigger full sync", cursor.LastHistoryID)
+				if updateErr := m.syncConfigRepo.UpsertAccountSyncCursorHistoryID(account.ID, models.SyncCursorProviderGmail, ""); updateErr != nil {
+					m.logger.Error("Failed to reset cursor History ID for fallback: %v", updateErr)
+				}
+				shouldRetry = true
+			} else if cursorErr != nil && cursorErr != gorm.ErrRecordNotFound {
+				m.logger.Warn("Failed to read Gmail sync cursor for fallback: %v", cursorErr)
+			}
 
+			if shouldRetry {
 				// Retry with cleared History ID
 				retryEmails, retryErr := fetcherService.FetchEmailsFromMultipleMailboxes(*account, options)
 				if retryErr == nil {
@@ -466,6 +540,17 @@ func (m *OptimizedIncrementalSyncManager) fetchEmails(ctx context.Context, req F
 
 	m.logger.Info("Successfully fetched %d emails from mailboxes (no filtering applied)", len(emails))
 	return emails, nil
+}
+
+func (m *OptimizedIncrementalSyncManager) getAccountCursorLastSyncEndTime(accountID uint, fallback *time.Time) *time.Time {
+	cursor, err := m.syncConfigRepo.GetAccountSyncCursor(accountID, models.SyncCursorProviderGeneric)
+	if err == nil && cursor.LastSyncEndTime != nil {
+		return cursor.LastSyncEndTime
+	}
+	if err != nil && err != gorm.ErrRecordNotFound {
+		m.logger.Warn("Failed to read sync cursor for account %d: %v", accountID, err)
+	}
+	return fallback
 }
 
 // getAccountByEmail 根据邮箱地址获取账户信息
@@ -723,13 +808,13 @@ func (m *OptimizedIncrementalSyncManager) processFetchComplete(accountID uint, e
 	config.LastSyncEndTime = &syncEndTime // 保存本次同步的结束时间，用于下次增量同步
 	config.SyncStatus = models.SyncStatusIdle
 
-	// 只有在没有新邮件时才需要强制更新，有新邮件时 handleSyncBatch 已经更新过了
-	if !hasNewEmails {
-		if err := m.syncConfigRepo.CreateOrUpdate(config); err != nil {
-			return fmt.Errorf("failed to update sync time: %w", err)
-		}
-		m.logger.Info("Updated last sync time for account %d (no new emails), end_time: %v", accountID, syncEndTime)
+	if err := m.syncConfigRepo.CreateOrUpdate(config); err != nil {
+		return fmt.Errorf("failed to update sync time: %w", err)
 	}
+	if err := m.syncConfigRepo.UpsertAccountSyncCursorTimes(accountID, models.SyncCursorProviderGeneric, config.LastSyncTime, config.LastSyncEndTime); err != nil {
+		return fmt.Errorf("failed to update sync cursor: %w", err)
+	}
+	m.logger.Info("Updated last sync cursor for account %d (has_new: %v), end_time: %v", accountID, hasNewEmails, syncEndTime)
 
 	// 记录统计信息
 	stats := &models.SyncStatistics{
@@ -747,29 +832,18 @@ func (m *OptimizedIncrementalSyncManager) processFetchComplete(accountID uint, e
 }
 
 // handleSyncBatch 处理一批邮件
-func (m *OptimizedIncrementalSyncManager) handleSyncBatch(emails []models.Email) ([]models.Email, bool, error) {
-	var syncedEmails []models.Email
-	hasNewEmails := false
+func (m *OptimizedIncrementalSyncManager) handleSyncBatch(emails []models.Email, source EmailIngestSource) ([]models.Email, bool, error) {
+	syncedEmails, err := m.ingestService.IngestEmails(emails, EmailIngestOptions{
+		Source: source,
+		Metadata: map[string]interface{}{
+			"sync_manager": "optimized_incremental",
+		},
+	})
+	if err != nil {
+		return nil, false, err
+	}
 
-	for _, email := range emails {
-		// 检查邮件是否已存在
-		exists, err := m.emailRepo.CheckDuplicate(email.MessageID, email.AccountID)
-		if err != nil {
-			m.logger.Error("Error checking duplicate for %s: %v", email.MessageID, err)
-			continue
-		}
-
-		if exists {
-			m.logger.Debug("Email already exists: %s", email.MessageID)
-			continue
-		}
-
-		// 保存新邮件
-		if err := m.emailRepo.Create(&email); err != nil {
-			m.logger.Error("Failed to save email %s: %v", email.MessageID, err)
-			continue
-		}
-
+	for _, email := range syncedEmails {
 		// 更新同步配置
 		config, err := m.syncConfigRepo.GetByAccountID(email.AccountID)
 		if err != nil {
@@ -787,12 +861,10 @@ func (m *OptimizedIncrementalSyncManager) handleSyncBatch(emails []models.Email)
 			continue
 		}
 
-		syncedEmails = append(syncedEmails, email)
-		hasNewEmails = true
 		m.logger.Info("Synced new email %s for account %d", email.MessageID, email.AccountID)
 	}
 
-	return syncedEmails, hasNewEmails, nil
+	return syncedEmails, len(syncedEmails) > 0, nil
 }
 
 // SyncNow 立即同步指定账户
@@ -824,6 +896,17 @@ func (m *OptimizedIncrementalSyncManager) SyncNow(accountID uint, opts SyncNowOp
 	// 在单独的goroutine中处理同步
 	go func() {
 		start := time.Now()
+		source := opts.Source
+		if source == "" {
+			source = EmailIngestSourceManualSync
+		}
+		syncRun := m.createSyncRun(accountID, source, start)
+		emailsFetched := 0
+		newEmailCount := 0
+		var syncErr error
+		defer func() {
+			m.finishSyncRun(syncRun, emailsFetched, newEmailCount, syncErr)
+		}()
 
 		// 处理同步
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -833,9 +916,10 @@ func (m *OptimizedIncrementalSyncManager) SyncNow(accountID uint, opts SyncNowOp
 		endTime := time.Now()
 		var startTime *time.Time
 
-		if config.LastSyncEndTime != nil {
+		lastSyncEndTime := m.getAccountCursorLastSyncEndTime(accountID, config.LastSyncEndTime)
+		if lastSyncEndTime != nil {
 			// 使用上次同步结束时间减5分钟作为开始时间
-			bufferTime := config.LastSyncEndTime.Add(-5 * time.Minute)
+			bufferTime := lastSyncEndTime.Add(-5 * time.Minute)
 			startTime = &bufferTime
 		} else if config.LastSyncTime != nil {
 			// 兼容旧版本，如果没有LastSyncEndTime则使用LastSyncTime减5分钟
@@ -855,19 +939,24 @@ func (m *OptimizedIncrementalSyncManager) SyncNow(accountID uint, opts SyncNowOp
 
 		emails, err := m.fetchEmails(ctx, fetchReq)
 		if err != nil {
+			syncErr = err
 			errorCh <- err
 			return
 		}
+		emailsFetched = len(emails)
 
 		// 处理邮件
-		syncedEmails, hasNewEmails, err := m.handleSyncBatch(emails)
+		syncedEmails, hasNewEmails, err := m.handleSyncBatch(emails, source)
 		if err != nil {
+			syncErr = err
 			errorCh <- err
 			return
 		}
+		newEmailCount = len(syncedEmails)
 
 		// 更新最后同步时间
 		if err := m.processFetchComplete(accountID, len(syncedEmails), hasNewEmails, endTime); err != nil {
+			syncErr = err
 			errorCh <- err
 			return
 		}

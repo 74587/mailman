@@ -7,8 +7,15 @@ export interface SyncConfig {
     sync_interval: number
     sync_folders: string[]
     last_sync_time?: string
+    last_sync_end_time?: string
     last_sync_error?: string
+    last_error_time?: string
     sync_status: string
+    auto_disabled?: boolean
+    disable_reason?: string
+    consecutive_errors?: number
+    recovery_attempts?: number
+    last_recovery_attempt?: string
     created_at: string
     updated_at: string
 }
@@ -170,4 +177,3 @@ export interface AccountSyncStatus {
     error_count?: number
     next_sync_time?: string
 }
-

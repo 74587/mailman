@@ -252,6 +252,18 @@ func main() {
 	mainLogger.Info("正在初始化邮件通知服务...")
 	emailNotificationService := services.NewEmailNotificationService()
 
+	// Initialize unified email ingest pipeline
+	mainLogger.Info("正在初始化统一邮件入库管道...")
+	emailIngestService := services.NewEmailIngestService(
+		emailRepo,
+		emailAccountRepo,
+		emailNotificationService,
+		eventBus,
+		subscriptionManager,
+	)
+	fetcherService.SetEmailIngestService(emailIngestService)
+	incrementalSyncManager.SetEmailIngestService(emailIngestService)
+
 	// Initialize Per Account Sync Manager
 	mainLogger.Info("正在初始化每账户同步管理器...")
 	perAccountSyncManager := services.NewPerAccountSyncManager(
@@ -262,7 +274,9 @@ func main() {
 		fetcherService,
 		emailNotificationService,
 		eventBus, // 传递EventBus使触发器系统能接收新邮件事件
+		subscriptionManager,
 	)
+	perAccountSyncManager.SetEmailIngestService(emailIngestService)
 	if err := perAccountSyncManager.Start(); err != nil {
 		mainLogger.Error("Failed to start per-account sync manager: %v", err)
 		return
@@ -291,7 +305,7 @@ func main() {
 	)
 
 	// Initialize API handler
-	apiHandler := api.NewAPIHandler(fetcherService, parserService, emailAccountRepo, mailProviderRepo, emailRepo, incrementalSyncRepo, emailFetchScheduler, pluginManager, incrementalSyncManager, perAccountSyncManager)
+	apiHandler := api.NewAPIHandler(fetcherService, parserService, emailAccountRepo, mailProviderRepo, emailRepo, incrementalSyncRepo, emailFetchScheduler, pluginManager, incrementalSyncManager, perAccountSyncManager, emailIngestService)
 
 	// Initialize Email Send handler
 	emailSendHandler := api.NewEmailSendHandlers(emailSenderService)

@@ -24,9 +24,11 @@ export interface InlineActionsConfig {
 }
 
 export interface SimpleExtractConfig {
-    field: string    // body, subject, from, html_body
-    type: string     // regex, js, gotemplate
-    pattern: string  // 正则表达式或脚本
+    field: string       // body, subject, from, html_body
+    type: string        // regex, js, gotemplate
+    pattern: string     // 正则表达式或脚本
+    match_mode?: 'all' | 'first' | 'last' | 'index'
+    match_index?: number
 }
 
 // ============ Response Types ============

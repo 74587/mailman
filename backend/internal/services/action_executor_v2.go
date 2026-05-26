@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sort"
 	"time"
 
@@ -272,8 +273,25 @@ func (e *ActionExecutorV2) executeActionWithInterceptors(
 }
 
 // executeActionCore 执行动作核心逻辑（不含拦截器）
-func (e *ActionExecutorV2) executeActionCore(action models.TriggerAction, email models.Email, sharedEvent *triggerModels.Event) *models.ActionExecutionResult {
+func (e *ActionExecutorV2) executeActionCore(action models.TriggerAction, email models.Email, sharedEvent *triggerModels.Event) (executionResult *models.ActionExecutionResult) {
 	log.Printf("[ActionExecutorV2] Executing action: %s (Plugin: %s)", action.ID, action.PluginID)
+	panicStart := time.Now()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			endTime := time.Now()
+			log.Printf("[ActionExecutorV2] Action execution panicked: %s - %v\n%s", action.ID, recovered, string(debug.Stack()))
+			executionResult = &models.ActionExecutionResult{
+				ActionID:   action.ID,
+				PluginID:   action.PluginID,
+				PluginName: action.PluginName,
+				Success:    false,
+				StartTime:  panicStart,
+				EndTime:    endTime,
+				Duration:   endTime.Sub(panicStart).Milliseconds(),
+				Error:      fmt.Sprintf("action panic: %v", recovered),
+			}
+		}
+	}()
 
 	// Get the plugin from TriggerV2 PluginManager
 	plugin, err := e.pluginManager.GetPlugin(action.PluginID)
@@ -340,7 +358,7 @@ func (e *ActionExecutorV2) executeActionCore(action models.TriggerAction, email 
 	endTime := time.Now()
 
 	// Create the execution result
-	executionResult := &models.ActionExecutionResult{
+	executionResult = &models.ActionExecutionResult{
 		ActionID:   action.ID,
 		PluginID:   action.PluginID,
 		PluginName: action.PluginName,

@@ -25,6 +25,8 @@ type EmailEvent struct {
 	Timestamp      time.Time
 	Data           interface{}
 	Error          error
+	Source         string
+	Metadata       map[string]interface{}
 }
 
 // EventChannel 定义事件通道类型

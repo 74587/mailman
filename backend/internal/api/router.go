@@ -142,6 +142,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	apiRouter.HandleFunc("/accounts/{id}/sync-config/effective", syncHandlers.GetEffectiveSyncConfig).Methods("GET")
 	apiRouter.HandleFunc("/accounts/{id}/sync-config/temporary", syncHandlers.CreateTemporarySyncConfig).Methods("POST")
 	apiRouter.HandleFunc("/accounts/{id}/sync-now", syncHandlers.SyncNow).Methods("POST")
+	apiRouter.HandleFunc("/accounts/{id}/sync-statistics", syncHandlers.GetSyncStatistics).Methods("GET")
 	apiRouter.HandleFunc("/accounts/{id}/mailboxes", syncHandlers.GetAccountMailboxes).Methods("GET")
 
 	// Sync global configuration

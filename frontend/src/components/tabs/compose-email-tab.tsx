@@ -116,7 +116,7 @@ function EmailSuggestions({
     if (filteredAccounts.length === 0) return null
 
     return (
-        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-600 dark:bg-gray-700">
+        <div className="absolute left-0 top-[calc(100%+0.5rem)] z-50 max-h-64 w-[min(420px,100%)] min-w-[280px] overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-600 dark:bg-gray-700">
             {filteredAccounts.map((account) => (
                 <button
                     key={account.id}
@@ -125,11 +125,13 @@ function EmailSuggestions({
                         onSelect(account.emailAddress)
                         onClose()
                     }}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-600"
+                    className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-600"
                 >
-                    <User className="h-4 w-4 text-gray-400" />
-                    <div>
-                        <div className="text-gray-900 dark:text-white">{account.emailAddress}</div>
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-600">
+                        <User className="h-4 w-4 text-gray-400" />
+                    </div>
+                    <div className="min-w-0">
+                        <div className="truncate font-medium text-gray-900 dark:text-white">{account.emailAddress}</div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">
                             {account.mailProvider?.name || account.mailProvider?.type}
                         </div>
@@ -203,8 +205,8 @@ function RecipientTags({
     // 当 label 为空时，渲染简化版本（用于新布局）
     if (!label) {
         return (
-            <div ref={containerRef} className="relative">
-                <div className="flex flex-wrap items-center gap-1">
+            <div ref={containerRef} className="relative min-h-7">
+                <div className="relative z-10 flex min-h-7 flex-wrap items-center gap-1">
                     {recipients.map((recipient, index) => (
                         <span
                             key={index}
@@ -237,7 +239,7 @@ function RecipientTags({
                             }, 200)
                         }}
                         placeholder={recipients.length === 0 ? placeholder : ''}
-                        className="flex-1 min-w-[100px] bg-transparent text-[13px] outline-none border-none focus:ring-0 placeholder:text-gray-400 dark:placeholder:text-gray-500"
+                        className="h-7 flex-1 min-w-[160px] bg-transparent text-[13px] outline-none border-none focus:ring-0 placeholder:text-gray-400 dark:placeholder:text-gray-500"
                     />
                 </div>
                 <EmailSuggestions
@@ -340,7 +342,7 @@ function SenderSelector({
     }, [])
 
     return (
-        <div ref={containerRef} className="relative flex-1">
+        <div ref={containerRef} className="relative z-50 flex-1">
             <button
                 type="button"
                 onClick={() => setIsOpen(!isOpen)}
@@ -363,7 +365,7 @@ function SenderSelector({
             </button>
 
             {isOpen && (
-                <div className="absolute left-0 right-0 top-full z-20 mt-1 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-600 dark:bg-gray-700">
+                <div className="absolute left-0 right-0 top-full z-[70] mt-1 rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-600 dark:bg-gray-700">
                     <div className="border-b border-gray-200 p-2 dark:border-gray-600">
                         <div className="relative">
                             <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -1016,7 +1018,7 @@ export default function ComposeEmailTab({
                     <label className="w-16 flex-shrink-0 text-[13px] font-medium text-gray-400 dark:text-gray-500">
                         收件人
                     </label>
-                    <div className="relative z-30 flex-1 bg-gray-50 dark:bg-gray-700/30 rounded-lg px-3 py-1 transition-all focus-within:ring-2 focus-within:ring-blue-300 dark:focus-within:ring-blue-500">
+                    <div className="relative flex-1 bg-gray-50 dark:bg-gray-700/30 rounded-lg px-3 py-1 transition-all focus-within:ring-2 focus-within:ring-blue-300 dark:focus-within:ring-blue-500">
                         <RecipientTags
                             label=""
                             recipients={toRecipients}
@@ -1056,7 +1058,7 @@ export default function ComposeEmailTab({
                             <label className="w-16 flex-shrink-0 text-[13px] font-medium text-gray-400 dark:text-gray-500">
                                 抄送
                             </label>
-                            <div className="relative z-20 flex-1 bg-gray-50 dark:bg-gray-700/30 rounded-lg px-3 py-1 transition-all focus-within:ring-2 focus-within:ring-blue-300 dark:focus-within:ring-blue-500">
+                            <div className="relative flex-1 bg-gray-50 dark:bg-gray-700/30 rounded-lg px-3 py-1 transition-all focus-within:ring-2 focus-within:ring-blue-300 dark:focus-within:ring-blue-500">
                                 <RecipientTags
                                     label=""
                                     recipients={ccRecipients}
@@ -1070,7 +1072,7 @@ export default function ComposeEmailTab({
                             <label className="w-16 flex-shrink-0 text-[13px] font-medium text-gray-400 dark:text-gray-500">
                                 密送
                             </label>
-                            <div className="relative z-10 flex-1 bg-gray-50 dark:bg-gray-700/30 rounded-lg px-3 py-1 transition-all focus-within:ring-2 focus-within:ring-blue-300 dark:focus-within:ring-blue-500">
+                            <div className="relative flex-1 bg-gray-50 dark:bg-gray-700/30 rounded-lg px-3 py-1 transition-all focus-within:ring-2 focus-within:ring-blue-300 dark:focus-within:ring-blue-500">
                                 <RecipientTags
                                     label=""
                                     recipients={bccRecipients}

@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"time"
 
@@ -69,8 +70,26 @@ func (e *ActionExecutor) ExecuteActions(actions []models.TriggerAction, email mo
 }
 
 // ExecuteAction executes a single action
-func (e *ActionExecutor) ExecuteAction(action models.TriggerAction, context *PluginContext) (*models.ActionExecutionResult, error) {
+func (e *ActionExecutor) ExecuteAction(action models.TriggerAction, context *PluginContext) (executionResult *models.ActionExecutionResult, err error) {
 	e.logger.Info("Executing action: %s (Plugin: %s)", action.ID, action.PluginID)
+	startTime := time.Now()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			endTime := time.Now()
+			err = fmt.Errorf("action panic: %v", recovered)
+			e.logger.Error("Action execution panicked: %s - %v\n%s", action.ID, recovered, string(debug.Stack()))
+			executionResult = &models.ActionExecutionResult{
+				ActionID:   action.ID,
+				PluginID:   action.PluginID,
+				PluginName: action.PluginName,
+				Success:    false,
+				StartTime:  startTime,
+				EndTime:    endTime,
+				Duration:   endTime.Sub(startTime).Milliseconds(),
+				Error:      err.Error(),
+			}
+		}
+	}()
 
 	// Skip disabled actions
 	if !action.Enabled {
@@ -105,12 +124,11 @@ func (e *ActionExecutor) ExecuteAction(action models.TriggerAction, context *Plu
 	}
 
 	// Execute the plugin
-	startTime := time.Now()
 	result, err := plugin.Execute(action.Config, context)
 	endTime := time.Now()
 
 	// Create the execution result
-	executionResult := &models.ActionExecutionResult{
+	executionResult = &models.ActionExecutionResult{
 		ActionID:   action.ID,
 		PluginID:   action.PluginID,
 		PluginName: action.PluginName,

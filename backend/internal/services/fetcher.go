@@ -28,6 +28,7 @@ type FetcherService struct {
 	emailRepo     *repository.EmailRepository
 	parserService *ParserService
 	oauth2Service *OAuth2Service
+	ingestService *EmailIngestService
 	logger        *utils.Logger
 }
 
@@ -43,6 +44,13 @@ type FetchEmailsOptions struct {
 	IncludeBody     bool
 	SortBy          string
 	Folders         []string // List of folders to fetch from
+}
+
+// SetEmailIngestService connects fetch-and-store helpers to the unified ingest pipeline.
+func (s *FetcherService) SetEmailIngestService(ingestService *EmailIngestService) {
+	if ingestService != nil {
+		s.ingestService = ingestService
+	}
 }
 
 // NewFetcherService creates a new FetcherService.
@@ -694,6 +702,21 @@ func (s *FetcherService) FetchAndStoreEmails(accountID uint) error {
 	}
 
 	s.logger.Debug("Fetched %d emails, checking for duplicates", len(emails))
+
+	if s.ingestService != nil {
+		newEmails, err := s.ingestService.IngestEmails(emails, EmailIngestOptions{
+			Source: EmailIngestSourceManualSync,
+			Metadata: map[string]interface{}{
+				"entrypoint": "fetcher_fetch_and_store",
+				"account_id": accountID,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("failed to ingest emails: %w", err)
+		}
+		s.logger.Info("Stored %d new emails for account %d via ingest pipeline", len(newEmails), accountID)
+		return nil
+	}
 
 	// Check for duplicates and store new emails
 	var newEmails []models.Email

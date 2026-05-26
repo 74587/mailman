@@ -74,31 +74,49 @@ func (h *APIHandler) processSingleMailbox(
 
 	result.EmailsProcessed = len(emails)
 
-	// Check for duplicates and store new emails
 	var newEmails []models.Email
-	for _, email := range emails {
-		if email.MessageID != "" {
-			exists, err := h.EmailRepo.CheckDuplicate(email.MessageID, account.ID)
-			if err != nil {
-				h.logger.Error("Error checking duplicate for message %s: %v", email.MessageID, err)
-				continue
+	if h.EmailIngestService != nil {
+		newEmails, err = h.EmailIngestService.IngestEmails(emails, services.EmailIngestOptions{
+			Source:       services.EmailIngestSourceManualSync,
+			AccountEmail: account.EmailAddress,
+			Metadata: map[string]interface{}{
+				"entrypoint": "process_single_mailbox",
+				"mailbox":    mailboxName,
+				"sync_mode":  syncMode,
+			},
+		})
+		if err != nil {
+			result.Error = fmt.Sprintf("Failed to ingest emails: %v", err)
+			result.SyncEndTime = time.Now()
+			return result
+		}
+	} else {
+		// Fallback for tests or legacy construction paths that do not provide the ingest service.
+		for _, email := range emails {
+			if email.MessageID != "" {
+				exists, err := h.EmailRepo.CheckDuplicate(email.MessageID, account.ID)
+				if err != nil {
+					h.logger.Error("Error checking duplicate for message %s: %v", email.MessageID, err)
+					continue
+				}
+				if exists {
+					continue
+				}
 			}
-			if exists {
-				continue
+			newEmails = append(newEmails, email)
+		}
+		if len(newEmails) > 0 {
+			if err := h.EmailRepo.CreateBatch(newEmails); err != nil {
+				result.Error = fmt.Sprintf("Failed to store emails: %v", err)
+				result.SyncEndTime = time.Now()
+				return result
 			}
 		}
-		newEmails = append(newEmails, email)
 	}
 
 	result.NewEmails = len(newEmails)
 
-	// Store new emails
 	if len(newEmails) > 0 {
-		if err := h.EmailRepo.CreateBatch(newEmails); err != nil {
-			result.Error = fmt.Sprintf("Failed to store emails: %v", err)
-			result.SyncEndTime = time.Now()
-			return result
-		}
 		h.logger.Info("Stored %d new emails for account %d mailbox %s", len(newEmails), account.ID, mailboxName)
 	}
 

@@ -1,7 +1,7 @@
 'use client'
 import { logger } from '@/lib/logger';
 
-import { useEffect, useState } from 'react'
+import { FormEvent, useEffect, useState } from 'react'
 import { Plus, Search, MoreVertical, Edit2, Trash2, RefreshCw, CheckCircle, XCircle, AlertCircle, Grid, List, Table, ChevronLeft, ChevronRight, Shield, ShieldCheck, Mail, Inbox, ChevronDown, X, Settings, Square, CheckSquare, Clock, Loader2, TableProperties } from 'lucide-react'
 import { toast } from 'sonner'
 import { emailAccountService } from '@/services/email-account.service'
@@ -22,6 +22,7 @@ import { TagFilter, TagManager, TagBadgeList, InlineTagSelector } from '@/compon
 import { TagWithGroup } from '@/types'
 import { AccountsDataTable } from '@/components/accounts/accounts-data-table'
 import { AccountFilterPanel } from '@/components/accounts/account-filter-panel'
+import { AccountSyncStatus, syncConfigService } from '@/services/sync-config.service'
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -125,6 +126,8 @@ export default function AccountsTab() {
     const [accounts, setAccounts] = useState<EmailAccount[]>([])
     const [loading, setLoading] = useState(true)
     const [searchQuery, setSearchQuery] = useState('')
+    const [submittedSearchQuery, setSubmittedSearchQuery] = useState('')
+    const [syncStatuses, setSyncStatuses] = useState<Map<number, AccountSyncStatus>>(new Map())
     const [selectedAccount, setSelectedAccount] = useState<EmailAccount | null>(null)
     const [showAddModal, setShowAddModal] = useState(false)
     const [showEnhancedAddModal, setShowEnhancedAddModal] = useState(false)
@@ -190,7 +193,7 @@ export default function AccountsTab() {
         loadAccounts()
         checkOAuth2Availability()
         loadProviders()
-    }, [pagination.page, pagination.limit, sortBy, sortOrder, tagFilter]) // 移除 advancedFilters 和 searchQuery，使用手动触发
+    }, [pagination.page, pagination.limit, sortBy, sortOrder, tagFilter, submittedSearchQuery]) // advancedFilters 使用手动触发
 
     // 加载供应商列表
     const loadProviders = async () => {
@@ -209,6 +212,7 @@ export default function AccountsTab() {
             setProviderFilter(filterByProvider)
             // 重置搜索查询以避免冲突
             setSearchQuery('')
+            setSubmittedSearchQuery('')
             // 重置分页到第一页
             setPagination(prev => ({ ...prev, page: 1 }))
         }
@@ -261,7 +265,7 @@ export default function AccountsTab() {
                 limit: pagination.limit,
                 sort_by: sortBy,
                 sort_order: sortOrder,
-                search: searchQuery || undefined,
+                search: submittedSearchQuery || undefined,
                 tag_ids: tagFilter.length > 0 ? tagFilter.join(',') : undefined,
                 // 高级过滤参数
                 provider_id: advancedFilters.provider_id,
@@ -284,6 +288,30 @@ export default function AccountsTab() {
             setLoading(false)
         }
     }
+
+    const loadSyncStatuses = async () => {
+        try {
+            const statuses = await syncConfigService.getAllAccountSyncStatuses()
+            const statusMap = new Map<number, AccountSyncStatus>()
+            statuses.forEach((status) => {
+                statusMap.set(status.account_id, status)
+            })
+            setSyncStatuses(statusMap)
+        } catch (error) {
+            console.error('Failed to load sync statuses:', error)
+            setSyncStatuses(new Map())
+        }
+    }
+
+    const handleSearchSubmit = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault()
+        setSubmittedSearchQuery(searchQuery.trim())
+        setPagination(prev => ({ ...prev, page: 1 }))
+    }
+
+    useEffect(() => {
+        loadSyncStatuses()
+    }, [accounts])
 
     const handleDelete = async (id: number) => {
         const confirmed = await confirm({
@@ -600,28 +628,65 @@ export default function AccountsTab() {
                 {/* 搜索和操作栏 */}
                 <div className="flex items-center justify-between">
                     <div className="w-96">
-                        <div className="relative">
+                        <form className="relative" onSubmit={handleSearchSubmit}>
                             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
                             <input
                                 type="text"
                                 placeholder="搜索邮箱账户..."
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
-                                className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-10 pr-4 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-10 pr-20 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
                             />
-                        </div>
+                            {searchQuery && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSearchQuery('')
+                                        setSubmittedSearchQuery('')
+                                        setPagination(prev => ({ ...prev, page: 1 }))
+                                    }}
+                                    className="absolute right-10 top-1/2 -translate-y-1/2 rounded p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-600 dark:hover:text-gray-200"
+                                    title="清空搜索"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            )}
+                            <button
+                                type="submit"
+                                className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-2 py-1 text-xs font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-900/20"
+                            >
+                                搜索
+                            </button>
+                        </form>
                         {/* 过滤器指示器 */}
-                        {providerFilter && (
+                        {(providerFilter || submittedSearchQuery) && (
                             <div className="mt-2 flex items-center space-x-2">
-                                <span className="inline-flex items-center rounded-full bg-primary-100 px-3 py-1 text-sm font-medium text-primary-800 dark:bg-primary-900/20 dark:text-primary-400">
-                                    过滤: {providerFilter.toUpperCase()} OAuth2 账户
-                                    <button
-                                        onClick={() => setProviderFilter(null)}
-                                        className="ml-2 rounded-full p-0.5 hover:bg-primary-200 dark:hover:bg-primary-800"
-                                    >
-                                        <X className="h-3 w-3" />
-                                    </button>
-                                </span>
+                                {providerFilter && (
+                                    <span className="inline-flex items-center rounded-full bg-primary-100 px-3 py-1 text-sm font-medium text-primary-800 dark:bg-primary-900/20 dark:text-primary-400">
+                                        过滤: {providerFilter.toUpperCase()} OAuth2 账户
+                                        <button
+                                            onClick={() => setProviderFilter(null)}
+                                            className="ml-2 rounded-full p-0.5 hover:bg-primary-200 dark:hover:bg-primary-800"
+                                        >
+                                            <X className="h-3 w-3" />
+                                        </button>
+                                    </span>
+                                )}
+                                {submittedSearchQuery && (
+                                    <span className="inline-flex max-w-64 items-center rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                                        <span className="truncate">搜索: {submittedSearchQuery}</span>
+                                        <button
+                                            onClick={() => {
+                                                setSearchQuery('')
+                                                setSubmittedSearchQuery('')
+                                                setPagination(prev => ({ ...prev, page: 1 }))
+                                            }}
+                                            className="ml-2 rounded-full p-0.5 hover:bg-gray-200 dark:hover:bg-gray-600"
+                                        >
+                                            <X className="h-3 w-3" />
+                                        </button>
+                                    </span>
+                                )}
                             </div>
                         )}
                     </div>
@@ -842,9 +907,9 @@ export default function AccountsTab() {
                     paginatedAccounts.length === 0 ? (
                         <div className="rounded-lg border border-gray-200 bg-white p-12 text-center dark:border-gray-700 dark:bg-gray-800">
                             <p className="text-gray-500 dark:text-gray-400">
-                                {searchQuery ? '没有找到匹配的账户' : '还没有添加任何邮箱账户'}
+                                {submittedSearchQuery ? '没有找到匹配的账户' : '还没有添加任何邮箱账户'}
                             </p>
-                            {!searchQuery && (
+                            {!submittedSearchQuery && (
                                 <button
                                     onClick={() => setShowEnhancedAddModal(true)}
                                     className="mt-4 text-primary-600 hover:text-primary-700"
@@ -1302,6 +1367,7 @@ export default function AccountsTab() {
                                     onTagsChange={loadAccounts}
                                     syncingId={syncing ?? undefined}
                                     verifyingId={verifying ?? undefined}
+                                    syncStatuses={syncStatuses}
                                     sorting={sortBy ? [{ id: sortBy, desc: sortOrder === 'desc' }] : []}
                                     onSortingChange={(newSorting) => {
                                         if (newSorting.length > 0) {
@@ -1505,4 +1571,3 @@ export default function AccountsTab() {
         </>
     )
 }
-

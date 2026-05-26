@@ -120,6 +120,9 @@ func (p *AIProcessActionPlugin) ValidateConfig(config map[string]interface{}) er
 // ApplyConfig 应用配置
 func (p *AIProcessActionPlugin) ApplyConfig(config map[string]interface{}) error {
 	if config != nil {
+		if p.config == nil {
+			p.config = make(map[string]interface{})
+		}
 		for k, v := range config {
 			p.config[k] = v
 		}
@@ -148,7 +151,15 @@ func (p *AIProcessActionPlugin) Execute(ctx *plugins.PluginContext, event *trigg
 	log.Printf("[AIProcessAction] Starting AI processing")
 	startTime := time.Now()
 
-	config := ctx.Config.Config
+	config := p.resolveExecutionConfig(ctx)
+	if event == nil {
+		return &plugins.PluginResult{
+			Success:       false,
+			Error:         "事件为空",
+			ExecutionTime: time.Since(startTime),
+			Timestamp:     time.Now(),
+		}, nil
+	}
 
 	// 获取邮件数据
 	var emailData triggerModels.EmailEventData
@@ -275,6 +286,22 @@ func (p *AIProcessActionPlugin) GetExecutionOrder() int {
 }
 
 // ========== 辅助方法 ==========
+
+func (p *AIProcessActionPlugin) resolveExecutionConfig(ctx *plugins.PluginContext) map[string]interface{} {
+	config := make(map[string]interface{})
+	for k, v := range p.GetDefaultConfig() {
+		config[k] = v
+	}
+	for k, v := range p.config {
+		config[k] = v
+	}
+	if ctx != nil && ctx.Config != nil && ctx.Config.Config != nil {
+		for k, v := range ctx.Config.Config {
+			config[k] = v
+		}
+	}
+	return config
+}
 
 // getStringConfig 获取字符串配置
 func (p *AIProcessActionPlugin) getStringConfig(config map[string]interface{}, key string) string {

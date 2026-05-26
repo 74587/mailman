@@ -81,20 +81,24 @@ func (h *SyncHandlers) GetAllSyncConfigs(w http.ResponseWriter, r *http.Request)
 
 	// Transform configs to include account info in expected format
 	type configResponse struct {
-		ID              uint                 `json:"id"`
-		AccountID       uint                 `json:"account_id"`
-		EnableAutoSync  bool                 `json:"enable_auto_sync"`
-		SyncInterval    int                  `json:"sync_interval"`
-		SyncFolders     models.StringSlice   `json:"sync_folders"`
-		LastSyncTime    *string              `json:"last_sync_time"`
-		LastSyncError   string               `json:"last_sync_error"`
-		SyncStatus      string               `json:"sync_status"`
-		CreatedAt       string               `json:"created_at"`
-		UpdatedAt       string               `json:"updated_at"`
-		AutoDisabled    bool                 `json:"auto_disabled"`
-		DisableReason   string               `json:"disable_reason"`
-		ConsecutiveErrs int                  `json:"consecutive_errors"`
-		Account         map[string]interface{} `json:"account"`
+		ID                  uint                   `json:"id"`
+		AccountID           uint                   `json:"account_id"`
+		EnableAutoSync      bool                   `json:"enable_auto_sync"`
+		SyncInterval        int                    `json:"sync_interval"`
+		SyncFolders         models.StringSlice     `json:"sync_folders"`
+		LastSyncTime        *string                `json:"last_sync_time"`
+		LastSyncEndTime     *string                `json:"last_sync_end_time"`
+		LastSyncError       string                 `json:"last_sync_error"`
+		SyncStatus          string                 `json:"sync_status"`
+		CreatedAt           string                 `json:"created_at"`
+		UpdatedAt           string                 `json:"updated_at"`
+		AutoDisabled        bool                   `json:"auto_disabled"`
+		DisableReason       string                 `json:"disable_reason"`
+		ConsecutiveErrs     int                    `json:"consecutive_errors"`
+		LastErrorTime       *string                `json:"last_error_time"`
+		RecoveryAttempts    int                    `json:"recovery_attempts"`
+		LastRecoveryAttempt *string                `json:"last_recovery_attempt"`
+		Account             map[string]interface{} `json:"account"`
 	}
 
 	responseConfigs := make([]configResponse, 0, len(configs))
@@ -103,6 +107,21 @@ func (h *SyncHandlers) GetAllSyncConfigs(w http.ResponseWriter, r *http.Request)
 		if cfg.LastSyncTime != nil {
 			t := cfg.LastSyncTime.Format("2006-01-02T15:04:05Z07:00")
 			lastSyncTime = &t
+		}
+		var lastSyncEndTime *string
+		if cfg.LastSyncEndTime != nil {
+			t := cfg.LastSyncEndTime.Format("2006-01-02T15:04:05Z07:00")
+			lastSyncEndTime = &t
+		}
+		var lastErrorTime *string
+		if cfg.LastErrorTime != nil {
+			t := cfg.LastErrorTime.Format("2006-01-02T15:04:05Z07:00")
+			lastErrorTime = &t
+		}
+		var lastRecoveryAttempt *string
+		if cfg.LastRecoveryAttempt != nil {
+			t := cfg.LastRecoveryAttempt.Format("2006-01-02T15:04:05Z07:00")
+			lastRecoveryAttempt = &t
 		}
 
 		accountInfo := map[string]interface{}{
@@ -124,20 +143,24 @@ func (h *SyncHandlers) GetAllSyncConfigs(w http.ResponseWriter, r *http.Request)
 		}
 
 		responseConfigs = append(responseConfigs, configResponse{
-			ID:              cfg.ID,
-			AccountID:       cfg.AccountID,
-			EnableAutoSync:  cfg.EnableAutoSync,
-			SyncInterval:    cfg.SyncInterval,
-			SyncFolders:     cfg.SyncFolders,
-			LastSyncTime:    lastSyncTime,
-			LastSyncError:   cfg.LastSyncError,
-			SyncStatus:      cfg.SyncStatus,
-			CreatedAt:       cfg.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			UpdatedAt:       cfg.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			AutoDisabled:    cfg.AutoDisabled,
-			DisableReason:   cfg.DisableReason,
-			ConsecutiveErrs: cfg.ConsecutiveErrors,
-			Account:         accountInfo,
+			ID:                  cfg.ID,
+			AccountID:           cfg.AccountID,
+			EnableAutoSync:      cfg.EnableAutoSync,
+			SyncInterval:        cfg.SyncInterval,
+			SyncFolders:         cfg.SyncFolders,
+			LastSyncTime:        lastSyncTime,
+			LastSyncEndTime:     lastSyncEndTime,
+			LastSyncError:       cfg.LastSyncError,
+			SyncStatus:          cfg.SyncStatus,
+			CreatedAt:           cfg.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			UpdatedAt:           cfg.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			AutoDisabled:        cfg.AutoDisabled,
+			DisableReason:       cfg.DisableReason,
+			ConsecutiveErrs:     cfg.ConsecutiveErrors,
+			LastErrorTime:       lastErrorTime,
+			RecoveryAttempts:    cfg.RecoveryAttempts,
+			LastRecoveryAttempt: lastRecoveryAttempt,
+			Account:             accountInfo,
 		})
 	}
 
@@ -210,7 +233,7 @@ func (h *SyncHandlers) CreateAccountSyncConfig(w http.ResponseWriter, r *http.Re
 		SyncStatus:     "idle",
 	}
 
-	if err := h.syncConfigRepo.CreateOrUpdate(config); err != nil {
+	if err := h.syncConfigRepo.CreateOrUpdateSettings(config); err != nil {
 		http.Error(w, "Failed to create sync config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -255,10 +278,11 @@ func (h *SyncHandlers) UpdateAccountSyncConfig(w http.ResponseWriter, r *http.Re
 		config.SyncFolders = req.SyncFolders
 	}
 
-	if err := h.syncConfigRepo.Update(config); err != nil {
+	if err := h.syncConfigRepo.CreateOrUpdateSettings(config); err != nil {
 		http.Error(w, "Failed to update sync config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	config, _ = h.syncConfigRepo.GetByAccountID(uint(id))
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
@@ -402,12 +426,38 @@ func (h *SyncHandlers) GetSyncStatistics(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	recentRuns, err := h.syncConfigRepo.GetRecentSyncRuns(uint(id), 10)
+	if err != nil {
+		h.logger.Warn("Failed to get recent sync runs for account %d: %v", id, err)
+		recentRuns = []models.SyncRun{}
+	}
+
+	cursors := map[string]*models.SyncCursor{}
+	if cursor, err := h.syncConfigRepo.GetAccountSyncCursor(uint(id), models.SyncCursorProviderGeneric); err == nil {
+		cursors[models.SyncCursorProviderGeneric] = cursor
+	}
+	if cursor, err := h.syncConfigRepo.GetAccountSyncCursor(uint(id), models.SyncCursorProviderGmail); err == nil {
+		cursors[models.SyncCursorProviderGmail] = cursor
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"account_id":      config.AccountID,
-		"sync_status":     config.SyncStatus,
-		"last_sync_time":  config.LastSyncTime,
-		"last_sync_error": config.LastSyncError,
+		"account_id":            config.AccountID,
+		"enable_auto_sync":      config.EnableAutoSync,
+		"sync_interval":         config.SyncInterval,
+		"sync_folders":          config.SyncFolders,
+		"sync_status":           config.SyncStatus,
+		"auto_disabled":         config.AutoDisabled,
+		"disable_reason":        config.DisableReason,
+		"consecutive_errors":    config.ConsecutiveErrors,
+		"last_sync_time":        config.LastSyncTime,
+		"last_sync_end_time":    config.LastSyncEndTime,
+		"last_sync_error":       config.LastSyncError,
+		"last_error_time":       config.LastErrorTime,
+		"recovery_attempts":     config.RecoveryAttempts,
+		"last_recovery_attempt": config.LastRecoveryAttempt,
+		"recent_runs":           recentRuns,
+		"cursors":               cursors,
 	})
 }
 
@@ -502,7 +552,7 @@ func (h *SyncHandlers) BatchCreateOrUpdateAccountSyncConfig(w http.ResponseWrite
 	var errors []map[string]interface{}
 
 	for _, config := range configs {
-		if err := h.syncConfigRepo.CreateOrUpdate(config); err != nil {
+		if err := h.syncConfigRepo.CreateOrUpdateSettings(config); err != nil {
 			errors = append(errors, map[string]interface{}{
 				"account_id": config.AccountID,
 				"error":      err.Error(),

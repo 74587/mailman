@@ -99,6 +99,8 @@ func Migrate() error {
 		&models.TemporarySyncConfig{},
 		&models.GlobalSyncConfig{},
 		&models.SyncStatistics{},
+		&models.SyncRun{},
+		&models.SyncCursor{},
 		&models.ActivityLog{},
 		&models.EmailTrigger{},
 		&models.TriggerExecutionLog{},
@@ -270,10 +272,10 @@ func seedOrganizationDefaults() error {
 
 	// 1. 创建默认组织
 	defaultOrg := models.Organization{
-		Name:     "Default Organization",
-		Slug:     "default",
+		Name:        "Default Organization",
+		Slug:        "default",
 		Description: "系统默认组织，包含所有已有数据",
-		IsActive: true,
+		IsActive:    true,
 	}
 	if err := DB.Create(&defaultOrg).Error; err != nil {
 		return fmt.Errorf("failed to create default organization: %w", err)

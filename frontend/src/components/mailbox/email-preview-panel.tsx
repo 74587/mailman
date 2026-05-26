@@ -357,33 +357,33 @@ function EmailPreviewPanelInner({
                     </div>
 
                     {/* 邮件操作按钮 */}
-                    <div className="flex items-center gap-2 mt-4">
+                    <div className="mt-4 flex items-center gap-2 overflow-x-auto pb-1">
                         <button
                             onClick={() => email && dispatchComposeEmail('reply', email, accountId)}
-                            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                         >
-                            <Reply className="h-4 w-4" />
+                            <Reply className="h-4 w-4 shrink-0" />
                             回复
                         </button>
                         <button
                             onClick={() => email && dispatchComposeEmail('reply-all', email, accountId)}
-                            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                         >
-                            <ReplyAll className="h-4 w-4" />
+                            <ReplyAll className="h-4 w-4 shrink-0" />
                             全部回复
                         </button>
                         <button
                             onClick={() => email && dispatchComposeEmail('forward', email, accountId)}
-                            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                         >
-                            <Forward className="h-4 w-4" />
+                            <Forward className="h-4 w-4 shrink-0" />
                             转发
                         </button>
-                        <div className="flex-1"></div>
-                        <button className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                        <div className="min-w-2 flex-1"></div>
+                        <button className="shrink-0 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
                             <Archive className="h-4 w-4" />
                         </button>
-                        <button className="p-1.5 text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                        <button className="shrink-0 p-1.5 text-gray-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
                             <Trash2 className="h-4 w-4" />
                         </button>
                     </div>

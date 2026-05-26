@@ -18,6 +18,7 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
+	"gorm.io/gorm"
 )
 
 func (s *FetcherService) verifyGmailOAuth2Connection(account models.EmailAccount) error {
@@ -190,16 +191,28 @@ func (s *FetcherService) fetchEmailsFromGmailAPI(account models.EmailAccount, op
 		s.logger.Warn("Failed to get sync config for account %d: %v", account.ID, err)
 		// Continue with full sync if no config found
 	}
+	historyID := ""
+	cursor, cursorErr := syncConfigRepo.GetAccountSyncCursor(account.ID, models.SyncCursorProviderGmail)
+	if cursorErr == nil && cursor.LastHistoryID != "" {
+		historyID = cursor.LastHistoryID
+		s.logger.Debug("Using Gmail History ID from sync cursor: %s", historyID)
+	} else if cursorErr != nil && cursorErr != gorm.ErrRecordNotFound {
+		s.logger.Warn("Failed to get Gmail sync cursor for account %d: %v", account.ID, cursorErr)
+	}
+	if historyID == "" && syncConfig != nil && syncConfig.LastHistoryID != "" {
+		historyID = syncConfig.LastHistoryID
+		s.logger.Debug("Using Gmail History ID from legacy sync config: %s", historyID)
+	}
 
 	var emails []models.Email
 	var newHistoryID string
 
 	// Try incremental sync using History API if we have a previous History ID
-	if syncConfig != nil && syncConfig.LastHistoryID != "" {
-		s.logger.Debug("Attempting Gmail unified incremental sync using History ID: %s", syncConfig.LastHistoryID)
+	if historyID != "" {
+		s.logger.Debug("Attempting Gmail unified incremental sync using History ID: %s", historyID)
 
 		// Use unified Gmail API sync - gets ALL email changes in one call
-		historyEmails, historyID, err := s.fetchGmailHistoryChangesUnified(gmailService, syncConfig.LastHistoryID, account.ID, options)
+		historyEmails, latestHistoryID, err := s.fetchGmailHistoryChangesUnified(gmailService, historyID, account.ID, options)
 		if err != nil {
 			s.logger.Warn("Gmail unified History API sync failed, falling back to full sync: %v", err)
 			// Fall back to full sync
@@ -210,7 +223,7 @@ func (s *FetcherService) fetchEmailsFromGmailAPI(account models.EmailAccount, op
 			emails = s.convertGmailMessages(messages, account.ID)
 		} else {
 			emails = historyEmails
-			newHistoryID = historyID
+			newHistoryID = latestHistoryID
 		}
 	} else {
 		s.logger.Debug("No previous History ID found, performing Gmail unified full sync")
@@ -239,6 +252,11 @@ func (s *FetcherService) fetchEmailsFromGmailAPI(account models.EmailAccount, op
 			s.logger.Warn("Failed to update History ID in sync config: %v", err)
 		} else {
 			s.logger.Debug("Updated History ID to: %s", newHistoryID)
+		}
+	}
+	if newHistoryID != "" {
+		if err := syncConfigRepo.UpsertAccountSyncCursorHistoryID(account.ID, models.SyncCursorProviderGmail, newHistoryID); err != nil {
+			s.logger.Warn("Failed to update Gmail History ID in sync cursor: %v", err)
 		}
 	}
 

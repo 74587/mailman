@@ -34,14 +34,76 @@ interface LayoutPreset {
 }
 
 const defaultPresets: LayoutPreset[] = [
-    { name: '标准', sidebarWidth: 280, emailListWidth: 400, sidebarCollapsed: false },
-    { name: '紧凑', sidebarWidth: 200, emailListWidth: 320, sidebarCollapsed: false },
-    { name: '宽敞', sidebarWidth: 320, emailListWidth: 500, sidebarCollapsed: false },
-    { name: '专注阅读', sidebarWidth: 60, emailListWidth: 350, sidebarCollapsed: true },
+    { name: '标准', sidebarWidth: 360, emailListWidth: 480, sidebarCollapsed: false },
+    { name: '紧凑', sidebarWidth: 280, emailListWidth: 400, sidebarCollapsed: false },
+    { name: '宽敞', sidebarWidth: 420, emailListWidth: 560, sidebarCollapsed: false },
+    { name: '专注阅读', sidebarWidth: 60, emailListWidth: 440, sidebarCollapsed: true },
 ]
 
 // 本地存储键
 const LAYOUT_STORAGE_KEY = 'mailman-layout-config'
+const LAYOUT_CONFIG_VERSION = 2
+const DESKTOP_DIVIDER_WIDTH = 12
+const MIN_SIDEBAR_WIDTH = 60
+const MAX_SIDEBAR_WIDTH = 520
+const MIN_EMAIL_LIST_WIDTH = 360
+const MAX_EMAIL_LIST_WIDTH = 760
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+
+const getAdaptiveLayout = (containerWidth: number) => {
+    const availableWidth = Math.max(containerWidth - DESKTOP_DIVIDER_WIDTH, 0)
+    const isNarrowDesktop = containerWidth < 1180
+    const previewMinWidth = isNarrowDesktop ? 320 : 380
+    const sidebarMinWidth = isNarrowDesktop ? 280 : 340
+    const listMinWidth = isNarrowDesktop ? 380 : 440
+
+    let sidebarWidth = clamp(Math.round(availableWidth * 0.3), sidebarMinWidth, 420)
+    let emailListWidth = clamp(Math.round(availableWidth * 0.36), listMinWidth, 560)
+    const maxFixedWidth = Math.max(availableWidth - previewMinWidth, MIN_SIDEBAR_WIDTH + MIN_EMAIL_LIST_WIDTH)
+
+    if (sidebarWidth + emailListWidth > maxFixedWidth) {
+        const overflow = sidebarWidth + emailListWidth - maxFixedWidth
+        const listReduction = Math.min(overflow, emailListWidth - MIN_EMAIL_LIST_WIDTH)
+        emailListWidth -= listReduction
+
+        const remainingOverflow = overflow - listReduction
+        if (remainingOverflow > 0) {
+            sidebarWidth = Math.max(MIN_SIDEBAR_WIDTH, sidebarWidth - remainingOverflow)
+        }
+    }
+
+    return { sidebarWidth, emailListWidth }
+}
+
+const fitLayoutToContainer = (
+    containerWidth: number,
+    requestedSidebarWidth: number,
+    requestedEmailListWidth: number,
+    sidebarCollapsed: boolean
+) => {
+    const availableWidth = Math.max(containerWidth - DESKTOP_DIVIDER_WIDTH, 0)
+    const previewMinWidth = containerWidth < 1180 ? 320 : 380
+    const maxFixedWidth = Math.max(availableWidth - previewMinWidth, MIN_SIDEBAR_WIDTH + MIN_EMAIL_LIST_WIDTH)
+
+    let sidebarWidth = sidebarCollapsed
+        ? MIN_SIDEBAR_WIDTH
+        : clamp(requestedSidebarWidth, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+    let emailListWidth = clamp(requestedEmailListWidth, MIN_EMAIL_LIST_WIDTH, MAX_EMAIL_LIST_WIDTH)
+
+    if (sidebarWidth + emailListWidth > maxFixedWidth) {
+        const overflow = sidebarWidth + emailListWidth - maxFixedWidth
+        const listReduction = Math.min(overflow, emailListWidth - MIN_EMAIL_LIST_WIDTH)
+        emailListWidth -= listReduction
+
+        const remainingOverflow = overflow - listReduction
+        if (remainingOverflow > 0 && !sidebarCollapsed) {
+            sidebarWidth = Math.max(MIN_SIDEBAR_WIDTH, sidebarWidth - remainingOverflow)
+        }
+    }
+
+    return { sidebarWidth, emailListWidth }
+}
 
 export default function EnhancedClassicMailboxView() {
     // 状态管理
@@ -57,12 +119,14 @@ export default function EnhancedClassicMailboxView() {
     const [directionFilter, setDirectionFilter] = useState<'received' | 'sent' | 'all'>('received')
 
     // 布局状态
-    const [sidebarWidth, setSidebarWidth] = useState(280)
-    const [emailListWidth, setEmailListWidth] = useState(400)
+    const [sidebarWidth, setSidebarWidth] = useState(360)
+    const [emailListWidth, setEmailListWidth] = useState(480)
     const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
     const [showLayoutMenu, setShowLayoutMenu] = useState(false)
     const [customPresets, setCustomPresets] = useState<LayoutPreset[]>([])
     const [isResizing, setIsResizing] = useState(false)
+    const [layoutReady, setLayoutReady] = useState(false)
+    const useAdaptiveLayoutRef = useRef(true)
 
     // 响应式断点
     const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1920)
@@ -95,10 +159,10 @@ export default function EnhancedClassicMailboxView() {
     }, [emails, selectedEmailId])
 
     // 最小/最大宽度限制
-    const minSidebarWidth = 60
-    const maxSidebarWidth = 400
-    const minEmailListWidth = 280
-    const maxEmailListWidth = 800
+    const minSidebarWidth = MIN_SIDEBAR_WIDTH
+    const maxSidebarWidth = MAX_SIDEBAR_WIDTH
+    const minEmailListWidth = MIN_EMAIL_LIST_WIDTH
+    const maxEmailListWidth = MAX_EMAIL_LIST_WIDTH
 
     // 响应式处理
     useEffect(() => {
@@ -112,8 +176,8 @@ export default function EnhancedClassicMailboxView() {
             } else if (width < 1024) {
                 // 平板模式 - 可以折叠侧边栏
                 setIsMobileView(false)
-                if (!sidebarCollapsed && sidebarWidth > 200) {
-                    setSidebarWidth(200)
+                if (!sidebarCollapsed && sidebarWidth > 280) {
+                    setSidebarWidth(280)
                 }
             } else {
                 setIsMobileView(false)
@@ -131,20 +195,76 @@ export default function EnhancedClassicMailboxView() {
             const savedConfig = localStorage.getItem(LAYOUT_STORAGE_KEY)
             if (savedConfig) {
                 const config = JSON.parse(savedConfig)
-                setSidebarWidth(config.sidebarWidth || 280)
-                setEmailListWidth(config.emailListWidth || 400)
-                setSidebarCollapsed(config.sidebarCollapsed || false)
                 setCustomPresets(config.customPresets || [])
+
+                if (config.version === LAYOUT_CONFIG_VERSION && !config.adaptive) {
+                    useAdaptiveLayoutRef.current = false
+                    setSidebarWidth(config.sidebarWidth || 360)
+                    setEmailListWidth(config.emailListWidth || 480)
+                    setSidebarCollapsed(config.sidebarCollapsed || false)
+                } else {
+                    const layout = getAdaptiveLayout(containerRef.current?.clientWidth || window.innerWidth)
+                    useAdaptiveLayoutRef.current = true
+                    setSidebarWidth(layout.sidebarWidth)
+                    setEmailListWidth(layout.emailListWidth)
+                    setSidebarCollapsed(false)
+                }
+            } else {
+                const layout = getAdaptiveLayout(containerRef.current?.clientWidth || window.innerWidth)
+                setSidebarWidth(layout.sidebarWidth)
+                setEmailListWidth(layout.emailListWidth)
             }
         } catch (e) {
             console.error('Failed to load layout config:', e)
+        } finally {
+            setLayoutReady(true)
         }
     }, [])
+
+    // 根据容器真实宽度调整默认布局，并约束用户自定义布局避免挤压预览面板。
+    useEffect(() => {
+        if (!layoutReady || !containerRef.current || isMobileView) return
+
+        const resizeObserver = new ResizeObserver(([entry]) => {
+            const containerWidth = entry.contentRect.width
+
+            if (useAdaptiveLayoutRef.current) {
+                const layout = getAdaptiveLayout(containerWidth)
+                setSidebarWidth(layout.sidebarWidth)
+                setEmailListWidth(layout.emailListWidth)
+                return
+            }
+
+            setSidebarWidth(currentSidebarWidth => {
+                const fitted = fitLayoutToContainer(
+                    containerWidth,
+                    currentSidebarWidth,
+                    emailListWidth,
+                    sidebarCollapsed
+                )
+                return fitted.sidebarWidth
+            })
+            setEmailListWidth(currentEmailListWidth => {
+                const fitted = fitLayoutToContainer(
+                    containerWidth,
+                    sidebarWidth,
+                    currentEmailListWidth,
+                    sidebarCollapsed
+                )
+                return fitted.emailListWidth
+            })
+        })
+
+        resizeObserver.observe(containerRef.current)
+        return () => resizeObserver.disconnect()
+    }, [layoutReady, isMobileView, sidebarCollapsed, sidebarWidth, emailListWidth])
 
     // 保存布局配置
     const saveLayoutConfig = useCallback(() => {
         try {
             const config = {
+                version: LAYOUT_CONFIG_VERSION,
+                adaptive: useAdaptiveLayoutRef.current,
                 sidebarWidth,
                 emailListWidth,
                 sidebarCollapsed,
@@ -176,6 +296,7 @@ export default function EnhancedClassicMailboxView() {
 
     // 应用布局预设
     const applyPreset = (preset: LayoutPreset) => {
+        useAdaptiveLayoutRef.current = false
         setSidebarWidth(preset.sidebarWidth)
         setEmailListWidth(preset.emailListWidth)
         setSidebarCollapsed(preset.sidebarCollapsed)
@@ -198,14 +319,17 @@ export default function EnhancedClassicMailboxView() {
 
     // 重置为默认布局
     const resetLayout = () => {
-        setSidebarWidth(280)
-        setEmailListWidth(400)
+        const layout = getAdaptiveLayout(containerRef.current?.clientWidth || window.innerWidth)
+        useAdaptiveLayoutRef.current = true
+        setSidebarWidth(layout.sidebarWidth)
+        setEmailListWidth(layout.emailListWidth)
         setSidebarCollapsed(false)
         setShowLayoutMenu(false)
     }
 
     // 处理侧边栏宽度调整
     const handleSidebarResize = useCallback((delta: number) => {
+        useAdaptiveLayoutRef.current = false
         setIsResizing(true)
         const effectiveSidebarWidth = sidebarCollapsed ? minSidebarWidth : sidebarWidth
         const newWidth = Math.min(maxSidebarWidth, Math.max(minSidebarWidth, effectiveSidebarWidth + delta))
@@ -228,6 +352,7 @@ export default function EnhancedClassicMailboxView() {
 
     // 处理邮件列表宽度调整
     const handleEmailListResize = useCallback((delta: number) => {
+        useAdaptiveLayoutRef.current = false
         setIsResizing(true)
         setEmailListWidth(prev =>
             Math.min(maxEmailListWidth, Math.max(minEmailListWidth, prev + delta))
@@ -244,9 +369,11 @@ export default function EnhancedClassicMailboxView() {
     // 切换侧边栏折叠状态
     const toggleSidebar = () => {
         if (sidebarCollapsed) {
+            useAdaptiveLayoutRef.current = false
             setSidebarCollapsed(false)
-            setSidebarWidth(280)
+            setSidebarWidth(360)
         } else {
+            useAdaptiveLayoutRef.current = false
             setSidebarCollapsed(true)
             setSidebarWidth(minSidebarWidth)
         }
@@ -756,7 +883,7 @@ export default function EnhancedClassicMailboxView() {
                 <ResizableDivider onResize={handleEmailListResize} />
 
                 {/* 右侧邮件预览 */}
-                <div className="flex-1 min-w-[300px] bg-white dark:bg-gray-800 relative">
+                <div className="flex-1 min-w-[280px] lg:min-w-[360px] bg-white dark:bg-gray-800 relative">
                     <EmailPreviewPanel
                         email={selectedEmail}
                         loading={loadingEmails}

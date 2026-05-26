@@ -314,7 +314,11 @@ func (r *SyncConfigRepository) GetAllWithPagination(orgID uint, page, limit int,
 
 	// Apply status filter
 	if status != "" && status != "all" {
-		baseQuery = baseQuery.Where("email_account_sync_configs.sync_status = ?", status)
+		if status == "abnormal" {
+			baseQuery = baseQuery.Where("email_account_sync_configs.sync_status = ? OR email_account_sync_configs.auto_disabled = ?", "error", true)
+		} else {
+			baseQuery = baseQuery.Where("email_account_sync_configs.sync_status = ?", status)
+		}
 	}
 
 	// Apply enabled filter
@@ -356,7 +360,11 @@ func (r *SyncConfigRepository) GetAllWithPagination(orgID uint, page, limit int,
 
 	// Apply status filter
 	if status != "" && status != "all" {
-		query = query.Where("email_account_sync_configs.sync_status = ?", status)
+		if status == "abnormal" {
+			query = query.Where("email_account_sync_configs.sync_status = ? OR email_account_sync_configs.auto_disabled = ?", "error", true)
+		} else {
+			query = query.Where("email_account_sync_configs.sync_status = ?", status)
+		}
 	}
 
 	// Apply enabled filter
@@ -400,6 +408,44 @@ func (r *SyncConfigRepository) CreateOrUpdate(config *models.EmailAccountSyncCon
 	return r.db.Save(config).Error
 }
 
+// CreateOrUpdateSettings writes user-facing sync settings without overwriting runtime checkpoint state.
+func (r *SyncConfigRepository) CreateOrUpdateSettings(config *models.EmailAccountSyncConfig) error {
+	if config == nil {
+		return nil
+	}
+
+	var existing models.EmailAccountSyncConfig
+	err := r.db.Where("account_id = ?", config.AccountID).First(&existing).Error
+	if err == gorm.ErrRecordNotFound {
+		if config.SyncStatus == "" {
+			config.SyncStatus = models.SyncStatusIdle
+		}
+		return r.db.Create(config).Error
+	}
+	if err != nil {
+		return err
+	}
+	config.ID = existing.ID
+
+	updates := map[string]interface{}{
+		"enable_auto_sync": config.EnableAutoSync,
+		"sync_interval":    config.SyncInterval,
+		"sync_folders":     config.SyncFolders,
+	}
+	if config.SyncStatus != "" {
+		updates["sync_status"] = config.SyncStatus
+	}
+	if config.EnableAutoSync && (!existing.EnableAutoSync || existing.AutoDisabled) {
+		updates["auto_disabled"] = false
+		updates["disable_reason"] = ""
+		updates["consecutive_errors"] = 0
+		updates["last_error_time"] = nil
+		updates["last_sync_error"] = ""
+	}
+
+	return r.db.Model(&existing).Updates(updates).Error
+}
+
 // RecordSyncStatistics records sync statistics (placeholder for now)
 func (r *SyncConfigRepository) RecordSyncStatistics(stats *models.SyncStatistics) error {
 	// For now, just update the last sync time
@@ -408,6 +454,157 @@ func (r *SyncConfigRepository) RecordSyncStatistics(stats *models.SyncStatistics
 		return r.UpdateLastSyncTime(stats.AccountID)
 	}
 	return nil
+}
+
+// CreateSyncRun records the start of a sync execution.
+func (r *SyncConfigRepository) CreateSyncRun(run *models.SyncRun) error {
+	if run == nil {
+		return nil
+	}
+	if run.StartedAt.IsZero() {
+		run.StartedAt = time.Now()
+	}
+	if run.Status == "" {
+		run.Status = models.SyncRunStatusRunning
+	}
+	if run.Source == "" {
+		run.Source = "unknown"
+	}
+	return r.db.Create(run).Error
+}
+
+// FinishSyncRun marks a sync execution as finished.
+func (r *SyncConfigRepository) FinishSyncRun(runID uint, status string, emailsFetched int, newEmails int, err error) error {
+	if runID == 0 {
+		return nil
+	}
+	if status == "" {
+		status = models.SyncRunStatusSuccess
+	}
+	now := time.Now()
+	var run models.SyncRun
+	if err := r.db.First(&run, runID).Error; err != nil {
+		return err
+	}
+	updates := map[string]interface{}{
+		"status":         status,
+		"finished_at":    &now,
+		"duration_ms":    now.Sub(run.StartedAt).Milliseconds(),
+		"emails_fetched": emailsFetched,
+		"new_emails":     newEmails,
+		"updated_at":     now,
+	}
+	if err != nil {
+		updates["error_message"] = err.Error()
+	}
+	return r.db.Model(&models.SyncRun{}).Where("id = ?", runID).Updates(updates).Error
+}
+
+// GetRecentSyncRuns returns recent sync executions for one account.
+func (r *SyncConfigRepository) GetRecentSyncRuns(accountID uint, limit int) ([]models.SyncRun, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	var runs []models.SyncRun
+	err := r.db.Where("account_id = ?", accountID).
+		Order("started_at DESC").
+		Limit(limit).
+		Find(&runs).Error
+	return runs, err
+}
+
+// GetSyncCursor retrieves a sync checkpoint cursor for one account/provider/mailbox.
+func (r *SyncConfigRepository) GetSyncCursor(accountID uint, provider, mailboxName string) (*models.SyncCursor, error) {
+	provider = normalizeSyncCursorProvider(provider)
+	mailboxName = normalizeSyncCursorMailbox(mailboxName)
+
+	var cursor models.SyncCursor
+	err := r.db.Where("account_id = ? AND provider = ? AND mailbox_name = ?", accountID, provider, mailboxName).
+		First(&cursor).Error
+	if err != nil {
+		return nil, err
+	}
+	return &cursor, nil
+}
+
+// GetAccountSyncCursor retrieves the account-level sync checkpoint cursor.
+func (r *SyncConfigRepository) GetAccountSyncCursor(accountID uint, provider string) (*models.SyncCursor, error) {
+	return r.GetSyncCursor(accountID, provider, models.SyncCursorMailboxAccount)
+}
+
+// UpsertAccountSyncCursorTimes stores account-level time checkpoints without touching provider tokens.
+func (r *SyncConfigRepository) UpsertAccountSyncCursorTimes(accountID uint, provider string, lastSyncTime, lastSyncEndTime *time.Time) error {
+	provider = normalizeSyncCursorProvider(provider)
+	return r.upsertSyncCursorFields(accountID, provider, models.SyncCursorMailboxAccount, map[string]interface{}{
+		"last_sync_time":     lastSyncTime,
+		"last_sync_end_time": lastSyncEndTime,
+	})
+}
+
+// UpsertAccountSyncCursorHistoryID stores Gmail History ID without touching time checkpoints.
+func (r *SyncConfigRepository) UpsertAccountSyncCursorHistoryID(accountID uint, provider string, historyID string) error {
+	provider = normalizeSyncCursorProvider(provider)
+	return r.upsertSyncCursorFields(accountID, provider, models.SyncCursorMailboxAccount, map[string]interface{}{
+		"last_history_id": historyID,
+	})
+}
+
+func (r *SyncConfigRepository) upsertSyncCursorFields(accountID uint, provider, mailboxName string, updates map[string]interface{}) error {
+	provider = normalizeSyncCursorProvider(provider)
+	mailboxName = normalizeSyncCursorMailbox(mailboxName)
+
+	var cursor models.SyncCursor
+	err := r.db.Where("account_id = ? AND provider = ? AND mailbox_name = ?", accountID, provider, mailboxName).
+		First(&cursor).Error
+	if err == gorm.ErrRecordNotFound {
+		cursor = models.SyncCursor{
+			AccountID:   accountID,
+			Provider:    provider,
+			MailboxName: mailboxName,
+		}
+		for key, value := range updates {
+			switch key {
+			case "last_sync_time":
+				if value == nil {
+					cursor.LastSyncTime = nil
+				} else if typed, ok := value.(*time.Time); ok {
+					cursor.LastSyncTime = typed
+				}
+			case "last_sync_end_time":
+				if value == nil {
+					cursor.LastSyncEndTime = nil
+				} else if typed, ok := value.(*time.Time); ok {
+					cursor.LastSyncEndTime = typed
+				}
+			case "last_history_id":
+				if typed, ok := value.(string); ok {
+					cursor.LastHistoryID = typed
+				}
+			}
+		}
+		return r.db.Create(&cursor).Error
+	}
+	if err != nil {
+		return err
+	}
+	return r.db.Model(&cursor).Updates(updates).Error
+}
+
+func normalizeSyncCursorProvider(provider string) string {
+	if provider == "" {
+		return models.SyncCursorProviderGeneric
+	}
+	return provider
+}
+
+func normalizeSyncCursorMailbox(mailboxName string) string {
+	if mailboxName == "" {
+		return models.SyncCursorMailboxAccount
+	}
+	return mailboxName
 }
 
 // GetGlobalConfig retrieves global sync configuration

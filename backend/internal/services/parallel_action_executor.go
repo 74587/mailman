@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"time"
@@ -147,8 +148,26 @@ func (e *ParallelActionExecutor) executeActionGroup(actions []models.TriggerActi
 }
 
 // executeAction 执行单个动作
-func (e *ParallelActionExecutor) executeAction(action models.TriggerAction, context *PluginContext) (*models.ActionExecutionResult, error) {
+func (e *ParallelActionExecutor) executeAction(action models.TriggerAction, context *PluginContext) (executionResult *models.ActionExecutionResult, err error) {
 	e.logger.Info("Executing action: %s (Plugin: %s)", action.ID, action.PluginID)
+	startTime := time.Now()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			endTime := time.Now()
+			err = fmt.Errorf("action panic: %v", recovered)
+			e.logger.Error("Action execution panicked: %s - %v\n%s", action.ID, recovered, string(debug.Stack()))
+			executionResult = &models.ActionExecutionResult{
+				ActionID:   action.ID,
+				PluginID:   action.PluginID,
+				PluginName: action.PluginName,
+				Success:    false,
+				StartTime:  startTime,
+				EndTime:    endTime,
+				Duration:   endTime.Sub(startTime).Milliseconds(),
+				Error:      err.Error(),
+			}
+		}
+	}()
 
 	// 跳过禁用的动作
 	if !action.Enabled {
@@ -183,12 +202,11 @@ func (e *ParallelActionExecutor) executeAction(action models.TriggerAction, cont
 	}
 
 	// 执行插件
-	startTime := time.Now()
 	result, err := plugin.Execute(action.Config, context)
 	endTime := time.Now()
 
 	// 创建执行结果
-	executionResult := &models.ActionExecutionResult{
+	executionResult = &models.ActionExecutionResult{
 		ActionID:   action.ID,
 		PluginID:   action.PluginID,
 		PluginName: action.PluginName,

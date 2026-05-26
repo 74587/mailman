@@ -87,6 +87,7 @@ export default function TagBadge({
         <span
             className={cn(
                 'inline-flex items-center rounded-full font-medium transition-colors',
+                'max-w-full overflow-hidden',
                 sizeClasses[size],
                 colorStyles.className,
                 onClick && 'cursor-pointer hover:opacity-80',
@@ -96,7 +97,9 @@ export default function TagBadge({
             onClick={onClick}
             title={groupName ? `${groupName}: ${tag.name}` : tag.name}
         >
-            {tag.name}
+            <span className="min-w-0 truncate">
+                {tag.name}
+            </span>
             {showRemove && onRemove && (
                 <button
                     onClick={(e) => {
@@ -199,4 +202,3 @@ export function GroupedTagBadgeList({
         </div>
     )
 }
-

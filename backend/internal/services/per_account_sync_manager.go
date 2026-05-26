@@ -53,6 +53,7 @@ type PerAccountSyncManager struct {
 	mailboxRepo      *repository.MailboxRepository
 	emailAccountRepo *repository.EmailAccountRepository
 	fetcherService   *FetcherService
+	ingestService    *EmailIngestService
 	activityLogger   *ActivityLogger
 	logger           *utils.Logger
 
@@ -116,6 +117,7 @@ func NewPerAccountSyncManager(
 	fetcherService *FetcherService,
 	notificationService *EmailNotificationService,
 	eventBus *EventBus,
+	subscriptionManager *SubscriptionManager,
 ) *PerAccountSyncManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -133,6 +135,7 @@ func NewPerAccountSyncManager(
 		mailboxRepo:         mailboxRepo,
 		emailAccountRepo:    emailAccountRepo,
 		fetcherService:      fetcherService,
+		ingestService:       NewEmailIngestService(emailRepo, emailAccountRepo, notificationService, eventBus, subscriptionManager),
 		activityLogger:      GetActivityLogger(),
 		logger:              utils.NewLogger("PerAccountSyncManager"),
 		notificationService: notificationService,
@@ -147,6 +150,13 @@ func NewPerAccountSyncManager(
 	manager.configMonitor = NewFastConfigMonitor(syncConfigRepo, manager)
 
 	return manager
+}
+
+// SetEmailIngestService replaces the default ingest pipeline with the app-wide instance.
+func (m *PerAccountSyncManager) SetEmailIngestService(ingestService *EmailIngestService) {
+	if ingestService != nil {
+		m.ingestService = ingestService
+	}
 }
 
 // calculateConcurrentLimit 根据系统资源计算并发限制
@@ -521,10 +531,16 @@ func (m *PerAccountSyncManager) GetStats() PerAccountSyncStats {
 type SyncNowOptions struct {
 	CreateStrategy string // "none", "ensure", "force"
 	SyncInterval   int    // 临时同步间隔（如果创建临时Sync需要用到）
+	Source         EmailIngestSource
 }
 
 // SyncNow 立即同步指定账户
 func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*SyncResult, error) {
+	source := opts.Source
+	if source == "" {
+		source = EmailIngestSourceManualSync
+	}
+
 	m.mu.RLock()
 	syncer, exists := m.accountSyncers[accountID]
 	m.mu.RUnlock()
@@ -532,7 +548,7 @@ func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*S
 	// 1. 如果存在活跃的Syncer，且策略不是"force"，直接使用
 	if exists && opts.CreateStrategy != "force" {
 		m.logger.Debug("SyncNow: Using existing active syncer for account %d", accountID)
-		return syncer.SyncNow()
+		return syncer.SyncNow(source)
 	}
 
 	// 2. 如果不存在，或者策略是"force"
@@ -596,7 +612,7 @@ func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*S
 	// 直接调用SyncNow，它内部会调用doSync
 	// 注意：doSync 不依赖 Run 循环，是安全的单次执行
 	m.logger.Debug("SyncNow: Starting ephemeral sync execution")
-	result, err := ephemeralSyncer.SyncNow()
+	result, err := ephemeralSyncer.SyncNow(source)
 
 	m.logger.Info("SyncNow: Ephemeral sync completed for account %d. Emails: %d, Error: %v",
 		accountID, result.EmailsSynced, err)
@@ -723,7 +739,7 @@ func (as *AccountSyncer) performSync() {
 	as.logger.Debug("Starting sync cycle")
 
 	// 执行实际同步
-	_, err := as.doSync(start)
+	_, err := as.doSync(start, EmailIngestSourceAutoSync)
 
 	as.mu.Lock()
 	as.LastSyncTime = time.Now()
@@ -746,8 +762,16 @@ func (as *AccountSyncer) performSync() {
 }
 
 // doSync 执行实际的邮件同步
-func (as *AccountSyncer) doSync(startTime time.Time) ([]models.Email, error) {
+func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (syncedEmails []models.Email, err error) {
 	as.logger.Debug("Executing doSync")
+	source = normalizeEmailIngestSource(source)
+	syncRun := as.createSyncRun(startTime, source)
+	emailsFetched := 0
+	newEmailCount := 0
+	defer func() {
+		as.finishSyncRun(syncRun, emailsFetched, newEmailCount, err)
+	}()
+
 	// 创建超时上下文（暂时不使用，但保留用于后续扩展）
 	_, cancel := context.WithTimeout(as.ctx, 60*time.Second)
 	defer cancel()
@@ -764,9 +788,18 @@ func (as *AccountSyncer) doSync(startTime time.Time) ([]models.Email, error) {
 	var startDate *time.Time
 	endDate := time.Now()
 
-	if as.Config.LastSyncEndTime != nil {
+	lastSyncEndTime := as.Config.LastSyncEndTime
+	cursor, cursorErr := as.manager.syncConfigRepo.GetAccountSyncCursor(as.AccountID, models.SyncCursorProviderGeneric)
+	if cursorErr == nil && cursor.LastSyncEndTime != nil {
+		lastSyncEndTime = cursor.LastSyncEndTime
+		as.logger.Debug("Using SyncCursor LastSyncEndTime for account %d: %v", as.AccountID, *cursor.LastSyncEndTime)
+	} else if cursorErr != nil && cursorErr != gorm.ErrRecordNotFound {
+		as.logger.Warn("Failed to read sync cursor for account %d: %v", as.AccountID, cursorErr)
+	}
+
+	if lastSyncEndTime != nil {
 		// 使用上次同步结束时间减5分钟作为开始时间
-		bufferTime := as.Config.LastSyncEndTime.Add(-5 * time.Minute)
+		bufferTime := lastSyncEndTime.Add(-5 * time.Minute)
 		startDate = &bufferTime
 		as.logger.Debug("Sync window started from LastSyncEndTime with buffer: %v", startDate)
 	} else if as.LastSyncTime.After(time.Time{}) {
@@ -798,15 +831,16 @@ func (as *AccountSyncer) doSync(startTime time.Time) ([]models.Email, error) {
 		as.logger.Error("Failed to fetch emails: %v", err)
 		return nil, fmt.Errorf("failed to fetch emails: %w", err)
 	}
+	emailsFetched = len(emails)
 	as.logger.Debug("Fetched %d emails from server", len(emails))
 
 	// 处理邮件
-	newEmails, err := as.processEmails(emails)
+	newEmails, err := as.processEmails(emails, source)
 	if err != nil {
 		as.logger.Error("Failed to process emails: %v", err)
 		return nil, fmt.Errorf("failed to process emails: %w", err)
 	}
-	newEmailCount := len(newEmails)
+	newEmailCount = len(newEmails)
 	as.logger.Debug("Processed %d new emails", newEmailCount)
 
 	// 更新同步配置
@@ -839,58 +873,48 @@ func (as *AccountSyncer) getAccount() (*models.EmailAccount, error) {
 }
 
 // processEmails 处理邮件
-func (as *AccountSyncer) processEmails(emails []models.Email) ([]models.Email, error) {
-	var newEmails []models.Email
+func (as *AccountSyncer) processEmails(emails []models.Email, source EmailIngestSource) ([]models.Email, error) {
+	return as.manager.ingestService.IngestEmails(emails, EmailIngestOptions{
+		Source:       source,
+		AccountEmail: as.Config.Account.EmailAddress,
+		Metadata: map[string]interface{}{
+			"sync_manager": "per_account",
+			"account_id":   as.AccountID,
+		},
+	})
+}
 
-	for _, email := range emails {
-		// 检查邮件是否已存在
-		exists, err := as.manager.emailRepo.CheckDuplicate(email.MessageID, email.AccountID)
-		if err != nil {
-			as.manager.logger.Error("Error checking duplicate for %s: %v", email.MessageID, err)
-			continue
-		}
-
-		if exists {
-			continue
-		}
-
-		// 保存新邮件
-		if err := as.manager.emailRepo.Create(&email); err != nil {
-			as.manager.logger.Error("Failed to save email %s: %v", email.MessageID, err)
-			continue
-		}
-
-		newEmails = append(newEmails, email)
-
-		// 发布新邮件事件到 EventBus，触发器系统会监听此事件
-		if as.manager.eventBus != nil {
-			event := EmailEvent{
-				Type:      EventTypeNewEmail,
-				Timestamp: time.Now(),
-				Data:      email, // 已保存到数据库的邮件（包含ID）
-			}
-			as.manager.eventBus.Publish(event)
-			as.manager.logger.Debug("Published new_email event for email ID: %d, MessageID: %s", email.ID, email.MessageID)
-		}
-
-		// 发送 WebSocket 通知，包含发送人和主题
-		if as.manager.notificationService != nil {
-			notification := EmailNotification{
-				Type:         "new_email",
-				AccountID:    email.AccountID,
-				AccountEmail: as.Config.Account.EmailAddress,
-				EmailID:      email.ID,
-				EmailCount:   1,
-				Subject:      email.Subject,
-				From:         email.FromAddress,
-				Timestamp:    time.Now(),
-			}
-			as.manager.notificationService.BroadcastNotification(notification)
-		}
-
+func (as *AccountSyncer) createSyncRun(startTime time.Time, source EmailIngestSource) *models.SyncRun {
+	if as.manager.syncConfigRepo == nil {
+		return nil
 	}
+	run := &models.SyncRun{
+		AccountID: as.AccountID,
+		Source:    string(source),
+		Status:    models.SyncRunStatusRunning,
+		StartedAt: startTime,
+		Metadata: models.JSONMap{
+			"sync_manager": "per_account",
+		},
+	}
+	if err := as.manager.syncConfigRepo.CreateSyncRun(run); err != nil {
+		as.logger.Warn("Failed to create sync run: %v", err)
+		return nil
+	}
+	return run
+}
 
-	return newEmails, nil
+func (as *AccountSyncer) finishSyncRun(run *models.SyncRun, emailsFetched int, newEmails int, syncErr error) {
+	if run == nil || as.manager.syncConfigRepo == nil {
+		return
+	}
+	status := models.SyncRunStatusSuccess
+	if syncErr != nil {
+		status = models.SyncRunStatusFailed
+	}
+	if err := as.manager.syncConfigRepo.FinishSyncRun(run.ID, status, emailsFetched, newEmails, syncErr); err != nil {
+		as.logger.Warn("Failed to finish sync run %d: %v", run.ID, err)
+	}
 }
 
 // updateSyncConfig 更新同步配置
@@ -911,6 +935,9 @@ func (as *AccountSyncer) updateSyncConfig(endTime time.Time, hasNewEmails bool) 
 	as.logger.Debug("Updating sync config - preserving History ID: %s", config.LastHistoryID)
 	if err := as.manager.syncConfigRepo.CreateOrUpdate(config); err != nil {
 		return err
+	}
+	if err := as.manager.syncConfigRepo.UpsertAccountSyncCursorTimes(as.AccountID, models.SyncCursorProviderGeneric, config.LastSyncTime, config.LastSyncEndTime); err != nil {
+		return fmt.Errorf("failed to update sync cursor: %w", err)
 	}
 
 	as.mu.Lock()
@@ -1035,7 +1062,7 @@ func (as *AccountSyncer) Stop() {
 }
 
 // SyncNow 立即同步
-func (as *AccountSyncer) SyncNow() (*SyncResult, error) {
+func (as *AccountSyncer) SyncNow(source EmailIngestSource) (*SyncResult, error) {
 	start := time.Now()
 
 	as.syncMu.Lock()
@@ -1061,7 +1088,7 @@ func (as *AccountSyncer) SyncNow() (*SyncResult, error) {
 	atomic.AddInt64(&as.syncCount, 1)
 	atomic.AddInt64(&as.manager.stats.TotalSyncs, 1)
 
-	emails, err := as.doSync(start)
+	emails, err := as.doSync(start, source)
 
 	as.mu.Lock()
 	as.LastSyncTime = time.Now()

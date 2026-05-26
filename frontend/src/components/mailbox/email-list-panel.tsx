@@ -194,15 +194,15 @@ export default function EmailListPanel({
             {/* 顶部工具栏 */}
             <div className="border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
                 {/* 标题栏 */}
-                <div className="px-4 py-3 flex items-center justify-between">
-                    <h3 className="font-semibold text-gray-900 dark:text-white">
+                <div className="px-4 py-3 flex items-center justify-between gap-3">
+                    <h3 className="min-w-0 flex-1 truncate font-semibold text-gray-900 dark:text-white">
                         {selectedAccount
                             ? `${selectedAccount.emailAddress} 的邮件`
                             : '邮件列表'
                         }
                     </h3>
-                    <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-500 dark:text-gray-400">
+                    <div className="flex shrink-0 items-center gap-2">
+                        <span className="whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                             {emails.length} 封邮件
                         </span>
 
@@ -221,7 +221,7 @@ export default function EmailListPanel({
                         <button
                             onClick={onToggleAutoSync}
                             className={cn(
-                                "flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors",
+                                "flex items-center gap-1 whitespace-nowrap px-2 py-1 rounded text-xs font-medium transition-colors",
                                 autoSyncEnabled
                                     ? "bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-300"
                                     : "bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-400"
@@ -268,10 +268,10 @@ export default function EmailListPanel({
                     </form>
 
                     {/* 紧凑排序控制 - pill 样式 */}
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2 overflow-hidden">
                         {/* 方向筛选 */}
                         {onDirectionChange && (
-                            <div className="flex items-center bg-blue-100 dark:bg-blue-900/30 rounded-full p-0.5 mr-2">
+                            <div className="flex shrink-0 items-center bg-blue-100 dark:bg-blue-900/30 rounded-full p-0.5">
                                 <button
                                     onClick={() => onDirectionChange('all')}
                                     className={cn(
@@ -307,7 +307,7 @@ export default function EmailListPanel({
                                 </button>
                             </div>
                         )}
-                        <div className="flex items-center bg-gray-100 dark:bg-gray-700/50 rounded-full p-0.5">
+                        <div className="flex min-w-0 items-center bg-gray-100 dark:bg-gray-700/50 rounded-full p-0.5">
                             <button
                                 onClick={() => setSortBy('date')}
                                 className={cn(
@@ -347,7 +347,7 @@ export default function EmailListPanel({
                         <button
                             onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')}
                             className={cn(
-                                "flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[11px] transition-all duration-200",
+                                "flex shrink-0 items-center gap-0.5 whitespace-nowrap px-2 py-0.5 rounded-full text-[11px] transition-all duration-200",
                                 "bg-gray-100 dark:bg-gray-700/50 text-gray-600 dark:text-gray-400",
                                 "hover:bg-gray-200 dark:hover:bg-gray-600"
                             )}

@@ -35,6 +35,28 @@ type EmailAccountSyncConfig struct {
 	Account EmailAccount `gorm:"foreignKey:AccountID;constraint:OnDelete:CASCADE" json:"account,omitempty"`
 }
 
+// SyncCursor stores mutable sync checkpoint state separately from sync settings.
+type SyncCursor struct {
+	ID              uint       `gorm:"primaryKey" json:"id"`
+	AccountID       uint       `gorm:"not null;uniqueIndex:idx_sync_cursors_account_provider_mailbox" json:"account_id"`
+	Provider        string     `gorm:"type:varchar(32);not null;uniqueIndex:idx_sync_cursors_account_provider_mailbox" json:"provider"`
+	MailboxName     string     `gorm:"type:varchar(255);not null;uniqueIndex:idx_sync_cursors_account_provider_mailbox" json:"mailbox_name"`
+	LastSyncTime    *time.Time `json:"last_sync_time,omitempty"`
+	LastSyncEndTime *time.Time `json:"last_sync_end_time,omitempty"`
+	LastHistoryID   string     `gorm:"type:varchar(255)" json:"last_history_id,omitempty"`
+	LastMessageID   string     `gorm:"type:varchar(255)" json:"last_message_id,omitempty"`
+	Metadata        JSONMap    `gorm:"type:json" json:"metadata,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+
+	Account EmailAccount `gorm:"foreignKey:AccountID;constraint:OnDelete:CASCADE" json:"-"`
+}
+
+// TableName specifies the table name for sync cursors.
+func (SyncCursor) TableName() string {
+	return "sync_cursors"
+}
+
 // TemporarySyncConfig represents a temporary sync configuration with expiration
 type TemporarySyncConfig struct {
 	ID           uint        `gorm:"primaryKey" json:"id"`
@@ -99,11 +121,49 @@ func (SyncStatistics) TableName() string {
 	return "sync_statistics"
 }
 
+// SyncRun records a single sync execution for observability and debugging.
+type SyncRun struct {
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	AccountID     uint       `gorm:"not null;index" json:"account_id"`
+	Source        string     `gorm:"type:varchar(32);not null;index" json:"source"` // auto_sync, manual_sync, pickup
+	Status        string     `gorm:"type:varchar(32);not null;index" json:"status"` // running, success, failed
+	StartedAt     time.Time  `gorm:"not null;index" json:"started_at"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+	DurationMs    int64      `gorm:"default:0" json:"duration_ms"`
+	EmailsFetched int        `gorm:"default:0" json:"emails_fetched"`
+	NewEmails     int        `gorm:"default:0" json:"new_emails"`
+	ErrorMessage  string     `gorm:"type:text" json:"error_message,omitempty"`
+	Metadata      JSONMap    `gorm:"type:json" json:"metadata,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+
+	Account EmailAccount `gorm:"foreignKey:AccountID;constraint:OnDelete:CASCADE" json:"-"`
+}
+
+// TableName specifies the table name for sync runs.
+func (SyncRun) TableName() string {
+	return "sync_runs"
+}
+
 // SyncStatus constants
 const (
 	SyncStatusIdle    = "idle"
 	SyncStatusSyncing = "syncing"
 	SyncStatusError   = "error"
+)
+
+// SyncRun status constants.
+const (
+	SyncRunStatusRunning = "running"
+	SyncRunStatusSuccess = "success"
+	SyncRunStatusFailed  = "failed"
+)
+
+// SyncCursor provider/mailbox constants.
+const (
+	SyncCursorProviderGeneric = "generic"
+	SyncCursorProviderGmail   = "gmail"
+	SyncCursorMailboxAccount  = "__account__"
 )
 
 // IsValidSyncStatus checks if the sync status is valid

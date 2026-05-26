@@ -1,8 +1,11 @@
 package services
 
 import (
+	stdctx "context"
 	"fmt"
 
+	"mailman/internal/models"
+	triggerModels "mailman/internal/triggerv2/models"
 	"mailman/internal/triggerv2/plugins"
 )
 
@@ -37,14 +40,35 @@ type pluginV2Adapter struct {
 	pluginID string
 }
 
-func (a *pluginV2Adapter) Execute(config map[string]interface{}, context *PluginContext) (*PluginResult, error) {
+func (a *pluginV2Adapter) Execute(config map[string]interface{}, ctx *PluginContext) (*PluginResult, error) {
+	if config == nil {
+		config = make(map[string]interface{})
+	}
+	if ctx == nil {
+		ctx = &PluginContext{}
+	}
+
+	event, err := buildTriggerV2EmailEvent(ctx.Email)
+	if err != nil {
+		return &PluginResult{
+			Success: false,
+			Error:   err.Error(),
+		}, err
+	}
+
 	// Use the plugin manager's ExecuteAction which handles the full execution pipeline
 	// including type assertion to ActionPlugin
 	pluginCtx := &plugins.PluginContext{
+		Context:  stdctx.Background(),
 		PluginID: a.pluginID,
+		Config: &plugins.PluginConfig{
+			Enabled: true,
+			Config:  config,
+		},
+		Event: event,
 	}
 
-	result, err := a.pm.ExecuteAction(a.pluginID, pluginCtx, nil)
+	result, err := a.pm.ExecuteAction(a.pluginID, pluginCtx, event)
 	if err != nil {
 		return &PluginResult{
 			Success: false,
@@ -64,6 +88,52 @@ func (a *pluginV2Adapter) Execute(config map[string]interface{}, context *Plugin
 		Data:    result.Data,
 		Error:   result.Error,
 	}, nil
+}
+
+func buildTriggerV2EmailEvent(email models.Email) (*triggerModels.Event, error) {
+	from := ""
+	if len(email.From) > 0 {
+		from = email.From[0]
+	}
+	if from == "" {
+		from = email.FromAddress
+	}
+
+	to := ""
+	if len(email.To) > 0 {
+		to = email.To[0]
+	}
+	if to == "" && len(email.ToAddresses) > 0 {
+		to = email.ToAddresses[0]
+	}
+
+	receivedAt := email.ReceivedAt
+	if receivedAt.IsZero() {
+		receivedAt = email.Date
+	}
+
+	emailData := triggerModels.EmailEventData{
+		Email:         &email,
+		EmailID:       email.ID,
+		AccountID:     email.AccountID,
+		Subject:       email.Subject,
+		From:          from,
+		To:            to,
+		MessageID:     email.MessageID,
+		ReceivedAt:    receivedAt,
+		HasAttachment: email.HasAttachments,
+		IsRead:        !contains(email.Flags, "UNREAD"),
+		Labels:        email.Flags,
+		EventType:     "received",
+		MailboxName:   email.MailboxName,
+	}
+
+	event, err := triggerModels.NewEvent(triggerModels.EventTypeEmailReceived, "mailman", email.Subject, emailData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build trigger event: %w", err)
+	}
+	event.Variables = make(map[string]interface{})
+	return event, nil
 }
 
 func (a *pluginV2Adapter) GetName() string {

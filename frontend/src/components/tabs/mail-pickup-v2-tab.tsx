@@ -62,6 +62,7 @@ interface ListenConfig {
 
 type ExecutionStatus = 'pending' | 'success' | 'failed' | 'no_match'
 type ExtractMode = 'template' | 'regex' | 'js' | 'gotemplate' | 'none'
+type MatchMode = 'all' | 'first' | 'last' | 'index'
 
 const EXTRACT_MODE_OPTIONS: { value: ExtractMode; label: string; desc: string }[] = [
     { value: 'template', label: '模板', desc: 'V2 取件模板' },
@@ -81,6 +82,8 @@ const EXTRACT_FIELD_OPTIONS = [
 interface SimpleExtractState {
     field: string
     pattern: string
+    matchMode: MatchMode
+    matchIndex: number
 }
 
 interface EmailExecutionResult {
@@ -261,7 +264,7 @@ export default function MailPickupV2Tab() {
             elapsedTime: 0,
             receivedEmails: [],
             extractMode: 'template',
-            simpleExtract: { field: 'body', pattern: '' },
+            simpleExtract: { field: 'body', pattern: '', matchMode: 'first', matchIndex: 0 },
             executionResults: new Map(),
             showConfig: true,
         }
@@ -508,6 +511,10 @@ export default function MailPickupV2Tab() {
                     field: listeningState.simpleExtract.field,
                     type: listeningState.extractMode,
                     pattern: listeningState.simpleExtract.pattern,
+                    match_mode: listeningState.simpleExtract.matchMode,
+                }
+                if (listeningState.simpleExtract.matchMode === 'index') {
+                    pollRequest.simple_extract.match_index = listeningState.simpleExtract.matchIndex
                 }
             }
             // mode === 'none': no extraction params
@@ -1088,10 +1095,41 @@ export default function MailPickupV2Tab() {
                                                         }
                                                         rows={email.extractMode === 'regex' ? 2 : 4}
                                                         className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs font-mono focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all resize-none"
-                                                    />
-                                                </div>
-                                            </div>
-                                        )}
+	                                                    />
+	                                                </div>
+	                                                <div className="grid grid-cols-2 gap-2">
+	                                                    <div>
+	                                                        <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+	                                                            匹配结果
+	                                                        </label>
+	                                                        <select
+	                                                            value={email.simpleExtract.matchMode}
+	                                                            onChange={(e) => updateSimpleExtract(email.id, { matchMode: e.target.value as MatchMode })}
+	                                                            className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+	                                                        >
+	                                                            <option value="all">全部</option>
+	                                                            <option value="first">第一个</option>
+	                                                            <option value="last">最后一个</option>
+	                                                            <option value="index">指定序号</option>
+	                                                        </select>
+	                                                    </div>
+	                                                    {email.simpleExtract.matchMode === 'index' && (
+	                                                        <div>
+	                                                            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+	                                                                序号
+	                                                            </label>
+	                                                            <input
+	                                                                type="number"
+	                                                                min={0}
+	                                                                value={email.simpleExtract.matchIndex}
+	                                                                onChange={(e) => updateSimpleExtract(email.id, { matchIndex: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+	                                                                className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-xs focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+	                                                            />
+	                                                        </div>
+	                                                    )}
+	                                                </div>
+	                                            </div>
+	                                        )}
 
                                         {/* None mode hint */}
                                         {email.extractMode === 'none' && (

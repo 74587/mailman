@@ -19,12 +19,15 @@ import {
     Link2,
     Key,
     Eye,
+    Wifi,
+    WifiOff,
 } from 'lucide-react'
 import { DataTable, createSelectColumn } from '@/components/ui/data-table'
 import { AdaptiveActions, ActionItem } from '@/components/ui/adaptive-actions'
 import { InlineTagSelector } from '@/components/tags/tag-selector'
 import { GmailIcon, OutlookIcon } from '@/components/ui/brand-icons'
 import { EmailAccount } from '@/types'
+import { AccountSyncStatus } from '@/services/sync-config.service'
 import { cn } from '@/lib/utils'
 
 interface AccountsDataTableProps {
@@ -44,6 +47,7 @@ interface AccountsDataTableProps {
     // 状态
     syncingId?: number
     verifyingId?: number
+    syncStatuses?: Map<number, AccountSyncStatus>
     // 排序
     sorting?: SortingState
     onSortingChange?: (sorting: SortingState) => void
@@ -96,6 +100,7 @@ export function AccountsDataTable({
     onTagsChange,
     syncingId,
     verifyingId,
+    syncStatuses,
     sorting,
     onSortingChange,
 }: AccountsDataTableProps) {
@@ -176,15 +181,19 @@ export function AccountsDataTable({
             {
                 id: 'tags',
                 header: '标签',
-                size: 130,
+                size: 170,
                 enableSorting: false,
                 cell: ({ row }) => (
-                    <InlineTagSelector
-                        accountId={row.original.id}
-                        currentTags={row.original.tags || []}
-                        onTagsChange={onTagsChange}
-                        size="sm"
-                    />
+                    <div className="max-w-full overflow-hidden">
+                        <InlineTagSelector
+                            accountId={row.original.id}
+                            currentTags={row.original.tags || []}
+                            onTagsChange={onTagsChange}
+                            size="sm"
+                            maxDisplayTags={3}
+                            className="w-full"
+                        />
+                    </div>
                 ),
             },
 
@@ -227,6 +236,53 @@ export function AccountsDataTable({
                         >
                             <Icon className={cn('h-3.5 w-3.5', color)} />
                             <span className={cn('text-xs font-medium', color)}>{label}</span>
+                        </div>
+                    )
+                },
+            },
+
+            // 同步配置
+            {
+                id: 'syncConfig',
+                header: '同步配置',
+                size: 130,
+                enableSorting: false,
+                cell: ({ row }) => {
+                    const status = syncStatuses?.get(row.original.id)
+
+                    if (!status) {
+                        return (
+                            <div className="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500 dark:bg-gray-700 dark:text-gray-400" title="未配置自动同步">
+                                <WifiOff className="h-3.5 w-3.5" />
+                                未配置
+                            </div>
+                        )
+                    }
+
+                    const disabled = !status.enable_auto_sync || status.auto_disabled
+                    const intervalText = status.sync_interval >= 60
+                        ? `${Math.round(status.sync_interval / 60)} 分钟`
+                        : `${status.sync_interval} 秒`
+                    const tooltip = [
+                        disabled ? (status.auto_disabled ? `已自动禁用: ${status.disable_reason || '错误过多'}` : '已关闭自动同步') : '已开启自动同步',
+                        `同步间隔: ${intervalText}`,
+                        status.last_sync_error ? `最近错误: ${status.last_sync_error}` : '',
+                    ].filter(Boolean).join('\n')
+
+                    return (
+                        <div
+                            className={cn(
+                                "inline-flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-xs font-medium",
+                                disabled
+                                    ? "bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400"
+                                    : "bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-300"
+                            )}
+                            title={tooltip}
+                        >
+                            {disabled ? <WifiOff className="h-3.5 w-3.5 shrink-0" /> : <Wifi className="h-3.5 w-3.5 shrink-0" />}
+                            <span className="truncate">
+                                {disabled ? '未开启' : intervalText}
+                            </span>
                         </div>
                     )
                 },
@@ -338,7 +394,7 @@ export function AccountsDataTable({
                 },
             },
         ],
-        [syncingId, verifyingId, onViewEmails, onPickupMail, onSync, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
+        [syncingId, verifyingId, syncStatuses, onViewEmails, onPickupMail, onSync, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
     )
 
     return (

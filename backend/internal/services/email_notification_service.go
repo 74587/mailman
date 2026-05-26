@@ -18,6 +18,7 @@ type EmailNotification struct {
 	EmailCount   int       `json:"email_count"`
 	Subject      string    `json:"subject,omitempty"`
 	From         string    `json:"from,omitempty"`
+	Source       string    `json:"source,omitempty"`
 	Timestamp    time.Time `json:"timestamp"`
 }
 

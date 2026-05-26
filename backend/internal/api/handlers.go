@@ -39,6 +39,7 @@ type APIHandler struct {
 	EmailAccountRepo    *repository.EmailAccountRepository
 	MailProviderRepo    *repository.MailProviderRepository
 	EmailRepo           *repository.EmailRepository
+	EmailIngestService  *services.EmailIngestService
 	IncrementalSyncRepo *repository.IncrementalSyncRepository
 	EmailScheduler      *services.EmailFetchScheduler
 	activityLogger      *services.ActivityLogger
@@ -61,6 +62,7 @@ func NewAPIHandler(
 	pluginManager plugins.PluginManager,
 	optimizedSyncManager *services.OptimizedIncrementalSyncManager,
 	perAccountSyncManager *services.PerAccountSyncManager,
+	emailIngestService *services.EmailIngestService,
 ) *APIHandler {
 	return &APIHandler{
 		Fetcher:               fetcher,
@@ -68,6 +70,7 @@ func NewAPIHandler(
 		EmailAccountRepo:      emailAccountRepo,
 		MailProviderRepo:      mailProviderRepo,
 		EmailRepo:             emailRepo,
+		EmailIngestService:    emailIngestService,
 		IncrementalSyncRepo:   incrementalSyncRepo,
 		EmailScheduler:        emailScheduler,
 		activityLogger:        services.GetActivityLogger(),
