@@ -216,12 +216,38 @@ func (p *VariableExtractActionPlugin) GetExecutionOrder() int {
 }
 
 // Execute 执行动作
-func (p *VariableExtractActionPlugin) Execute(ctx *plugins.PluginContext, event *triggerModels.Event) (*plugins.PluginResult, error) {
+func (p *VariableExtractActionPlugin) Execute(ctx *plugins.PluginContext, event *triggerModels.Event) (result *plugins.PluginResult, err error) {
 	startTime := time.Now()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = &plugins.PluginResult{
+				Success:       false,
+				Error:         fmt.Sprintf("提取失败: 插件执行异常: %v", recovered),
+				ExecutionTime: time.Since(startTime),
+				Timestamp:     time.Now(),
+			}
+			err = nil
+		}
+	}()
 
 	// 更新使用统计
-	p.info.UsageCount++
-	p.info.LastUsed = time.Now()
+	if p.info != nil {
+		p.info.UsageCount++
+		p.info.LastUsed = time.Now()
+	}
+
+	if p.config == nil {
+		p.config = p.GetDefaultConfig()
+	}
+
+	if event == nil {
+		return &plugins.PluginResult{
+			Success:       false,
+			Error:         "事件为空",
+			ExecutionTime: time.Since(startTime),
+			Timestamp:     time.Now(),
+		}, nil
+	}
 
 	// 获取邮件对象
 	var email *models.Email
@@ -242,23 +268,23 @@ func (p *VariableExtractActionPlugin) Execute(ctx *plugins.PluginContext, event 
 	returnType := getStringValue(p.config, "return_type", "auto")
 
 	var extractedValue interface{}
-	var err error
+	var extractErr error
 
 	switch source {
 	case "email":
-		extractedValue, err = p.extractFromEmail(email, event)
+		extractedValue, extractErr = p.extractFromEmail(email, event)
 	case "variable":
-		extractedValue, err = p.extractFromVariable(event)
+		extractedValue, extractErr = p.extractFromVariable(event)
 	case "expression":
-		extractedValue, err = p.extractFromExpression(email, event)
+		extractedValue, extractErr = p.extractFromExpression(email, event)
 	default:
-		err = fmt.Errorf("不支持的 source 类型: %s", source)
+		extractErr = fmt.Errorf("不支持的 source 类型: %s", source)
 	}
 
-	if err != nil {
+	if extractErr != nil {
 		return &plugins.PluginResult{
 			Success:       false,
-			Error:         fmt.Sprintf("提取失败: %v", err),
+			Error:         fmt.Sprintf("提取失败: %v", extractErr),
 			ExecutionTime: time.Since(startTime),
 			Timestamp:     time.Now(),
 		}, nil
@@ -288,7 +314,9 @@ func (p *VariableExtractActionPlugin) Execute(ctx *plugins.PluginContext, event 
 
 	// 计算执行时间
 	duration := time.Since(startTime)
-	p.info.AvgExecutionTime = (p.info.AvgExecutionTime + duration) / 2
+	if p.info != nil {
+		p.info.AvgExecutionTime = (p.info.AvgExecutionTime + duration) / 2
+	}
 
 	return &plugins.PluginResult{
 		Success:       true,
@@ -305,6 +333,10 @@ func (p *VariableExtractActionPlugin) Execute(ctx *plugins.PluginContext, event 
 
 // extractFromEmail 从邮件字段提取
 func (p *VariableExtractActionPlugin) extractFromEmail(email *models.Email, event *triggerModels.Event) (interface{}, error) {
+	if email == nil {
+		return nil, fmt.Errorf("邮件数据为空")
+	}
+
 	sourceField := getStringValue(p.config, "source_field", "")
 	expression := getStringValue(p.config, "expression", "")
 	expressionType := getStringValue(p.config, "expression_type", "javascript")
@@ -322,6 +354,10 @@ func (p *VariableExtractActionPlugin) extractFromEmail(email *models.Email, even
 
 // extractFromVariable 从变量提取
 func (p *VariableExtractActionPlugin) extractFromVariable(event *triggerModels.Event) (interface{}, error) {
+	if event == nil {
+		return nil, fmt.Errorf("事件为空")
+	}
+
 	sourceVar := getStringValue(p.config, "source_variable", "")
 	expression := getStringValue(p.config, "expression", "")
 	expressionType := getStringValue(p.config, "expression_type", "javascript")
