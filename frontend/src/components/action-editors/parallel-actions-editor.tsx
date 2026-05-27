@@ -45,6 +45,7 @@ interface ParallelActionsEditorProps {
         description: string
     }>
     onActionSelect?: (action: any) => void
+    pluginContext?: 'trigger' | 'pickup'
 }
 
 // 主组件：并行动作编辑器
@@ -52,7 +53,8 @@ export function ParallelActionsEditor({
     config,
     onChange,
     availablePlugins = [],
-    onActionSelect
+    onActionSelect,
+    pluginContext = 'trigger'
 }: ParallelActionsEditorProps) {
     // 确保 config 有默认值
     const safeConfig: ParallelActionsConfig = {
@@ -166,6 +168,7 @@ export function ParallelActionsEditor({
                         testData={{}}
                         hideHeader={true}
                         onActionSelect={onActionSelect}
+                        pluginContext={pluginContext}
                     />
                 </CardContent>
             </Card>

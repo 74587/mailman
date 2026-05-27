@@ -24,6 +24,7 @@ interface FilterSectionProps {
         timestamp: number
     }>
     isEvaluating?: string | null
+    pluginContext?: 'trigger' | 'pickup' | 'interceptor'
     // 描述相关
     description?: string
     onDescriptionChange?: (description: string) => void
@@ -48,6 +49,7 @@ export function FilterSection({
     onEvaluate,
     evaluationResults,
     isEvaluating,
+    pluginContext = 'trigger',
     description,
     onDescriptionChange
 }: FilterSectionProps) {
@@ -182,6 +184,7 @@ export function FilterSection({
                         onEvaluate={onEvaluate}
                         evaluationResults={evaluationResults}
                         isEvaluating={isEvaluating}
+                        pluginContext={pluginContext}
                     />
                 </div>
             )}

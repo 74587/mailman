@@ -366,8 +366,12 @@ func (p *ConditionalBranchActionPlugin) parseBranches(config map[string]interfac
 		if actions, ok := branchMap["actions"].([]interface{}); ok {
 			for _, action := range actions {
 				if actionMap, ok := action.(map[string]interface{}); ok {
+					pluginID := getStringValue(actionMap, "plugin_id", "")
+					if pluginID == "" {
+						pluginID = getStringValue(actionMap, "pluginId", "")
+					}
 					branchAction := BranchAction{
-						PluginID: getStringValue(actionMap, "plugin_id", ""),
+						PluginID: pluginID,
 						Enabled:  true,
 					}
 					if config, ok := actionMap["config"].(map[string]interface{}); ok {
@@ -402,8 +406,12 @@ func (p *ConditionalBranchActionPlugin) parseElseActions(config map[string]inter
 	actions := make([]BranchAction, 0, len(actionsSlice))
 	for _, actionRaw := range actionsSlice {
 		if actionMap, ok := actionRaw.(map[string]interface{}); ok {
+			pluginID := getStringValue(actionMap, "plugin_id", "")
+			if pluginID == "" {
+				pluginID = getStringValue(actionMap, "pluginId", "")
+			}
 			action := BranchAction{
-				PluginID: getStringValue(actionMap, "plugin_id", ""),
+				PluginID: pluginID,
 				Enabled:  true,
 			}
 			if config, ok := actionMap["config"].(map[string]interface{}); ok {

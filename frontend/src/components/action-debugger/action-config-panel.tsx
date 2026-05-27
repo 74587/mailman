@@ -102,6 +102,7 @@ interface ActionConfigPanelProps {
     readOnly?: boolean
     nestingLevel?: number // 嵌套层级，用于条件分支等需要嵌套感知的组件
     onActionSelect?: (action: any) => void
+    pluginContext?: 'trigger' | 'pickup'
 }
 
 // 数组字段编辑器组件
@@ -355,7 +356,7 @@ function ArrayFieldEditor({ field, value, onChange, readOnly = false, parentConf
     )
 }
 
-export function ActionConfigPanel({ action, availablePlugins, onChange, testData = {}, readOnly = false, nestingLevel = 0, onActionSelect }: ActionConfigPanelProps) {
+export function ActionConfigPanel({ action, availablePlugins, onChange, testData = {}, readOnly = false, nestingLevel = 0, onActionSelect, pluginContext = 'trigger' }: ActionConfigPanelProps) {
     const [pluginData, setPluginData] = useState<PluginData | null>(null)
     const [loading, setLoading] = useState(true)
     const [dynamicOptions, setDynamicOptions] = useState<Record<string, any[]>>({})
@@ -406,7 +407,7 @@ export function ActionConfigPanel({ action, availablePlugins, onChange, testData
         try {
             setLoading(true)
             const data = await apiClient.get('/plugins/ui/schemas', {
-                params: { type: 'action' }
+                params: { type: 'action', context: pluginContext }
             })
 
             // 查找对应的插件数据
@@ -764,6 +765,7 @@ export function ActionConfigPanel({ action, availablePlugins, onChange, testData
                             nestingLevel={nestingLevel}
                             onActionSelect={onActionSelect}
                             actionId={action.id}
+                            pluginContext={pluginContext}
                         />
                     </div>
                 )
@@ -788,6 +790,7 @@ export function ActionConfigPanel({ action, availablePlugins, onChange, testData
                             onChange={onChange}
                             availablePlugins={availablePlugins}
                             onActionSelect={onActionSelect}
+                            pluginContext={pluginContext}
                         />
                     </div>
                 )

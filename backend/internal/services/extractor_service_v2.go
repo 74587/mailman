@@ -145,19 +145,39 @@ func (s *ExtractorServiceV2) DebugExtraction(template *models.ExtractorTemplateV
 		// 准备输入（包含上一个动作的输出）
 		actionInput := s.prepareActionInput(context, lastOutput, action)
 
-		// 执行动作
-		actionOutput, actionErr := s.actionExecutor.ExecuteAction(action, actionInput)
-		actionDuration := time.Since(actionStartTime).Milliseconds()
-
 		actionResult := models.ActionExecutionResult{
 			ActionID:   action.ID,
 			PluginID:   action.PluginID,
 			PluginName: action.PluginName,
 			StartTime:  actionStartTime,
 			EndTime:    time.Now(),
-			Duration:   actionDuration,
 			Input:      actionInput,
 		}
+
+		if actionErr := validatePickupAction(action); actionErr != nil {
+			actionResult.Success = false
+			actionResult.Error = actionErr.Error()
+			actionResult.Duration = time.Since(actionStartTime).Milliseconds()
+			actionResult.EndTime = time.Now()
+			actionResults = append(actionResults, actionResult)
+
+			debugResult.StepResults = append(debugResult.StepResults, models.StepDebugResult{
+				StepIndex: i + 1,
+				StepType:  "action",
+				StepName:  action.PluginName,
+				Input:     actionInput,
+				Success:   false,
+				Duration:  actionResult.Duration,
+				Error:     actionResult.Error,
+			})
+			break
+		}
+
+		// 执行动作
+		actionOutput, actionErr := s.actionExecutor.ExecuteAction(action, actionInput)
+		actionDuration := time.Since(actionStartTime).Milliseconds()
+		actionResult.Duration = actionDuration
+		actionResult.EndTime = time.Now()
 
 		if actionErr != nil {
 			actionResult.Success = false
@@ -265,9 +285,6 @@ func (s *ExtractorServiceV2) executeExtraction(template *models.ExtractorTemplat
 		// 准备输入
 		actionInput := s.prepareActionInput(context, lastOutput, action)
 
-		// 执行动作
-		actionOutput, actionErr := s.actionExecutor.ExecuteAction(action, actionInput)
-
 		actionResult := models.ActionExecutionResult{
 			ActionID:   action.ID,
 			PluginID:   action.PluginID,
@@ -277,6 +294,21 @@ func (s *ExtractorServiceV2) executeExtraction(template *models.ExtractorTemplat
 			Duration:   time.Since(actionStartTime).Milliseconds(),
 			Input:      actionInput,
 		}
+
+		if actionErr := validatePickupAction(action); actionErr != nil {
+			actionResult.Success = false
+			actionResult.Error = actionErr.Error()
+			actionResult.EndTime = time.Now()
+			actionResult.Duration = time.Since(actionStartTime).Milliseconds()
+			result.ActionResults = append(result.ActionResults, actionResult)
+			result.Success = false
+			result.Status = models.ExtractionV2StatusFailed
+			result.Error = actionErr.Error()
+			return result
+		}
+
+		// 执行动作
+		actionOutput, actionErr := s.actionExecutor.ExecuteAction(action, actionInput)
 
 		if actionErr != nil {
 			actionResult.Success = false
@@ -609,6 +641,12 @@ func (s *FilterEvaluatorService) evaluatePlugin(expr models.TriggerExpression, c
 	}
 
 	pluginID := *expr.PluginID
+	if pluginID == "builtin" {
+		return s.evaluateBuiltinPluginCondition(expr, context)
+	}
+	if !builtin.IsPluginAllowedInContextByID(pluginID, builtin.PluginContextPickup) {
+		return false, fmt.Errorf("plugin %s is not allowed in pickup templates", pluginID)
+	}
 
 	// 查找内置插件并断言为条件插件
 	p := builtin.GetBuiltinPluginByID(pluginID)
@@ -650,6 +688,28 @@ func (s *FilterEvaluatorService) evaluatePlugin(expr models.TriggerExpression, c
 	}
 
 	return s.applyNot(result.Success, expr.Not), nil
+}
+
+func (s *FilterEvaluatorService) evaluateBuiltinPluginCondition(expr models.TriggerExpression, context map[string]interface{}) (bool, error) {
+	if expr.Fields == nil {
+		return false, fmt.Errorf("builtin plugin condition missing fields")
+	}
+
+	field, _ := expr.Fields["field"].(string)
+	operatorText, _ := expr.Fields["operator"].(string)
+	if field == "" || operatorText == "" {
+		return false, fmt.Errorf("builtin plugin condition missing field or operator")
+	}
+
+	return s.evaluateCondition(models.TriggerExpression{
+		Type:  models.TriggerExpressionTypeCondition,
+		Field: &field,
+		Value: map[string]interface{}{
+			"operator": operatorText,
+			"value":    expr.Fields["value"],
+		},
+		Not: expr.Not,
+	}, context)
 }
 
 // evaluateCustomExpression 评估自定义表达式（如JS、CEL等）
@@ -906,6 +966,161 @@ func shouldStopPipeline(output map[string]interface{}) bool {
 	}
 
 	return false
+}
+
+func validatePickupAction(action models.TriggerAction) error {
+	return validatePickupActionByID(action.PluginID, action.Config, action.PluginName)
+}
+
+func validatePickupActionByID(pluginID string, config map[string]interface{}, path string) error {
+	if pluginID == "" {
+		if path == "" {
+			path = "action"
+		}
+		return fmt.Errorf("%s plugin id is empty", path)
+	}
+	if path == "" {
+		path = pluginID
+	}
+
+	if !isPickupActionAllowed(pluginID) {
+		return fmt.Errorf("plugin %s is not allowed in pickup templates", pluginID)
+	}
+
+	switch pluginID {
+	case "conditional_branch_action":
+		if err := validatePickupConditionalBranchActions(config, path); err != nil {
+			return err
+		}
+	case "parallel_actions":
+		if err := validatePickupActionList(config["actions"], path+".actions"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func isPickupActionAllowed(pluginID string) bool {
+	switch pluginID {
+	case "regex_extractor", "regex",
+		"js_extractor", "js", "javascript",
+		"gotemplate_extractor", "gotemplate",
+		"jsonpath_extractor", "jsonpath",
+		"email_transform":
+		return true
+	default:
+		return builtin.IsPluginAllowedInContextByID(pluginID, builtin.PluginContextPickup)
+	}
+}
+
+func validatePickupConditionalBranchActions(config map[string]interface{}, path string) error {
+	if config == nil {
+		return nil
+	}
+
+	if err := validatePickupBranches(config["branches"], path+".branches"); err != nil {
+		return err
+	}
+	if err := validatePickupActionList(config["else_actions"], path+".else_actions"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validatePickupBranches(raw interface{}, path string) error {
+	if raw == nil {
+		return nil
+	}
+
+	switch branches := raw.(type) {
+	case []interface{}:
+		for i, branch := range branches {
+			branchMap, ok := branch.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("%s[%d] must be an object", path, i)
+			}
+			if err := validatePickupActionList(branchMap["actions"], fmt.Sprintf("%s[%d].actions", path, i)); err != nil {
+				return err
+			}
+		}
+	case []map[string]interface{}:
+		for i, branch := range branches {
+			if err := validatePickupActionList(branch["actions"], fmt.Sprintf("%s[%d].actions", path, i)); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("%s must be an array", path)
+	}
+
+	return nil
+}
+
+func validatePickupActionList(raw interface{}, path string) error {
+	if raw == nil {
+		return nil
+	}
+
+	switch actions := raw.(type) {
+	case []interface{}:
+		for i, action := range actions {
+			if err := validatePickupActionValue(action, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case []map[string]interface{}:
+		for i, action := range actions {
+			if err := validatePickupActionMap(action, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case []models.TriggerAction:
+		for i, action := range actions {
+			if !action.Enabled {
+				continue
+			}
+			if err := validatePickupActionByID(action.PluginID, action.Config, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("%s must be an array", path)
+	}
+
+	return nil
+}
+
+func validatePickupActionValue(raw interface{}, path string) error {
+	actionMap, ok := raw.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("%s must be an object", path)
+	}
+	return validatePickupActionMap(actionMap, path)
+}
+
+func validatePickupActionMap(action map[string]interface{}, path string) error {
+	if enabled, ok := action["enabled"].(bool); ok && !enabled {
+		return nil
+	}
+
+	pluginID := stringFromActionMap(action, "plugin_id", "pluginId")
+	config, _ := action["config"].(map[string]interface{})
+	if config == nil {
+		config = map[string]interface{}{}
+	}
+
+	return validatePickupActionByID(pluginID, config, path)
+}
+
+func stringFromActionMap(action map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := action[key].(string); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 func emailFromActionInput(input map[string]interface{}) *models.Email {

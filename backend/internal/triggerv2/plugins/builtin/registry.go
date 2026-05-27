@@ -53,9 +53,10 @@ func GetBuiltinPlugins() []plugins.Plugin {
 
 // RegisterBuiltinPlugins 注册所有内置插件到管理器
 func RegisterBuiltinPlugins(manager plugins.PluginManager) error {
-	plugins := GetBuiltinPlugins()
+	builtinPlugins := GetBuiltinPlugins()
 
-	for _, plugin := range plugins {
+	for _, plugin := range builtinPlugins {
+		ApplyBuiltinPluginPolicy(plugin.GetInfo())
 		if aware, ok := plugin.(pluginManagerAware); ok {
 			aware.SetPluginManager(manager)
 		}
@@ -71,6 +72,7 @@ func RegisterBuiltinPlugins(manager plugins.PluginManager) error {
 func GetBuiltinPluginByID(id string) plugins.Plugin {
 	for _, p := range GetBuiltinPlugins() {
 		if p.GetInfo().ID == id {
+			ApplyBuiltinPluginPolicy(p.GetInfo())
 			return p
 		}
 	}
@@ -102,7 +104,7 @@ func GetBuiltinPluginInfo() []*plugins.PluginInfo {
 	var infos []*plugins.PluginInfo
 
 	for _, plugin := range GetBuiltinPlugins() {
-		infos = append(infos, plugin.GetInfo())
+		infos = append(infos, ApplyBuiltinPluginPolicy(plugin.GetInfo()))
 	}
 
 	return infos

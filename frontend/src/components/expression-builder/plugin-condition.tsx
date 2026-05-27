@@ -107,6 +107,7 @@ interface PluginConditionProps {
     onEvaluate?: (expressionId: string, expression: any) => Promise<void>
     evaluationResult?: EvaluationResult
     isEvaluating?: boolean
+    pluginContext?: 'trigger' | 'pickup' | 'interceptor'
 }
 
 interface UIField {
@@ -173,7 +174,8 @@ export function PluginCondition({
     onSelect,
     onEvaluate,
     evaluationResult,
-    isEvaluating = false
+    isEvaluating = false,
+    pluginContext = 'trigger'
 }: PluginConditionProps) {
     const [pluginData, setPluginData] = useState<PluginData | null>(null)
     const [loading, setLoading] = useState(true)
@@ -219,13 +221,13 @@ export function PluginCondition({
     // 获取插件UI架构
     useEffect(() => {
         fetchPluginSchemas()
-    }, [pluginId])
+    }, [pluginId, pluginContext])
 
     const fetchPluginSchemas = async () => {
         try {
             setLoading(true)
             const data = await apiClient.get('/plugins/ui/schemas', {
-                params: { type: 'condition' }
+                params: { type: 'condition', context: pluginContext }
             })
 
             // 查找对应的插件数据

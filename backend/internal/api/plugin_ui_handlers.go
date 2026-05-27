@@ -6,12 +6,14 @@ import (
 	"strings"
 
 	"mailman/internal/triggerv2/plugins"
+	"mailman/internal/triggerv2/plugins/builtin"
 )
 
 // GetPluginUISchemas 获取所有插件的UI架构
 func (h *APIHandler) GetPluginUISchemas(w http.ResponseWriter, r *http.Request) {
 	// 获取插件类型过滤
 	pluginType := r.URL.Query().Get("type")
+	pluginContext := r.URL.Query().Get("context")
 
 	// 获取所有插件
 	pluginInfos, err := h.pluginManager.ListPlugins()
@@ -25,6 +27,9 @@ func (h *APIHandler) GetPluginUISchemas(w http.ResponseWriter, r *http.Request) 
 	// 遍历插件，获取条件和动作插件的UI架构
 	for _, info := range pluginInfos {
 		if pluginType != "" && string(info.Type) != pluginType {
+			continue
+		}
+		if !builtin.IsPluginAllowedInContext(info, pluginContext) {
 			continue
 		}
 
@@ -52,14 +57,19 @@ func (h *APIHandler) GetPluginUISchemas(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// 添加通用字段匹配条件
-	schemas["builtin"] = map[string]interface{}{
-		"info": map[string]interface{}{
-			"id":          "builtin",
-			"name":        "字段匹配器",
-			"description": "基于字段值的通用条件匹配，支持所有邮件字段",
-		},
-		"schema": getBuiltinUISchema(),
+	if pluginType == "" || pluginType == string(plugins.PluginTypeCondition) {
+		// 添加通用字段匹配条件
+		schemas["builtin"] = map[string]interface{}{
+			"info": map[string]interface{}{
+				"id":           "builtin",
+				"name":         "字段匹配器",
+				"description":  "基于字段值的通用条件匹配，支持所有邮件字段",
+				"type":         string(plugins.PluginTypeCondition),
+				"capabilities": []string{builtin.PluginCapabilityCondition, builtin.PluginCapabilityPure},
+				"contexts":     []string{builtin.PluginContextTrigger, builtin.PluginContextPickup, builtin.PluginContextInterceptor},
+			},
+			"schema": getBuiltinUISchema(),
+		}
 	}
 
 	RespondWithJSON(w, http.StatusOK, schemas)
@@ -68,6 +78,7 @@ func (h *APIHandler) GetPluginUISchemas(w http.ResponseWriter, r *http.Request) 
 // GetPluginUISchema 获取单个插件的UI架构
 func (h *APIHandler) GetPluginUISchema(w http.ResponseWriter, r *http.Request) {
 	pluginID := r.URL.Query().Get("id")
+	pluginContext := r.URL.Query().Get("context")
 	if pluginID == "" {
 		RespondWithError(w, http.StatusBadRequest, "Missing plugin ID")
 		return
@@ -162,6 +173,10 @@ func (h *APIHandler) GetPluginUISchema(w http.ResponseWriter, r *http.Request) {
 
 	// 获取插件信息
 	info := plugin.GetInfo()
+	if !builtin.IsPluginAllowedInContext(info, pluginContext) {
+		RespondWithError(w, http.StatusForbidden, "Plugin is not available in this context")
+		return
+	}
 
 	// 根据插件类型检查是否实现了UI接口
 	switch info.Type {

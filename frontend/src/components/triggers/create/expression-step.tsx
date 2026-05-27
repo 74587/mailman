@@ -44,6 +44,7 @@ interface ExpressionStepProps {
     isEvaluating?: string | null
     readOnly?: boolean
     stepNumber?: number  // 可选的步骤编号
+    pluginContext?: 'trigger' | 'pickup' | 'interceptor'
 }
 
 interface TestResult {
@@ -64,7 +65,8 @@ export default function ExpressionStep({
     evaluationResults,
     isEvaluating,
     readOnly,
-    stepNumber
+    stepNumber,
+    pluginContext = 'trigger'
 }: ExpressionStepProps) {
     const [isTestingExpression, setIsTestingExpression] = useState(false)
     const [testResult, setTestResult] = useState<TestResult | null>(null)
@@ -177,6 +179,7 @@ export default function ExpressionStep({
                                 onEvaluate={onEvaluate}
                                 evaluationResults={evaluationResults}
                                 isEvaluating={isEvaluating}
+                                pluginContext={pluginContext}
                             />
                         </AncestorProvider>
                     </div>

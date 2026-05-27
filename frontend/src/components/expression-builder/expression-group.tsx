@@ -42,40 +42,41 @@ interface EvaluationResult {
 }
 
 // 全局缓存插件列表，避免重复请求
-let pluginsCache: any[] | null = null
-let pluginsFetching = false
-let pluginsPromise: Promise<any[]> | null = null
+type PluginContext = 'trigger' | 'pickup' | 'interceptor'
+let pluginsCacheByContext: Record<string, any[]> = {}
+let pluginsFetchingByContext: Record<string, boolean> = {}
+let pluginsPromiseByContext: Record<string, Promise<any[]> | null> = {}
 
-const fetchPluginsOnce = async (): Promise<any[]> => {
-    if (pluginsCache) {
-        return pluginsCache
+const fetchPluginsOnce = async (pluginContext: PluginContext = 'trigger'): Promise<any[]> => {
+    if (pluginsCacheByContext[pluginContext]) {
+        return pluginsCacheByContext[pluginContext]
     }
-    if (pluginsFetching && pluginsPromise) {
-        return pluginsPromise
+    if (pluginsFetchingByContext[pluginContext] && pluginsPromiseByContext[pluginContext]) {
+        return pluginsPromiseByContext[pluginContext]!
     }
 
-    pluginsFetching = true
-    pluginsPromise = (async () => {
+    pluginsFetchingByContext[pluginContext] = true
+    pluginsPromiseByContext[pluginContext] = (async () => {
         try {
             const data = await apiClient.get('/plugins/ui/schemas', {
-                params: { type: 'condition' }
+                params: { type: 'condition', context: pluginContext }
             })
             const plugins = Object.entries(data).map(([id, plugin]: [string, any]) => ({
                 id,
                 name: plugin.info.name,
                 description: plugin.info.description
             }))
-            pluginsCache = plugins
+            pluginsCacheByContext[pluginContext] = plugins
             return plugins
         } catch (error) {
             console.error('Failed to fetch plugins:', error)
             return []
         } finally {
-            pluginsFetching = false
+            pluginsFetchingByContext[pluginContext] = false
         }
     })()
 
-    return pluginsPromise
+    return pluginsPromiseByContext[pluginContext]!
 }
 
 // 模板缓存
@@ -93,6 +94,7 @@ interface ExpressionGroupProps {
     onEvaluate?: (expressionId: string, expression: any) => Promise<void>
     evaluationResults?: Record<string, EvaluationResult>
     isEvaluating?: string | null
+    pluginContext?: PluginContext
 }
 
 export function ExpressionGroup({
@@ -105,9 +107,10 @@ export function ExpressionGroup({
     onExpressionSelect,
     onEvaluate,
     evaluationResults = {},
-    isEvaluating
+    isEvaluating,
+    pluginContext = 'trigger'
 }: ExpressionGroupProps) {
-    const [availablePlugins, setAvailablePlugins] = useState<any[]>(pluginsCache || [])
+    const [availablePlugins, setAvailablePlugins] = useState<any[]>(pluginsCacheByContext[pluginContext] || [])
     const [templates, setTemplates] = useState<FilterTemplateListItem[]>(templatesCache || [])
     const [filteredTemplates, setFilteredTemplates] = useState<FilterTemplateListItem[]>([])
     const [templateSearch, setTemplateSearch] = useState('')
@@ -119,19 +122,16 @@ export function ExpressionGroup({
     useEffect(() => {
         isMounted.current = true
 
-        // 只有在没有缓存时才请求
-        if (!pluginsCache) {
-            fetchPluginsOnce().then(plugins => {
-                if (isMounted.current) {
-                    setAvailablePlugins(plugins)
-                }
-            })
-        }
+        fetchPluginsOnce(pluginContext).then(plugins => {
+            if (isMounted.current) {
+                setAvailablePlugins(plugins)
+            }
+        })
 
         return () => {
             isMounted.current = false
         }
-    }, [])
+    }, [pluginContext])
 
     // 加载模板列表
     const loadTemplates = useCallback(async () => {
@@ -457,6 +457,7 @@ export function ExpressionGroup({
                                     onEvaluate={onEvaluate}
                                     evaluationResults={evaluationResults}
                                     isEvaluating={isEvaluating}
+                                    pluginContext={pluginContext}
                                 />
                             ) : readOnly ? (
                                 // 只读模式下使用简化的只读组件
@@ -501,6 +502,7 @@ export function ExpressionGroup({
                                     onEvaluate={onEvaluate}
                                     evaluationResult={evaluationResults[condition.id]}
                                     isEvaluating={isEvaluating === condition.id}
+                                    pluginContext={pluginContext}
                                 />
                             ) : (
                                 <ExpressionCondition

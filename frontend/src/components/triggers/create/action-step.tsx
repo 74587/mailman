@@ -29,6 +29,7 @@ interface ActionStepProps {
     onActionSelect?: (action: any, executionResult?: ActionExecutionResult) => void
     readOnly?: boolean
     stepNumber?: number  // 可选的步骤编号
+    pluginContext?: 'trigger' | 'pickup'
 }
 
 interface TestResult {
@@ -39,7 +40,7 @@ interface TestResult {
 
 const STEP_NAMES = ['第一步', '第二步', '第三步', '第四步']
 
-export default function ActionStep({ data, onDataChange, onNext, onPrevious, onActionSelect, readOnly, stepNumber }: ActionStepProps) {
+export default function ActionStep({ data, onDataChange, onNext, onPrevious, onActionSelect, readOnly, stepNumber, pluginContext = 'trigger' }: ActionStepProps) {
     const [isTestingActions, setIsTestingActions] = useState(false)
     const [testResult, setTestResult] = useState<TestResult | null>(null)
     const [showDataPreview, setShowDataPreview] = useState(false)
@@ -306,6 +307,7 @@ export default function ActionStep({ data, onDataChange, onNext, onPrevious, onA
                                 testData={emailData}
                                 expressions={expressions}
                                 onActionSelect={handleActionSelectInternal}
+                                pluginContext={pluginContext}
                             />
                         </AncestorProvider>
                     </div>

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 
 	"mailman/internal/models"
@@ -519,6 +520,33 @@ func TestFilterEvaluator_ConditionMissingField(t *testing.T) {
 	}
 }
 
+func TestFilterEvaluator_BuiltinPluginCondition(t *testing.T) {
+	svc := NewFilterEvaluatorService()
+	pluginID := "builtin"
+
+	exprs := models.TriggerExpressions{
+		{
+			Type:     models.TriggerExpressionTypePlugin,
+			PluginID: &pluginID,
+			Fields: models.JSONMapInterface{
+				"field":    "body",
+				"operator": "contains",
+				"value":    "code",
+			},
+		},
+	}
+
+	result, err := svc.Evaluate(exprs, map[string]interface{}{
+		"body": "652015 Use this code to continue in Dia.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result {
+		t.Error("expected builtin plugin condition to match")
+	}
+}
+
 // =============================================================================
 // ActionExecutorService Tests (no DB dependency for these action types)
 // =============================================================================
@@ -800,8 +828,8 @@ func TestActionExecutor_ConditionalBranchRunsNestedActionConfig(t *testing.T) {
 					"name": "default",
 					"actions": []interface{}{
 						map[string]interface{}{
-							"plugin_id": "variable_extract_action",
-							"enabled":   true,
+							"pluginId": "variable_extract_action",
+							"enabled":  true,
 							"config": map[string]interface{}{
 								"source":          "email",
 								"source_field":    "body",
@@ -895,6 +923,89 @@ func TestExtractorServiceV2_ReturnActionStopsPipeline(t *testing.T) {
 	}
 	if !result.ActionResults[0].StopPipeline {
 		t.Fatal("expected return action to stop pipeline")
+	}
+}
+
+func TestExtractorServiceV2_BlocksUnsafePickupAction(t *testing.T) {
+	svc := &ExtractorServiceV2{
+		filterEvaluator: NewFilterEvaluatorService(),
+		actionExecutor:  &ActionExecutorService{},
+	}
+
+	template := &models.ExtractorTemplateV2{
+		Enabled: true,
+		Actions: models.TriggerActions{
+			{
+				ID:       "delete-email",
+				PluginID: "email_delete_action",
+				Config: map[string]interface{}{
+					"delete_type": "trash",
+				},
+				Enabled: true,
+			},
+		},
+	}
+
+	result, err := svc.TestExtraction(template, &models.Email{
+		Subject: "Your Dia Code",
+		Body:    "652015 Use this code to continue in Dia.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected unsafe pickup action to fail")
+	}
+	if !strings.Contains(result.Error, "not allowed in pickup templates") {
+		t.Fatalf("expected pickup policy error, got %q", result.Error)
+	}
+}
+
+func TestExtractorServiceV2_BlocksUnsafeNestedPickupAction(t *testing.T) {
+	svc := &ExtractorServiceV2{
+		filterEvaluator: NewFilterEvaluatorService(),
+		actionExecutor:  &ActionExecutorService{},
+	}
+
+	template := &models.ExtractorTemplateV2{
+		Enabled: true,
+		Actions: models.TriggerActions{
+			{
+				ID:       "branch",
+				PluginID: "conditional_branch_action",
+				Config: map[string]interface{}{
+					"branches": []interface{}{
+						map[string]interface{}{
+							"name": "default",
+							"actions": []interface{}{
+								map[string]interface{}{
+									"pluginId": "webhook_action",
+									"enabled":  true,
+									"config": map[string]interface{}{
+										"url": "https://example.com/hook",
+									},
+								},
+							},
+						},
+					},
+				},
+				Enabled: true,
+			},
+		},
+	}
+
+	result, err := svc.TestExtraction(template, &models.Email{
+		Subject: "Your Dia Code",
+		Body:    "652015 Use this code to continue in Dia.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Fatal("expected unsafe nested pickup action to fail")
+	}
+	if !strings.Contains(result.Error, "webhook_action is not allowed in pickup templates") {
+		t.Fatalf("expected nested pickup policy error, got %q", result.Error)
 	}
 }
 

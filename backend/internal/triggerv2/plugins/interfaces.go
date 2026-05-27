@@ -65,8 +65,10 @@ type PluginInfo struct {
 	MaxVersion   string   `json:"max_version"`
 
 	// 权限和安全
-	Permissions []string `json:"permissions"`
-	Sandbox     bool     `json:"sandbox"`
+	Permissions  []string `json:"permissions"`
+	Sandbox      bool     `json:"sandbox"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Contexts     []string `json:"contexts,omitempty"`
 
 	// 性能信息
 	AvgExecutionTime time.Duration `json:"avg_execution_time"`

@@ -417,8 +417,13 @@ func (p *ParallelActionsPlugin) parseActions(config map[string]interface{}) ([]P
 			return nil, fmt.Errorf("动作 %d: 格式无效", i+1)
 		}
 
+		pluginID := getStringValue(actionMap, "plugin_id", "")
+		if pluginID == "" {
+			pluginID = getStringValue(actionMap, "pluginId", "")
+		}
+
 		action := ParallelAction{
-			PluginID: getStringValue(actionMap, "plugin_id", ""),
+			PluginID: pluginID,
 			Name:     getStringValue(actionMap, "name", fmt.Sprintf("动作 %d", i+1)),
 			Enabled:  true,
 		}

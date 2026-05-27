@@ -397,6 +397,7 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
                         onExpressionSelect={handleExpressionSelect}
                         stepNumber={1}
                         readOnly={readOnly}
+                        pluginContext="pickup"
                     />
                 )
             case 'action':
@@ -416,7 +417,7 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
                                         取件模板的动作链用于从邮件中提取数据。动作会按顺序执行，<strong>最后一个动作的返回值</strong>将作为提取结果。
                                     </p>
                                     <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-                                        💡 建议：使用「JSON提取」「正则提取」「AI提取」等动作来获取邮件中的关键信息。
+                                        💡 建议：优先使用「变量提取」「邮件数据转换」「条件分支」「中断流程」组合出稳定的提取结果。
                                     </p>
                                 </div>
                             </div>
@@ -427,6 +428,7 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
                             onActionSelect={handleActionSelect}
                             stepNumber={2}
                             readOnly={readOnly}
+                            pluginContext="pickup"
                         />
                     </div>
                 )

@@ -83,6 +83,7 @@ interface ConditionalBranchEditorProps {
     onActionSelect?: (action: any) => void
     // 父动作 ID，用于生成 ELSE 分支的 ID
     actionId?: string
+    pluginContext?: 'trigger' | 'pickup'
 }
 
 // 层级颜色配置
@@ -104,7 +105,8 @@ function BranchEditor({
     onDuplicate,
     testData,
     isCompact,
-    onActionSelect
+    onActionSelect,
+    pluginContext
 }: {
     branch: ConditionalBranch
     branchIndex: number
@@ -115,6 +117,7 @@ function BranchEditor({
     testData?: Record<string, any>
     isCompact?: boolean
     onActionSelect?: (action: any) => void
+    pluginContext: 'trigger' | 'pickup'
 }) {
     const { level } = useContext(NestingContext)
     const { selectItem } = useStickyBreadcrumb()
@@ -348,6 +351,7 @@ function BranchEditor({
                                         onChange={handleConditionsChange}
                                         testData={testData || {}}
                                         hideHeader={true}
+                                        pluginContext={pluginContext}
                                     />
                                 </AncestorProvider>
                             </div>
@@ -363,6 +367,7 @@ function BranchEditor({
                                         testData={testData || {}}
                                         hideHeader={true}
                                         onActionSelect={onActionSelect}
+                                        pluginContext={pluginContext}
                                     />
                                 </AncestorProvider>
                             </div>
@@ -382,7 +387,8 @@ export function ConditionalBranchEditor({
     testData,
     nestingLevel = 0,
     onActionSelect,
-    actionId
+    actionId,
+    pluginContext = 'trigger'
 }: ConditionalBranchEditorProps) {
     // 确保 config 有默认值
     const safeConfig: ConditionalBranchConfig = {
@@ -597,6 +603,7 @@ export function ConditionalBranchEditor({
                             testData={testData}
                             isCompact={isCompact}
                             onActionSelect={onActionSelect}
+                            pluginContext={pluginContext}
                         />
                     ))}
                 </div>
@@ -654,6 +661,7 @@ export function ConditionalBranchEditor({
                                 testData={testData || {}}
                                 hideHeader={true}
                                 onActionSelect={onActionSelect}
+                                pluginContext={pluginContext}
                             />
                         </CardContent>
                     </Card>

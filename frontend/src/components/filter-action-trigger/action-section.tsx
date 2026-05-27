@@ -20,6 +20,8 @@ interface Action {
     executionOrder: number
 }
 
+export type PluginContext = 'trigger' | 'pickup'
+
 // 执行结果类型
 export interface ActionExecutionResult {
     actionId: string
@@ -37,9 +39,10 @@ interface ActionSectionProps {
     onActionSelect?: (action: Action | null, executionResult?: ActionExecutionResult, actionIndex?: number) => void
     hideHeader?: boolean // 隐藏标题
     readOnly?: boolean // 只读模式
+    pluginContext?: PluginContext
 }
 
-export function ActionSection({ actions, onChange, testData, expressions = [], onActionSelect, hideHeader = false, readOnly = false }: ActionSectionProps) {
+export function ActionSection({ actions, onChange, testData, expressions = [], onActionSelect, hideHeader = false, readOnly = false, pluginContext = 'trigger' }: ActionSectionProps) {
     const [selectedActionId, setSelectedActionId] = useState<string>()
     const [executingActionId, setExecutingActionId] = useState<string | undefined>()
     const [executionResults, setExecutionResults] = useState<Record<string, ActionExecutionResult>>({})
@@ -58,7 +61,7 @@ export function ActionSection({ actions, onChange, testData, expressions = [], o
     const fetchAvailablePlugins = useCallback(async () => {
         try {
             const response = await apiClient.get('/plugins/ui/schemas', {
-                params: { type: 'action' }
+                params: { type: 'action', context: pluginContext }
             })
             // 转换UI schemas为插件列表，过滤出动作插件
             const formattedPlugins = Object.keys(response)
@@ -80,7 +83,7 @@ export function ActionSection({ actions, onChange, testData, expressions = [], o
         } catch (error) {
             console.error('获取动作插件失败:', error)
         }
-    }, [])
+    }, [pluginContext])
 
     // 获取插件默认配置
     const getDefaultConfigForPlugin = (pluginId: string): Record<string, any> => {
@@ -288,6 +291,7 @@ export function ActionSection({ actions, onChange, testData, expressions = [], o
                         onChange={(config) => handleActionConfigChange(selectedAction.id, config)}
                         testData={testData}
                         readOnly={readOnly}
+                        pluginContext={pluginContext}
                         onActionSelect={onActionSelect}
                     />
                 </Card>

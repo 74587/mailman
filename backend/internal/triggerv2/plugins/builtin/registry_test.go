@@ -177,6 +177,53 @@ func TestRegisterBuiltinPluginsInjectsCompositePluginManager(t *testing.T) {
 	}
 }
 
+func TestBuiltinPluginPolicyContexts(t *testing.T) {
+	manager := plugins.NewTriggerV2PluginManager(plugins.DefaultPluginManagerConfig())
+	if err := RegisterBuiltinPlugins(manager); err != nil {
+		t.Fatalf("RegisterBuiltinPlugins() error = %v", err)
+	}
+
+	infos, err := manager.ListPlugins()
+	if err != nil {
+		t.Fatalf("ListPlugins() error = %v", err)
+	}
+
+	byID := make(map[string]*plugins.PluginInfo)
+	for _, info := range infos {
+		byID[info.ID] = info
+	}
+
+	variableExtract := byID["variable_extract_action"]
+	if variableExtract == nil {
+		t.Fatal("variable_extract_action info not found")
+	}
+	if !policyContainsString(variableExtract.Contexts, PluginContextPickup) {
+		t.Fatalf("expected variable_extract_action to be available in pickup context, got %v", variableExtract.Contexts)
+	}
+
+	emailDelete := byID["email_delete_action"]
+	if emailDelete == nil {
+		t.Fatal("email_delete_action info not found")
+	}
+	if policyContainsString(emailDelete.Contexts, PluginContextPickup) {
+		t.Fatalf("expected email_delete_action to be blocked from pickup context, got %v", emailDelete.Contexts)
+	}
+	if !policyContainsString(emailDelete.Contexts, PluginContextTrigger) {
+		t.Fatalf("expected email_delete_action to remain available in trigger context, got %v", emailDelete.Contexts)
+	}
+
+	aiProcess := byID["ai_process_action"]
+	if aiProcess == nil {
+		t.Fatal("ai_process_action info not found")
+	}
+	if policyContainsString(aiProcess.Contexts, PluginContextPickup) {
+		t.Fatalf("expected ai_process_action to be blocked from pickup context, got %v", aiProcess.Contexts)
+	}
+	if !policyContainsString(aiProcess.Capabilities, PluginCapabilityAI) {
+		t.Fatalf("expected ai_process_action to be labeled as AI, got %v", aiProcess.Capabilities)
+	}
+}
+
 func TestValidateBuiltinPluginConfig_NotFound(t *testing.T) {
 	err := ValidateBuiltinPluginConfig("nonexistent_plugin", nil)
 	if err == nil {
