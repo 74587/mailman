@@ -2,6 +2,8 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,6 +17,11 @@ import (
 
 	"github.com/gorilla/mux"
 )
+
+func hashOAuth2State(state string) string {
+	sum := sha256.Sum256([]byte(state))
+	return hex.EncodeToString(sum[:])[:12]
+}
 
 // OAuth2Handler handles OAuth2 related API endpoints
 type OAuth2Handler struct {
@@ -281,14 +288,16 @@ func (h *OAuth2Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store state in cookie (simplified version)
-	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth2_state",
-		Value:    state,
-		MaxAge:   3600,
-		Path:     "/",
-		HttpOnly: true,
-	})
+	session, err := h.authSessionService.CreateSession(uint(config.ID), state, 10)
+	if err != nil {
+		log.Printf("[OAuth2] auth-url session creation failed provider=%s config_id=%d state_hash=%s error=%v",
+			providerType, config.ID, hashOAuth2State(state), err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[OAuth2] auth-url session created provider=%s config_id=%d session_id=%d state_hash=%s redirect_uri=%s",
+		providerType, config.ID, session.ID, hashOAuth2State(state), config.RedirectURI)
 
 	authURL, err := h.oauth2Service.GenerateAuthURL(providerType, config.ClientID, config.RedirectURI, state)
 	if err != nil {
@@ -309,8 +318,16 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	providerType := vars["provider"]
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
+	stateHash := ""
+	if state != "" {
+		stateHash = hashOAuth2State(state)
+	}
+
+	log.Printf("[OAuth2] callback received provider=%s state_hash=%s has_code=%t remote_addr=%s x_forwarded_for=%s",
+		providerType, stateHash, code != "", r.RemoteAddr, r.Header.Get("X-Forwarded-For"))
 
 	if state == "" {
+		log.Printf("[OAuth2] callback rejected provider=%s reason=missing_state remote_addr=%s", providerType, r.RemoteAddr)
 		http.Error(w, "missing state parameter", http.StatusBadRequest)
 		return
 	}
@@ -318,7 +335,7 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// 验证会话状态
 	session, err := h.authSessionService.GetSessionByState(state)
 	if err != nil {
-		log.Printf("[OAuth2] Failed to get session by state: %v", err)
+		log.Printf("[OAuth2] callback session lookup failed provider=%s state_hash=%s error=%v", providerType, stateHash, err)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "invalid session")
 		http.Error(w, "invalid session", http.StatusBadRequest)
 		return
@@ -326,6 +343,8 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// 检查会话是否已过期
 	if session.IsExpired() {
+		log.Printf("[OAuth2] callback session expired provider=%s session_id=%d state_hash=%s expires_at=%s",
+			providerType, session.ID, stateHash, session.ExpiresAt.Format(time.RFC3339))
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusExpired, "session expired")
 		http.Error(w, "session expired", http.StatusGone)
 		return
@@ -333,6 +352,8 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// 检查会话状态
 	if session.Status != models.OAuth2AuthSessionStatusPending {
+		log.Printf("[OAuth2] callback session already processed provider=%s session_id=%d state_hash=%s status=%s",
+			providerType, session.ID, stateHash, session.Status)
 		http.Error(w, "session already processed", http.StatusConflict)
 		return
 	}
@@ -344,6 +365,7 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	case "outlook":
 		mailProviderType = models.ProviderTypeOutlook
 	default:
+		log.Printf("[OAuth2] callback unsupported provider provider=%s state_hash=%s", providerType, stateHash)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "unsupported provider type")
 		http.Error(w, "unsupported provider type", http.StatusBadRequest)
 		return
@@ -352,6 +374,8 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Use the OAuth2 config from the session (which supports multi-config)
 	config, err := h.configService.GetConfigByID(session.ProviderID)
 	if err != nil {
+		log.Printf("[OAuth2] callback provider config not found provider=%s session_id=%d state_hash=%s config_id=%d error=%v",
+			providerType, session.ID, stateHash, session.ProviderID, err)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "provider config not found")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -359,6 +383,8 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the config provider type matches the callback provider type
 	if config.ProviderType != mailProviderType {
+		log.Printf("[OAuth2] callback provider mismatch provider=%s session_id=%d state_hash=%s config_provider=%s",
+			providerType, session.ID, stateHash, config.ProviderType)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "provider type mismatch")
 		http.Error(w, "provider type mismatch", http.StatusBadRequest)
 		return
@@ -373,6 +399,8 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		config.RedirectURI,
 	)
 	if err != nil {
+		log.Printf("[OAuth2] callback token exchange failed provider=%s session_id=%d state_hash=%s error=%v",
+			providerType, session.ID, stateHash, err)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, fmt.Sprintf("token exchange failed: %v", err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -383,7 +411,6 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	var userInfo models.JSONMap
 
 	if providerType == "gmail" {
-
 
 		userInfoResp, err := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + accessToken)
 		if err != nil {
@@ -434,11 +461,15 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		userInfo,
 	)
 	if err != nil {
-		log.Printf("[OAuth2] Failed to complete auth flow: %v", err)
+		log.Printf("[OAuth2] callback complete auth flow failed provider=%s session_id=%d state_hash=%s error=%v",
+			providerType, session.ID, stateHash, err)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "failed to save auth data")
 		http.Error(w, "failed to save auth data", http.StatusInternalServerError)
 		return
 	}
+
+	log.Printf("[OAuth2] callback success provider=%s session_id=%d state_hash=%s has_email=%t",
+		providerType, session.ID, stateHash, userEmail != "")
 
 	// 构建前端重定向URL
 	frontendUrl := "http://localhost:3000"
@@ -448,7 +479,6 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// 重定向到成功页面，携带state参数用于前端轮询获取结果
 	callbackUrl := fmt.Sprintf("%s/oauth2/success?state=%s&provider=%s", frontendUrl, state, providerType)
-
 
 	http.Redirect(w, r, callbackUrl, http.StatusFound)
 }
@@ -512,9 +542,14 @@ func (h *OAuth2Handler) StartOAuth2Session(w http.ResponseWriter, r *http.Reques
 	// 创建授权会话
 	session, err := h.authSessionService.CreateSession(uint(config.ID), state, 10) // 10分钟过期
 	if err != nil {
+		log.Printf("[OAuth2] session start failed provider=%s config_id=%d state_hash=%s error=%v",
+			providerType, config.ID, hashOAuth2State(state), err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	log.Printf("[OAuth2] session started provider=%s config_id=%d session_id=%d state_hash=%s redirect_uri=%s",
+		providerType, config.ID, session.ID, hashOAuth2State(state), config.RedirectURI)
 
 	// 生成授权URL
 	authURL, err := h.oauth2Service.GenerateAuthURL(providerType, config.ClientID, config.RedirectURI, state)

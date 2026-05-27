@@ -419,7 +419,7 @@ export default function OAuth2ConfigTab() {
     // 处理测试连接
     const handleTestConnection = async (config: OAuth2GlobalConfig) => {
         try {
-            const authUrl = await oauth2Service.getAuthUrl(config.provider_type)
+            const authUrl = await oauth2Service.getAuthUrl(config.provider_type, config.id)
             window.open(authUrl.auth_url, '_blank', 'width=600,height=700')
         } catch (err) {
             console.error('Failed to test connection:', err)

@@ -1,6 +1,7 @@
 package models
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -55,7 +56,7 @@ func (s *OAuth2AuthSession) GetCustomSettings() JSONMap {
 		"access_token":  s.AccessToken,
 		"refresh_token": s.RefreshToken,
 		"token_type":    s.TokenType,
-		"expires_at":    string(rune(s.TokenExpiresAt)),
+		"expires_at":    fmt.Sprintf("%d", s.TokenExpiresAt),
 	}
 
 	// 添加client_id和client_secret（从关联的全局配置获取）
