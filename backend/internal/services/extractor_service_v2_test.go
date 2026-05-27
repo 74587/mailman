@@ -789,6 +789,55 @@ func TestExtractorServiceV2_VariableExtractOutputField(t *testing.T) {
 	}
 }
 
+func TestActionExecutor_ConditionalBranchRunsNestedActionConfig(t *testing.T) {
+	svc := &ActionExecutorService{}
+
+	action := models.TriggerAction{
+		PluginID: "conditional_branch_action",
+		Config: map[string]interface{}{
+			"branches": []interface{}{
+				map[string]interface{}{
+					"name": "default",
+					"actions": []interface{}{
+						map[string]interface{}{
+							"plugin_id": "variable_extract_action",
+							"enabled":   true,
+							"config": map[string]interface{}{
+								"source":          "email",
+								"source_field":    "body",
+								"expression_type": "javascript",
+								"expression":      `value.match(/(\d{6})/)[0]`,
+								"output_name":     "code",
+								"return_type":     "string",
+							},
+						},
+					},
+				},
+			},
+			"return_first_match": true,
+		},
+	}
+
+	result, err := svc.ExecuteAction(action, map[string]interface{}{
+		"subject": "Your Dia Code",
+		"body":    "652015 Use this code to continue in Dia.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lastBranchResult, ok := result["last_branch_result"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected last_branch_result map, got %T: %v", result["last_branch_result"], result["last_branch_result"])
+	}
+	if lastBranchResult["extracted_value"] != "652015" {
+		t.Errorf("expected nested extracted_value '652015', got %v", lastBranchResult["extracted_value"])
+	}
+	if result["code"] != "652015" {
+		t.Errorf("expected output variable code '652015', got %v", result["code"])
+	}
+}
+
 func TestActionExecutor_UnknownPlugin(t *testing.T) {
 	svc := &ActionExecutorService{}
 

@@ -2,6 +2,8 @@ package builtin
 
 import (
 	"testing"
+
+	"mailman/internal/triggerv2/plugins"
 )
 
 func TestGetBuiltinPlugins(t *testing.T) {
@@ -141,6 +143,37 @@ func TestGetBuiltinPluginInfo(t *testing.T) {
 		if info.ID == "" {
 			t.Errorf("empty ID at index %d", i)
 		}
+	}
+}
+
+func TestRegisterBuiltinPluginsInjectsCompositePluginManager(t *testing.T) {
+	manager := plugins.NewTriggerV2PluginManager(plugins.DefaultPluginManagerConfig())
+	if err := RegisterBuiltinPlugins(manager); err != nil {
+		t.Fatalf("RegisterBuiltinPlugins() error = %v", err)
+	}
+
+	conditionalPlugin, err := manager.GetPlugin("conditional_branch_action")
+	if err != nil {
+		t.Fatalf("GetPlugin(conditional_branch_action) error = %v", err)
+	}
+	conditional, ok := conditionalPlugin.(*ConditionalBranchActionPlugin)
+	if !ok {
+		t.Fatalf("conditional_branch_action type = %T", conditionalPlugin)
+	}
+	if conditional.pluginManager == nil {
+		t.Fatal("conditional_branch_action pluginManager was not injected")
+	}
+
+	parallelPlugin, err := manager.GetPlugin("parallel_actions")
+	if err != nil {
+		t.Fatalf("GetPlugin(parallel_actions) error = %v", err)
+	}
+	parallel, ok := parallelPlugin.(*ParallelActionsPlugin)
+	if !ok {
+		t.Fatalf("parallel_actions type = %T", parallelPlugin)
+	}
+	if parallel.pluginManager == nil {
+		t.Fatal("parallel_actions pluginManager was not injected")
 	}
 }
 

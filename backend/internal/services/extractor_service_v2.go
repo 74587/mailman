@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"mailman/internal/expression"
@@ -728,7 +729,9 @@ func (s *FilterEvaluatorService) applyNot(result bool, not *bool) bool {
 
 // ActionExecutorService 动作执行服务
 type ActionExecutorService struct {
-	db *gorm.DB
+	db              *gorm.DB
+	pluginManager   plugins.PluginManager
+	pluginManagerMu sync.Mutex
 	// 可以复用触发器的动作执行逻辑
 }
 
@@ -810,10 +813,43 @@ func (s *ActionExecutorService) executeBuiltinAction(action models.TriggerAction
 		return nil, fmt.Errorf("plugin %s cannot execute this action", action.PluginID)
 	}
 
-	result, err := actionPlugin.Execute(pluginCtx, event)
+	var result *plugins.PluginResult
+	if _, ok := plugin.(interface{ SetPluginManager(plugins.PluginManager) }); ok {
+		pm, err := s.getBuiltinPluginManager()
+		if err != nil {
+			return nil, err
+		}
+		result, err = pm.ExecuteAction(action.PluginID, pluginCtx, event)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		result, err = actionPlugin.Execute(pluginCtx, event)
+	}
 	if err != nil {
 		return nil, err
 	}
+
+	return outputFromPluginResult(action.PluginID, result, event)
+}
+
+func (s *ActionExecutorService) getBuiltinPluginManager() (plugins.PluginManager, error) {
+	s.pluginManagerMu.Lock()
+	defer s.pluginManagerMu.Unlock()
+
+	if s.pluginManager != nil {
+		return s.pluginManager, nil
+	}
+
+	manager := plugins.NewTriggerV2PluginManager(plugins.DefaultPluginManagerConfig())
+	if err := builtin.RegisterBuiltinPlugins(manager); err != nil {
+		return nil, err
+	}
+	s.pluginManager = manager
+	return s.pluginManager, nil
+}
+
+func outputFromPluginResult(pluginID string, result *plugins.PluginResult, event *v2models.Event) (map[string]interface{}, error) {
 	if result == nil {
 		return map[string]interface{}{}, nil
 	}
@@ -821,7 +857,7 @@ func (s *ActionExecutorService) executeBuiltinAction(action models.TriggerAction
 		if result.Error != "" {
 			return nil, errors.New(result.Error)
 		}
-		return nil, fmt.Errorf("plugin %s execution failed", action.PluginID)
+		return nil, fmt.Errorf("plugin %s execution failed", pluginID)
 	}
 
 	output := make(map[string]interface{}, len(result.Data)+len(event.Variables)+3)

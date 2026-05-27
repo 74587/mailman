@@ -699,8 +699,8 @@ func (p *ConditionalBranchActionPlugin) executeBranchActions(actions []BranchAct
 			return nil, fmt.Errorf("插件管理器未设置，无法执行动作")
 		}
 
-		// 使用 PluginManager 的 ExecuteAction 方法
-		result, err := p.pluginManager.ExecuteAction(action.PluginID, ctx, event)
+		childCtx := childPluginContext(ctx, action.PluginID, action.Config)
+		result, err := p.pluginManager.ExecuteAction(action.PluginID, childCtx, event)
 		if err != nil {
 			return nil, fmt.Errorf("动作 %d: 执行插件 %s 失败: %v", i+1, action.PluginID, err)
 		}

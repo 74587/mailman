@@ -5,6 +5,10 @@ import (
 	"mailman/internal/triggerv2/plugins"
 )
 
+type pluginManagerAware interface {
+	SetPluginManager(plugins.PluginManager)
+}
+
 // GetBuiltinPlugins 获取所有内置插件
 func GetBuiltinPlugins() []plugins.Plugin {
 	return []plugins.Plugin{
@@ -52,6 +56,9 @@ func RegisterBuiltinPlugins(manager plugins.PluginManager) error {
 	plugins := GetBuiltinPlugins()
 
 	for _, plugin := range plugins {
+		if aware, ok := plugin.(pluginManagerAware); ok {
+			aware.SetPluginManager(manager)
+		}
 		if err := manager.RegisterPlugin(plugin); err != nil {
 			return err
 		}

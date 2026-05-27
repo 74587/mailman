@@ -447,8 +447,8 @@ func (p *ParallelActionsPlugin) executeAction(action ParallelAction, event *trig
 		return nil, fmt.Errorf("插件管理器未设置")
 	}
 
-	// 使用 PluginManager 的 ExecuteAction 方法
-	result, err := p.pluginManager.ExecuteAction(action.PluginID, ctx, event)
+	childCtx := childPluginContext(ctx, action.PluginID, action.Config)
+	result, err := p.pluginManager.ExecuteAction(action.PluginID, childCtx, event)
 	if err != nil {
 		return nil, fmt.Errorf("执行插件 %s 失败: %v", action.PluginID, err)
 	}
