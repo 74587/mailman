@@ -106,6 +106,21 @@ func (e *ActionExecutor) ExecuteAction(action models.TriggerAction, context *Plu
 		}, nil
 	}
 
+	if e.pluginManager == nil {
+		errMsg := fmt.Sprintf("Plugin manager is not configured; cannot execute plugin: %s", action.PluginID)
+		e.logger.Error("%s", errMsg)
+		return &models.ActionExecutionResult{
+			ActionID:   action.ID,
+			PluginID:   action.PluginID,
+			PluginName: action.PluginName,
+			Success:    false,
+			StartTime:  time.Now(),
+			EndTime:    time.Now(),
+			Duration:   0,
+			Error:      errMsg,
+		}, fmt.Errorf("%s", errMsg)
+	}
+
 	// Get the plugin
 	plugin, err := e.pluginManager.GetPlugin(action.PluginID)
 	if err != nil {

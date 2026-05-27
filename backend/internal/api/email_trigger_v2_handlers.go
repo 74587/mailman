@@ -37,11 +37,10 @@ func NewEmailTriggerV2Controller(
 	pluginManager plugins.PluginManager,
 	conditionEngine *services.ConditionEngine,
 ) *EmailTriggerV2Controller {
-	// Note: ActionExecutor (V1) is passed nil because V2 trigger handlers
-	// use the pluginManager directly via the V2 plugin system.
-	// The actionExecutor field is only used for legacy TestAction/ExecuteActions
-	// compatibility and will return plugin-not-found errors when called with nil.
 	actionExecutor := services.NewActionExecutor(nil)
+	if pluginManager != nil {
+		actionExecutor = services.NewActionExecutor(services.NewPluginManagerV2Adapter(pluginManager))
+	}
 
 	return &EmailTriggerV2Controller{
 		triggerService:  triggerService,
@@ -1436,19 +1435,21 @@ func (c *EmailTriggerV2Controller) TestCompleteTriggerHandler(w http.ResponseWri
 	response.Duration = time.Since(startTime).Milliseconds()
 
 	// Record activity log
-	userID := getUserIDFromContext(r)
-	c.activityLogger.LogActivity(
-		models.ActivityTypeGeneral,
-		"测试触发器",
-		"测试了完整触发器流程",
-		userID,
-		map[string]interface{}{
-			"condition_result":  conditionResult,
-			"actions_executed":  response.ActionsExecuted,
-			"actions_succeeded": response.ActionsSucceeded,
-			"duration":          response.Duration,
-		},
-	)
+	if c.activityLogger != nil {
+		userID := getUserIDFromContext(r)
+		c.activityLogger.LogActivity(
+			models.ActivityTypeGeneral,
+			"测试触发器",
+			"测试了完整触发器流程",
+			userID,
+			map[string]interface{}{
+				"condition_result":  conditionResult,
+				"actions_executed":  response.ActionsExecuted,
+				"actions_succeeded": response.ActionsSucceeded,
+				"duration":          response.Duration,
+			},
+		)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)

@@ -26,6 +26,10 @@ func NewPluginManagerV2Adapter(pm plugins.PluginManager) *PluginManagerV2Adapter
 
 // GetPlugin implements actionPluginProvider by wrapping plugins.Plugin
 func (a *PluginManagerV2Adapter) GetPlugin(pluginID string) (Plugin, error) {
+	if a == nil || a.pm == nil {
+		return nil, fmt.Errorf("v2 plugin manager is not configured")
+	}
+
 	p, err := a.pm.GetPlugin(pluginID)
 	if err != nil {
 		return nil, err

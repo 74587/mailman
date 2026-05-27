@@ -95,6 +95,30 @@ func TestParallelActionExecutorConvertsPluginPanicToFailure(t *testing.T) {
 	}
 }
 
+func TestActionExecutorNilPluginManagerReturnsError(t *testing.T) {
+	executor := NewActionExecutor(nil)
+
+	result, err := executor.ExecuteAction(models.TriggerAction{
+		ID:       "extract-code",
+		PluginID: "variable_extract_action",
+		Config:   models.JSONMapInterface{},
+		Enabled:  true,
+	}, &PluginContext{Email: models.Email{Body: "652015"}})
+
+	if err == nil {
+		t.Fatal("expected nil plugin manager to return an error")
+	}
+	if result == nil {
+		t.Fatal("expected a failed action result")
+	}
+	if result.Success {
+		t.Fatalf("expected failed result, got %+v", result)
+	}
+	if !strings.Contains(result.Error, "Plugin manager is not configured") {
+		t.Fatalf("result error = %q, want plugin manager error", result.Error)
+	}
+}
+
 type recordingV2PluginManager struct {
 	v2plugins.PluginManager
 	plugin     v2plugins.Plugin
