@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 import { Toaster as SonnerToaster } from 'sonner'
 import { useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { ThemeProvider, useTheme } from '@/components/theme-provider'
 import { AuthProvider } from '@/context/auth-context'
 import { KeyboardProvider, DefaultKeybindings } from '@/context/keyboard'
@@ -35,6 +36,8 @@ function ThemedSonnerToaster() {
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {
+    const pathname = usePathname()
+    const isOAuth2StandalonePage = pathname.startsWith('/oauth2/')
     const [queryClient] = useState(
         () =>
             new QueryClient({
@@ -52,20 +55,27 @@ export function Providers({ children }: { children: React.ReactNode }) {
     return (
         <QueryClientProvider client={queryClient}>
             <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-                <AuthProvider>
-                    <ConfirmDialogProvider>
-                        <KeyboardProvider>
-                            <HintModeProvider>
-                                <DefaultKeybindings />
-                                {children}
-                                <CommandPalette />
-                            </HintModeProvider>
-                        </KeyboardProvider>
-                    </ConfirmDialogProvider>
+                {isOAuth2StandalonePage ? (
+                    <>
+                        {children}
+                        <ThemedSonnerToaster />
+                    </>
+                ) : (
+                    <AuthProvider>
+                        <ConfirmDialogProvider>
+                            <KeyboardProvider>
+                                <HintModeProvider>
+                                    <DefaultKeybindings />
+                                    {children}
+                                    <CommandPalette />
+                                </HintModeProvider>
+                            </KeyboardProvider>
+                        </ConfirmDialogProvider>
 
-                    <ThemedSonnerToaster />
-                </AuthProvider>
-                <EmailNotificationToast />
+                        <ThemedSonnerToaster />
+                    </AuthProvider>
+                )}
+                {!isOAuth2StandalonePage && <EmailNotificationToast />}
             </ThemeProvider>
             <ReactQueryDevtools initialIsOpen={false} />
         </QueryClientProvider>
