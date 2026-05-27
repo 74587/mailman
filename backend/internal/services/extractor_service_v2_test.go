@@ -711,6 +711,84 @@ func TestActionExecutor_EmailTransformAction_CaseTransforms(t *testing.T) {
 	}
 }
 
+func TestActionExecutor_VariableExtractAction(t *testing.T) {
+	svc := &ActionExecutorService{}
+
+	action := models.TriggerAction{
+		PluginID: "variable_extract_action",
+		Config: map[string]interface{}{
+			"source":          "email",
+			"source_field":    "body",
+			"expression_type": "javascript",
+			"expression":      `value.match(/(\d{6})/)[0]`,
+			"output_name":     "code",
+			"return_type":     "string",
+		},
+	}
+
+	result, err := svc.ExecuteAction(action, map[string]interface{}{
+		"subject": "Your Dia Code",
+		"body":    "652015 Use this code to continue in Dia.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result["value"] != "652015" {
+		t.Errorf("expected value '652015', got %v", result["value"])
+	}
+	if result["code"] != "652015" {
+		t.Errorf("expected code '652015', got %v", result["code"])
+	}
+	if result["extracted_value"] != "652015" {
+		t.Errorf("expected extracted_value '652015', got %v", result["extracted_value"])
+	}
+}
+
+func TestExtractorServiceV2_VariableExtractOutputField(t *testing.T) {
+	svc := &ExtractorServiceV2{
+		filterEvaluator: NewFilterEvaluatorService(),
+		actionExecutor:  &ActionExecutorService{},
+	}
+
+	template := &models.ExtractorTemplateV2{
+		Enabled: true,
+		Actions: models.TriggerActions{
+			{
+				ID:       "extract-code",
+				PluginID: "variable_extract_action",
+				Config: map[string]interface{}{
+					"source":          "email",
+					"source_field":    "body",
+					"expression_type": "javascript",
+					"expression":      `value.match(/(\d{6})/)[0]`,
+					"output_name":     "code",
+					"return_type":     "string",
+				},
+				Enabled: true,
+			},
+		},
+		OutputConfig: models.ExtractorOutputConfig{
+			Format: models.ExtractorOutputFormatText,
+			Field:  "code",
+		},
+	}
+
+	result, err := svc.TestExtraction(template, &models.Email{
+		Subject: "Your Dia Code",
+		Body:    "652015 Use this code to continue in Dia.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected successful extraction, got status=%s error=%s", result.Status, result.Error)
+	}
+	if result.ExtractedValue != "652015" {
+		t.Errorf("expected extracted value '652015', got %v", result.ExtractedValue)
+	}
+}
+
 func TestActionExecutor_UnknownPlugin(t *testing.T) {
 	svc := &ActionExecutorService{}
 

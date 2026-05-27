@@ -1,7 +1,9 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,9 +13,9 @@ import (
 	"mailman/internal/expression/core"
 	"mailman/internal/models"
 	"mailman/internal/repository"
-	"mailman/internal/triggerv2/plugins/builtin"
 	v2models "mailman/internal/triggerv2/models"
 	"mailman/internal/triggerv2/plugins"
+	"mailman/internal/triggerv2/plugins/builtin"
 
 	"github.com/PaesslerAG/jsonpath"
 	"gorm.io/gorm"
@@ -324,6 +326,7 @@ func (s *ExtractorServiceV2) evaluateFilterWithDetails(expressions models.Trigge
 // emailToContext 将邮件转换为上下文对象
 func (s *ExtractorServiceV2) emailToContext(email *models.Email) map[string]interface{} {
 	return map[string]interface{}{
+		"$email":      email,
 		"id":          email.ID,
 		"messageId":   email.MessageID,
 		"accountId":   email.AccountID,
@@ -750,8 +753,169 @@ func (s *ActionExecutorService) ExecuteAction(action models.TriggerAction, input
 		// 复用触发器的邮件转换动作
 		return s.executeEmailTransformAction(action, input)
 	default:
+		if builtin.IsBuiltinPlugin(action.PluginID) {
+			return s.executeBuiltinAction(action, input)
+		}
 		return nil, fmt.Errorf("unknown plugin: %s", action.PluginID)
 	}
+}
+
+func (s *ActionExecutorService) executeBuiltinAction(action models.TriggerAction, input map[string]interface{}) (map[string]interface{}, error) {
+	plugin := builtin.GetBuiltinPluginByID(action.PluginID)
+	if plugin == nil {
+		return nil, fmt.Errorf("unknown plugin: %s", action.PluginID)
+	}
+
+	actionPlugin, ok := plugin.(plugins.ActionPlugin)
+	if !ok {
+		return nil, fmt.Errorf("plugin %s is not an action plugin", action.PluginID)
+	}
+
+	config := action.Config
+	if config == nil {
+		config = map[string]interface{}{}
+	}
+	if err := actionPlugin.ApplyConfig(config); err != nil {
+		return nil, err
+	}
+
+	email := emailFromActionInput(input)
+	emailData := v2models.EmailEventData{
+		Email:         email,
+		EmailID:       email.ID,
+		AccountID:     email.AccountID,
+		Subject:       email.Subject,
+		From:          strings.Join(email.From, ", "),
+		To:            strings.Join(email.To, ", "),
+		MessageID:     email.MessageID,
+		HasAttachment: email.HasAttachments,
+		ReceivedAt:    email.ReceivedAt,
+		MailboxName:   email.MailboxName,
+	}
+	event, err := v2models.NewEvent(v2models.EventTypeEmailReceived, "extractor", email.Subject, emailData)
+	if err != nil {
+		return nil, err
+	}
+	event.Variables = variablesFromActionInput(input)
+
+	pluginCtx := &plugins.PluginContext{
+		Context:  context.Background(),
+		PluginID: action.PluginID,
+		Event:    event,
+		Config: &plugins.PluginConfig{
+			Config: config,
+		},
+	}
+	if !actionPlugin.CanExecute(pluginCtx, event) {
+		return nil, fmt.Errorf("plugin %s cannot execute this action", action.PluginID)
+	}
+
+	result, err := actionPlugin.Execute(pluginCtx, event)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return map[string]interface{}{}, nil
+	}
+	if !result.Success {
+		if result.Error != "" {
+			return nil, errors.New(result.Error)
+		}
+		return nil, fmt.Errorf("plugin %s execution failed", action.PluginID)
+	}
+
+	output := make(map[string]interface{}, len(result.Data)+len(event.Variables)+3)
+	for k, v := range result.Data {
+		output[k] = v
+	}
+
+	if value, exists := output["extracted_value"]; exists {
+		output["value"] = value
+		if outputName, _ := output["output_name"].(string); outputName != "" {
+			output[outputName] = value
+		}
+	}
+
+	for k, v := range event.GetAllVariables() {
+		if _, exists := output[k]; !exists {
+			output[k] = v
+		}
+	}
+	output["variables"] = event.GetAllVariables()
+
+	return output, nil
+}
+
+func emailFromActionInput(input map[string]interface{}) *models.Email {
+	if email, ok := input["$email"].(*models.Email); ok && email != nil {
+		return email
+	}
+	if email, ok := input["email"].(*models.Email); ok && email != nil {
+		return email
+	}
+	if email, ok := input["email"].(models.Email); ok {
+		return &email
+	}
+
+	email := &models.Email{
+		Subject:     stringFromActionInput(input, "subject"),
+		Body:        stringFromActionInput(input, "body"),
+		TextBody:    stringFromActionInput(input, "textBody"),
+		HTMLBody:    stringFromActionInput(input, "htmlBody"),
+		MessageID:   stringFromActionInput(input, "messageId"),
+		MailboxName: stringFromActionInput(input, "mailbox"),
+		FromAddress: stringFromActionInput(input, "fromAddress"),
+	}
+	email.From = stringSliceFromActionInput(input, "from", "fromList")
+	email.To = stringSliceFromActionInput(input, "to", "toList")
+	email.Cc = stringSliceFromActionInput(input, "cc", "ccList")
+	email.ToAddresses = models.StringSlice(stringSliceFromActionInput(input, "", "toAddresses"))
+	return email
+}
+
+func stringFromActionInput(input map[string]interface{}, key string) string {
+	if val, exists := input[key]; exists && val != nil {
+		return fmt.Sprintf("%v", val)
+	}
+	return ""
+}
+
+func stringSliceFromActionInput(input map[string]interface{}, scalarKey, sliceKey string) models.StringSlice {
+	if sliceKey != "" {
+		switch val := input[sliceKey].(type) {
+		case []string:
+			return models.StringSlice(val)
+		case models.StringSlice:
+			return val
+		case []interface{}:
+			result := make(models.StringSlice, 0, len(val))
+			for _, item := range val {
+				result = append(result, fmt.Sprintf("%v", item))
+			}
+			return result
+		}
+	}
+	if scalarKey != "" {
+		if val := stringFromActionInput(input, scalarKey); val != "" {
+			return models.StringSlice{val}
+		}
+	}
+	return models.StringSlice{}
+}
+
+func variablesFromActionInput(input map[string]interface{}) map[string]interface{} {
+	variables := make(map[string]interface{})
+	if prev, exists := input["$prev"]; exists {
+		variables["_"] = prev
+	}
+
+	for key, value := range input {
+		if strings.HasPrefix(key, "$") && len(key) > 1 {
+			variables[strings.TrimPrefix(key, "$")] = value
+		}
+	}
+
+	return variables
 }
 
 // executeRegexAction 执行正则提取动作
