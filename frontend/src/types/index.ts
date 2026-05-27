@@ -675,6 +675,21 @@ export interface ExtractorOutputConfig {
     description?: string;   // 输出字段描述
 }
 
+export interface ExtractorCompatibilityIssue {
+    path: string;
+    kind: string;
+    pluginId?: string;
+    pluginName?: string;
+    message: string;
+    severity: 'error' | 'warning' | string;
+}
+
+export interface ExtractorTemplateCompatibility {
+    compatible: boolean;
+    message?: string;
+    issues?: ExtractorCompatibilityIssue[];
+}
+
 // 取件模板V2
 export interface ExtractorTemplateV2 {
     id: number;
@@ -692,6 +707,7 @@ export interface ExtractorTemplateV2 {
     lastError?: string;
     createdAt: string;
     updatedAt: string;
+    compatibility?: ExtractorTemplateCompatibility;
 }
 
 // 创建取件模板V2请求

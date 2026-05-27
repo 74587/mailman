@@ -303,9 +303,9 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
                 setSaveSuccess(true)
                 toast.success('模板创建成功')
             }
-        } catch (error) {
+        } catch (error: any) {
             console.error('Failed to save template:', error)
-            toast.error(isEditMode ? '更新模板失败' : '创建模板失败')
+            toast.error(error?.message || (isEditMode ? '更新模板失败' : '创建模板失败'))
         } finally {
             setSaving(false)
         }

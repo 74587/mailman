@@ -52,6 +52,7 @@ import {
     Package,
     Filter,
     FileText,
+    AlertTriangle,
 } from 'lucide-react'
 import { extractorTemplateV2Service } from '@/services/extractor-template-v2.service'
 import type { ExtractorTemplateV2, PaginatedExtractorTemplateV2Response } from '@/types'
@@ -196,6 +197,11 @@ export function ExtractorTemplateV2List({ onCreateNew }: ExtractorTemplateListPr
 
     // 切换启用状态
     const handleToggleEnabled = async (template: ExtractorTemplateV2) => {
+        if (!template.enabled && template.compatibility && !template.compatibility.compatible) {
+            toast.error(template.compatibility.message || '模板包含不兼容配置，修复后才能启用')
+            return
+        }
+
         try {
             await extractorTemplateV2Service.updateTemplate(template.id, {
                 enabled: !template.enabled,
@@ -357,6 +363,16 @@ export function ExtractorTemplateV2List({ onCreateNew }: ExtractorTemplateListPr
                                         <TableCell>
                                             <div>
                                                 <p className="font-medium">{template.name}</p>
+                                                {template.compatibility && !template.compatibility.compatible && (
+                                                    <Badge
+                                                        variant="destructive"
+                                                        className="mt-1 gap-1"
+                                                        title={template.compatibility.issues?.map(issue => issue.message).join('\n') || template.compatibility.message}
+                                                    >
+                                                        <AlertTriangle className="w-3 h-3" />
+                                                        不兼容
+                                                    </Badge>
+                                                )}
                                                 {template.description && (
                                                     <p className="text-sm text-muted-foreground line-clamp-1">
                                                         {template.description}

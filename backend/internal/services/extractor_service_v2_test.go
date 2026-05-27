@@ -956,7 +956,7 @@ func TestExtractorServiceV2_BlocksUnsafePickupAction(t *testing.T) {
 	if result.Success {
 		t.Fatal("expected unsafe pickup action to fail")
 	}
-	if !strings.Contains(result.Error, "not allowed in pickup templates") {
+	if !strings.Contains(result.Error, "email_delete_action") || !strings.Contains(result.Error, "不适用于取件模板") {
 		t.Fatalf("expected pickup policy error, got %q", result.Error)
 	}
 }
@@ -1004,8 +1004,28 @@ func TestExtractorServiceV2_BlocksUnsafeNestedPickupAction(t *testing.T) {
 	if result.Success {
 		t.Fatal("expected unsafe nested pickup action to fail")
 	}
-	if !strings.Contains(result.Error, "webhook_action is not allowed in pickup templates") {
+	if !strings.Contains(result.Error, "webhook_action") || !strings.Contains(result.Error, "不适用于取件模板") {
 		t.Fatalf("expected nested pickup policy error, got %q", result.Error)
+	}
+}
+
+func TestCheckPickupTemplateCompatibilityReportsIssues(t *testing.T) {
+	compatibility := CheckPickupTemplateCompatibility(nil, models.TriggerActions{
+		{
+			ID:       "notify",
+			PluginID: "webhook_action",
+			Enabled:  true,
+		},
+	})
+
+	if compatibility.Compatible {
+		t.Fatal("expected incompatible template")
+	}
+	if len(compatibility.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(compatibility.Issues))
+	}
+	if compatibility.Issues[0].PluginID != "webhook_action" {
+		t.Fatalf("expected webhook_action issue, got %+v", compatibility.Issues[0])
 	}
 }
 

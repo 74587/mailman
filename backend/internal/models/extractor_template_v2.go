@@ -32,6 +32,23 @@ type ExtractorOutputConfig struct {
 	Description string                `json:"description,omitempty"` // 输出字段描述
 }
 
+// ExtractorCompatibilityIssue describes a template setting that cannot run in pickup context.
+type ExtractorCompatibilityIssue struct {
+	Path       string `json:"path"`
+	Kind       string `json:"kind"`
+	PluginID   string `json:"pluginId,omitempty"`
+	PluginName string `json:"pluginName,omitempty"`
+	Message    string `json:"message"`
+	Severity   string `json:"severity"`
+}
+
+// ExtractorTemplateCompatibility is returned with templates and validation errors.
+type ExtractorTemplateCompatibility struct {
+	Compatible bool                          `json:"compatible"`
+	Message    string                        `json:"message,omitempty"`
+	Issues     []ExtractorCompatibilityIssue `json:"issues,omitempty"`
+}
+
 // Scan implements the sql.Scanner interface
 func (eoc *ExtractorOutputConfig) Scan(value interface{}) error {
 	if value == nil {

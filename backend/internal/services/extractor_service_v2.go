@@ -104,6 +104,15 @@ func (s *ExtractorServiceV2) DebugExtraction(template *models.ExtractorTemplateV
 		StepResults: []models.StepDebugResult{},
 	}
 
+	compatibility := CheckExtractorTemplateCompatibility(template)
+	if !compatibility.Compatible {
+		debugResult.Success = false
+		debugResult.Status = models.ExtractionV2StatusFailed
+		debugResult.Error = compatibility.Message
+		debugResult.Duration = time.Since(startTime).Milliseconds()
+		return debugResult, nil
+	}
+
 	// 步骤1: 评估过滤条件
 	filterStartTime := time.Now()
 	filterMatched, filterEvaluation := s.evaluateFilterWithDetails(template.Expressions, email)
@@ -259,6 +268,14 @@ func (s *ExtractorServiceV2) EvaluateFilter(template *models.ExtractorTemplateV2
 func (s *ExtractorServiceV2) executeExtraction(template *models.ExtractorTemplateV2, email *models.Email) *models.ExtractionResult {
 	result := &models.ExtractionResult{
 		ActionResults: []models.ActionExecutionResult{},
+	}
+
+	compatibility := CheckExtractorTemplateCompatibility(template)
+	if !compatibility.Compatible {
+		result.Success = false
+		result.Status = models.ExtractionV2StatusFailed
+		result.Error = compatibility.Message
+		return result
 	}
 
 	// 评估过滤条件

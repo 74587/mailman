@@ -96,21 +96,22 @@ type DebugExtractorV2Request struct {
 
 // ExtractorTemplateV2Response 取件模板响应
 type ExtractorTemplateV2Response struct {
-	ID                 uint                         `json:"id"`
-	Name               string                       `json:"name"`
-	Description        string                       `json:"description,omitempty"`
-	Enabled            bool                         `json:"enabled"`
-	Expressions        models.TriggerExpressions    `json:"expressions"`
-	Actions            models.TriggerActions        `json:"actions"`
-	OutputConfig       models.ExtractorOutputConfig `json:"outputConfig"`
-	Category           string                       `json:"category,omitempty"`
-	Tags               []string                     `json:"tags,omitempty"`
-	TotalExtractions   int64                        `json:"totalExtractions"`
-	SuccessExtractions int64                        `json:"successExtractions"`
-	LastExtractedAt    *time.Time                   `json:"lastExtractedAt,omitempty"`
-	LastError          string                       `json:"lastError,omitempty"`
-	CreatedAt          time.Time                    `json:"createdAt"`
-	UpdatedAt          time.Time                    `json:"updatedAt"`
+	ID                 uint                                  `json:"id"`
+	Name               string                                `json:"name"`
+	Description        string                                `json:"description,omitempty"`
+	Enabled            bool                                  `json:"enabled"`
+	Expressions        models.TriggerExpressions             `json:"expressions"`
+	Actions            models.TriggerActions                 `json:"actions"`
+	OutputConfig       models.ExtractorOutputConfig          `json:"outputConfig"`
+	Category           string                                `json:"category,omitempty"`
+	Tags               []string                              `json:"tags,omitempty"`
+	TotalExtractions   int64                                 `json:"totalExtractions"`
+	SuccessExtractions int64                                 `json:"successExtractions"`
+	LastExtractedAt    *time.Time                            `json:"lastExtractedAt,omitempty"`
+	LastError          string                                `json:"lastError,omitempty"`
+	CreatedAt          time.Time                             `json:"createdAt"`
+	UpdatedAt          time.Time                             `json:"updatedAt"`
+	Compatibility      models.ExtractorTemplateCompatibility `json:"compatibility"`
 }
 
 // PaginatedExtractorTemplateV2Response 分页响应
@@ -140,7 +141,33 @@ func toExtractorTemplateV2Response(t *models.ExtractorTemplateV2) ExtractorTempl
 		LastError:          t.LastError,
 		CreatedAt:          t.CreatedAt,
 		UpdatedAt:          t.UpdatedAt,
+		Compatibility:      services.CheckExtractorTemplateCompatibility(t),
 	}
+}
+
+func respondExtractorCompatibilityError(w http.ResponseWriter, compatibility models.ExtractorTemplateCompatibility) {
+	message := compatibility.Message
+	if message == "" {
+		message = "取件模板包含不兼容配置"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":         message,
+		"message":       message,
+		"compatibility": compatibility,
+	})
+}
+
+func shouldValidateExtractorTemplateUpdate(req UpdateExtractorTemplateV2Request) bool {
+	if req.Expressions != nil || req.Actions != nil {
+		return true
+	}
+	if req.Enabled != nil && *req.Enabled {
+		return true
+	}
+	return false
 }
 
 // ========== Handler Methods ==========
@@ -186,6 +213,11 @@ func (h *ExtractorTemplateV2Handler) CreateHandler(w http.ResponseWriter, r *htt
 		Category:     req.Category,
 		Tags:         req.Tags,
 		OrgID:        orgID,
+	}
+
+	if compatibility := services.CheckExtractorTemplateCompatibility(template); !compatibility.Compatible {
+		respondExtractorCompatibilityError(w, compatibility)
+		return
 	}
 
 	if err := h.templateRepo.Create(template); err != nil {
@@ -375,6 +407,13 @@ func (h *ExtractorTemplateV2Handler) UpdateHandler(w http.ResponseWriter, r *htt
 		template.Tags = *req.Tags
 	}
 
+	if shouldValidateExtractorTemplateUpdate(req) {
+		if compatibility := services.CheckExtractorTemplateCompatibility(template); !compatibility.Compatible {
+			respondExtractorCompatibilityError(w, compatibility)
+			return
+		}
+	}
+
 	if err := h.templateRepo.Update(template); err != nil {
 		http.Error(w, "Failed to update template: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -471,6 +510,11 @@ func (h *ExtractorTemplateV2Handler) TestHandler(w http.ResponseWriter, r *http.
 		Expressions:  req.Expressions,
 		Actions:      req.Actions,
 		OutputConfig: req.OutputConfig,
+	}
+
+	if compatibility := services.CheckExtractorTemplateCompatibility(template); !compatibility.Compatible {
+		respondExtractorCompatibilityError(w, compatibility)
+		return
 	}
 
 	// 执行测试
@@ -582,6 +626,11 @@ func (h *ExtractorTemplateV2Handler) DebugHandler(w http.ResponseWriter, r *http
 		Expressions:  req.Expressions,
 		Actions:      req.Actions,
 		OutputConfig: req.OutputConfig,
+	}
+
+	if compatibility := services.CheckExtractorTemplateCompatibility(template); !compatibility.Compatible {
+		respondExtractorCompatibilityError(w, compatibility)
+		return
 	}
 
 	// 执行调试
