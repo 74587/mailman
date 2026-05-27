@@ -838,6 +838,66 @@ func TestActionExecutor_ConditionalBranchRunsNestedActionConfig(t *testing.T) {
 	}
 }
 
+func TestExtractorServiceV2_ReturnActionStopsPipeline(t *testing.T) {
+	svc := &ExtractorServiceV2{
+		filterEvaluator: NewFilterEvaluatorService(),
+		actionExecutor:  &ActionExecutorService{},
+	}
+
+	template := &models.ExtractorTemplateV2{
+		Enabled: true,
+		Actions: models.TriggerActions{
+			{
+				ID:       "return-now",
+				PluginID: "return_action",
+				Config: map[string]interface{}{
+					"return_value": "manual-code",
+					"return_type":  "string",
+					"success":      true,
+				},
+				Enabled: true,
+			},
+			{
+				ID:       "should-not-run",
+				PluginID: "variable_extract_action",
+				Config: map[string]interface{}{
+					"source":          "email",
+					"source_field":    "body",
+					"expression_type": "javascript",
+					"expression":      `value.match(/(\d{6})/)[0]`,
+					"output_name":     "code",
+					"return_type":     "string",
+				},
+				Enabled: true,
+			},
+		},
+		OutputConfig: models.ExtractorOutputConfig{
+			Format: models.ExtractorOutputFormatText,
+			Field:  "return_value",
+		},
+	}
+
+	result, err := svc.TestExtraction(template, &models.Email{
+		Subject: "Your Dia Code",
+		Body:    "652015 Use this code to continue in Dia.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected successful extraction, got status=%s error=%s", result.Status, result.Error)
+	}
+	if result.ExtractedValue != "manual-code" {
+		t.Errorf("expected extracted value 'manual-code', got %v", result.ExtractedValue)
+	}
+	if len(result.ActionResults) != 1 {
+		t.Fatalf("expected only return action to execute, got %d actions", len(result.ActionResults))
+	}
+	if !result.ActionResults[0].StopPipeline {
+		t.Fatal("expected return action to stop pipeline")
+	}
+}
+
 func TestActionExecutor_UnknownPlugin(t *testing.T) {
 	svc := &ActionExecutorService{}
 

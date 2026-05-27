@@ -165,6 +165,7 @@ func (s *ExtractorServiceV2) DebugExtraction(template *models.ExtractorTemplateV
 		} else {
 			actionResult.Success = true
 			actionResult.Output = actionOutput
+			actionResult.StopPipeline = shouldStopPipeline(actionOutput)
 			lastOutput = actionOutput
 		}
 
@@ -184,6 +185,9 @@ func (s *ExtractorServiceV2) DebugExtraction(template *models.ExtractorTemplateV
 
 		// 如果动作失败，中止执行
 		if !actionResult.Success {
+			break
+		}
+		if actionResult.StopPipeline {
 			break
 		}
 	}
@@ -286,8 +290,12 @@ func (s *ExtractorServiceV2) executeExtraction(template *models.ExtractorTemplat
 
 		actionResult.Success = true
 		actionResult.Output = actionOutput
+		actionResult.StopPipeline = shouldStopPipeline(actionOutput)
 		result.ActionResults = append(result.ActionResults, actionResult)
 		lastOutput = actionOutput
+		if actionResult.StopPipeline {
+			break
+		}
 	}
 
 	// 格式化输出
@@ -877,9 +885,27 @@ func outputFromPluginResult(pluginID string, result *plugins.PluginResult, event
 			output[k] = v
 		}
 	}
+	if result.StopPipeline {
+		output["stop_pipeline"] = true
+		output["$stop_pipeline"] = true
+	}
 	output["variables"] = event.GetAllVariables()
 
 	return output, nil
+}
+
+func shouldStopPipeline(output map[string]interface{}) bool {
+	if output == nil {
+		return false
+	}
+
+	for _, key := range []string{"$stop_pipeline", "stop_pipeline"} {
+		if stop, ok := output[key].(bool); ok && stop {
+			return true
+		}
+	}
+
+	return false
 }
 
 func emailFromActionInput(input map[string]interface{}) *models.Email {
