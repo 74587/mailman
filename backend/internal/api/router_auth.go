@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"io/fs"
+	"mailman/internal/interceptor"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/services"
@@ -40,6 +41,7 @@ func NewRouterWithAuth(
 	triggerExecutionLogV2Repo *repository.TriggerExecutionLogV2Repository,
 	emailRepo *repository.EmailRepository,
 	pluginManager plugins.PluginManager,
+	interceptorManager *interceptor.Manager,
 	conditionEngine *services.ConditionEngine,
 	orgRepo *repository.OrganizationRepository,
 	memberRepo *repository.OrgMemberRepository,
@@ -322,6 +324,7 @@ func NewRouterWithAuth(
 		triggerExecutionLogV2Repo,
 		emailRepo,
 		pluginManager,
+		interceptorManager,
 		conditionEngine,
 	)
 

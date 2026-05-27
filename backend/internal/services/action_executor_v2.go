@@ -293,6 +293,22 @@ func (e *ActionExecutorV2) executeActionCore(action models.TriggerAction, email 
 		}
 	}()
 
+	if e.pluginManager == nil {
+		errMsg := fmt.Sprintf("Plugin manager is not configured; cannot execute plugin: %s", action.PluginID)
+		log.Printf("[ActionExecutorV2] %s", errMsg)
+		now := time.Now()
+		return &models.ActionExecutionResult{
+			ActionID:   action.ID,
+			PluginID:   action.PluginID,
+			PluginName: action.PluginName,
+			Success:    false,
+			StartTime:  now,
+			EndTime:    now,
+			Duration:   0,
+			Error:      errMsg,
+		}
+	}
+
 	// Get the plugin from TriggerV2 PluginManager
 	plugin, err := e.pluginManager.GetPlugin(action.PluginID)
 	if err != nil {
@@ -431,4 +447,14 @@ func (e *ActionExecutorV2) createSharedEvent(email models.Email) *triggerModels.
 // ExecuteActions 兼容旧接口的方法（不带拦截器）
 func (e *ActionExecutorV2) ExecuteActions(actions []models.TriggerAction, email models.Email) (models.ActionExecutionResults, error) {
 	return e.ExecuteActionsWithContext(actions, email, 0)
+}
+
+func countSuccessfulActions(results models.ActionExecutionResults) int {
+	count := 0
+	for _, result := range results {
+		if result.Success {
+			count++
+		}
+	}
+	return count
 }

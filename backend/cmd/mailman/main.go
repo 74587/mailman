@@ -226,19 +226,16 @@ func main() {
 	eventBus := services.NewEventBus()
 	conditionEngine := services.NewConditionEngine(pluginManager)
 
-	// Initialize EmailTriggerService for V2 (using TriggerV2 PluginManager via adapter)
-	pluginManagerAdapter := services.NewPluginManagerV2Adapter(pluginManager)
+	// Initialize EmailTriggerService for V2
 	emailTriggerService := services.NewEmailTriggerService(
 		emailTriggerV2Repo,
 		triggerExecutionLogV2Repo,
 		subscriptionManager,
 		eventBus,
 		conditionEngine,
-		pluginManagerAdapter,
+		pluginManager,
+		interceptorManager,
 	)
-
-	// Note: SetInterceptorManager is handled internally by the trigger service
-	_ = interceptorManager // Used by interceptorHandler below
 
 	// Initialize V2 EmailTriggerService (set up trigger subscriptions)
 	mainLogger.Info("正在初始化 V2 EmailTriggerService...")
@@ -329,7 +326,7 @@ func main() {
 	sessionHandler := api.NewSessionHandler(authService)
 
 	// Initialize Trigger handler
-	triggerHandler := api.NewTriggerAPIHandler(triggerService, triggerRepo, triggerLogRepo, pluginManager)
+	triggerHandler := api.NewTriggerAPIHandler(triggerService, triggerRepo, triggerLogRepo, pluginManager, interceptorManager)
 
 	// Initialize OAuth2 handler
 	oauth2Handler := api.NewOAuth2Handler(oauth2ConfigService, oauth2Service, oauth2AuthSessionService)
@@ -387,6 +384,7 @@ func main() {
 		triggerExecutionLogV2Repo,
 		emailRepo,
 		pluginManager,
+		interceptorManager,
 		conditionEngine,
 		orgRepo,
 		orgMemberRepo,

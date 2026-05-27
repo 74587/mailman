@@ -6,8 +6,10 @@ import (
 	"sync"
 	"time"
 
+	"mailman/internal/interceptor"
 	"mailman/internal/models"
 	"mailman/internal/repository"
+	"mailman/internal/triggerv2/plugins"
 	"mailman/internal/utils"
 )
 
@@ -18,9 +20,9 @@ type EmailTriggerService struct {
 	subscriptionManager *SubscriptionManager
 	eventBus            *EventBus
 	conditionEngine     *ConditionEngine
-	pluginManager       actionPluginProvider
-	actionExecutor      *ParallelActionExecutor // 使用并行执行器
-	resultCache         *ResultCache            // 结果缓存
+	pluginManager       plugins.PluginManager
+	actionExecutor      *ActionExecutorV2
+	resultCache         *ResultCache // 结果缓存
 	logger              *utils.Logger
 
 	// For managing active subscriptions
@@ -35,10 +37,10 @@ func NewEmailTriggerService(
 	subscriptionManager *SubscriptionManager,
 	eventBus *EventBus,
 	conditionEngine *ConditionEngine,
-	pluginManager actionPluginProvider,
+	pluginManager plugins.PluginManager,
+	interceptorManager *interceptor.Manager,
 ) *EmailTriggerService {
-	// 创建并行动作执行器，最大并行度为10
-	actionExecutor := NewParallelActionExecutor(pluginManager, 10)
+	actionExecutor := NewActionExecutorV2(pluginManager, interceptorManager)
 
 	// 创建结果缓存，默认过期时间5分钟，每10分钟清理一次过期项
 	resultCache := NewResultCache(5*time.Minute, 10*time.Minute)
@@ -265,8 +267,8 @@ func (s *EmailTriggerService) executeTriggerActions(trigger *models.EmailTrigger
 	s.logger.Debug("Executing actions for trigger %d on email %d",
 		trigger.ID, email.ID)
 
-	// Use the action executor to execute the actions
-	return s.actionExecutor.ExecuteActions(trigger.Actions, email)
+	// Use the V2 action executor to execute actions with shared event variables and interceptors.
+	return s.actionExecutor.ExecuteActionsWithContext(trigger.Actions, email, trigger.ID)
 }
 
 // updateTriggerStatistics updates the execution statistics for a trigger

@@ -25,10 +25,11 @@ func TestEmailTriggerV2ControllerUsesV2PluginsForActionTests(t *testing.T) {
 		nil,
 		nil,
 		pluginManager,
+		nil,
 		services.NewConditionEngine(pluginManager),
 	)
 
-	result, err := controller.actionExecutor.TestAction(models.TriggerAction{
+	results, err := controller.actionExecutor.ExecuteActionsWithContext([]models.TriggerAction{{
 		ID:         "extract-code",
 		PluginID:   "variable_extract_action",
 		PluginName: "变量提取",
@@ -42,17 +43,18 @@ func TestEmailTriggerV2ControllerUsesV2PluginsForActionTests(t *testing.T) {
 		},
 		Enabled:        true,
 		ExecutionOrder: 1,
-	}, models.Email{
+	}}, models.Email{
 		Subject: "Your Dia Code",
 		Body:    "652015 Use this code to continue in Dia.",
-	})
+	}, 0)
 
 	if err != nil {
 		t.Fatalf("unexpected action test error: %v", err)
 	}
-	if result == nil {
-		t.Fatal("expected action result")
+	if len(results) != 1 {
+		t.Fatalf("result length = %d, want 1", len(results))
 	}
+	result := results[0]
 	if !result.Success {
 		t.Fatalf("expected action success, got %+v", result)
 	}
@@ -78,6 +80,7 @@ func TestCompleteTriggerHandlerExecutesV2ActionPlugins(t *testing.T) {
 		nil,
 		nil,
 		pluginManager,
+		nil,
 		services.NewConditionEngine(pluginManager),
 	)
 	controller.activityLogger = nil

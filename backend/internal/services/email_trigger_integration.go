@@ -74,7 +74,7 @@ func NewEmailTriggerIntegration(
 	// Create result cache with 5 minute expiration
 	resultCache := NewResultCache(5*time.Minute, 10*time.Minute)
 
-	// Create legacy services.PluginManager for dynamic loading and trigger service
+	// Create legacy services.PluginManager for dynamic loading
 	legacyPluginManager := NewPluginManager()
 	dynamicPluginLoader := NewDynamicPluginLoader(legacyPluginManager, pluginDirs)
 	conditionLoader := NewDynamicConditionLoader(conditionEngine, conditionDirs)
@@ -89,7 +89,8 @@ func NewEmailTriggerIntegration(
 		subscriptionManager,
 		eventBus,
 		conditionEngine,
-		legacyPluginManager,
+		pluginManager,
+		nil,
 	)
 
 	return &EmailTriggerIntegration{

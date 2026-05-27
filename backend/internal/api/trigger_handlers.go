@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"mailman/internal/interceptor"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/services"
@@ -24,6 +25,7 @@ type TriggerAPIHandler struct {
 	logRepo        *repository.TriggerExecutionLogRepository
 	activityLogger *services.ActivityLogger
 	pluginManager  plugins.PluginManager
+	actionExecutor *services.ActionExecutorV2
 }
 
 // TriggerV2 Expression结构 - 对应前端Expression接口
@@ -55,6 +57,7 @@ func NewTriggerAPIHandler(
 	triggerRepo *repository.TriggerRepository,
 	logRepo *repository.TriggerExecutionLogRepository,
 	pluginManager plugins.PluginManager,
+	interceptorManager *interceptor.Manager,
 ) *TriggerAPIHandler {
 	return &TriggerAPIHandler{
 		triggerService: triggerService,
@@ -62,6 +65,7 @@ func NewTriggerAPIHandler(
 		logRepo:        logRepo,
 		activityLogger: services.GetActivityLogger(),
 		pluginManager:  pluginManager,
+		actionExecutor: services.NewActionExecutorV2(pluginManager, interceptorManager),
 	}
 }
 
@@ -829,6 +833,137 @@ type ExecuteActionsResponse struct {
 	Summary map[string]interface{}  `json:"summary"`
 }
 
+func debugDataToEmail(data map[string]interface{}) models.Email {
+	email := models.Email{}
+	source := data
+	if eventData, ok := nestedMap(data, "event"); ok {
+		if nestedData, ok := nestedMap(eventData, "data"); ok {
+			source = nestedData
+		}
+	}
+
+	if payload, err := json.Marshal(source); err == nil {
+		_ = json.Unmarshal(payload, &email)
+	}
+
+	if email.Subject == "" {
+		email.Subject = firstString(source, "Subject", "subject")
+	}
+	if len(email.From) == 0 {
+		email.From = models.StringSlice(firstStringSlice(source, "From", "from"))
+	}
+	if len(email.To) == 0 {
+		email.To = models.StringSlice(firstStringSlice(source, "To", "to"))
+	}
+	if len(email.Cc) == 0 {
+		email.Cc = models.StringSlice(firstStringSlice(source, "Cc", "cc"))
+	}
+	if len(email.Bcc) == 0 {
+		email.Bcc = models.StringSlice(firstStringSlice(source, "Bcc", "bcc"))
+	}
+	if email.Body == "" {
+		email.Body = firstString(source, "Body", "body")
+	}
+	if email.TextBody == "" {
+		email.TextBody = firstString(source, "TextBody", "textBody", "text_body")
+	}
+	if email.HTMLBody == "" {
+		email.HTMLBody = firstString(source, "HTMLBody", "htmlBody", "html_body")
+	}
+	if email.MessageID == "" {
+		email.MessageID = firstString(source, "MessageID", "messageID", "messageId", "message_id")
+	}
+	if email.MailboxName == "" {
+		email.MailboxName = firstString(source, "MailboxName", "mailboxName", "mailbox_name")
+	}
+
+	email.ExtractPureAddresses()
+	return email
+}
+
+func nestedMap(data map[string]interface{}, key string) (map[string]interface{}, bool) {
+	if data == nil {
+		return nil, false
+	}
+	value, ok := data[key]
+	if !ok {
+		return nil, false
+	}
+	result, ok := value.(map[string]interface{})
+	return result, ok
+}
+
+func firstString(data map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := data[key]; ok {
+			if str, ok := value.(string); ok {
+				return str
+			}
+		}
+	}
+	return ""
+}
+
+func firstStringSlice(data map[string]interface{}, keys ...string) []string {
+	for _, key := range keys {
+		value, ok := data[key]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			if v != "" {
+				return []string{v}
+			}
+		case []string:
+			return v
+		case []interface{}:
+			result := make([]string, 0, len(v))
+			for _, item := range v {
+				if str, ok := item.(string); ok {
+					result = append(result, str)
+				}
+			}
+			return result
+		}
+	}
+	return nil
+}
+
+func actionResultData(result interface{}) map[string]interface{} {
+	if result == nil {
+		return nil
+	}
+	if data, ok := result.(map[string]interface{}); ok {
+		return data
+	}
+	return map[string]interface{}{
+		"value": result,
+	}
+}
+
+func (h *TriggerAPIHandler) pluginInfo(pluginID string) map[string]interface{} {
+	if h.pluginManager == nil {
+		return nil
+	}
+	plugins, err := h.pluginManager.ListPlugins()
+	if err != nil {
+		return nil
+	}
+	for _, pluginInfo := range plugins {
+		if pluginInfo.ID == pluginID {
+			return map[string]interface{}{
+				"id":          pluginInfo.ID,
+				"name":        pluginInfo.Name,
+				"type":        pluginInfo.Type,
+				"description": pluginInfo.Description,
+				"version":     pluginInfo.Version,
+			}
+		}
+	}
+	return nil
+}
+
 // EvaluateExpressionHandler 评估表达式
 // @Summary Evaluate a condition expression
 // @Description Evaluate a condition expression with test data
@@ -930,78 +1065,62 @@ func (h *TriggerAPIHandler) ExecuteActionHandler(w http.ResponseWriter, r *http.
 	// 记录开始时间
 	startTime := time.Now()
 
-	// 创建插件上下文
-	pluginContext := &plugins.PluginContext{
-		Context:  r.Context(),
-		PluginID: req.PluginID,
-		Config: &plugins.PluginConfig{
-			Enabled: true,
-			Config:  req.Config,
-		},
-	}
-
-	// 创建事件对象
-	eventDataJSON, err := json.Marshal(req.Data)
-	if err != nil {
-		http.Error(w, "Failed to marshal event data: "+err.Error(), http.StatusBadRequest)
+	if h.actionExecutor == nil {
+		http.Error(w, "Action executor is not configured", http.StatusInternalServerError)
 		return
 	}
 
-	event := &triggerv2models.Event{
-		Type: "test",
-		Data: eventDataJSON,
+	action := models.TriggerAction{
+		ID:             "debug-action",
+		PluginID:       req.PluginID,
+		Config:         req.Config,
+		Enabled:        true,
+		ExecutionOrder: 1,
 	}
 
-	// 执行动作
-	result, err := h.pluginManager.ExecuteAction(req.PluginID, pluginContext, event)
+	actionResults, err := h.actionExecutor.ExecuteActionsWithContext([]models.TriggerAction{action}, debugDataToEmail(req.Data), 0)
 
 	// 计算执行时间
 	duration := time.Since(startTime).Milliseconds()
 
 	// 构建响应
 	response := ExecuteActionResponse{
-		Success:  err == nil,
-		Duration: duration,
+		Success:    err == nil,
+		Duration:   duration,
+		PluginInfo: h.pluginInfo(req.PluginID),
 	}
 
 	if err != nil {
 		response.Error = err.Error()
-	} else if result != nil {
-		response.Result = result.Data
 	}
-
-	// 获取插件信息
-	if plugins, err := h.pluginManager.ListPlugins(); err == nil {
-		for _, pluginInfo := range plugins {
-			if pluginInfo.ID == req.PluginID {
-				response.PluginInfo = map[string]interface{}{
-					"id":          pluginInfo.ID,
-					"name":        pluginInfo.Name,
-					"type":        pluginInfo.Type,
-					"description": pluginInfo.Description,
-					"version":     pluginInfo.Version,
-				}
-				break
-			}
+	if len(actionResults) > 0 {
+		actionResult := actionResults[0]
+		response.Success = actionResult.Success
+		response.Duration = actionResult.Duration
+		response.Result = actionResultData(actionResult.Result)
+		if actionResult.Error != "" {
+			response.Error = actionResult.Error
 		}
 	}
 
 	// 记录活动日志
-	userID := getUserIDFromContext(r)
-	h.activityLogger.LogActivity(
-		models.ActivityTypeGeneral,
-		"执行动作",
-		"测试动作执行",
-		userID,
-		map[string]interface{}{
-			"plugin_id": req.PluginID,
-			"config":    req.Config,
-			"data":      req.Data,
-			"success":   response.Success,
-			"duration":  duration,
-			"error":     response.Error,
-		},
-	)
+	if h.activityLogger != nil {
+		userID := getUserIDFromContext(r)
+		h.activityLogger.LogActivity(
+			models.ActivityTypeGeneral,
+			"执行动作",
+			"测试动作执行",
+			userID,
+			map[string]interface{}{
+				"plugin_id": req.PluginID,
+				"config":    req.Config,
+				"data":      req.Data,
+				"success":   response.Success,
+				"duration":  duration,
+				"error":     response.Error,
+			},
+		)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
@@ -1034,137 +1153,41 @@ func (h *TriggerAPIHandler) ExecuteActionsHandler(w http.ResponseWriter, r *http
 	// 记录开始时间
 	startTime := time.Now()
 
-	// 创建事件对象
-	var eventType triggerv2models.EventType = "test" // 默认类型
-
-	// 尝试从请求数据中提取事件信息
-	if eventData, ok := req.Data["event"].(map[string]interface{}); ok {
-		if eventTypeStr, ok := eventData["type"].(string); ok {
-			// 转换事件类型格式：email_received -> email.received
-			switch eventTypeStr {
-			case "email_received":
-				eventType = triggerv2models.EventTypeEmailReceived
-			case "email_updated":
-				eventType = triggerv2models.EventTypeEmailUpdated
-			case "email_deleted":
-				eventType = triggerv2models.EventTypeEmailDeleted
-			default:
-				eventType = triggerv2models.EventType(eventTypeStr)
-			}
-		}
-	}
-
-	eventDataJSON, err := json.Marshal(req.Data)
-	if err != nil {
-		http.Error(w, "Failed to marshal event data: "+err.Error(), http.StatusBadRequest)
+	if h.actionExecutor == nil {
+		http.Error(w, "Action executor is not configured", http.StatusInternalServerError)
 		return
 	}
 
-	event := &triggerv2models.Event{
-		Type: eventType,
-		Data: eventDataJSON,
-	}
-
-	// 执行所有动作（链式处理）
-	results := make([]ExecuteActionResponse, len(req.Actions))
-	successCount := 0
-
-	// 当前处理的事件数据（会在动作之间传递）
-	currentEvent := event
-	var currentEmailData map[string]interface{}
-
-	// 尝试解析初始邮件数据
-	if err := json.Unmarshal(currentEvent.Data, &currentEmailData); err == nil {
-		// 成功解析
-	} else {
-		currentEmailData = make(map[string]interface{})
-	}
-
+	actions := make([]models.TriggerAction, 0, len(req.Actions))
 	for i, action := range req.Actions {
-		// 验证动作
 		if action.PluginID == "" {
-			results[i] = ExecuteActionResponse{
-				Success:  false,
-				Error:    "Plugin ID is required",
-				Duration: 0,
-			}
 			continue
 		}
+		actions = append(actions, models.TriggerAction{
+			ID:             fmt.Sprintf("debug-action-%d", i+1),
+			PluginID:       action.PluginID,
+			Config:         action.Config,
+			Enabled:        true,
+			ExecutionOrder: i + 1,
+		})
+	}
 
-		// 记录单个动作开始时间
-		actionStartTime := time.Now()
+	actionResults, execErr := h.actionExecutor.ExecuteActionsWithContext(actions, debugDataToEmail(req.Data), 0)
 
-		// 创建插件上下文
-		pluginContext := &plugins.PluginContext{
-			Context:  r.Context(),
-			PluginID: action.PluginID,
-			Config: &plugins.PluginConfig{
-				Enabled: true,
-				Config:  action.Config,
-			},
-		}
-
-		// 执行单个动作
-		result, err := h.pluginManager.ExecuteAction(action.PluginID, pluginContext, currentEvent)
-
-		// 计算单个动作执行时间
-		actionDuration := time.Since(actionStartTime).Milliseconds()
-
-		// 构建单个动作响应
+	results := make([]ExecuteActionResponse, 0, len(actionResults))
+	successCount := 0
+	for _, actionResult := range actionResults {
 		actionResponse := ExecuteActionResponse{
-			Success:  err == nil,
-			Duration: actionDuration,
+			Success:    actionResult.Success,
+			Result:     actionResultData(actionResult.Result),
+			Error:      actionResult.Error,
+			Duration:   actionResult.Duration,
+			PluginInfo: h.pluginInfo(actionResult.PluginID),
 		}
-
-		if err != nil {
-			actionResponse.Error = err.Error()
-		} else {
-			if result != nil {
-				actionResponse.Result = result.Data
-
-				// 更新当前事件数据，传递给下一个动作
-				if transformedEmail, ok := result.Data["transformed_email"].(map[string]interface{}); ok {
-					// 更新邮件数据
-					if eventData, ok := currentEmailData["event"].(map[string]interface{}); ok {
-						if emailData, ok := eventData["data"].(map[string]interface{}); ok {
-							// 更新邮件字段
-							for key, value := range transformedEmail {
-								emailData[key] = value
-							}
-
-							// 重新构建事件数据
-							updatedEventData, _ := json.Marshal(currentEmailData)
-							currentEvent = &triggerv2models.Event{
-								Type: currentEvent.Type,
-								Data: updatedEventData,
-							}
-						}
-					}
-				}
-			}
+		if actionResult.Success {
 			successCount++
 		}
-
-		// 获取插件信息
-		if plugins, err := h.pluginManager.ListPlugins(); err == nil {
-			for _, pluginInfo := range plugins {
-				if pluginInfo.ID == action.PluginID {
-					actionResponse.PluginInfo = map[string]interface{}{
-						"id":          pluginInfo.ID,
-						"name":        pluginInfo.Name,
-						"type":        pluginInfo.Type,
-						"description": pluginInfo.Description,
-						"version":     pluginInfo.Version,
-					}
-					break
-				}
-			}
-		}
-
-		results[i] = actionResponse
-
-		// 如果当前动作失败，可以选择是否继续执行后续动作
-		// 这里我们选择继续执行，但可以根据需要调整
+		results = append(results, actionResponse)
 	}
 
 	// 计算总执行时间
@@ -1180,21 +1203,26 @@ func (h *TriggerAPIHandler) ExecuteActionsHandler(w http.ResponseWriter, r *http
 			"total_duration":     totalDuration,
 		},
 	}
+	if execErr != nil {
+		response.Summary["error"] = execErr.Error()
+	}
 
 	// 记录活动日志
-	userID := getUserIDFromContext(r)
-	h.activityLogger.LogActivity(
-		models.ActivityTypeGeneral,
-		"执行多个动作",
-		fmt.Sprintf("执行了%d个动作，成功%d个", len(req.Actions), successCount),
-		userID,
-		map[string]interface{}{
-			"total_actions":      len(req.Actions),
-			"successful_actions": successCount,
-			"failed_actions":     len(req.Actions) - successCount,
-			"total_duration":     totalDuration,
-		},
-	)
+	if h.activityLogger != nil {
+		userID := getUserIDFromContext(r)
+		h.activityLogger.LogActivity(
+			models.ActivityTypeGeneral,
+			"执行多个动作",
+			fmt.Sprintf("执行了%d个动作，成功%d个", len(req.Actions), successCount),
+			userID,
+			map[string]interface{}{
+				"total_actions":      len(req.Actions),
+				"successful_actions": successCount,
+				"failed_actions":     len(req.Actions) - successCount,
+				"total_duration":     totalDuration,
+			},
+		)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)

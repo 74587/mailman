@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"mailman/internal/interceptor"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/services"
@@ -22,7 +23,7 @@ type EmailTriggerV2Controller struct {
 	triggerRepo     *repository.EmailTriggerV2Repository
 	logRepo         *repository.TriggerExecutionLogV2Repository
 	emailRepo       *repository.EmailRepository
-	actionExecutor  *services.ActionExecutor
+	actionExecutor  *services.ActionExecutorV2
 	pluginManager   plugins.PluginManager
 	conditionEngine *services.ConditionEngine
 	activityLogger  *services.ActivityLogger
@@ -35,19 +36,15 @@ func NewEmailTriggerV2Controller(
 	logRepo *repository.TriggerExecutionLogV2Repository,
 	emailRepo *repository.EmailRepository,
 	pluginManager plugins.PluginManager,
+	interceptorManager *interceptor.Manager,
 	conditionEngine *services.ConditionEngine,
 ) *EmailTriggerV2Controller {
-	actionExecutor := services.NewActionExecutor(nil)
-	if pluginManager != nil {
-		actionExecutor = services.NewActionExecutor(services.NewPluginManagerV2Adapter(pluginManager))
-	}
-
 	return &EmailTriggerV2Controller{
 		triggerService:  triggerService,
 		triggerRepo:     triggerRepo,
 		logRepo:         logRepo,
 		emailRepo:       emailRepo,
-		actionExecutor:  actionExecutor,
+		actionExecutor:  services.NewActionExecutorV2(pluginManager, interceptorManager),
 		pluginManager:   pluginManager,
 		conditionEngine: conditionEngine,
 		activityLogger:  services.GetActivityLogger(),
@@ -196,17 +193,20 @@ func (c *EmailTriggerV2Controller) TestTriggerActionHandler(w http.ResponseWrite
 		}
 	}
 
-	// Use the action executor to test the action
-	result, err := c.actionExecutor.TestAction(req.Action, email)
+	actionResults, err := c.actionExecutor.ExecuteActionsWithContext([]models.TriggerAction{req.Action}, email, 0)
 
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Failed to test action: %v", err), http.StatusInternalServerError)
 		return
 	}
+	if len(actionResults) == 0 {
+		http.Error(w, "No action result returned", http.StatusInternalServerError)
+		return
+	}
 
 	// Return the result
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	json.NewEncoder(w).Encode(actionResults[0])
 }
 
 // RegisterRoutes registers the routes for EmailTriggerV2Controller
@@ -1415,7 +1415,7 @@ func (c *EmailTriggerV2Controller) TestCompleteTriggerHandler(w http.ResponseWri
 	}
 
 	// Execute actions
-	actionResults, err := c.actionExecutor.ExecuteActions(req.Trigger.Actions, email)
+	actionResults, err := c.actionExecutor.ExecuteActionsWithContext(req.Trigger.Actions, email, req.Trigger.ID)
 	response.ActionResults = actionResults
 	response.ActionsExecuted = len(actionResults)
 
