@@ -216,18 +216,66 @@ export default function ProxyPoolTab() {
         }
     }
 
-    const createGroup = async () => {
-        if (!newGroupName.trim()) return
-        await proxyPoolService.createGroup({ name: newGroupName.trim() })
-        setNewGroupName('')
-        loadData()
+    const createGroup = async (name?: string) => {
+        const groupName = (name ?? newGroupName).trim()
+        if (!groupName) return null
+        try {
+            const group = await proxyPoolService.createGroup({ name: groupName })
+            if (!name || newGroupName.trim() === groupName) {
+                setNewGroupName('')
+            }
+            toast.success('分组已创建')
+            await loadData()
+            return group
+        } catch (error: any) {
+            toast.error(error.message || '创建分组失败')
+            return null
+        }
     }
 
-    const createTag = async () => {
-        if (!newTagName.trim()) return
-        await proxyPoolService.createTag({ name: newTagName.trim() })
-        setNewTagName('')
-        loadData()
+    const createTag = async (name?: string) => {
+        const tagName = (name ?? newTagName).trim()
+        if (!tagName) return null
+        try {
+            const tag = await proxyPoolService.createTag({ name: tagName })
+            if (!name || newTagName.trim() === tagName) {
+                setNewTagName('')
+            }
+            toast.success('标签已创建')
+            await loadData()
+            return tag
+        } catch (error: any) {
+            toast.error(error.message || '创建标签失败')
+            return null
+        }
+    }
+
+    const deleteGroup = async (group: ProxyGroup) => {
+        if (!window.confirm(`删除分组「${group.name}」？该分组下的代理会变为未分组。`)) return
+        try {
+            await proxyPoolService.deleteGroup(group.id)
+            setSelectedGroupIds(prev => prev.filter(id => id !== group.id))
+            setBulkGroupId(prev => prev === group.id ? undefined : prev)
+            setDeleteReplacement(prev => ({ ...prev, groupIds: prev.groupIds?.filter(id => id !== group.id) }))
+            toast.success('分组已删除')
+            await loadData()
+        } catch (error: any) {
+            toast.error(error.message || '删除分组失败')
+        }
+    }
+
+    const deleteTag = async (tag: ProxyTag) => {
+        if (!window.confirm(`删除标签「${tag.name}」？代理上的该标签会被移除。`)) return
+        try {
+            await proxyPoolService.deleteTag(tag.id)
+            setSelectedTagIds(prev => prev.filter(id => id !== tag.id))
+            setBulkTagIds(prev => prev.filter(id => id !== tag.id))
+            setDeleteReplacement(prev => ({ ...prev, tagIds: prev.tagIds?.filter(id => id !== tag.id) }))
+            toast.success('标签已删除')
+            await loadData()
+        } catch (error: any) {
+            toast.error(error.message || '删除标签失败')
+        }
     }
 
     return (
@@ -391,6 +439,8 @@ export default function ProxyPoolTab() {
                             setCheckProxy={setBulkCheck}
                             channel={checkChannel}
                             setChannel={setCheckChannel}
+                            onCreateGroup={createGroup}
+                            onCreateTag={createTag}
                             onImport={importProxies}
                             loading={loading}
                         />
@@ -419,6 +469,8 @@ export default function ProxyPoolTab() {
                             setNewTagName={setNewTagName}
                             onCreateGroup={createGroup}
                             onCreateTag={createTag}
+                            onDeleteGroup={deleteGroup}
+                            onDeleteTag={deleteTag}
                         />
                     )}
 
@@ -545,10 +597,26 @@ function ImportPanel(props: {
     setCheckProxy: (value: boolean) => void
     channel: string
     setChannel: (value: string) => void
+    onCreateGroup: (name?: string) => Promise<ProxyGroup | null>
+    onCreateTag: (name?: string) => Promise<ProxyTag | null>
     onImport: () => void
     loading: boolean
 }) {
+    const [quickGroupName, setQuickGroupName] = useState('')
+    const [quickTagName, setQuickTagName] = useState('')
     const toggleTag = (id: number) => props.setTagIds(props.tagIds.includes(id) ? props.tagIds.filter(item => item !== id) : [...props.tagIds, id])
+    const createAndSelectGroup = async () => {
+        const group = await props.onCreateGroup(quickGroupName)
+        if (!group) return
+        props.setGroupId(group.id)
+        setQuickGroupName('')
+    }
+    const createAndSelectTag = async () => {
+        const tag = await props.onCreateTag(quickTagName)
+        if (!tag) return
+        props.setTagIds([...new Set([...props.tagIds, tag.id])])
+        setQuickTagName('')
+    }
     return (
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <h3 className="mb-4 font-semibold text-gray-900 dark:text-white">批量新增代理</h3>
@@ -566,12 +634,53 @@ function ImportPanel(props: {
                 <select value={props.defaultType} onChange={(event) => props.setDefaultType(event.target.value as ProxyType)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
                     {proxyTypes.map(type => <option key={type} value={type}>{type.toUpperCase()}</option>)}
                 </select>
-                <select value={props.groupId || ''} onChange={(event) => props.setGroupId(event.target.value ? Number(event.target.value) : undefined)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
-                    <option value="">不分组</option>
-                    {props.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
-                </select>
-                <div className="flex flex-wrap gap-2">
-                    {props.tags.map(tag => <button key={tag.id} onClick={() => toggleTag(tag.id)} className={cn('rounded-full border px-2 py-1 text-xs', props.tagIds.includes(tag.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-gray-200 text-gray-600 dark:border-gray-700')}>{tag.name}</button>)}
+                <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                    <div className="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">导入分组</div>
+                    <select value={props.groupId || ''} onChange={(event) => props.setGroupId(event.target.value ? Number(event.target.value) : undefined)} className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
+                        <option value="">不分组</option>
+                        {props.groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+                    </select>
+                    <div className="mt-2 flex gap-2">
+                        <input
+                            value={quickGroupName}
+                            onChange={(event) => setQuickGroupName(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                    event.preventDefault()
+                                    createAndSelectGroup()
+                                }
+                            }}
+                            placeholder="创建新分组并选中"
+                            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                        />
+                        <button onClick={createAndSelectGroup} disabled={!quickGroupName.trim()} className="rounded-lg border border-primary-200 px-3 py-2 text-sm text-primary-700 hover:bg-primary-50 disabled:opacity-50 dark:border-primary-900 dark:text-primary-300 dark:hover:bg-primary-950/30">创建</button>
+                    </div>
+                </div>
+                <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                    <div className="mb-2 flex items-center justify-between">
+                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">导入标签</span>
+                        <span className="text-[11px] text-gray-400">可多选</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        {props.tags.length === 0 ? <span className="text-xs text-gray-400">暂无标签</span> : props.tags.map(tag => (
+                            <button key={tag.id} onClick={() => toggleTag(tag.id)} className={cn('rounded-full border px-2 py-1 text-xs', props.tagIds.includes(tag.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300')}>{tag.name}</button>
+                        ))}
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                        <input
+                            value={quickTagName}
+                            onChange={(event) => setQuickTagName(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                    event.preventDefault()
+                                    createAndSelectTag()
+                                }
+                            }}
+                            placeholder="创建新标签并选中"
+                            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                        />
+                        <button onClick={createAndSelectTag} disabled={!quickTagName.trim()} className="rounded-lg border border-emerald-200 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30">创建</button>
+                    </div>
                 </div>
                 <textarea value={props.bulkText} onChange={(event) => props.setBulkText(event.target.value)} rows={12} placeholder="请在此填写您的代理信息" className="min-h-[260px] rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-sm dark:border-gray-700 dark:bg-gray-900" />
                 <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
@@ -648,35 +757,79 @@ function DeletePanel({ selectedCount, replacement, setReplacement, proxies, grou
     )
 }
 
-function MetaPanel({ groups, tags, newGroupName, setNewGroupName, newTagName, setNewTagName, onCreateGroup, onCreateTag }: {
+function MetaPanel({ groups, tags, newGroupName, setNewGroupName, newTagName, setNewTagName, onCreateGroup, onCreateTag, onDeleteGroup, onDeleteTag }: {
     groups: ProxyGroup[]
     tags: ProxyTag[]
     newGroupName: string
     setNewGroupName: (value: string) => void
     newTagName: string
     setNewTagName: (value: string) => void
-    onCreateGroup: () => void
-    onCreateTag: () => void
+    onCreateGroup: (name?: string) => Promise<ProxyGroup | null>
+    onCreateTag: (name?: string) => Promise<ProxyTag | null>
+    onDeleteGroup: (group: ProxyGroup) => void
+    onDeleteTag: (tag: ProxyTag) => void
 }) {
     return (
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
             <h3 className="mb-4 font-semibold text-gray-900 dark:text-white">分组与标签</h3>
             <div className="space-y-4">
                 <div>
-                    <div className="mb-2 text-sm font-medium">代理分组</div>
+                    <div className="mb-1 text-sm font-medium">代理分组</div>
+                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">删除分组不会删除代理，代理会回到未分组状态。</p>
                     <div className="mb-2 flex gap-2">
-                        <input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} placeholder="新分组名称" className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900" />
-                        <button onClick={onCreateGroup} className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white dark:bg-white dark:text-gray-900">添加</button>
+                        <input
+                            value={newGroupName}
+                            onChange={(event) => setNewGroupName(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                    event.preventDefault()
+                                    onCreateGroup()
+                                }
+                            }}
+                            placeholder="新分组名称"
+                            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                        />
+                        <button onClick={() => onCreateGroup()} className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white dark:bg-white dark:text-gray-900">添加</button>
                     </div>
-                    <div className="flex flex-wrap gap-2">{groups.map(group => <span key={group.id} className="rounded-full bg-primary-50 px-3 py-1 text-xs text-primary-700 dark:bg-primary-950/30 dark:text-primary-200">{group.name}</span>)}</div>
+                    <div className="flex flex-wrap gap-2">
+                        {groups.length === 0 ? <span className="text-xs text-gray-400">暂无分组</span> : groups.map(group => (
+                            <span key={group.id} className="inline-flex max-w-full items-center gap-1 rounded-full bg-primary-50 py-1 pl-3 pr-1 text-xs text-primary-700 dark:bg-primary-950/30 dark:text-primary-200">
+                                <span className="truncate">{group.name}</span>
+                                <button onClick={() => onDeleteGroup(group)} title="删除分组" className="rounded-full p-1 text-primary-500 hover:bg-primary-100 hover:text-primary-700 dark:hover:bg-primary-900/50">
+                                    <Trash2 className="h-3 w-3" />
+                                </button>
+                            </span>
+                        ))}
+                    </div>
                 </div>
                 <div>
-                    <div className="mb-2 text-sm font-medium">代理标签</div>
+                    <div className="mb-1 text-sm font-medium">代理标签</div>
+                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">删除标签会从已绑定代理上移除该标签。</p>
                     <div className="mb-2 flex gap-2">
-                        <input value={newTagName} onChange={(event) => setNewTagName(event.target.value)} placeholder="新标签名称" className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900" />
-                        <button onClick={onCreateTag} className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white dark:bg-white dark:text-gray-900">添加</button>
+                        <input
+                            value={newTagName}
+                            onChange={(event) => setNewTagName(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                    event.preventDefault()
+                                    onCreateTag()
+                                }
+                            }}
+                            placeholder="新标签名称"
+                            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                        />
+                        <button onClick={() => onCreateTag()} className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white dark:bg-white dark:text-gray-900">添加</button>
                     </div>
-                    <div className="flex flex-wrap gap-2">{tags.map(tag => <span key={tag.id} className="rounded-full bg-emerald-50 px-3 py-1 text-xs text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200">{tag.name}</span>)}</div>
+                    <div className="flex flex-wrap gap-2">
+                        {tags.length === 0 ? <span className="text-xs text-gray-400">暂无标签</span> : tags.map(tag => (
+                            <span key={tag.id} className="inline-flex max-w-full items-center gap-1 rounded-full bg-emerald-50 py-1 pl-3 pr-1 text-xs text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200">
+                                <span className="truncate">{tag.name}</span>
+                                <button onClick={() => onDeleteTag(tag)} title="删除标签" className="rounded-full p-1 text-emerald-500 hover:bg-emerald-100 hover:text-emerald-700 dark:hover:bg-emerald-900/50">
+                                    <Trash2 className="h-3 w-3" />
+                                </button>
+                            </span>
+                        ))}
+                    </div>
                 </div>
             </div>
         </div>
