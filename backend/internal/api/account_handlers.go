@@ -34,21 +34,36 @@ func (h *APIHandler) CreateAccountHandler(w http.ResponseWriter, r *http.Request
 
 	// Convert request to model
 	account := models.EmailAccount{
-		EmailAddress:     request.EmailAddress,
-		AuthType:         request.AuthType,
-		Password:         services.EncryptIfAvailable(request.Password),
-		Token:            services.EncryptIfAvailable(request.Token),
-		MailProviderID:   request.MailProviderID,
-		OAuth2ProviderID: request.OAuth2ProviderID,
-		Proxy:            request.Proxy,
-		IsDomainMail:     request.IsDomainMail,
-		Domain:           request.Domain,
-		Note:             request.Note,
-		NoteFormat:       models.NormalizeAccountNoteFormat(request.NoteFormat),
-		CustomSettings:   request.CustomSettings,
+		EmailAddress:         request.EmailAddress,
+		AuthType:             request.AuthType,
+		Password:             services.EncryptIfAvailable(request.Password),
+		Token:                services.EncryptIfAvailable(request.Token),
+		MailProviderID:       request.MailProviderID,
+		OAuth2ProviderID:     request.OAuth2ProviderID,
+		Proxy:                request.Proxy,
+		ProxyMode:            models.NormalizeProxyAccountMode(request.ProxyMode),
+		ProxyID:              request.ProxyID,
+		ProxyFallbackMode:    models.NormalizeProxyFallbackMode(request.ProxyFallbackMode),
+		ProxyFallbackProxyID: request.ProxyFallbackProxyID,
+		ProxyFallbackProxy:   request.ProxyFallbackProxy,
+		ProxyMatchGroupIDs:   request.ProxyMatchGroupIDs,
+		ProxyMatchTagIDs:     request.ProxyMatchTagIDs,
+		ProxyMatchTagMode:    models.NormalizeProxyTagFilterMode(request.ProxyMatchTagMode),
+		IsDomainMail:         request.IsDomainMail,
+		Domain:               request.Domain,
+		Note:                 request.Note,
+		NoteFormat:           models.NormalizeAccountNoteFormat(request.NoteFormat),
+		CustomSettings:       request.CustomSettings,
 	}
 
 	account.OrgID = orgID
+
+	if h.ProxyPoolService != nil {
+		if err := h.ProxyPoolService.PrepareAccountProxy(&account); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
 	if err := h.EmailAccountRepo.Create(&account); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -637,6 +652,39 @@ func (h *APIHandler) UpdateAccountHandler(w http.ResponseWriter, r *http.Request
 	if request.Proxy != nil {
 		existingAccount.Proxy = *request.Proxy
 	}
+	proxyConfigChanged := false
+	if request.ProxyMode != nil {
+		existingAccount.ProxyMode = models.NormalizeProxyAccountMode(*request.ProxyMode)
+		proxyConfigChanged = true
+	}
+	if request.ProxyID != nil {
+		existingAccount.ProxyID = request.ProxyID
+		proxyConfigChanged = true
+	}
+	if request.ProxyFallbackMode != nil {
+		existingAccount.ProxyFallbackMode = models.NormalizeProxyFallbackMode(*request.ProxyFallbackMode)
+		proxyConfigChanged = true
+	}
+	if request.ProxyFallbackProxyID != nil {
+		existingAccount.ProxyFallbackProxyID = request.ProxyFallbackProxyID
+		proxyConfigChanged = true
+	}
+	if request.ProxyFallbackProxy != nil {
+		existingAccount.ProxyFallbackProxy = *request.ProxyFallbackProxy
+		proxyConfigChanged = true
+	}
+	if request.ProxyMatchGroupIDs != nil {
+		existingAccount.ProxyMatchGroupIDs = *request.ProxyMatchGroupIDs
+		proxyConfigChanged = true
+	}
+	if request.ProxyMatchTagIDs != nil {
+		existingAccount.ProxyMatchTagIDs = *request.ProxyMatchTagIDs
+		proxyConfigChanged = true
+	}
+	if request.ProxyMatchTagMode != nil {
+		existingAccount.ProxyMatchTagMode = models.NormalizeProxyTagFilterMode(*request.ProxyMatchTagMode)
+		proxyConfigChanged = true
+	}
 	if request.IsDomainMail != nil {
 		existingAccount.IsDomainMail = *request.IsDomainMail
 	}
@@ -654,6 +702,13 @@ func (h *APIHandler) UpdateAccountHandler(w http.ResponseWriter, r *http.Request
 	}
 	if request.LastSyncAt != nil {
 		existingAccount.LastSyncAt = request.LastSyncAt
+	}
+
+	if proxyConfigChanged && h.ProxyPoolService != nil {
+		if err := h.ProxyPoolService.PrepareAccountProxy(existingAccount); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	if err := h.EmailAccountRepo.Update(existingAccount); err != nil {
@@ -700,19 +755,34 @@ func (h *APIHandler) UpsertAccountHandler(w http.ResponseWriter, r *http.Request
 		activityType = models.ActivityAccountAdded
 
 		account = &models.EmailAccount{
-			EmailAddress:     request.EmailAddress,
-			AuthType:         request.AuthType,
-			Password:         services.EncryptIfAvailable(request.Password),
-			Token:            services.EncryptIfAvailable(request.Token),
-			MailProviderID:   request.MailProviderID,
-			OAuth2ProviderID: request.OAuth2ProviderID,
-			Proxy:            request.Proxy,
-			IsDomainMail:     request.IsDomainMail,
-			Domain:           request.Domain,
-			Note:             request.Note,
-			NoteFormat:       models.NormalizeAccountNoteFormat(request.NoteFormat),
-			CustomSettings:   request.CustomSettings,
-			OrgID:            orgID,
+			EmailAddress:         request.EmailAddress,
+			AuthType:             request.AuthType,
+			Password:             services.EncryptIfAvailable(request.Password),
+			Token:                services.EncryptIfAvailable(request.Token),
+			MailProviderID:       request.MailProviderID,
+			OAuth2ProviderID:     request.OAuth2ProviderID,
+			Proxy:                request.Proxy,
+			ProxyMode:            models.NormalizeProxyAccountMode(request.ProxyMode),
+			ProxyID:              request.ProxyID,
+			ProxyFallbackMode:    models.NormalizeProxyFallbackMode(request.ProxyFallbackMode),
+			ProxyFallbackProxyID: request.ProxyFallbackProxyID,
+			ProxyFallbackProxy:   request.ProxyFallbackProxy,
+			ProxyMatchGroupIDs:   request.ProxyMatchGroupIDs,
+			ProxyMatchTagIDs:     request.ProxyMatchTagIDs,
+			ProxyMatchTagMode:    models.NormalizeProxyTagFilterMode(request.ProxyMatchTagMode),
+			IsDomainMail:         request.IsDomainMail,
+			Domain:               request.Domain,
+			Note:                 request.Note,
+			NoteFormat:           models.NormalizeAccountNoteFormat(request.NoteFormat),
+			CustomSettings:       request.CustomSettings,
+			OrgID:                orgID,
+		}
+
+		if h.ProxyPoolService != nil {
+			if err := h.ProxyPoolService.PrepareAccountProxy(account); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 
 		if err := h.EmailAccountRepo.Create(account); err != nil {
@@ -745,6 +815,30 @@ func (h *APIHandler) UpsertAccountHandler(w http.ResponseWriter, r *http.Request
 		if request.Proxy != "" {
 			account.Proxy = request.Proxy
 		}
+		if request.ProxyMode != "" {
+			account.ProxyMode = models.NormalizeProxyAccountMode(request.ProxyMode)
+		}
+		if request.ProxyID != nil {
+			account.ProxyID = request.ProxyID
+		}
+		if request.ProxyFallbackMode != "" {
+			account.ProxyFallbackMode = models.NormalizeProxyFallbackMode(request.ProxyFallbackMode)
+		}
+		if request.ProxyFallbackProxyID != nil {
+			account.ProxyFallbackProxyID = request.ProxyFallbackProxyID
+		}
+		if request.ProxyFallbackProxy != "" {
+			account.ProxyFallbackProxy = request.ProxyFallbackProxy
+		}
+		if len(request.ProxyMatchGroupIDs) > 0 {
+			account.ProxyMatchGroupIDs = request.ProxyMatchGroupIDs
+		}
+		if len(request.ProxyMatchTagIDs) > 0 {
+			account.ProxyMatchTagIDs = request.ProxyMatchTagIDs
+		}
+		if request.ProxyMatchTagMode != "" {
+			account.ProxyMatchTagMode = models.NormalizeProxyTagFilterMode(request.ProxyMatchTagMode)
+		}
 		if request.CustomSettings != nil {
 			account.CustomSettings = request.CustomSettings
 		}
@@ -753,6 +847,13 @@ func (h *APIHandler) UpsertAccountHandler(w http.ResponseWriter, r *http.Request
 		}
 		if request.NoteFormat != "" {
 			account.NoteFormat = models.NormalizeAccountNoteFormat(request.NoteFormat)
+		}
+
+		if h.ProxyPoolService != nil {
+			if err := h.ProxyPoolService.PrepareAccountProxy(account); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 
 		if err := h.EmailAccountRepo.Update(account); err != nil {

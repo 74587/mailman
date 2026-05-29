@@ -116,6 +116,11 @@ func Migrate() error {
 		&models.TagGroup{},
 		&models.Tag{},
 		&models.EmailAccountTag{},
+		// Proxy pool tables
+		&models.ProxyGroup{},
+		&models.ProxyTag{},
+		&models.ProxyPoolItem{},
+		&models.ProxyPoolItemTag{},
 		// Organization & RBAC tables
 		&models.Organization{},
 		&models.Role{},

@@ -37,6 +37,7 @@ import {
     Building2,
     Users,
     Crown,
+    Network,
     type LucideIcon,
 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
@@ -69,6 +70,7 @@ const navigation: MenuItem[] = [
     { name: '发送邮件', id: 'compose-email', icon: Send, permission: { resource: 'email', action: 'read' } },
     { name: '经典邮件管理器', id: 'classic-mailbox', icon: Inbox, permission: { resource: 'email', action: 'read' } },
     { name: '同步配置', id: 'sync-config', icon: RefreshCw, permission: { resource: 'sync_config', action: 'read' } },
+    { name: '代理池管理', id: 'proxy-pool', icon: Network, description: '代理分组 · 标签 · 检测', permission: { resource: 'email_account', action: 'read' } },
     { name: '取件', id: 'mail-pickup', icon: Inbox, hidden: true },
     { name: '取件', id: 'mail-pickup-v2', icon: Package, description: '邮件监听 · 自动提取', permission: { resource: 'trigger', action: 'read' } },
     { name: '取件模板', id: 'pickup', icon: FileText, hidden: true },

@@ -90,6 +90,7 @@ func main() {
 	oauth2AuthSessionRepo := repository.NewOAuth2AuthSessionRepository(db)
 	systemConfigRepo := repository.NewSystemConfigRepository(db)
 	tagRepo := repository.NewTagRepository(db)
+	proxyPoolRepo := repository.NewProxyPoolRepository(db)
 
 	// Organization & RBAC repositories
 	orgRepo := repository.NewOrganizationRepository(db)
@@ -108,6 +109,8 @@ func main() {
 
 	// Initialize services with repositories
 	fetcherService := services.NewFetcherService(emailAccountRepo, emailRepo, db)
+	proxyPoolService := services.NewProxyPoolService(proxyPoolRepo, emailAccountRepo)
+	fetcherService.SetProxyPoolService(proxyPoolService)
 	parserService := services.NewParserService()
 	authService := services.NewAuthService(userRepo, userSessionRepo)
 	oauth2Service := services.NewOAuth2Service(db)
@@ -303,6 +306,7 @@ func main() {
 
 	// Initialize API handler
 	apiHandler := api.NewAPIHandler(fetcherService, parserService, emailAccountRepo, mailProviderRepo, emailRepo, incrementalSyncRepo, emailFetchScheduler, pluginManager, incrementalSyncManager, perAccountSyncManager, syncConfigRepo, emailIngestService)
+	apiHandler.SetProxyPoolService(proxyPoolService)
 
 	// Initialize Email Send handler
 	emailSendHandler := api.NewEmailSendHandlers(emailSenderService)
@@ -348,6 +352,10 @@ func main() {
 	mainLogger.Info("正在初始化标签处理器...")
 	tagHandlers := api.NewTagHandlers(tagRepo, emailAccountRepo)
 
+	// Initialize Proxy Pool handlers
+	mainLogger.Info("正在初始化代理池处理器...")
+	proxyPoolHandlers := api.NewProxyPoolHandlers(proxyPoolRepo, proxyPoolService)
+
 	// Initialize default AI prompt templates
 	if err := aiPromptTemplateRepo.InitializeDefaultTemplates(); err != nil {
 		mainLogger.Warn("Failed to initialize default AI prompt templates: %v", err)
@@ -375,6 +383,7 @@ func main() {
 		emailSendHandler,
 		interceptorHandler,
 		tagHandlers,
+		proxyPoolHandlers,
 		pickupHandler,
 		orgHandler,
 		userMgmtHandler,

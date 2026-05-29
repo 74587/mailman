@@ -7,6 +7,77 @@ export interface ApiResponse<T> {
 
 // Email Account Types - 匹配后端API响应
 export type AccountNoteFormat = 'markdown' | 'html';
+export type ProxyType = 'http' | 'https' | 'ssh' | 'socks5';
+export type ProxyStatus = 'unknown' | 'available' | 'unavailable' | 'checking';
+export type ProxyAccountMode = 'manual' | 'selected' | 'auto';
+export type ProxyFallbackMode = 'interrupt' | 'manual_backup' | 'auto_select';
+export type ProxyTagFilterMode = 'and' | 'or';
+
+export interface ProxyGroup {
+    id: number;
+    orgId?: number;
+    name: string;
+    description?: string;
+    color?: string;
+    sortOrder?: number;
+    createdAt?: string;
+    updatedAt?: string;
+}
+
+export interface ProxyTag {
+    id: number;
+    orgId?: number;
+    name: string;
+    color?: string;
+    sortOrder?: number;
+    createdAt?: string;
+    updatedAt?: string;
+}
+
+export interface ProxyPoolItem {
+    id: number;
+    orgId?: number;
+    type: ProxyType;
+    host: string;
+    port: number;
+    username?: string;
+    password?: string;
+    refreshUrl?: string;
+    remark?: string;
+    groupId?: number;
+    group?: ProxyGroup;
+    tags?: ProxyTag[];
+    status: ProxyStatus;
+    lastCheckAt?: string;
+    lastSuccessAt?: string;
+    lastFailureAt?: string;
+    lastError?: string;
+    checkLatencyMs?: number;
+    exitIp?: string;
+    country?: string;
+    region?: string;
+    city?: string;
+    isp?: string;
+    checkCount?: number;
+    successCount?: number;
+    failureCount?: number;
+    usageScope?: string;
+    source?: string;
+    metadata?: Record<string, any>;
+    createdAt?: string;
+    updatedAt?: string;
+}
+
+export interface ProxyAccountSettings {
+    proxyMode?: ProxyAccountMode;
+    proxyId?: number;
+    proxyFallbackMode?: ProxyFallbackMode;
+    proxyFallbackProxyId?: number;
+    proxyFallbackProxy?: string;
+    proxyMatchGroupIds?: number[];
+    proxyMatchTagIds?: number[];
+    proxyMatchTagMode?: ProxyTagFilterMode;
+}
 
 export interface EmailAccount {
     id: number;
@@ -31,6 +102,15 @@ export interface EmailAccount {
         };
     };
     proxy?: string;
+    proxyMode?: ProxyAccountMode;
+    proxyId?: number;
+    proxyPoolItem?: ProxyPoolItem;
+    proxyFallbackMode?: ProxyFallbackMode;
+    proxyFallbackProxyId?: number;
+    proxyFallbackProxy?: string;
+    proxyMatchGroupIds?: number[];
+    proxyMatchTagIds?: number[];
+    proxyMatchTagMode?: ProxyTagFilterMode;
     isDomainMail: boolean;
     domain?: string;
     note?: string;
@@ -79,6 +159,14 @@ export interface CreateEmailAccountRequest {
     token?: string;
     mail_provider_id?: number;
     proxy?: string;
+    proxy_mode?: ProxyAccountMode;
+    proxy_id?: number;
+    proxy_fallback_mode?: ProxyFallbackMode;
+    proxy_fallback_proxy_id?: number;
+    proxy_fallback_proxy?: string;
+    proxy_match_group_ids?: number[];
+    proxy_match_tag_ids?: number[];
+    proxy_match_tag_mode?: ProxyTagFilterMode;
     is_domain_mail?: boolean;
     domain?: string;
     note?: string;

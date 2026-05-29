@@ -47,6 +47,7 @@ import {
     Package,
     BookOpen,
     StickyNote,
+    Network,
 } from 'lucide-react'
 
 interface Tab {
@@ -62,6 +63,7 @@ const tabConfig: Tab[] = [
     { id: 'classic-mailbox', name: '经典邮件管理器', icon: Inbox },
     { id: 'compose-email', name: '发送邮件', icon: Send },
     { id: 'sync-config', name: '同步配置', icon: RefreshCw },
+    { id: 'proxy-pool', name: '代理池管理', icon: Network },
     { id: 'mail-pickup', name: '取件', icon: Inbox },
     { id: 'mail-pickup-v2', name: '取件', icon: Package },
     // 根据需求隐藏订阅管理菜单项

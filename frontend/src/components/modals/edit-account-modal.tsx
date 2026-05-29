@@ -1,13 +1,14 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Save, AlertCircle, Eye, EyeOff, Loader2 } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
-import { AccountNoteFormat, EmailAccount } from '@/types'
+import { AccountNoteFormat, EmailAccount, ProxyAccountMode, ProxyFallbackMode, ProxyTagFilterMode, ProxyType } from '@/types'
 import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AccountNoteEditor } from '@/components/accounts/account-note-editor'
+import { ProxyConfigSection, defaultProxyConfigValue } from '@/components/proxy/proxy-config-section'
 import {
     Modal,
     ModalContent,
@@ -39,9 +40,18 @@ interface EditAccountForm {
     accessToken: string
     refreshToken: string
     useProxy: boolean
+    proxyMode: ProxyAccountMode
+    proxyType: ProxyType
     proxyUrl: string
     proxyUsername: string
     proxyPassword: string
+    proxyId?: number
+    proxyFallbackMode: ProxyFallbackMode
+    proxyFallbackProxyId?: number
+    proxyFallbackProxy: string
+    proxyMatchGroupIds: number[]
+    proxyMatchTagIds: number[]
+    proxyMatchTagMode: ProxyTagFilterMode
     isDomainMail: boolean
     domain: string
     note: string
@@ -68,23 +78,14 @@ export default function EditAccountModal({
         clientId: '',
         accessToken: '',
         refreshToken: '',
-        useProxy: false,
-        proxyUrl: '',
-        proxyUsername: '',
-        proxyPassword: '',
+        ...defaultProxyConfigValue(),
         isDomainMail: false,
         domain: '',
         note: '',
         noteFormat: 'markdown'
     })
 
-    useEffect(() => {
-        if (isOpen && accountId) {
-            loadFullAccount()
-        }
-    }, [isOpen, accountId])
-
-    const loadFullAccount = async () => {
+    const loadFullAccount = useCallback(async () => {
         if (!accountId) return
 
         try {
@@ -121,10 +122,19 @@ export default function EditAccountModal({
                 clientId: data.customSettings?.client_id || '',
                 accessToken: data.customSettings?.access_token || '',
                 refreshToken: data.customSettings?.refresh_token || '',
-                useProxy: !!data.proxy,
+                useProxy: !!data.proxy || data.proxyMode === 'selected' || data.proxyMode === 'auto',
+                proxyMode: data.proxyMode || 'manual',
+                proxyType: 'socks5',
                 proxyUrl: proxyUrl,
                 proxyUsername: proxyUsername,
                 proxyPassword: proxyPassword,
+                proxyId: data.proxyId,
+                proxyFallbackMode: data.proxyFallbackMode || 'interrupt',
+                proxyFallbackProxyId: data.proxyFallbackProxyId,
+                proxyFallbackProxy: data.proxyFallbackProxy || '',
+                proxyMatchGroupIds: data.proxyMatchGroupIds || [],
+                proxyMatchTagIds: data.proxyMatchTagIds || [],
+                proxyMatchTagMode: data.proxyMatchTagMode || 'or',
                 isDomainMail: data.isDomainMail || false,
                 domain: data.domain || '',
                 note: data.note || '',
@@ -136,7 +146,13 @@ export default function EditAccountModal({
         } finally {
             setLoadingAccount(false)
         }
-    }
+    }, [accountId, onError])
+
+    useEffect(() => {
+        if (isOpen && accountId) {
+            loadFullAccount()
+        }
+    }, [isOpen, accountId, loadFullAccount])
 
     const handleSubmit = async () => {
         if (!accountId || !fullAccount) return
@@ -165,20 +181,33 @@ export default function EditAccountModal({
                 }
             }
 
-            if (form.useProxy && form.proxyUrl) {
-                payload.proxy = form.proxyUrl
-                if (form.proxyUsername && form.proxyPassword) {
-                    try {
-                        const url = new URL(form.proxyUrl)
-                        url.username = form.proxyUsername
-                        url.password = form.proxyPassword
-                        payload.proxy = url.toString()
-                    } catch (e) {
-                        payload.proxy = form.proxyUrl
+            if (form.useProxy) {
+                payload.proxy_mode = form.proxyMode
+                payload.proxy_fallback_mode = form.proxyFallbackMode
+                payload.proxy_fallback_proxy_id = form.proxyFallbackProxyId
+                payload.proxy_fallback_proxy = form.proxyFallbackProxy
+                payload.proxy_match_group_ids = form.proxyMatchGroupIds
+                payload.proxy_match_tag_ids = form.proxyMatchTagIds
+                payload.proxy_match_tag_mode = form.proxyMatchTagMode
+
+                if (form.proxyMode === 'manual') {
+                    payload.proxy = form.proxyUrl
+                    if (form.proxyUsername && form.proxyPassword) {
+                        try {
+                            const url = new URL(form.proxyUrl)
+                            url.username = form.proxyUsername
+                            url.password = form.proxyPassword
+                            payload.proxy = url.toString()
+                        } catch (e) {
+                            payload.proxy = form.proxyUrl
+                        }
                     }
+                } else if (form.proxyMode === 'selected') {
+                    payload.proxy_id = form.proxyId
                 }
             } else {
                 payload.proxy = ''
+                payload.proxy_mode = 'manual'
             }
 
             await emailAccountService.updateAccount(accountId, payload)
@@ -199,10 +228,7 @@ export default function EditAccountModal({
             clientId: '',
             accessToken: '',
             refreshToken: '',
-            useProxy: false,
-            proxyUrl: '',
-            proxyUsername: '',
-            proxyPassword: '',
+            ...defaultProxyConfigValue(),
             isDomainMail: false,
             domain: '',
             note: '',
@@ -393,59 +419,10 @@ export default function EditAccountModal({
                                 onFormatChange={(noteFormat) => setForm({ ...form, noteFormat })}
                             />
 
-                            {/* 代理设置 */}
-                            <div className="space-y-3">
-                                <div className="flex items-center space-x-2">
-                                    <input
-                                        type="checkbox"
-                                        id="useProxy"
-                                        checked={form.useProxy}
-                                        onChange={(e) => setForm({ ...form, useProxy: e.target.checked })}
-                                        className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                    />
-                                    <Label htmlFor="useProxy">使用代理</Label>
-                                </div>
-
-                                <AnimatePresence>
-                                    {form.useProxy && (
-                                        <motion.div
-                                            initial={{ height: 0, opacity: 0 }}
-                                            animate={{ height: "auto", opacity: 1 }}
-                                            exit={{ height: 0, opacity: 0 }}
-                                            transition={{ duration: 0.3 }}
-                                            className="overflow-hidden"
-                                        >
-                                            <div className="space-y-3 pt-3">
-                                                <div className="space-y-2">
-                                                    <Label>代理地址</Label>
-                                                    <Input
-                                                        value={form.proxyUrl}
-                                                        onChange={(e) => setForm({ ...form, proxyUrl: e.target.value })}
-                                                        placeholder="socks5://127.0.0.1:1080"
-                                                    />
-                                                </div>
-                                                <div className="grid grid-cols-2 gap-3">
-                                                    <div className="space-y-2">
-                                                        <Label>代理用户名（可选）</Label>
-                                                        <Input
-                                                            value={form.proxyUsername}
-                                                            onChange={(e) => setForm({ ...form, proxyUsername: e.target.value })}
-                                                        />
-                                                    </div>
-                                                    <div className="space-y-2">
-                                                        <Label>代理密码（可选）</Label>
-                                                        <Input
-                                                            type="password"
-                                                            value={form.proxyPassword}
-                                                            onChange={(e) => setForm({ ...form, proxyPassword: e.target.value })}
-                                                        />
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </motion.div>
-                                    )}
-                                </AnimatePresence>
-                            </div>
+                            <ProxyConfigSection
+                                value={form}
+                                onChange={(proxyConfig) => setForm({ ...form, ...proxyConfig })}
+                            />
                         </div>
                     )}
                 </ModalBody>

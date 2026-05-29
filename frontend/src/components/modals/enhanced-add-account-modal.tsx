@@ -8,9 +8,10 @@ import { oauth2Service } from '@/services/oauth2.service'
 import { syncConfigService } from '@/services/sync-config.service'
 import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AccountNoteFormat, EmailAccount } from '@/types'
+import { AccountNoteFormat, EmailAccount, ProxyAccountMode, ProxyFallbackMode, ProxyTagFilterMode, ProxyType } from '@/types'
 import OAuth2PopupAuth from '@/components/oauth2/oauth2-popup-auth'
 import { AccountNoteEditor } from '@/components/accounts/account-note-editor'
+import { ProxyConfigSection, defaultProxyConfigValue } from '@/components/proxy/proxy-config-section'
 import {
     Modal,
     ModalContent,
@@ -50,9 +51,18 @@ interface AccountForm {
     accessToken: string
     refreshToken: string
     useProxy: boolean
+    proxyMode: ProxyAccountMode
+    proxyType: ProxyType
     proxyUrl: string
     proxyUsername: string
     proxyPassword: string
+    proxyId?: number
+    proxyFallbackMode: ProxyFallbackMode
+    proxyFallbackProxyId?: number
+    proxyFallbackProxy: string
+    proxyMatchGroupIds: number[]
+    proxyMatchTagIds: number[]
+    proxyMatchTagMode: ProxyTagFilterMode
     isDomainMail: boolean
     domain: string
     note: string
@@ -93,10 +103,7 @@ export default function EnhancedAddAccountModal({
         clientId: '',
         accessToken: '',
         refreshToken: '',
-        useProxy: false,
-        proxyUrl: '',
-        proxyUsername: '',
-        proxyPassword: '',
+        ...defaultProxyConfigValue(),
         isDomainMail: false,
         domain: '',
         note: '',
@@ -185,10 +192,7 @@ export default function EnhancedAddAccountModal({
             clientId: '',
             accessToken: '',
             refreshToken: '',
-            useProxy: false,
-            proxyUrl: '',
-            proxyUsername: '',
-            proxyPassword: '',
+            ...defaultProxyConfigValue(),
             isDomainMail: false,
             domain: '',
             note: '',
@@ -271,17 +275,32 @@ export default function EnhancedAddAccountModal({
             }
 
             if (accountForm.useProxy) {
-                payload.proxy = accountForm.proxyUrl
-                if (accountForm.proxyUsername && accountForm.proxyPassword) {
-                    try {
-                        const url = new URL(accountForm.proxyUrl)
-                        url.username = accountForm.proxyUsername
-                        url.password = accountForm.proxyPassword
-                        payload.proxy = url.toString()
-                    } catch (e) {
-                        payload.proxy = accountForm.proxyUrl
+                payload.proxy_mode = accountForm.proxyMode
+                payload.proxy_fallback_mode = accountForm.proxyFallbackMode
+                payload.proxy_fallback_proxy_id = accountForm.proxyFallbackProxyId
+                payload.proxy_fallback_proxy = accountForm.proxyFallbackProxy
+                payload.proxy_match_group_ids = accountForm.proxyMatchGroupIds
+                payload.proxy_match_tag_ids = accountForm.proxyMatchTagIds
+                payload.proxy_match_tag_mode = accountForm.proxyMatchTagMode
+
+                if (accountForm.proxyMode === 'manual') {
+                    payload.proxy = accountForm.proxyUrl
+                    if (accountForm.proxyUsername && accountForm.proxyPassword) {
+                        try {
+                            const url = new URL(accountForm.proxyUrl)
+                            url.username = accountForm.proxyUsername
+                            url.password = accountForm.proxyPassword
+                            payload.proxy = url.toString()
+                        } catch (e) {
+                            payload.proxy = accountForm.proxyUrl
+                        }
                     }
+                } else if (accountForm.proxyMode === 'selected') {
+                    payload.proxy_id = accountForm.proxyId
                 }
+            } else {
+                payload.proxy = ''
+                payload.proxy_mode = 'manual'
             }
 
             if (accountForm.isDomainMail) {
@@ -663,6 +682,11 @@ export default function EnhancedAddAccountModal({
                                             format={accountForm.noteFormat}
                                             onValueChange={(note) => setAccountForm(prev => ({ ...prev, note }))}
                                             onFormatChange={(noteFormat) => setAccountForm(prev => ({ ...prev, noteFormat }))}
+                                        />
+
+                                        <ProxyConfigSection
+                                            value={accountForm}
+                                            onChange={(proxyConfig) => setAccountForm(prev => ({ ...prev, ...proxyConfig }))}
                                         />
                                     </div>
                                 </motion.div>

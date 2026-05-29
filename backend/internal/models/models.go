@@ -217,25 +217,34 @@ func NormalizeAccountNoteFormat(format AccountNoteFormat) AccountNoteFormat {
 
 // EmailAccount represents a user's email account credentials and settings.
 type EmailAccount struct {
-	ID               uint                `gorm:"primaryKey" json:"id"`
-	OrgID            uint                `gorm:"not null;index;default:1" json:"orgId"` // 所属组织
-	EmailAddress     string              `gorm:"uniqueIndex;not null;type:varchar(255)" json:"emailAddress"`
-	AuthType         AuthType            `gorm:"not null;default:'password'" json:"authType"`
-	Password         string              `json:"password,omitempty"`                                                                                         // For AuthTypePassword
-	Token            string              `json:"token,omitempty"`                                                                                            // For AuthTypeToken
-	MailProviderID   *uint               `gorm:"index" json:"mailProviderId,omitempty"`                                                                      // Make optional - only for accounts that need predefined providers
-	MailProvider     *MailProvider       `gorm:"foreignKey:MailProviderID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"mailProvider,omitempty"`     // Make optional
-	OAuth2ProviderID *uint               `gorm:"index" json:"oauth2ProviderId,omitempty"`                                                                    // For OAuth2 authentication, references OAuth2GlobalConfig
-	OAuth2Provider   *OAuth2GlobalConfig `gorm:"foreignKey:OAuth2ProviderID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"oauth2Provider,omitempty"` // OAuth2配置关联
-	Proxy            string              `json:"proxy,omitempty"`                                                                                            // e.g., "socks5://user:pass@host:port"
-	IsDomainMail     bool                `gorm:"default:false" json:"isDomainMail"`
-	Domain           string              `gorm:"index" json:"domain,omitempty"` // For domain-specific email
-	Note             string              `gorm:"type:text" json:"note"`
-	NoteFormat       AccountNoteFormat   `gorm:"type:varchar(16);not null;default:'markdown'" json:"noteFormat"`
-	CustomSettings   JSONMap             `gorm:"type:json" json:"customSettings"`
-	LastSyncAt       *time.Time          `json:"lastSyncAt,omitempty"`
-	IsVerified       bool                `gorm:"default:false" json:"isVerified"`
-	VerifiedAt       *time.Time          `json:"verifiedAt,omitempty"`
+	ID                   uint                `gorm:"primaryKey" json:"id"`
+	OrgID                uint                `gorm:"not null;index;default:1" json:"orgId"` // 所属组织
+	EmailAddress         string              `gorm:"uniqueIndex;not null;type:varchar(255)" json:"emailAddress"`
+	AuthType             AuthType            `gorm:"not null;default:'password'" json:"authType"`
+	Password             string              `json:"password,omitempty"`                                                                                         // For AuthTypePassword
+	Token                string              `json:"token,omitempty"`                                                                                            // For AuthTypeToken
+	MailProviderID       *uint               `gorm:"index" json:"mailProviderId,omitempty"`                                                                      // Make optional - only for accounts that need predefined providers
+	MailProvider         *MailProvider       `gorm:"foreignKey:MailProviderID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"mailProvider,omitempty"`     // Make optional
+	OAuth2ProviderID     *uint               `gorm:"index" json:"oauth2ProviderId,omitempty"`                                                                    // For OAuth2 authentication, references OAuth2GlobalConfig
+	OAuth2Provider       *OAuth2GlobalConfig `gorm:"foreignKey:OAuth2ProviderID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"oauth2Provider,omitempty"` // OAuth2配置关联
+	Proxy                string              `json:"proxy,omitempty"`                                                                                            // e.g., "socks5://user:pass@host:port"
+	ProxyMode            ProxyAccountMode    `gorm:"type:varchar(24);not null;default:'manual'" json:"proxyMode"`                                                // manual, selected, auto
+	ProxyID              *uint               `gorm:"index" json:"proxyId,omitempty"`                                                                             // Selected proxy from pool
+	ProxyPoolItem        *ProxyPoolItem      `gorm:"foreignKey:ProxyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"proxyPoolItem,omitempty"`
+	ProxyFallbackMode    ProxyFallbackMode   `gorm:"type:varchar(32);not null;default:'interrupt'" json:"proxyFallbackMode"` // interrupt, manual_backup, auto_select
+	ProxyFallbackProxyID *uint               `gorm:"index" json:"proxyFallbackProxyId,omitempty"`                            // Backup proxy from pool
+	ProxyFallbackProxy   string              `json:"proxyFallbackProxy,omitempty"`                                           // Manual backup proxy URL
+	ProxyMatchGroupIDs   UintSlice           `gorm:"type:json" json:"proxyMatchGroupIds,omitempty"`                          // Auto-match group IDs
+	ProxyMatchTagIDs     UintSlice           `gorm:"type:json" json:"proxyMatchTagIds,omitempty"`                            // Auto-match tag IDs
+	ProxyMatchTagMode    ProxyTagFilterMode  `gorm:"type:varchar(8);not null;default:'or'" json:"proxyMatchTagMode"`         // and/or
+	IsDomainMail         bool                `gorm:"default:false" json:"isDomainMail"`
+	Domain               string              `gorm:"index" json:"domain,omitempty"` // For domain-specific email
+	Note                 string              `gorm:"type:text" json:"note"`
+	NoteFormat           AccountNoteFormat   `gorm:"type:varchar(16);not null;default:'markdown'" json:"noteFormat"`
+	CustomSettings       JSONMap             `gorm:"type:json" json:"customSettings"`
+	LastSyncAt           *time.Time          `json:"lastSyncAt,omitempty"`
+	IsVerified           bool                `gorm:"default:false" json:"isVerified"`
+	VerifiedAt           *time.Time          `json:"verifiedAt,omitempty"`
 
 	// 错误状态管理字段
 	ErrorStatus    string     `gorm:"default:'normal'" json:"errorStatus"` // normal, oauth_expired, auth_revoked, api_disabled, network_error
@@ -426,7 +435,7 @@ func (e ExtractorTemplateConfigs) Value() (driver.Value, error) {
 // ExtractorTemplate represents a saved email extraction template
 type ExtractorTemplate struct {
 	ID          uint                     `gorm:"primaryKey" json:"id"`
-	OrgID       uint                     `gorm:"not null;index;default:1" json:"orgId"` // 所属组织
+	OrgID       uint                     `gorm:"not null;index;default:1" json:"orgId"`              // 所属组织
 	Name        string                   `gorm:"not null;uniqueIndex;type:varchar(255)" json:"name"` // Custom name for the template
 	Description string                   `json:"description,omitempty"`                              // Optional description
 	Extractors  ExtractorTemplateConfigs `gorm:"type:json;not null" json:"extractors"`               // Array of extractor configurations
@@ -447,7 +456,7 @@ const (
 // OpenAIConfig represents the OpenAI configuration settings
 type OpenAIConfig struct {
 	ID          uint          `gorm:"primaryKey" json:"id"`
-	OrgID       uint          `gorm:"not null;index;default:1" json:"orgId"` // 所属组织
+	OrgID       uint          `gorm:"not null;index;default:1" json:"orgId"`              // 所属组织
 	Name        string        `gorm:"not null;uniqueIndex;type:varchar(255)" json:"name"` // Configuration name (e.g., "default", "production")
 	ChannelType AIChannelType `gorm:"not null;default:'openai'" json:"channel_type"`      // AI provider type
 	BaseURL     string        `gorm:"not null" json:"base_url"`                           // API base URL

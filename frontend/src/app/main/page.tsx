@@ -38,6 +38,7 @@ const tabNameMap: { [key: string]: string } = {
     'classic-mailbox': '经典邮件管理器[classic-mailbox]',
     'compose-email': '发送邮件[compose-email]',
     'sync-config': '同步配置[sync-config]',
+    'proxy-pool': '代理池管理[proxy-pool]',
     'mail-pickup': '取件[mail-pickup]',
     'mail-pickup-v2': '取件[mail-pickup-v2]',
     'pickup': '取件模板[pickup]',
@@ -207,6 +208,10 @@ export default function MainPage() {
                     //     break
                     case 'sync-config':
                         content = guard('sync_config', 'read', <SyncConfigTab key={tabId} />)
+                        break
+                    case 'proxy-pool':
+                        const ProxyPoolTab = require('@/components/tabs/proxy-pool-tab').default
+                        content = guard('email_account', 'read', <ProxyPoolTab key={tabId} />)
                         break
                     case 'pickup':
                         content = <PickupTab key={tabId} />
@@ -591,7 +596,7 @@ export default function MainPage() {
                         {openTabs.map((tabId) => {
                             // 定义需要全屏显示的 Tab（无 padding 和 container 限制）
                             // 包括需要固定header/footer布局的编辑和创建页面
-                            const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide']
+                            const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide', 'proxy-pool']
                             const isFullscreen = fullscreenTabs.includes(tabId) ||
                                 tabId.startsWith('account-note-') ||
                                 tabId.startsWith('trigger-edit-') ||

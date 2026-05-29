@@ -32,6 +32,7 @@ func NewRouterWithAuth(
 	emailSendHandler *EmailSendHandlers,
 	interceptorHandler *InterceptorHandler,
 	tagHandlers *TagHandlers,
+	proxyPoolHandlers *ProxyPoolHandlers,
 	pickupHandler *PickupHandler,
 	orgHandler *OrganizationHandler,
 	userMgmtHandler *UserManagementHandler,
@@ -108,6 +109,11 @@ func NewRouterWithAuth(
 	accountRouter.HandleFunc("/accounts/{id}", handler.DeleteAccountHandler).Methods("DELETE")
 	accountRouter.HandleFunc("/accounts/verify", handler.VerifyAccountHandler).Methods("POST")
 	accountRouter.HandleFunc("/accounts/batch-verify", handler.BatchVerifyAccountsHandler).Methods("POST")
+
+	if proxyPoolHandlers != nil {
+		proxyPoolHandlers.RegisterRoutes(accountRouter)
+		utils.NewLogger("Router").Info("Proxy pool API routes registered")
+	}
 
 	accountRouter.HandleFunc("/account-emails/fetch/{id}", handler.FetchAndStoreEmailsHandler).Methods("POST")
 	// 新增：获取所有邮件和文件夹的路由（必须放在参数路由之前）

@@ -2,6 +2,7 @@ package services
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
@@ -18,18 +19,20 @@ import (
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
+	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/net/proxy"
 	"gorm.io/gorm"
 )
 
 // FetcherService is responsible for fetching emails from an IMAP server.
 type FetcherService struct {
-	accountRepo   *repository.EmailAccountRepository
-	emailRepo     *repository.EmailRepository
-	parserService *ParserService
-	oauth2Service *OAuth2Service
-	ingestService *EmailIngestService
-	logger        *utils.Logger
+	accountRepo      *repository.EmailAccountRepository
+	emailRepo        *repository.EmailRepository
+	parserService    *ParserService
+	oauth2Service    *OAuth2Service
+	ingestService    *EmailIngestService
+	proxyPoolService *ProxyPoolService
+	logger           *utils.Logger
 }
 
 // FetchEmailsOptions contains options for fetching emails
@@ -50,6 +53,12 @@ type FetchEmailsOptions struct {
 func (s *FetcherService) SetEmailIngestService(ingestService *EmailIngestService) {
 	if ingestService != nil {
 		s.ingestService = ingestService
+	}
+}
+
+func (s *FetcherService) SetProxyPoolService(proxyPoolService *ProxyPoolService) {
+	if proxyPoolService != nil {
+		s.proxyPoolService = proxyPoolService
 	}
 }
 
@@ -89,6 +98,10 @@ func (s *FetcherService) FetchEmailsWithOptions(account models.EmailAccount, opt
 		return s.fetchEmailsFromDatabase(account.ID, options)
 	}
 
+	if err := s.prepareAccountProxy(&account); err != nil {
+		return nil, err
+	}
+
 	// Fetch from IMAP server
 	s.logger.Debug("Fetching emails from IMAP server for account %s", account.EmailAddress)
 	return s.fetchEmailsFromServer(account, options)
@@ -100,6 +113,9 @@ func (s *FetcherService) FetchEmailsFromMultipleMailboxes(account models.EmailAc
 	s.logger.Debug("Starting to fetch emails from multiple mailboxes for %s", account.EmailAddress)
 	if options.StartDate != nil {
 		s.logger.Debug("Filter StartDate: %s", options.StartDate.Format(time.RFC3339))
+	}
+	if err := s.prepareAccountProxy(&account); err != nil {
+		return nil, err
 	}
 
 	// 检查是否应该使用Gmail API
@@ -216,6 +232,13 @@ func (s *FetcherService) FetchEmailsFromMultipleMailboxes(account models.EmailAc
 		len(emails), filteredCount, len(result))
 
 	return result, nil
+}
+
+func (s *FetcherService) prepareAccountProxy(account *models.EmailAccount) error {
+	if s.proxyPoolService == nil || account == nil {
+		return nil
+	}
+	return s.proxyPoolService.ResolveAccountProxy(account)
 }
 
 // fetchEmailsFromDatabase fetches emails from the local database
@@ -755,6 +778,9 @@ func (s *FetcherService) FetchAndStoreEmails(accountID uint) error {
 func (s *FetcherService) GetMailboxes(account models.EmailAccount) ([]models.Mailbox, error) {
 	DecryptAccountCredentials(&account.Password, &account.Token)
 	s.logger.Info("GetMailboxes called for account %s", account.EmailAddress)
+	if err := s.prepareAccountProxy(&account); err != nil {
+		return nil, err
+	}
 
 	// Check if MailProvider is nil
 	if account.MailProvider == nil {
@@ -996,6 +1022,8 @@ func (s *FetcherService) createProxyDialer(proxyURL *url.URL) (proxy.Dialer, err
 	case "http", "https":
 		// Create HTTP proxy dialer
 		return s.createHTTPProxyDialer(proxyURL), nil
+	case "ssh":
+		return &sshProxyDialer{proxyURL: proxyURL, logger: s.logger}, nil
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxyURL.Scheme)
 	}
@@ -1013,6 +1041,50 @@ func (s *FetcherService) createHTTPProxyDialer(proxyURL *url.URL) proxy.Dialer {
 type httpProxyDialer struct {
 	proxyURL *url.URL
 	logger   *utils.Logger
+}
+
+type sshProxyDialer struct {
+	proxyURL *url.URL
+	logger   *utils.Logger
+}
+
+type sshTunneledConn struct {
+	net.Conn
+	client *cryptossh.Client
+}
+
+func (c *sshTunneledConn) Close() error {
+	connErr := c.Conn.Close()
+	clientErr := c.client.Close()
+	if connErr != nil {
+		return connErr
+	}
+	return clientErr
+}
+
+func (d *sshProxyDialer) Dial(network, addr string) (net.Conn, error) {
+	username := d.proxyURL.User.Username()
+	password, _ := d.proxyURL.User.Password()
+	if username == "" || password == "" {
+		return nil, fmt.Errorf("ssh proxy requires username and password")
+	}
+
+	config := &cryptossh.ClientConfig{
+		User:            username,
+		Auth:            []cryptossh.AuthMethod{cryptossh.Password(password)},
+		HostKeyCallback: cryptossh.InsecureIgnoreHostKey(),
+		Timeout:         30 * time.Second,
+	}
+	client, err := cryptossh.Dial("tcp", d.proxyURL.Host, config)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := client.Dial(network, addr)
+	if err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return &sshTunneledConn{Conn: conn, client: client}, nil
 }
 
 // createHTTPClientWithProxy creates an HTTP client with proxy support
@@ -1050,6 +1122,28 @@ func (s *FetcherService) createHTTPClientWithProxy(proxyStr string) (*http.Clien
 		}
 		transport.Dial = dialer.Dial
 		transport.Proxy = nil // Don't use HTTP proxy for SOCKS5
+	}
+
+	if proxyURL.Scheme == "ssh" {
+		dialer := &sshProxyDialer{proxyURL: proxyURL, logger: s.logger}
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			type dialResult struct {
+				conn net.Conn
+				err  error
+			}
+			ch := make(chan dialResult, 1)
+			go func() {
+				conn, err := dialer.Dial(network, addr)
+				ch <- dialResult{conn: conn, err: err}
+			}()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case result := <-ch:
+				return result.conn, result.err
+			}
+		}
+		transport.Proxy = nil
 	}
 
 	return &http.Client{
@@ -1236,6 +1330,9 @@ func convertAddresses(addresses []*imap.Address) models.StringSlice {
 func (s *FetcherService) VerifyConnection(account *models.EmailAccount) error {
 	DecryptAccountCredentials(&account.Password, &account.Token)
 	s.logger.Info("VerifyConnection called for account %s", account.EmailAddress)
+	if err := s.prepareAccountProxy(account); err != nil {
+		return err
+	}
 
 	// Check if MailProvider is nil
 	if account.MailProvider == nil {

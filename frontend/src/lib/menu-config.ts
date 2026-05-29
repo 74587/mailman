@@ -23,6 +23,7 @@ export const menuRegistry: MenuItemConfig[] = [
     { id: 'compose-email', name: '发送邮件', group: 'main', defaultVisible: true },
     { id: 'classic-mailbox', name: '经典邮件管理器', group: 'main', defaultVisible: true },
     { id: 'sync-config', name: '同步配置', group: 'main', defaultVisible: true },
+    { id: 'proxy-pool', name: '代理池管理', group: 'main', defaultVisible: true },
     { id: 'mail-pickup-v2', name: '取件', group: 'main', defaultVisible: true },
     { id: 'extractor-v2-list', name: '取件模板', group: 'main', defaultVisible: true },
     { id: 'api-docs', name: 'API 文档', group: 'main', defaultVisible: true },
