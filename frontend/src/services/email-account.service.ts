@@ -269,10 +269,34 @@ export class EmailAccountService {
         mail_provider_id?: number;
         custom_settings?: Record<string, string>;
         proxy?: string;
+        proxy_mode?: CreateEmailAccountRequest['proxy_mode'];
+        proxy_id?: number;
+        proxy_fallback_mode?: CreateEmailAccountRequest['proxy_fallback_mode'];
+        proxy_fallback_proxy_id?: number;
+        proxy_fallback_proxy?: string;
+        proxy_match_group_ids?: number[];
+        proxy_match_tag_ids?: number[];
+        proxy_match_tag_mode?: CreateEmailAccountRequest['proxy_match_tag_mode'];
     }): Promise<{ success: boolean; message: string; error?: string }> {
+        const payload: any = {
+            ...data,
+            proxyMode: data.proxy_mode,
+            proxyId: data.proxy_id,
+            proxyFallbackMode: data.proxy_fallback_mode,
+            proxyFallbackProxyId: data.proxy_fallback_proxy_id,
+            proxyFallbackProxy: data.proxy_fallback_proxy,
+            proxyMatchGroupIds: data.proxy_match_group_ids,
+            proxyMatchTagIds: data.proxy_match_tag_ids,
+            proxyMatchTagMode: data.proxy_match_tag_mode,
+        }
+        Object.keys(payload).forEach(key => {
+            if (payload[key] === undefined) {
+                delete payload[key]
+            }
+        })
         const response = await apiClient.post<{ success: boolean; message: string; error?: string }>(
             `${this.basePath}/verify`,
-            data
+            payload
         );
         return response;
     }

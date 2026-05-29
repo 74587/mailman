@@ -418,13 +418,21 @@ func (h *APIHandler) syncEmailsForToQuery(toQuery string) error {
 
 // VerifyAccountRequest represents the request for verifying account connectivity
 type VerifyAccountRequest struct {
-	AccountID      *uint             `json:"account_id,omitempty"`
-	EmailAddress   string            `json:"email_address,omitempty"`
-	Password       string            `json:"password,omitempty"`
-	AuthType       string            `json:"auth_type,omitempty"`
-	MailProviderID uint              `json:"mail_provider_id,omitempty"`
-	CustomSettings map[string]string `json:"custom_settings,omitempty"`
-	Proxy          string            `json:"proxy,omitempty"`
+	AccountID            *uint                     `json:"account_id,omitempty"`
+	EmailAddress         string                    `json:"email_address,omitempty"`
+	Password             string                    `json:"password,omitempty"`
+	AuthType             string                    `json:"auth_type,omitempty"`
+	MailProviderID       uint                      `json:"mail_provider_id,omitempty"`
+	CustomSettings       map[string]string         `json:"custom_settings,omitempty"`
+	Proxy                string                    `json:"proxy,omitempty"`
+	ProxyMode            models.ProxyAccountMode   `json:"proxyMode,omitempty"`
+	ProxyID              *uint                     `json:"proxyId,omitempty"`
+	ProxyFallbackMode    models.ProxyFallbackMode  `json:"proxyFallbackMode,omitempty"`
+	ProxyFallbackProxyID *uint                     `json:"proxyFallbackProxyId,omitempty"`
+	ProxyFallbackProxy   string                    `json:"proxyFallbackProxy,omitempty"`
+	ProxyMatchGroupIDs   models.UintSlice          `json:"proxyMatchGroupIds,omitempty"`
+	ProxyMatchTagIDs     models.UintSlice          `json:"proxyMatchTagIds,omitempty"`
+	ProxyMatchTagMode    models.ProxyTagFilterMode `json:"proxyMatchTagMode,omitempty"`
 }
 
 // VerifyAccountResponse represents the response for account verification
@@ -508,13 +516,22 @@ func (h *APIHandler) VerifyAccountHandler(w http.ResponseWriter, r *http.Request
 		}
 
 		account = models.EmailAccount{
-			EmailAddress:   req.EmailAddress,
-			Password:       req.Password,
-			AuthType:       models.AuthType(req.AuthType),
-			MailProviderID: mailProviderID,
-			MailProvider:   provider,
-			CustomSettings: models.JSONMap(req.CustomSettings),
-			Proxy:          req.Proxy,
+			OrgID:                GetCurrentOrgID(r),
+			EmailAddress:         req.EmailAddress,
+			Password:             req.Password,
+			AuthType:             models.AuthType(req.AuthType),
+			MailProviderID:       mailProviderID,
+			MailProvider:         provider,
+			CustomSettings:       models.JSONMap(req.CustomSettings),
+			Proxy:                req.Proxy,
+			ProxyMode:            models.NormalizeProxyAccountMode(req.ProxyMode),
+			ProxyID:              req.ProxyID,
+			ProxyFallbackMode:    models.NormalizeProxyFallbackMode(req.ProxyFallbackMode),
+			ProxyFallbackProxyID: req.ProxyFallbackProxyID,
+			ProxyFallbackProxy:   req.ProxyFallbackProxy,
+			ProxyMatchGroupIDs:   req.ProxyMatchGroupIDs,
+			ProxyMatchTagIDs:     req.ProxyMatchTagIDs,
+			ProxyMatchTagMode:    models.NormalizeProxyTagFilterMode(req.ProxyMatchTagMode),
 		}
 
 		// Set default auth type if not provided

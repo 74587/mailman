@@ -61,6 +61,20 @@ func (r *ProxyPoolRepository) Update(proxyItem *models.ProxyPoolItem) error {
 	return r.db.Save(proxyItem).Error
 }
 
+func (r *ProxyPoolRepository) FindDuplicate(orgID uint, proxyItem models.ProxyPoolItem) (*models.ProxyPoolItem, error) {
+	var existing models.ProxyPoolItem
+	err := r.db.
+		Where("org_id = ? AND type = ? AND host = ? AND port = ? AND username = ?", orgID, models.NormalizeProxyType(proxyItem.Type), proxyItem.Host, proxyItem.Port, proxyItem.Username).
+		First(&existing).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &existing, nil
+}
+
 func (r *ProxyPoolRepository) GetByID(orgID, id uint) (*models.ProxyPoolItem, error) {
 	var proxyItem models.ProxyPoolItem
 	query := r.db.Preload("Group").Preload("Tags").First(&proxyItem, "id = ? AND org_id = ?", id, orgID)
@@ -121,6 +135,16 @@ func (r *ProxyPoolRepository) List(orgID uint, filter ProxyPoolFilter) ([]models
 	return proxies, total, err
 }
 
+func (r *ProxyPoolRepository) ListIDs(orgID uint, filter ProxyPoolFilter) ([]uint, error) {
+	var ids []uint
+	query := r.applyProxyFilter(r.db.Model(&models.ProxyPoolItem{}), orgID, filter).
+		Order("id ASC")
+	if err := query.Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 func (r *ProxyPoolRepository) applyProxyFilter(query *gorm.DB, orgID uint, filter ProxyPoolFilter) *gorm.DB {
 	query = query.Where("org_id = ?", orgID)
 	if filter.Search != "" {
@@ -170,6 +194,7 @@ func (r *ProxyPoolRepository) SetProxyTags(proxyID uint, tagIDs []uint) error {
 }
 
 func (r *ProxyPoolRepository) DeleteByIDs(orgID uint, ids []uint, replacement ProxyDeleteReplacement) (int64, error) {
+	ids = uniqueUintIDs(ids)
 	if len(ids) == 0 {
 		return 0, nil
 	}
@@ -178,25 +203,34 @@ func (r *ProxyPoolRepository) DeleteByIDs(orgID uint, ids []uint, replacement Pr
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		var count int64
 		if err := tx.Model(&models.EmailAccount{}).
-			Where("org_id = ? AND proxy_id IN ?", orgID, ids).
+			Where("org_id = ? AND (proxy_id IN ? OR proxy_fallback_proxy_id IN ?)", orgID, ids, ids).
 			Count(&count).Error; err != nil {
 			return err
 		}
 		affectedAccounts = count
 
 		updates := map[string]interface{}{}
+		fallbackUpdates := map[string]interface{}{}
 		switch replacement.Mode {
 		case "proxy":
 			if replacement.ProxyID == nil {
 				return errors.New("replacement proxy is required")
 			}
+			if uintInSlice(*replacement.ProxyID, ids) {
+				return errors.New("replacement proxy cannot be one of the proxies being deleted")
+			}
 			replacementProxy := models.ProxyPoolItem{}
 			if err := tx.First(&replacementProxy, "id = ? AND org_id = ?", *replacement.ProxyID, orgID).Error; err != nil {
 				return err
 			}
+			if replacementProxy.Status != models.ProxyStatusAvailable {
+				return errors.New("replacement proxy must be available")
+			}
 			updates["proxy_id"] = replacementProxy.ID
 			updates["proxy"] = replacementProxy.ProxyURL()
 			updates["proxy_mode"] = models.ProxyAccountModeSelected
+			fallbackUpdates["proxy_fallback_proxy_id"] = replacementProxy.ID
+			fallbackUpdates["proxy_fallback_proxy"] = ""
 		case "auto":
 			updates["proxy_id"] = nil
 			updates["proxy"] = ""
@@ -205,20 +239,37 @@ func (r *ProxyPoolRepository) DeleteByIDs(orgID uint, ids []uint, replacement Pr
 			updates["proxy_match_group_ids"] = models.UintSlice(replacement.GroupIDs)
 			updates["proxy_match_tag_ids"] = models.UintSlice(replacement.TagIDs)
 			updates["proxy_match_tag_mode"] = models.NormalizeProxyTagFilterMode(models.ProxyTagFilterMode(replacement.TagMode))
+			fallbackUpdates["proxy_fallback_proxy_id"] = nil
+			fallbackUpdates["proxy_fallback_proxy"] = ""
+			fallbackUpdates["proxy_fallback_mode"] = models.ProxyFallbackAutoSelect
 		case "manual":
+			if strings.TrimSpace(replacement.FallbackProxy) == "" {
+				return errors.New("manual replacement proxy is required")
+			}
 			updates["proxy_id"] = nil
 			updates["proxy"] = replacement.FallbackProxy
 			updates["proxy_mode"] = models.ProxyAccountModeManual
+			fallbackUpdates["proxy_fallback_proxy_id"] = nil
+			fallbackUpdates["proxy_fallback_proxy"] = replacement.FallbackProxy
 		default:
 			updates["proxy_id"] = nil
 			updates["proxy"] = ""
 			updates["proxy_mode"] = models.ProxyAccountModeManual
+			fallbackUpdates["proxy_fallback_proxy_id"] = nil
+			fallbackUpdates["proxy_fallback_proxy"] = ""
 		}
 
 		if len(updates) > 0 {
 			if err := tx.Model(&models.EmailAccount{}).
 				Where("org_id = ? AND proxy_id IN ?", orgID, ids).
 				Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		if len(fallbackUpdates) > 0 {
+			if err := tx.Model(&models.EmailAccount{}).
+				Where("org_id = ? AND proxy_fallback_proxy_id IN ?", orgID, ids).
+				Updates(fallbackUpdates).Error; err != nil {
 				return err
 			}
 		}
@@ -288,6 +339,9 @@ func (r *ProxyPoolRepository) DeleteGroup(orgID, id uint) error {
 		if err := tx.Model(&models.ProxyPoolItem{}).Where("org_id = ? AND group_id = ?", orgID, id).Update("group_id", nil).Error; err != nil {
 			return err
 		}
+		if err := removeAccountMatchID(tx, orgID, "group", id); err != nil {
+			return err
+		}
 		return tx.Unscoped().Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGroup{}).Error
 	})
 }
@@ -319,6 +373,9 @@ func (r *ProxyPoolRepository) DeleteTag(orgID, id uint) error {
 		if err := tx.Where("tag_id = ?", id).Delete(&models.ProxyPoolItemTag{}).Error; err != nil {
 			return err
 		}
+		if err := removeAccountMatchID(tx, orgID, "tag", id); err != nil {
+			return err
+		}
 		return tx.Unscoped().Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyTag{}).Error
 	})
 }
@@ -329,4 +386,75 @@ func (r *ProxyPoolRepository) GetTagByID(orgID, id uint) (*models.ProxyTag, erro
 		return nil, err
 	}
 	return &tag, nil
+}
+
+func removeAccountMatchID(tx *gorm.DB, orgID uint, kind string, id uint) error {
+	var accounts []models.EmailAccount
+	if err := tx.Where("org_id = ?", orgID).Find(&accounts).Error; err != nil {
+		return err
+	}
+	for i := range accounts {
+		account := accounts[i]
+		updates := map[string]interface{}{}
+		switch kind {
+		case "group":
+			next, changed := removeUint(account.ProxyMatchGroupIDs, id)
+			if changed {
+				updates["proxy_match_group_ids"] = next
+			}
+		case "tag":
+			next, changed := removeUint(account.ProxyMatchTagIDs, id)
+			if changed {
+				updates["proxy_match_tag_ids"] = next
+			}
+		}
+		if len(updates) == 0 {
+			continue
+		}
+		if err := tx.Model(&models.EmailAccount{}).Where("id = ? AND org_id = ?", account.ID, orgID).Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeUint(values models.UintSlice, target uint) (models.UintSlice, bool) {
+	next := make(models.UintSlice, 0, len(values))
+	changed := false
+	for _, value := range values {
+		if value == target {
+			changed = true
+			continue
+		}
+		next = append(next, value)
+	}
+	return next, changed
+}
+
+func uniqueUintIDs(values []uint) []uint {
+	if len(values) == 0 {
+		return values
+	}
+	seen := make(map[uint]struct{}, len(values))
+	next := make([]uint, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		next = append(next, value)
+	}
+	return next
+}
+
+func uintInSlice(target uint, values []uint) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

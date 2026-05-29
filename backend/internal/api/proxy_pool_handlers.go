@@ -44,12 +44,13 @@ type proxyCreateRequest struct {
 }
 
 type proxyBulkImportRequest struct {
-	DefaultType models.ProxyType `json:"defaultType"`
-	GroupID     *uint            `json:"groupId"`
-	TagIDs      []uint           `json:"tagIds"`
-	CheckProxy  bool             `json:"checkProxy"`
-	Channel     string           `json:"channel"`
-	Content     string           `json:"content"`
+	DefaultType     models.ProxyType `json:"defaultType"`
+	GroupID         *uint            `json:"groupId"`
+	TagIDs          []uint           `json:"tagIds"`
+	CheckProxy      bool             `json:"checkProxy"`
+	Channel         string           `json:"channel"`
+	Content         string           `json:"content"`
+	DuplicatePolicy string           `json:"duplicatePolicy"` // allow, skip, update
 }
 
 type proxyBulkImportResponse struct {
@@ -207,6 +208,9 @@ func (h *ProxyPoolHandlers) BulkImport(w http.ResponseWriter, r *http.Request) {
 	parsed := h.service.ParseBulk(req.Content, req.DefaultType, req.GroupID, req.TagIDs, orgID)
 	created := make([]models.ProxyPoolItem, 0, len(parsed.Proxies))
 	checks := []services.ProxyCheckResult{}
+	duplicatePolicy := normalizeProxyDuplicatePolicy(req.DuplicatePolicy)
+	updatedCount := 0
+	skippedCount := 0
 	for i := range parsed.Proxies {
 		item := parsed.Proxies[i]
 		tagIDs := make([]uint, 0, len(item.Tags))
@@ -214,11 +218,50 @@ func (h *ProxyPoolHandlers) BulkImport(w http.ResponseWriter, r *http.Request) {
 			tagIDs = append(tagIDs, tag.ID)
 		}
 		item.Tags = nil
+		duplicate, err := h.repo.FindDuplicate(orgID, item)
+		if err != nil {
+			parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
+			continue
+		}
+		if duplicate != nil {
+			switch duplicatePolicy {
+			case "skip":
+				skippedCount++
+				continue
+			case "update":
+				duplicate.Password = item.Password
+				duplicate.RefreshURL = item.RefreshURL
+				duplicate.Remark = item.Remark
+				duplicate.GroupID = item.GroupID
+				duplicate.UsageScope = item.UsageScope
+				duplicate.Source = item.Source
+				if err := h.repo.Update(duplicate); err != nil {
+					parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
+					continue
+				}
+				if err := h.repo.SetProxyTags(duplicate.ID, tagIDs); err != nil {
+					parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
+					continue
+				}
+				itemWithRelations, _ := h.repo.GetByID(orgID, duplicate.ID)
+				if itemWithRelations != nil {
+					created = append(created, *itemWithRelations)
+					updatedCount++
+					if req.CheckProxy {
+						checks = append(checks, h.service.TestProxy(context.Background(), itemWithRelations, req.Channel, 12*time.Second))
+					}
+				}
+				continue
+			}
+		}
 		if err := h.repo.Create(&item); err != nil {
 			parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
 			continue
 		}
-		_ = h.repo.SetProxyTags(item.ID, tagIDs)
+		if err := h.repo.SetProxyTags(item.ID, tagIDs); err != nil {
+			parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
+			continue
+		}
 		itemWithRelations, _ := h.repo.GetByID(orgID, item.ID)
 		if itemWithRelations != nil {
 			created = append(created, *itemWithRelations)
@@ -232,8 +275,10 @@ func (h *ProxyPoolHandlers) BulkImport(w http.ResponseWriter, r *http.Request) {
 		Errors:  parsed.Errors,
 		Checks:  checks,
 		Summary: map[string]interface{}{
-			"created": len(created),
-			"errors":  len(parsed.Errors),
+			"processed": len(created),
+			"updated":   updatedCount,
+			"skipped":   skippedCount,
+			"errors":    len(parsed.Errors),
 		},
 	})
 }
@@ -300,14 +345,11 @@ func (h *ProxyPoolHandlers) BatchDelete(w http.ResponseWriter, r *http.Request) 
 	}
 	ids := req.IDs
 	if len(ids) == 0 {
-		req.Filter.Limit = 5000
-		items, _, err := h.repo.List(orgID, req.Filter)
+		var err error
+		ids, err = h.repo.ListIDs(orgID, req.Filter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
-		}
-		for _, item := range items {
-			ids = append(ids, item.ID)
 		}
 	}
 	affected, err := h.repo.DeleteByIDs(orgID, ids, req.Replacement)
@@ -542,6 +584,15 @@ func (h *ProxyPoolHandlers) proxyTagNameExists(orgID, exceptID uint, name string
 		}
 	}
 	return false, nil
+}
+
+func normalizeProxyDuplicatePolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "skip", "update":
+		return strings.ToLower(strings.TrimSpace(policy))
+	default:
+		return "allow"
+	}
 }
 
 func (h *ProxyPoolHandlers) RegisterRoutes(router *mux.Router) {

@@ -71,6 +71,7 @@ export interface BulkImportProxyPayload {
     tagIds?: number[]
     checkProxy?: boolean
     channel?: string
+    duplicatePolicy?: 'allow' | 'skip' | 'update'
     content: string
 }
 

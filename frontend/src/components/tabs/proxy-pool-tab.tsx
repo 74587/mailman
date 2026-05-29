@@ -38,6 +38,7 @@ import {
     proxyPoolService,
     ProxyCheckChannel,
     ProxyCheckResult,
+    ProxyPayload,
     proxyToUrl,
 } from '@/services/proxy-pool.service'
 import { ProxyGroup, ProxyPoolItem, ProxyStatus, ProxyTag, ProxyTagFilterMode, ProxyType } from '@/types'
@@ -59,6 +60,20 @@ type ProxyMetaDraft = {
     description?: string
     sortOrder?: number
 }
+
+type ProxyDuplicatePolicy = 'allow' | 'skip' | 'update'
+
+const emptyProxyDraft = (): ProxyPayload => ({
+    type: 'socks5',
+    host: '',
+    port: 1080,
+    username: '',
+    password: '',
+    refreshUrl: '',
+    remark: '',
+    tagIds: [],
+    usageScope: 'shared',
+})
 
 function sortProxyMeta<T extends { name: string; sortOrder?: number }>(left: T, right: T) {
     const sortDiff = (left.sortOrder || 0) - (right.sortOrder || 0)
@@ -120,10 +135,14 @@ export default function ProxyPoolTab() {
     const [bulkGroupId, setBulkGroupId] = useState<number | undefined>()
     const [bulkTagIds, setBulkTagIds] = useState<number[]>([])
     const [bulkCheck, setBulkCheck] = useState(false)
+    const [bulkDuplicatePolicy, setBulkDuplicatePolicy] = useState<ProxyDuplicatePolicy>('skip')
     const [checkChannel, setCheckChannel] = useState('ip-api')
     const [checkResults, setCheckResults] = useState<ProxyCheckResult[]>([])
     const [showMetaManager, setShowMetaManager] = useState(false)
     const [deleteReplacement, setDeleteReplacement] = useState<BulkDeleteProxyPayload['replacement']>({ mode: 'clear' })
+    const [editingProxy, setEditingProxy] = useState<ProxyPoolItem | null>(null)
+    const [editDraft, setEditDraft] = useState<ProxyPayload>(emptyProxyDraft())
+    const [savingProxy, setSavingProxy] = useState(false)
 
     const limit = 30
 
@@ -211,10 +230,13 @@ export default function ProxyPoolTab() {
                 tagIds: bulkTagIds,
                 checkProxy: bulkCheck,
                 channel: checkChannel,
+                duplicatePolicy: bulkDuplicatePolicy,
                 content: bulkText,
             })
             setCheckResults(result.checks || [])
-            toast.success(`已添加 ${result.created.length} 个代理${result.errors.length ? `，${result.errors.length} 行失败` : ''}`)
+            const updated = Number(result.summary?.updated || 0)
+            const skipped = Number(result.summary?.skipped || 0)
+            toast.success(`已处理 ${result.created.length} 个代理${updated ? `，覆盖 ${updated} 个` : ''}${skipped ? `，跳过 ${skipped} 个重复项` : ''}${result.errors.length ? `，${result.errors.length} 行失败` : ''}`)
             setBulkText('')
             setActivePanel('list')
             loadData()
@@ -222,6 +244,51 @@ export default function ProxyPoolTab() {
             toast.error(error.message || '批量添加失败')
         } finally {
             setLoading(false)
+        }
+    }
+
+    const openProxyEditor = (proxy: ProxyPoolItem) => {
+        setEditingProxy(proxy)
+        setEditDraft({
+            type: proxy.type,
+            host: proxy.host,
+            port: proxy.port,
+            username: proxy.username || '',
+            password: proxy.password || '',
+            refreshUrl: proxy.refreshUrl || '',
+            remark: proxy.remark || '',
+            groupId: proxy.groupId,
+            tagIds: (proxy.tags || []).map(tag => tag.id),
+            usageScope: proxy.usageScope || 'shared',
+        })
+    }
+
+    const saveProxyEdit = async () => {
+        if (!editingProxy) return
+        if (!editDraft.host.trim()) {
+            toast.error('代理主机不能为空')
+            return
+        }
+        if (!editDraft.port || editDraft.port < 1 || editDraft.port > 65535) {
+            toast.error('代理端口必须在 1-65535 之间')
+            return
+        }
+        setSavingProxy(true)
+        try {
+            await proxyPoolService.update(editingProxy.id, {
+                ...editDraft,
+                host: editDraft.host.trim(),
+                username: editDraft.username?.trim(),
+                refreshUrl: editDraft.refreshUrl?.trim(),
+                remark: editDraft.remark?.trim(),
+            })
+            toast.success('代理已更新')
+            setEditingProxy(null)
+            await loadData()
+        } catch (error: any) {
+            toast.error(error.message || '更新代理失败')
+        } finally {
+            setSavingProxy(false)
         }
     }
 
@@ -265,6 +332,31 @@ export default function ProxyPoolTab() {
     }
 
     const batchDelete = async () => {
+        if (deleteReplacement.mode === 'proxy') {
+            if (!deleteReplacement.proxyId) {
+                toast.error('请选择替换代理')
+                return
+            }
+            if (selectedIds.includes(deleteReplacement.proxyId)) {
+                toast.error('替换代理不能包含在待删除代理中')
+                return
+            }
+        }
+        if (deleteReplacement.mode === 'manual' && !deleteReplacement.fallbackProxy?.trim()) {
+            toast.error('请填写手动替换代理 URL')
+            return
+        }
+        const confirmed = await confirm({
+            title: '确认批量删除代理',
+            description: selectedIds.length
+                ? `将删除已选 ${selectedIds.length} 个代理，并按当前替换方案处理已绑定账户。`
+                : '将按当前筛选条件删除所有匹配代理，并按当前替换方案处理已绑定账户。',
+            confirmText: '确认删除',
+            cancelText: '取消',
+            variant: 'destructive',
+        })
+        if (!confirmed) return
+
         setLoading(true)
         try {
             const payload: BulkDeleteProxyPayload = {
@@ -561,8 +653,17 @@ export default function ProxyPoolTab() {
                                             proxy={proxy}
                                             selected={selectedIds.includes(proxy.id)}
                                             onToggle={() => toggleSelected(proxy.id)}
+                                            onEdit={() => openProxyEditor(proxy)}
                                             onTest={() => testProxy(proxy)}
                                             onDelete={async () => {
+                                                const confirmed = await confirm({
+                                                    title: '删除代理',
+                                                    description: `确定删除 ${proxy.host}:${proxy.port} 吗？已绑定账户会被清空代理配置。`,
+                                                    confirmText: '删除',
+                                                    cancelText: '取消',
+                                                    variant: 'destructive',
+                                                })
+                                                if (!confirmed) return
                                                 await proxyPoolService.delete(proxy.id)
                                                 toast.success('代理已删除')
                                                 loadData()
@@ -599,6 +700,8 @@ export default function ProxyPoolTab() {
                             setTagIds={setBulkTagIds}
                             checkProxy={bulkCheck}
                             setCheckProxy={setBulkCheck}
+                            duplicatePolicy={bulkDuplicatePolicy}
+                            setDuplicatePolicy={setBulkDuplicatePolicy}
                             channel={checkChannel}
                             setChannel={setCheckChannel}
                             onCreateGroup={createGroup}
@@ -614,6 +717,7 @@ export default function ProxyPoolTab() {
                             replacement={deleteReplacement}
                             setReplacement={setDeleteReplacement}
                             proxies={proxies}
+                            excludedProxyIds={selectedIds}
                             groups={groups}
                             tags={tags}
                             onDelete={batchDelete}
@@ -650,14 +754,28 @@ export default function ProxyPoolTab() {
                 onDeleteGroup={deleteGroup}
                 onDeleteTag={deleteTag}
             />
+            <ProxyEditorModal
+                open={!!editingProxy}
+                proxy={editingProxy}
+                draft={editDraft}
+                setDraft={setEditDraft}
+                groups={groups}
+                tags={tags}
+                saving={savingProxy}
+                onOpenChange={(open) => {
+                    if (!open) setEditingProxy(null)
+                }}
+                onSave={saveProxyEdit}
+            />
         </div>
     )
 }
 
-function ProxyRow({ proxy, selected, onToggle, onTest, onDelete }: {
+function ProxyRow({ proxy, selected, onToggle, onEdit, onTest, onDelete }: {
     proxy: ProxyPoolItem
     selected: boolean
     onToggle: () => void
+    onEdit: () => void
     onTest: () => void
     onDelete: () => void
 }) {
@@ -701,6 +819,7 @@ function ProxyRow({ proxy, selected, onToggle, onTest, onDelete }: {
             <td className="max-w-[180px] truncate px-4 py-3 text-xs text-gray-500">{proxy.remark || '-'}</td>
             <td className="px-4 py-3 text-right">
                 <div className="inline-flex gap-2">
+                    <button onClick={onEdit} className="rounded-lg border border-gray-200 px-2 py-1 text-xs hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">编辑</button>
                     <button onClick={onTest} className="rounded-lg border border-gray-200 px-2 py-1 text-xs hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">检测</button>
                     <button onClick={onDelete} className="rounded-lg border border-rose-200 px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30">删除</button>
                 </div>
@@ -768,6 +887,8 @@ function ImportPanel(props: {
     setTagIds: (value: number[]) => void
     checkProxy: boolean
     setCheckProxy: (value: boolean) => void
+    duplicatePolicy: ProxyDuplicatePolicy
+    setDuplicatePolicy: (value: ProxyDuplicatePolicy) => void
     channel: string
     setChannel: (value: string) => void
     onCreateGroup: (input: string | ProxyMetaDraft) => Promise<ProxyGroup | null>
@@ -883,6 +1004,14 @@ function ImportPanel(props: {
                     <input type="checkbox" checked={props.checkProxy} onChange={(event) => props.setCheckProxy(event.target.checked)} />
                     添加后立即检查代理
                 </label>
+                <label className="space-y-1">
+                    <span className="text-xs font-medium text-gray-500 dark:text-gray-400">重复代理处理</span>
+                    <select value={props.duplicatePolicy} onChange={(event) => props.setDuplicatePolicy(event.target.value as ProxyDuplicatePolicy)} className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
+                        <option value="skip">跳过重复项</option>
+                        <option value="update">覆盖已有代理</option>
+                        <option value="allow">允许重复导入</option>
+                    </select>
+                </label>
                 {props.checkProxy && (
                     <select value={props.channel} onChange={(event) => props.setChannel(event.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
                         {props.channels.map(channel => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
@@ -897,11 +1026,12 @@ function ImportPanel(props: {
     )
 }
 
-function DeletePanel({ selectedCount, replacement, setReplacement, proxies, groups, tags, onDelete, loading }: {
+function DeletePanel({ selectedCount, replacement, setReplacement, proxies, excludedProxyIds, groups, tags, onDelete, loading }: {
     selectedCount: number
     replacement: BulkDeleteProxyPayload['replacement']
     setReplacement: (value: BulkDeleteProxyPayload['replacement']) => void
     proxies: ProxyPoolItem[]
+    excludedProxyIds: number[]
     groups: ProxyGroup[]
     tags: ProxyTag[]
     onDelete: () => void
@@ -926,7 +1056,7 @@ function DeletePanel({ selectedCount, replacement, setReplacement, proxies, grou
                 {replacement.mode === 'proxy' && (
                     <select value={replacement.proxyId || ''} onChange={(event) => setReplacement({ ...replacement, proxyId: event.target.value ? Number(event.target.value) : undefined })} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
                         <option value="">选择替换代理</option>
-                        {proxies.filter(proxy => proxy.status === 'available').map(proxy => <option key={proxy.id} value={proxy.id}>{proxyToUrl(proxy)}</option>)}
+                        {proxies.filter(proxy => proxy.status === 'available' && !excludedProxyIds.includes(proxy.id)).map(proxy => <option key={proxy.id} value={proxy.id}>{proxyToUrl(proxy)}</option>)}
                     </select>
                 )}
                 {replacement.mode === 'manual' && (
@@ -960,6 +1090,154 @@ function DeletePanel({ selectedCount, replacement, setReplacement, proxies, grou
                 </button>
             </div>
         </div>
+    )
+}
+
+function ProxyEditorModal({ open, proxy, draft, setDraft, groups, tags, saving, onOpenChange, onSave }: {
+    open: boolean
+    proxy: ProxyPoolItem | null
+    draft: ProxyPayload
+    setDraft: (value: ProxyPayload) => void
+    groups: ProxyGroup[]
+    tags: ProxyTag[]
+    saving: boolean
+    onOpenChange: (open: boolean) => void
+    onSave: () => void
+}) {
+    const toggleTag = (id: number) => {
+        const current = draft.tagIds || []
+        setDraft({
+            ...draft,
+            tagIds: current.includes(id) ? current.filter(item => item !== id) : [...current, id],
+        })
+    }
+
+    return (
+        <Modal open={open} onOpenChange={onOpenChange}>
+            <ModalContent size="2xl">
+                <ModalHeader>
+                    <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200">
+                            <Pencil className="h-5 w-5" />
+                        </div>
+                        <div>
+                            <ModalTitle>编辑代理</ModalTitle>
+                            <ModalDescription>{proxy ? proxyToUrl(proxy) : '调整代理连接信息、分组、标签和备注'}</ModalDescription>
+                        </div>
+                    </div>
+                </ModalHeader>
+                <ModalBody>
+                    <div className="grid gap-4 md:grid-cols-[150px_minmax(0,1fr)]">
+                        <label className="space-y-1">
+                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">代理类型</span>
+                            <select
+                                value={draft.type}
+                                onChange={(event) => setDraft({ ...draft, type: event.target.value as ProxyType })}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            >
+                                {proxyTypes.map(type => <option key={type} value={type}>{type.toUpperCase()}</option>)}
+                            </select>
+                        </label>
+                        <label className="space-y-1">
+                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">代理主机</span>
+                            <input
+                                value={draft.host}
+                                onChange={(event) => setDraft({ ...draft, host: event.target.value })}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            />
+                        </label>
+                        <label className="space-y-1">
+                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">端口</span>
+                            <input
+                                type="number"
+                                min={1}
+                                max={65535}
+                                value={draft.port || ''}
+                                onChange={(event) => setDraft({ ...draft, port: Number(event.target.value) })}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            />
+                        </label>
+                        <div className="grid gap-3 md:grid-cols-2">
+                            <label className="space-y-1">
+                                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">账号</span>
+                                <input
+                                    value={draft.username || ''}
+                                    onChange={(event) => setDraft({ ...draft, username: event.target.value })}
+                                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                                />
+                            </label>
+                            <label className="space-y-1">
+                                <span className="text-xs font-medium text-gray-500 dark:text-gray-400">密码</span>
+                                <input
+                                    type="password"
+                                    value={draft.password || ''}
+                                    onChange={(event) => setDraft({ ...draft, password: event.target.value })}
+                                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                                />
+                            </label>
+                        </div>
+                        <label className="space-y-1 md:col-span-2">
+                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">刷新 URL</span>
+                            <input
+                                value={draft.refreshUrl || ''}
+                                onChange={(event) => setDraft({ ...draft, refreshUrl: event.target.value })}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            />
+                        </label>
+                        <label className="space-y-1">
+                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">分组</span>
+                            <select
+                                value={draft.groupId || ''}
+                                onChange={(event) => setDraft({ ...draft, groupId: event.target.value ? Number(event.target.value) : undefined })}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            >
+                                <option value="">未分组</option>
+                                {groups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}
+                            </select>
+                        </label>
+                        <label className="space-y-1">
+                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">使用范围</span>
+                            <select
+                                value={draft.usageScope || 'shared'}
+                                onChange={(event) => setDraft({ ...draft, usageScope: event.target.value })}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            >
+                                <option value="shared">共享</option>
+                                <option value="email_account">邮箱账户</option>
+                                <option value="reserved">预留</option>
+                            </select>
+                        </label>
+                        <div className="space-y-2 md:col-span-2">
+                            <div className="text-xs font-medium text-gray-500 dark:text-gray-400">标签</div>
+                            <div className="flex flex-wrap gap-2">
+                                {tags.length === 0 ? <span className="text-xs text-gray-400">暂无标签</span> : tags.map(tag => (
+                                    <button key={tag.id} type="button" onClick={() => toggleTag(tag.id)} className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs', draft.tagIds?.includes(tag.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300')}>
+                                        <MetaDot color={tag.color} fallback={proxyMetaColors[7]} className="h-2 w-2" />
+                                        {tag.name}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <label className="space-y-1 md:col-span-2">
+                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">备注</span>
+                            <textarea
+                                rows={3}
+                                value={draft.remark || ''}
+                                onChange={(event) => setDraft({ ...draft, remark: event.target.value })}
+                                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            />
+                        </label>
+                    </div>
+                </ModalBody>
+                <ModalFooter>
+                    <button onClick={() => onOpenChange(false)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">取消</button>
+                    <button onClick={onSave} disabled={saving} className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-60">
+                        {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                        保存
+                    </button>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
     )
 }
 
