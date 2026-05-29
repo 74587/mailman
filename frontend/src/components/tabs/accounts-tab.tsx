@@ -1365,6 +1365,7 @@ export default function AccountsTab() {
                                     onDelete={handleDelete}
                                     onOAuth2Config={handleOAuth2Config}
                                     onTagsChange={loadAccounts}
+                                    onAccountChange={loadAccounts}
                                     syncingId={syncing ?? undefined}
                                     verifyingId={verifying ?? undefined}
                                     syncStatuses={syncStatuses}

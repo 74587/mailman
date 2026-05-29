@@ -22,7 +22,11 @@ import {
     Wifi,
     WifiOff,
     Code2,
+    ExternalLink,
     FileText,
+    Maximize2,
+    Minimize2,
+    Save,
     StickyNote,
 } from 'lucide-react'
 import { DataTable, createSelectColumn } from '@/components/ui/data-table'
@@ -38,13 +42,16 @@ import {
 import { AdaptiveActions, ActionItem } from '@/components/ui/adaptive-actions'
 import { InlineTagSelector } from '@/components/tags/tag-selector'
 import { GmailIcon, OutlookIcon } from '@/components/ui/brand-icons'
-import { EmailAccount } from '@/types'
+import { AccountNoteFormat, EmailAccount } from '@/types'
 import { AccountSyncStatus } from '@/services/sync-config.service'
+import { emailAccountService } from '@/services/email-account.service'
 import { cn } from '@/lib/utils'
+import { AccountNoteEditor } from './account-note-editor'
 import {
     AccountNotePreview,
     getAccountNotePlainText,
     normalizeAccountNoteFormat,
+    openAccountNoteStandalonePreview,
 } from './account-note-preview'
 
 interface AccountsDataTableProps {
@@ -61,6 +68,7 @@ interface AccountsDataTableProps {
     onDelete: (id: number) => void
     onOAuth2Config?: (account: EmailAccount) => void
     onTagsChange?: () => void
+    onAccountChange?: () => void
     // 状态
     syncingId?: number
     verifyingId?: number
@@ -115,6 +123,7 @@ export function AccountsDataTable({
     onDelete,
     onOAuth2Config,
     onTagsChange,
+    onAccountChange,
     syncingId,
     verifyingId,
     syncStatuses,
@@ -122,6 +131,69 @@ export function AccountsDataTable({
     onSortingChange,
 }: AccountsDataTableProps) {
     const [notePreviewAccount, setNotePreviewAccount] = React.useState<EmailAccount | null>(null)
+    const [noteMode, setNoteMode] = React.useState<'preview' | 'edit'>('preview')
+    const [noteDraft, setNoteDraft] = React.useState('')
+    const [noteFormatDraft, setNoteFormatDraft] = React.useState<AccountNoteFormat>('markdown')
+    const [noteSaving, setNoteSaving] = React.useState(false)
+    const [noteViewport, setNoteViewport] = React.useState<'compact' | 'wide' | 'full'>('wide')
+    const [noteHeight, setNoteHeight] = React.useState(520)
+
+    const openNoteDialog = React.useCallback((account: EmailAccount, mode: 'preview' | 'edit' = 'preview') => {
+        setNotePreviewAccount(account)
+        setNoteMode(mode)
+        setNoteDraft(account.note || '')
+        setNoteFormatDraft(normalizeAccountNoteFormat(account.noteFormat))
+    }, [])
+
+    const closeNoteDialog = React.useCallback(() => {
+        setNotePreviewAccount(null)
+        setNoteMode('preview')
+        setNoteDraft('')
+        setNoteFormatDraft('markdown')
+        setNoteSaving(false)
+    }, [])
+
+    const saveNote = React.useCallback(async () => {
+        if (!notePreviewAccount) return
+
+        setNoteSaving(true)
+        try {
+            await emailAccountService.updateAccount(notePreviewAccount.id, {
+                id: notePreviewAccount.id,
+                note: noteDraft,
+                note_format: noteFormatDraft,
+            })
+
+            const updatedAccount = {
+                ...notePreviewAccount,
+                note: noteDraft,
+                noteFormat: noteFormatDraft,
+            }
+            setNotePreviewAccount(updatedAccount)
+            setNoteMode('preview')
+            onAccountChange?.()
+        } finally {
+            setNoteSaving(false)
+        }
+    }, [noteDraft, noteFormatDraft, notePreviewAccount, onAccountChange])
+
+    const openStandaloneNotePreview = React.useCallback(() => {
+        if (!notePreviewAccount) return
+
+        openAccountNoteStandalonePreview({
+            note: noteMode === 'edit' ? noteDraft : notePreviewAccount.note || '',
+            format: noteMode === 'edit' ? noteFormatDraft : notePreviewAccount.noteFormat,
+            title: `${notePreviewAccount.emailAddress} 账户备注`,
+        })
+    }, [noteDraft, noteFormatDraft, noteMode, notePreviewAccount])
+
+    const previewFormat = noteMode === 'edit' ? noteFormatDraft : notePreviewAccount?.noteFormat
+    const previewContent = noteMode === 'edit' ? noteDraft : notePreviewAccount?.note
+    const modalWidthClass = noteViewport === 'compact'
+        ? '!max-w-2xl'
+        : noteViewport === 'full'
+            ? '!max-w-[96vw]'
+            : '!max-w-5xl'
 
     // 将 selectedIds 转换为 RowSelectionState
     const rowSelection = React.useMemo(() => {
@@ -227,7 +299,17 @@ export function AccountsDataTable({
                     const noteFormat = normalizeAccountNoteFormat(row.original.noteFormat)
 
                     if (!note) {
-                        return <span className="text-xs text-gray-400 dark:text-gray-500">无</span>
+                        return (
+                            <button
+                                type="button"
+                                onClick={() => openNoteDialog(row.original, 'edit')}
+                                className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                                title="添加备注"
+                            >
+                                <StickyNote className="h-3.5 w-3.5" />
+                                添加备注
+                            </button>
+                        )
                     }
 
                     const previewText = getAccountNotePlainText(note, noteFormat) || (noteFormat === 'html' ? 'HTML/JS 备注' : 'Markdown 备注')
@@ -236,7 +318,7 @@ export function AccountsDataTable({
                     return (
                         <button
                             type="button"
-                            onClick={() => setNotePreviewAccount(row.original)}
+                            onClick={() => openNoteDialog(row.original)}
                             className="inline-flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white"
                             title={previewText}
                         >
@@ -444,7 +526,7 @@ export function AccountsDataTable({
                 },
             },
         ],
-        [syncingId, verifyingId, syncStatuses, onViewEmails, onPickupMail, onSync, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
+        [syncingId, verifyingId, syncStatuses, openNoteDialog, onViewEmails, onPickupMail, onSync, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
     )
 
     return (
@@ -461,38 +543,147 @@ export function AccountsDataTable({
                 compact={true}
             />
 
-            <Modal open={!!notePreviewAccount} onOpenChange={(open) => !open && setNotePreviewAccount(null)}>
-                <ModalContent size="2xl">
+            <Modal open={!!notePreviewAccount} onOpenChange={(open) => !open && closeNoteDialog()}>
+                <ModalContent
+                    size="full"
+                    className={cn(
+                        'transition-[max-width,height] duration-200',
+                        modalWidthClass,
+                        noteViewport === 'full' && 'h-[92vh]'
+                    )}
+                >
                     <ModalHeader>
-                        <ModalTitle className="flex items-center gap-2">
-                            <StickyNote className="h-5 w-5 text-primary-600" />
-                            账户备注
-                        </ModalTitle>
-                        {notePreviewAccount && (
-                            <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-                                <span>{notePreviewAccount.emailAddress}</span>
-                                <span className="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
-                                    {normalizeAccountNoteFormat(notePreviewAccount.noteFormat) === 'html' ? (
-                                        <Code2 className="h-3.5 w-3.5" />
-                                    ) : (
-                                        <FileText className="h-3.5 w-3.5" />
-                                    )}
-                                    {normalizeAccountNoteFormat(notePreviewAccount.noteFormat) === 'html' ? 'HTML/JS' : 'MARKDOWN'}
-                                </span>
+                        <div className="flex flex-wrap items-start justify-between gap-4 pr-10">
+                            <div>
+                                <ModalTitle className="flex items-center gap-2">
+                                    <StickyNote className="h-5 w-5 text-primary-600" />
+                                    {noteMode === 'edit' ? '编辑账户备注' : '账户备注'}
+                                </ModalTitle>
+                                {notePreviewAccount && (
+                                    <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                                        <span>{notePreviewAccount.emailAddress}</span>
+                                        <span className="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                                            {normalizeAccountNoteFormat(previewFormat) === 'html' ? (
+                                                <Code2 className="h-3.5 w-3.5" />
+                                            ) : (
+                                                <FileText className="h-3.5 w-3.5" />
+                                            )}
+                                            {normalizeAccountNoteFormat(previewFormat) === 'html' ? 'HTML/JS' : 'MARKDOWN'}
+                                        </span>
+                                    </div>
+                                )}
                             </div>
-                        )}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                    type="button"
+                                    variant={noteViewport === 'compact' ? 'default' : 'outline'}
+                                    size="sm"
+                                    onClick={() => {
+                                        setNoteViewport('compact')
+                                        setNoteHeight(420)
+                                    }}
+                                    title="紧凑窗口"
+                                >
+                                    <Minimize2 className="mr-1.5 h-4 w-4" />
+                                    紧凑
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant={noteViewport === 'wide' ? 'default' : 'outline'}
+                                    size="sm"
+                                    onClick={() => {
+                                        setNoteViewport('wide')
+                                        setNoteHeight(560)
+                                    }}
+                                    title="宽屏窗口"
+                                >
+                                    <Maximize2 className="mr-1.5 h-4 w-4" />
+                                    宽屏
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant={noteViewport === 'full' ? 'default' : 'outline'}
+                                    size="sm"
+                                    onClick={() => {
+                                        setNoteViewport('full')
+                                        setNoteHeight(720)
+                                    }}
+                                    title="全屏预览"
+                                >
+                                    <Maximize2 className="mr-1.5 h-4 w-4" />
+                                    全屏
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={openStandaloneNotePreview}
+                                    disabled={!notePreviewAccount}
+                                    title="在独立标签页查看"
+                                >
+                                    <ExternalLink className="mr-1.5 h-4 w-4" />
+                                    独立 Tab
+                                </Button>
+                            </div>
+                        </div>
                     </ModalHeader>
-                    <ModalBody>
-                        <AccountNotePreview
-                            note={notePreviewAccount?.note}
-                            format={notePreviewAccount?.noteFormat}
-                            className="max-h-[60vh]"
-                        />
+                    <ModalBody className={cn('space-y-4', noteViewport === 'full' && 'min-h-0')}>
+                        {noteMode === 'preview' ? (
+                            <>
+                                <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800/70">
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">预览高度</span>
+                                        <input
+                                            type="range"
+                                            min={320}
+                                            max={900}
+                                            step={20}
+                                            value={noteHeight}
+                                            onChange={(event) => setNoteHeight(Number(event.target.value))}
+                                            className="w-48 accent-primary-600"
+                                        />
+                                        <span className="w-12 text-xs tabular-nums text-gray-500 dark:text-gray-400">{noteHeight}px</span>
+                                    </div>
+                                    <span className="text-xs text-gray-400 dark:text-gray-500">右下角也可拖动调整预览区域</span>
+                                </div>
+                                <AccountNotePreview
+                                    note={previewContent}
+                                    format={previewFormat}
+                                    className="resize-y overflow-auto"
+                                    style={{ height: noteHeight }}
+                                />
+                            </>
+                        ) : (
+                            <AccountNoteEditor
+                                value={noteDraft}
+                                format={noteFormatDraft}
+                                onValueChange={setNoteDraft}
+                                onFormatChange={setNoteFormatDraft}
+                            />
+                        )}
                     </ModalBody>
                     <ModalFooter>
-                        <Button variant="outline" onClick={() => setNotePreviewAccount(null)}>
-                            关闭
-                        </Button>
+                        {noteMode === 'preview' ? (
+                            <>
+                                <Button variant="outline" onClick={closeNoteDialog}>
+                                    关闭
+                                </Button>
+                                <Button onClick={() => setNoteMode('edit')}>
+                                    <Edit2 className="mr-2 h-4 w-4" />
+                                    编辑备注
+                                </Button>
+                            </>
+                        ) : (
+                            <>
+                                <Button variant="outline" onClick={() => setNoteMode('preview')} disabled={noteSaving}>
+                                    取消
+                                </Button>
+                                <Button onClick={saveNote} disabled={noteSaving}>
+                                    <Save className="mr-2 h-4 w-4" />
+                                    {noteSaving ? '保存中...' : '保存备注'}
+                                </Button>
+                            </>
+                        )}
                     </ModalFooter>
                 </ModalContent>
             </Modal>
