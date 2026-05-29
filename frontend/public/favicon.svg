@@ -1,0 +1,21 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="mailman-favicon-bg" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#4F46E5"/>
+    </linearGradient>
+    <linearGradient id="mailman-favicon-shine" x1="20" y1="14" x2="42" y2="42" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#DBEAFE" stop-opacity="0.88"/>
+    </linearGradient>
+    <filter id="mailman-favicon-shadow" x="4" y="4" width="56" height="58" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#1E40AF" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect x="8" y="7" width="48" height="50" rx="14" fill="url(#mailman-favicon-bg)" filter="url(#mailman-favicon-shadow)"/>
+  <path d="M19.5 23.5C19.5 21.8431 20.8431 20.5 22.5 20.5H41.5C43.1569 20.5 44.5 21.8431 44.5 23.5V40.5C44.5 42.1569 43.1569 43.5 41.5 43.5H22.5C20.8431 43.5 19.5 42.1569 19.5 40.5V23.5Z" fill="url(#mailman-favicon-shine)"/>
+  <path d="M21 23.5L31.1697 31.0632C31.6622 31.4294 32.3378 31.4294 32.8303 31.0632L43 23.5" stroke="#2563EB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M21.5 40.5L28.25 33.75M42.5 40.5L35.75 33.75" stroke="#60A5FA" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="45" cy="44" r="7" fill="#10B981" stroke="#EFF6FF" stroke-width="3"/>
+  <path d="M42.25 43.85L44.25 45.85L48.15 41.95" stroke="white" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

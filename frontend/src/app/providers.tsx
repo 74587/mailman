@@ -19,7 +19,7 @@ function ThemedSonnerToaster() {
     // Map theme to sonner theme
     const sonnerTheme = theme === 'system'
         ? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-        : theme === 'sakura' ? 'light' : theme
+        : theme === 'sakura' || theme === 'custom' ? 'light' : theme
 
     return (
         <SonnerToaster

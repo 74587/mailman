@@ -2,8 +2,14 @@
 import { logger } from '@/lib/logger';
 
 import * as React from 'react'
+import {
+    applyCustomThemeStyle,
+    CUSTOM_THEME_CHANGE_EVENT,
+    isCustomThemeTemporarilyDisabled,
+    removeCustomThemeStyle,
+} from '@/lib/custom-theme'
 
-type Theme = 'dark' | 'light' | 'system' | 'sakura'
+type Theme = 'dark' | 'light' | 'system' | 'sakura' | 'custom'
 
 type ThemeProviderProps = {
     children: React.ReactNode
@@ -58,24 +64,53 @@ export function ThemeProvider({
         const root = window.document.documentElement
         logger.debug('[ThemeProvider] 应用主题变化:', theme)
 
-        root.classList.remove('light', 'dark', 'sakura')
+        root.classList.remove('light', 'dark', 'sakura', 'custom-theme')
         logger.debug('[ThemeProvider] 移除类后的html类:', root.className)
 
         let appliedTheme: string
-        if (theme === 'system' && enableSystem) {
+        if (theme === 'custom') {
+            if (isCustomThemeTemporarilyDisabled()) {
+                appliedTheme = 'light'
+                removeCustomThemeStyle()
+                logger.debug('[ThemeProvider] 自定义主题已被URL参数临时禁用')
+            } else {
+                appliedTheme = 'custom-theme'
+                applyCustomThemeStyle()
+                logger.debug('[ThemeProvider] 应用自定义主题')
+            }
+        } else if (theme === 'system' && enableSystem) {
             const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches
                 ? 'dark'
                 : 'light'
             appliedTheme = systemTheme
+            removeCustomThemeStyle()
             logger.debug('[ThemeProvider] 系统主题为:', systemTheme)
         } else {
             appliedTheme = theme
+            removeCustomThemeStyle()
             logger.debug('[ThemeProvider] 直接应用主题:', theme)
         }
 
         root.classList.add(appliedTheme)
         logger.debug('[ThemeProvider] 应用主题后的html类:', root.className)
     }, [theme, enableSystem, mounted])
+
+    React.useEffect(() => {
+        if (!mounted || typeof window === 'undefined' || theme !== 'custom') return
+
+        const handleCustomThemeChange = () => {
+            if (!isCustomThemeTemporarilyDisabled()) {
+                applyCustomThemeStyle()
+            }
+        }
+
+        window.addEventListener(CUSTOM_THEME_CHANGE_EVENT, handleCustomThemeChange)
+        window.addEventListener('storage', handleCustomThemeChange)
+        return () => {
+            window.removeEventListener(CUSTOM_THEME_CHANGE_EVENT, handleCustomThemeChange)
+            window.removeEventListener('storage', handleCustomThemeChange)
+        }
+    }, [mounted, theme])
 
     // Listen for system theme changes
     React.useEffect(() => {
@@ -85,7 +120,7 @@ export function ThemeProvider({
 
         const handleChange = () => {
             const root = window.document.documentElement
-            root.classList.remove('light', 'dark', 'sakura')
+            root.classList.remove('light', 'dark', 'sakura', 'custom-theme')
             const systemTheme = mediaQuery.matches ? 'dark' : 'light'
             root.classList.add(systemTheme)
         }
@@ -135,14 +170,24 @@ export const useTheme = () => {
                 if (typeof window !== 'undefined') {
                     localStorage.setItem('theme', newTheme)
                     const root = window.document.documentElement
-                    root.classList.remove('light', 'dark', 'sakura')
+                    root.classList.remove('light', 'dark', 'sakura', 'custom-theme')
 
-                    if (newTheme === 'system') {
+                    if (newTheme === 'custom') {
+                        if (isCustomThemeTemporarilyDisabled()) {
+                            removeCustomThemeStyle()
+                            root.classList.add('light')
+                        } else {
+                            applyCustomThemeStyle()
+                            root.classList.add('custom-theme')
+                        }
+                    } else if (newTheme === 'system') {
+                        removeCustomThemeStyle()
                         const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches
                             ? 'dark'
                             : 'light'
                         root.classList.add(systemTheme)
                     } else {
+                        removeCustomThemeStyle()
                         root.classList.add(newTheme)
                     }
                 }
