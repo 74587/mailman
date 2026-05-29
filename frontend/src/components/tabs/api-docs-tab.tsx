@@ -7,6 +7,14 @@ import { RefreshCw, ExternalLink, Search, Copy, Check, BookOpen, Server, Code2, 
 import { toast } from 'sonner'
 import { registerRefreshCallback, unregisterRefreshCallback } from '@/lib/tab-utils'
 
+const SWAGGER_JSON_PATH = '/swagger/doc.json'
+const SWAGGER_UI_PATH = '/swagger/index.html'
+
+function toSameOriginUrl(path: string) {
+    if (typeof window === 'undefined') return path
+    return new URL(path, window.location.origin).toString()
+}
+
 // Dynamic import of SwaggerUI to avoid SSR issues
 const SwaggerUI = dynamic(() => import('swagger-ui-react'), { 
     ssr: false,
@@ -65,9 +73,10 @@ export default function ApiDocsTab() {
     const [apiSpec, setApiSpec] = useState<any>(null)
     const [copied, setCopied] = useState(false)
 
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
-    const swaggerJsonUrl = `${apiBaseUrl}/swagger/doc.json`
-    const swaggerUiUrl = `${apiBaseUrl}/swagger/index.html`
+    const swaggerJsonUrl = SWAGGER_JSON_PATH
+    const swaggerUiUrl = SWAGGER_UI_PATH
+    const displaySwaggerJsonUrl = toSameOriginUrl(SWAGGER_JSON_PATH)
+    const displaySwaggerUiUrl = toSameOriginUrl(SWAGGER_UI_PATH)
 
     const loadSpec = useCallback(async () => {
         try {
@@ -104,7 +113,7 @@ export default function ApiDocsTab() {
 
     const handleCopyUrl = async () => {
         try {
-            await navigator.clipboard.writeText(swaggerJsonUrl)
+            await navigator.clipboard.writeText(displaySwaggerJsonUrl)
             setCopied(true)
             toast.success('Swagger JSON URL 已复制')
             setTimeout(() => setCopied(false), 2000)
@@ -114,7 +123,7 @@ export default function ApiDocsTab() {
     }
 
     const handleOpenExternal = () => {
-        window.open(swaggerUiUrl, '_blank')
+        window.open(displaySwaggerUiUrl, '_blank')
     }
 
     // Count endpoints and tags from spec
@@ -157,7 +166,7 @@ export default function ApiDocsTab() {
                     <p className="text-xs text-gray-400 dark:text-gray-500 mb-6">
                         请确保后端服务正在运行，且 Swagger 文档已生成。
                         <br />
-                        文档地址：<code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">{swaggerJsonUrl}</code>
+                        文档地址：<code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">{displaySwaggerJsonUrl}</code>
                     </p>
                     <button
                         onClick={loadSpec}

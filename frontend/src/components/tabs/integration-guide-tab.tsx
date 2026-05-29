@@ -8,8 +8,9 @@ import {
     ExternalLink, Zap, RefreshCw, Settings,
     FileText, Code2, Database, Search,
     Container, HardDrive, Wrench, Network, Terminal, Cpu, Lock, CloudCog,
-    Rocket, Box, Layers, Monitor,
+    Rocket, Box, Layers, Monitor, type LucideIcon,
 } from 'lucide-react'
+import { AnimatePresence, motion } from 'framer-motion'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
@@ -566,17 +567,81 @@ const TOC_DEPLOY = [
     { id: 'deploy-troubleshoot', label: '故障排查', icon: Wrench },
 ]
 
+type GuideId = 'oauth' | 'mail-api' | 'deploy'
+
+type GuideDoc = {
+    id: GuideId
+    title: string
+    eyebrow: string
+    description: string
+    sections: typeof TOC_OAUTH
+    primarySection: string
+    icon: LucideIcon
+    accent: string
+    surface: string
+    glow: string
+    stats: string[]
+}
+
+const GUIDE_DOCS: GuideDoc[] = [
+    {
+        id: 'oauth',
+        title: 'OAuth 接入',
+        eyebrow: 'Gmail Authorization',
+        description: '从 OAuth2 全局配置、授权会话到创建 Gmail 邮箱账户。',
+        sections: TOC_OAUTH,
+        primarySection: 'overview',
+        icon: Shield,
+        accent: 'from-blue-500 to-indigo-600',
+        surface: 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-300 dark:border-blue-800/70',
+        glow: 'shadow-blue-500/20',
+        stats: ['6 步流程', 'OAuth2', 'Token 刷新'],
+    },
+    {
+        id: 'mail-api',
+        title: '邮件 API',
+        eyebrow: 'Mailbox Automation',
+        description: '通过 API 获取账户、同步读取邮件，并使用取件轮询等待验证码。',
+        sections: TOC_MAIL_API,
+        primarySection: 'mail-api-overview',
+        icon: Mail,
+        accent: 'from-emerald-500 to-teal-600',
+        surface: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800/70',
+        glow: 'shadow-emerald-500/20',
+        stats: ['账户读取', '邮件搜索', '取件轮询'],
+    },
+    {
+        id: 'deploy',
+        title: '部署指南',
+        eyebrow: 'Production Setup',
+        description: '覆盖 Docker、Compose、K3s、Helm 和源码开发环境部署。',
+        sections: TOC_DEPLOY,
+        primarySection: 'deploy-overview',
+        icon: Rocket,
+        accent: 'from-cyan-500 to-blue-600',
+        surface: 'bg-cyan-50 text-cyan-700 border-cyan-200 dark:bg-cyan-950/30 dark:text-cyan-300 dark:border-cyan-800/70',
+        glow: 'shadow-cyan-500/20',
+        stats: ['Docker', 'Kubernetes', '环境变量'],
+    },
+]
+
 // ==================== 主组件 ====================
 
 export default function IntegrationGuideTab() {
-    const [activeSection, setActiveSection] = useState('overview')
+    const [activeGuide, setActiveGuide] = useState<GuideId>('mail-api')
+    const activeDoc = GUIDE_DOCS.find((doc) => doc.id === activeGuide) || GUIDE_DOCS[0]
+    const [activeSection, setActiveSection] = useState(activeDoc.primarySection)
     const contentRef = useRef<HTMLDivElement>(null)
+    const activeSectionIndex = Math.max(0, activeDoc.sections.findIndex((section) => section.id === activeSection))
+    const progressPercent = ((activeSectionIndex + 1) / activeDoc.sections.length) * 100
+    const previousSection = activeDoc.sections[activeSectionIndex - 1]
+    const nextSection = activeDoc.sections[activeSectionIndex + 1]
 
     // 滚动监听，自动高亮目录
     const handleScroll = useCallback(() => {
         if (!contentRef.current) return
-        const sections = contentRef.current.querySelectorAll('[data-section]')
-        let current = 'overview'
+        const sections = contentRef.current.querySelectorAll(`[data-guide="${activeGuide}"] [data-section]`)
+        let current = activeDoc.primarySection
         sections.forEach((section) => {
             const el = section as HTMLElement
             const rect = el.getBoundingClientRect()
@@ -585,7 +650,7 @@ export default function IntegrationGuideTab() {
             }
         })
         setActiveSection(current)
-    }, [])
+    }, [activeDoc.primarySection, activeGuide])
 
     useEffect(() => {
         const el = contentRef.current
@@ -594,8 +659,17 @@ export default function IntegrationGuideTab() {
         return () => el.removeEventListener('scroll', handleScroll)
     }, [handleScroll])
 
+    const switchGuide = (id: GuideId) => {
+        const nextDoc = GUIDE_DOCS.find((doc) => doc.id === id) || GUIDE_DOCS[0]
+        setActiveGuide(id)
+        setActiveSection(nextDoc.primarySection)
+        requestAnimationFrame(() => {
+            contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+        })
+    }
+
     const scrollTo = (id: string) => {
-        const el = contentRef.current?.querySelector(`[data-section="${id}"]`)
+        const el = contentRef.current?.querySelector(`[data-guide="${activeGuide}"] [data-section="${id}"]`)
         if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'start' })
         }
@@ -616,73 +690,155 @@ export default function IntegrationGuideTab() {
                         </div>
                     </div>
 
-                    <nav className="space-y-0.5">
-                        {/* OAuth 接入部分 */}
-                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">OAuth 接入</div>
-                        {TOC_OAUTH.map((item) => (
-                            <button
-                                key={item.id}
-                                onClick={() => scrollTo(item.id)}
-                                className={cn(
-                                    'flex items-center gap-2 w-full px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 text-left',
-                                    activeSection === item.id
-                                        ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
-                                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50 hover:text-gray-700 dark:hover:text-gray-300'
-                                )}
-                            >
-                                <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
-                                <span className="truncate">{item.label}</span>
-                            </button>
-                        ))}
+                    <nav className="space-y-5">
+                        <div>
+                            <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">文档集</div>
+                            <div className="space-y-2">
+                                {GUIDE_DOCS.map((doc) => (
+                                    <button
+                                        key={doc.id}
+                                        onClick={() => switchGuide(doc.id)}
+                                        className={cn(
+                                            'group w-full rounded-2xl border p-3 text-left transition-all duration-300',
+                                            activeGuide === doc.id
+                                                ? cn(doc.surface, 'shadow-sm')
+                                                : 'border-transparent bg-white/60 text-gray-600 hover:border-gray-200 hover:bg-white dark:bg-gray-900/40 dark:text-gray-400 dark:hover:border-gray-800 dark:hover:bg-gray-900'
+                                        )}
+                                    >
+                                        <div className="flex items-start gap-3">
+                                            <div className={cn(
+                                                'flex h-9 w-9 items-center justify-center rounded-xl text-white shadow-md transition-transform duration-300 group-hover:scale-105',
+                                                `bg-gradient-to-br ${doc.accent}`,
+                                                doc.glow
+                                            )}>
+                                                <doc.icon className="h-4 w-4" />
+                                            </div>
+                                            <div className="min-w-0 flex-1">
+                                                <div className="text-sm font-bold text-gray-900 dark:text-white">{doc.title}</div>
+                                                <div className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">{doc.eyebrow}</div>
+                                            </div>
+                                        </div>
+                                        <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                                            {doc.description}
+                                        </p>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
 
-                        {/* 分隔线 */}
-                        <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
-
-                        {/* 邮件 API 部分 */}
-                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">邮件 API</div>
-                        {TOC_MAIL_API.map((item) => (
-                            <button
-                                key={item.id}
-                                onClick={() => scrollTo(item.id)}
-                                className={cn(
-                                    'flex items-center gap-2 w-full px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 text-left',
-                                    activeSection === item.id
-                                        ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
-                                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50 hover:text-gray-700 dark:hover:text-gray-300'
-                                )}
-                            >
-                                <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
-                                <span className="truncate">{item.label}</span>
-                            </button>
-                        ))}
-
-                        {/* 分隔线 */}
-                        <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
-
-                        {/* 部署文档部分 */}
-                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">部署指南</div>
-                        {TOC_DEPLOY.map((item) => (
-                            <button
-                                key={item.id}
-                                onClick={() => scrollTo(item.id)}
-                                className={cn(
-                                    'flex items-center gap-2 w-full px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 text-left',
-                                    activeSection === item.id
-                                        ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
-                                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50 hover:text-gray-700 dark:hover:text-gray-300'
-                                )}
-                            >
-                                <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
-                                <span className="truncate">{item.label}</span>
-                            </button>
-                        ))}
+                        <div>
+                            <div className="flex items-center justify-between px-3 py-1.5">
+                                <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">当前目录</span>
+                                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                    {activeDoc.sections.length}
+                                </span>
+                            </div>
+                            <div className="mb-2 px-3">
+                                <div className="mb-1 flex items-center justify-between text-[10px] text-gray-400">
+                                    <span>阅读进度</span>
+                                    <span>{activeSectionIndex + 1}/{activeDoc.sections.length}</span>
+                                </div>
+                                <div className="h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+                                    <div
+                                        className={cn('h-full rounded-full bg-gradient-to-r transition-all duration-500', activeDoc.accent)}
+                                        style={{ width: `${progressPercent}%` }}
+                                    />
+                                </div>
+                            </div>
+                            <div className="space-y-0.5">
+                                {activeDoc.sections.map((item) => (
+                                    <button
+                                        key={item.id}
+                                        onClick={() => scrollTo(item.id)}
+                                        className={cn(
+                                            'flex items-center gap-2 w-full px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 text-left',
+                                            activeSection === item.id
+                                                ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
+                                                : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50 hover:text-gray-700 dark:hover:text-gray-300'
+                                        )}
+                                    >
+                                        <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
+                                        <span className="truncate">{item.label}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
                     </nav>
                 </div>
             </aside>
 
             {/* 右侧内容区 */}
             <div ref={contentRef} className="flex-1 overflow-y-auto">
-                <div className="max-w-4xl mx-auto px-8 py-8 space-y-12">
+                <div className="max-w-5xl mx-auto px-6 lg:px-8 py-8">
+                    <div className="mb-8">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                            <div>
+                                <div className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-500 shadow-sm dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400">
+                                    <BookOpen className="h-3.5 w-3.5" />
+                                    Documentation Hub
+                                </div>
+                                <h1 className="mt-3 text-2xl font-extrabold text-gray-950 dark:text-white">
+                                    接入手册
+                                </h1>
+                                <p className="mt-2 max-w-2xl text-sm leading-relaxed text-gray-500 dark:text-gray-400">
+                                    按任务拆成独立文档页：接入 Gmail、调用邮件 API、部署上线。切换文档不会把你丢进一整页长滚动里。
+                                </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {activeDoc.stats.map((stat) => (
+                                    <span key={stat} className={cn('rounded-full border px-3 py-1 text-xs font-medium', activeDoc.surface)}>
+                                        {stat}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="mt-5 grid gap-3 md:grid-cols-3">
+                            {GUIDE_DOCS.map((doc) => (
+                                <motion.button
+                                    key={doc.id}
+                                    type="button"
+                                    onClick={() => switchGuide(doc.id)}
+                                    whileHover={{ y: -3 }}
+                                    whileTap={{ scale: 0.98 }}
+                                    className={cn(
+                                        'group relative overflow-hidden rounded-2xl border p-4 text-left shadow-sm transition-all duration-300',
+                                        activeGuide === doc.id
+                                            ? 'border-transparent bg-white shadow-lg dark:bg-gray-900'
+                                            : 'border-gray-200 bg-white/70 hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900/60 dark:hover:border-gray-700'
+                                    )}
+                                >
+                                    <div className={cn(
+                                        'absolute inset-x-0 top-0 h-1 bg-gradient-to-r transition-opacity duration-300',
+                                        doc.accent,
+                                        activeGuide === doc.id ? 'opacity-100' : 'opacity-30'
+                                    )} />
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className={cn('flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md', doc.accent, doc.glow)}>
+                                            <doc.icon className="h-4 w-4" />
+                                        </div>
+                                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                                            {doc.sections.length} 节
+                                        </span>
+                                    </div>
+                                    <div className="mt-3 text-sm font-bold text-gray-950 dark:text-white">{doc.title}</div>
+                                    <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{doc.description}</p>
+                                </motion.button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <AnimatePresence mode="wait">
+                        {activeGuide === 'oauth' && (
+                            <motion.div
+                                key="oauth"
+                                data-guide="oauth"
+                                className="space-y-12"
+                                initial={{ opacity: 0, y: 16 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -12 }}
+                                transition={{ duration: 0.22, ease: 'easeOut' }}
+                            >
 
                     {/* ===== 概述 ===== */}
                     <section data-section="overview">
@@ -1214,10 +1370,22 @@ done`}
                             ))}
                         </div>
                     </section>
+                            </motion.div>
+                        )}
 
                     {/* ============================================================ */}
                     {/* ==================== 邮件 API 接入 ==================== */}
                     {/* ============================================================ */}
+                        {activeGuide === 'mail-api' && (
+                            <motion.div
+                                key="mail-api"
+                                data-guide="mail-api"
+                                className="space-y-12"
+                                initial={{ opacity: 0, y: 16 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -12 }}
+                                transition={{ duration: 0.22, ease: 'easeOut' }}
+                            >
 
                     {/* 分隔线 */}
                     <div className="relative py-8">
@@ -1676,10 +1844,22 @@ node mailman-mail-api-demo.mjs`}
                             </Callout>
                         </div>
                     </section>
+                            </motion.div>
+                        )}
 
                     {/* ============================================================ */}
                     {/* ==================== 部署指南 ==================== */}
                     {/* ============================================================ */}
+                        {activeGuide === 'deploy' && (
+                            <motion.div
+                                key="deploy"
+                                data-guide="deploy"
+                                className="space-y-12"
+                                initial={{ opacity: 0, y: 16 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -12 }}
+                                transition={{ duration: 0.22, ease: 'easeOut' }}
+                            >
 
                     {/* 分隔线 */}
                     <div className="relative py-8">
@@ -2463,7 +2643,7 @@ make dev    # 带竞态检测的开发构建并运行`}
                                 <ul className="space-y-1 text-sm text-gray-600 dark:text-gray-400">
                                     <li className="flex items-center gap-2"><Monitor className="w-3.5 h-3.5 text-purple-500" /> 前端界面：<code className="text-xs font-mono bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">http://localhost:3000</code></li>
                                     <li className="flex items-center gap-2"><Server className="w-3.5 h-3.5 text-blue-500" /> 后端 API：<code className="text-xs font-mono bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">http://localhost:8080</code></li>
-                                    <li className="flex items-center gap-2"><FileText className="w-3.5 h-3.5 text-amber-500" /> API 文档：<code className="text-xs font-mono bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">http://localhost:8080/swagger/index.html</code></li>
+                                    <li className="flex items-center gap-2"><FileText className="w-3.5 h-3.5 text-amber-500" /> API 文档：<code className="text-xs font-mono bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded">/swagger/index.html</code></li>
                                 </ul>
                             </div>
 
@@ -2576,6 +2756,50 @@ make reset-password
                             ))}
                         </div>
                     </section>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
+                    <div className="mt-8 grid gap-3 border-t border-gray-200 pt-6 dark:border-gray-800 sm:grid-cols-2">
+                        <button
+                            type="button"
+                            disabled={!previousSection}
+                            onClick={() => previousSection && scrollTo(previousSection.id)}
+                            className={cn(
+                                'flex min-h-[76px] items-center gap-3 rounded-2xl border p-4 text-left transition-all duration-200',
+                                previousSection
+                                    ? 'border-gray-200 bg-white hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-sm dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700'
+                                    : 'cursor-not-allowed border-gray-100 bg-gray-50 opacity-50 dark:border-gray-900 dark:bg-gray-950'
+                            )}
+                        >
+                            <ChevronRight className="h-4 w-4 rotate-180 text-gray-400" />
+                            <div>
+                                <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">上一节</div>
+                                <div className="mt-1 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                                    {previousSection?.label || '已经是开头'}
+                                </div>
+                            </div>
+                        </button>
+                        <button
+                            type="button"
+                            disabled={!nextSection}
+                            onClick={() => nextSection && scrollTo(nextSection.id)}
+                            className={cn(
+                                'flex min-h-[76px] items-center justify-between gap-3 rounded-2xl border p-4 text-left transition-all duration-200',
+                                nextSection
+                                    ? 'border-gray-200 bg-white hover:-translate-y-0.5 hover:border-gray-300 hover:shadow-sm dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700'
+                                    : 'cursor-not-allowed border-gray-100 bg-gray-50 opacity-50 dark:border-gray-900 dark:bg-gray-950'
+                            )}
+                        >
+                            <div>
+                                <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">下一节</div>
+                                <div className="mt-1 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                                    {nextSection?.label || '已经读完'}
+                                </div>
+                            </div>
+                            <ChevronRight className="h-4 w-4 text-gray-400" />
+                        </button>
+                    </div>
 
                     {/* 底部间距 */}
                     <div className="h-20" />
