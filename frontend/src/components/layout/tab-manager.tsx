@@ -94,6 +94,7 @@ const tabConfig: Tab[] = [
     { id: 'system-config', name: '系统配置', icon: Settings },
     // API 文档
     { id: 'api-docs', name: 'API 文档', icon: BookOpen },
+    { id: 'integration-guide', name: '接入手册', icon: ScrollText },
 ]
 
 interface TabManagerProps {

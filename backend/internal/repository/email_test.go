@@ -171,6 +171,49 @@ func TestEmailSearchQueryPostgresQuotesRecipientFields(t *testing.T) {
 	}
 }
 
+func TestEmailSearchQueryExpandsGmailAliasRecipient(t *testing.T) {
+	db := mustOpenTestDB(t, postgres.Open(
+		"host=localhost user=test password=test dbname=test port=5432 sslmode=disable",
+	))
+	repo := NewEmailRepository(db)
+
+	var emails []models.Email
+	stmt := repo.buildEmailSearchQuery(EmailSearchOptions{
+		AccountID: 1,
+		ToQuery:   "target@gmail.com",
+	}).Find(&emails).Statement
+
+	if !statementHasVar(stmt.Vars, "%target+%@gmail.com%") {
+		t.Fatalf("generated vars %#v do not include Gmail plus alias pattern", stmt.Vars)
+	}
+}
+
+func TestEmailSearchQueryExpandsDomainWildcardRecipient(t *testing.T) {
+	db := mustOpenTestDB(t, postgres.Open(
+		"host=localhost user=test password=test dbname=test port=5432 sslmode=disable",
+	))
+	repo := NewEmailRepository(db)
+
+	var emails []models.Email
+	stmt := repo.buildEmailSearchQuery(EmailSearchOptions{
+		AccountID: 1,
+		ToQuery:   "*@example.com",
+	}).Find(&emails).Statement
+
+	if !statementHasVar(stmt.Vars, "%@example.com%") {
+		t.Fatalf("generated vars %#v do not include domain wildcard pattern", stmt.Vars)
+	}
+}
+
+func statementHasVar(vars []interface{}, expected string) bool {
+	for _, value := range vars {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
 func mustOpenTestDB(t *testing.T, dialector gorm.Dialector) *gorm.DB {
 	t.Helper()
 

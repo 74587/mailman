@@ -17,13 +17,16 @@ import {
 import { cn } from '@/lib/utils'
 import { EmailAccount, Email } from '@/types'
 import { emailAccountService } from '@/services/email-account.service'
-import { emailService } from '@/services/email.service'
+import { emailService, EmailSearchParams } from '@/services/email.service'
+import { syncConfigService, SyncConfig } from '@/services/sync-config.service'
 import EnhancedMailboxSidebar from './enhanced-mailbox-sidebar'
 import EmailListPanel from './email-list-panel'
 import EmailPreviewPanel from './email-preview-panel'
+import TemporarySyncPromptModal from '@/components/modals/temporary-sync-prompt-modal'
 // EmailNotificationToast 已移至全局 providers.tsx
 import { ResizableDivider } from './resizable-panel'
 import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
+import { toast } from 'sonner'
 
 // 布局预设
 interface LayoutPreset {
@@ -48,6 +51,8 @@ const MIN_SIDEBAR_WIDTH = 60
 const MAX_SIDEBAR_WIDTH = 520
 const MIN_EMAIL_LIST_WIDTH = 360
 const MAX_EMAIL_LIST_WIDTH = 760
+const SYNC_WARNING_INTERVAL_SECONDS = 30
+const DEFAULT_TEMP_SYNC_FOLDERS = ['INBOX']
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
@@ -105,6 +110,85 @@ const fitLayoutToContainer = (
     return { sidebarWidth, emailListWidth }
 }
 
+const formatSyncInterval = (seconds?: number) => {
+    if (!seconds || seconds <= 0) return '未设置'
+    if (seconds < 60) return `${seconds}秒`
+    if (seconds % 3600 === 0) return `${seconds / 3600}小时`
+    if (seconds % 60 === 0) return `${seconds / 60}分钟`
+    return `${seconds}秒`
+}
+
+const isRecipientLikeSearch = (query?: string) => {
+    const trimmed = query?.trim()
+    if (!trimmed) return false
+    return trimmed.includes('@') || trimmed.startsWith('*@')
+}
+
+const buildEmailSearchParams = (
+    searchQuery: string | undefined,
+    direction: 'received' | 'sent' | 'all',
+    limit: number,
+    offset: number,
+    account?: EmailAccount | null
+): EmailSearchParams => {
+    const trimmedQuery = searchQuery?.trim()
+    const params: EmailSearchParams = {
+        limit,
+        offset,
+        sort_by: 'date',
+        direction
+    }
+
+    if (!trimmedQuery) {
+        return params
+    }
+
+    const accountDomain = account?.domain?.trim().toLowerCase()
+    const normalizedQuery = trimmedQuery.toLowerCase()
+    if (
+        isRecipientLikeSearch(trimmedQuery) ||
+        (account?.isDomainMail && accountDomain && normalizedQuery === accountDomain)
+    ) {
+        params.to_query = account?.isDomainMail && accountDomain && normalizedQuery === accountDomain
+            ? `*@${accountDomain}`
+            : trimmedQuery
+    } else {
+        params.keyword = trimmedQuery
+    }
+
+    return params
+}
+
+const getSyncWarning = (config?: SyncConfig) => {
+    if (!config) {
+        return {
+            reason: '未读取到同步配置，刷新可能只会显示本地缓存。',
+            currentConfigText: '未配置自动同步',
+        }
+    }
+
+    if (!config.enable_auto_sync || config.auto_disabled) {
+        return {
+            reason: '当前账户没有开启自动同步，刷新可能只会显示本地缓存。',
+            currentConfigText: `自动同步关闭，间隔 ${formatSyncInterval(config.sync_interval)}`,
+        }
+    }
+
+    if (config.sync_interval > SYNC_WARNING_INTERVAL_SECONDS) {
+        return {
+            reason: `当前账户同步间隔为 ${formatSyncInterval(config.sync_interval)}，可能需要等待较久才会拉取新邮件。`,
+            currentConfigText: `自动同步开启，间隔 ${formatSyncInterval(config.sync_interval)}`,
+        }
+    }
+
+    return null
+}
+
+type PendingSyncAction = {
+    label: string
+    run: () => Promise<void>
+}
+
 export default function EnhancedClassicMailboxView() {
     // 状态管理
     const [accounts, setAccounts] = useState<EmailAccount[]>([])
@@ -137,18 +221,28 @@ export default function EnhancedClassicMailboxView() {
     const [autoSyncEnabled, setAutoSyncEnabled] = useState(false)
     const [isRefreshing, setIsRefreshing] = useState(false)
     const autoSyncTimerRef = useRef<NodeJS.Timeout | null>(null)
+    const [syncPromptOpen, setSyncPromptOpen] = useState(false)
+    const [syncPromptAccount, setSyncPromptAccount] = useState<EmailAccount | null>(null)
+    const [syncPromptReason, setSyncPromptReason] = useState('')
+    const [syncPromptConfigText, setSyncPromptConfigText] = useState('')
+    const [syncPromptActionLabel, setSyncPromptActionLabel] = useState('刷新')
+    const [creatingTemporarySync, setCreatingTemporarySync] = useState(false)
+    const [temporarySyncFolders, setTemporarySyncFolders] = useState<string[]>(DEFAULT_TEMP_SYNC_FOLDERS)
 
     // 分页状态
     const [totalCount, setTotalCount] = useState(0)
     const [currentOffset, setCurrentOffset] = useState(0)
     const [hasMore, setHasMore] = useState(false)
     const [loadingMore, setLoadingMore] = useState(false)
+    const [emailSearchQuery, setEmailSearchQuery] = useState('')
     const PAGE_SIZE = 50
 
     // refs
     const selectedAccountRef = useRef<EmailAccount | null>(null)
     const loadingEmailsRef = useRef<boolean>(false)
     const isRefreshingRef = useRef<boolean>(false)
+    const emailSearchQueryRef = useRef('')
+    const pendingSyncActionRef = useRef<PendingSyncAction | null>(null)
     const containerRef = useRef<HTMLDivElement>(null)
     const layoutMenuRef = useRef<HTMLDivElement>(null)
 
@@ -462,13 +556,8 @@ export default function EnhancedClassicMailboxView() {
             loadingEmailsRef.current = true
 
             const offset = appendMode ? currentOffset + PAGE_SIZE : 0
-            const emailsData = await emailService.searchEmails({
-                keyword: searchQuery,
-                limit: PAGE_SIZE,
-                offset: offset,
-                sort_by: 'date',
-                direction: directionFilter
-            }, account.id)
+            const searchParams = buildEmailSearchParams(searchQuery, directionFilter, PAGE_SIZE, offset, account)
+            const emailsData = await emailService.searchEmails(searchParams, account.id)
 
             // 解析响应数据
             const emailList = Array.isArray(emailsData) ? emailsData : (emailsData.emails || [])
@@ -515,7 +604,7 @@ export default function EnhancedClassicMailboxView() {
     // 加载更多邮件
     const handleLoadMore = async () => {
         if (selectedAccount && hasMore && !loadingMore) {
-            await loadEmails(selectedAccount, undefined, false, true)
+            await loadEmails(selectedAccount, emailSearchQueryRef.current, false, true)
         }
     }
 
@@ -523,7 +612,7 @@ export default function EnhancedClassicMailboxView() {
     const handleSelectAccount = (account: EmailAccount) => {
         setSelectedAccount(account)
         setSelectedEmailId(null)
-        loadEmails(account, undefined, false)
+        loadEmails(account, emailSearchQueryRef.current, false)
 
         // 移动端自动切换到邮件列表
         if (isMobileView) {
@@ -564,23 +653,130 @@ export default function EnhancedClassicMailboxView() {
 
     // 搜索邮件
     const handleSearchEmails = (query: string) => {
+        setEmailSearchQuery(query)
+        emailSearchQueryRef.current = query
         loadEmails(selectedAccount, query)
     }
 
-    // 手动刷新
-    const handleRefreshEmails = async () => {
+    const closeSyncPrompt = () => {
+        if (creatingTemporarySync) return
+        setSyncPromptOpen(false)
+        setSyncPromptAccount(null)
+        pendingSyncActionRef.current = null
+    }
+
+    const continuePendingSyncAction = async () => {
+        const pendingAction = pendingSyncActionRef.current
+        pendingSyncActionRef.current = null
+        setSyncPromptOpen(false)
+        setSyncPromptAccount(null)
+
+        if (pendingAction) {
+            await pendingAction.run()
+        }
+    }
+
+    const confirmTemporarySync = async (syncInterval: number, durationMinutes: number) => {
+        const account = syncPromptAccount
+        const pendingAction = pendingSyncActionRef.current
+        if (!account || !pendingAction) {
+            closeSyncPrompt()
+            return
+        }
+
+        setCreatingTemporarySync(true)
+        try {
+            await syncConfigService.createTemporarySyncConfig(account.id, {
+                sync_interval: syncInterval,
+                sync_folders: temporarySyncFolders.length > 0 ? temporarySyncFolders : DEFAULT_TEMP_SYNC_FOLDERS,
+                duration_minutes: durationMinutes
+            })
+
+            toast.success('临时同步已开启', {
+                description: `${account.emailAddress} 将在 ${durationMinutes} 分钟内按 ${syncInterval} 秒间隔同步`
+            })
+
+            try {
+                await syncConfigService.syncNow(account.id)
+            } catch (error: any) {
+                toast.warning('临时配置已创建，但立即同步触发失败', {
+                    description: error?.message || '后台同步器会在下一次轮询时接管'
+                })
+            }
+
+            pendingSyncActionRef.current = null
+            setSyncPromptOpen(false)
+            setSyncPromptAccount(null)
+            await pendingAction.run()
+        } catch (error: any) {
+            toast.error('创建临时同步配置失败', {
+                description: error?.message || '请稍后重试'
+            })
+        } finally {
+            setCreatingTemporarySync(false)
+        }
+    }
+
+    const runWithSyncPrompt = async (action: PendingSyncAction) => {
+        if (!selectedAccount) return
+
+        try {
+            const effectiveConfig = await syncConfigService.getEffectiveSyncConfig(selectedAccount.id)
+            const warning = getSyncWarning(effectiveConfig.config)
+            if (effectiveConfig.config?.sync_folders?.length) {
+                setTemporarySyncFolders(effectiveConfig.config.sync_folders)
+            } else {
+                setTemporarySyncFolders(DEFAULT_TEMP_SYNC_FOLDERS)
+            }
+
+            if (warning) {
+                pendingSyncActionRef.current = action
+                setSyncPromptAccount(selectedAccount)
+                setSyncPromptReason(warning.reason)
+                setSyncPromptConfigText(
+                    effectiveConfig.is_temporary
+                        ? `${warning.currentConfigText}，当前为临时配置`
+                        : warning.currentConfigText
+                )
+                setSyncPromptActionLabel(action.label)
+                setSyncPromptOpen(true)
+                return
+            }
+        } catch (error) {
+            pendingSyncActionRef.current = action
+            setTemporarySyncFolders(DEFAULT_TEMP_SYNC_FOLDERS)
+            setSyncPromptAccount(selectedAccount)
+            setSyncPromptReason('无法读取当前同步配置，刷新可能只会显示本地缓存。')
+            setSyncPromptConfigText('同步配置读取失败')
+            setSyncPromptActionLabel(action.label)
+            setSyncPromptOpen(true)
+            return
+        }
+
+        await action.run()
+    }
+
+    const refreshEmailsNow = async () => {
         if (!selectedAccount) return
 
         setIsRefreshing(true)
         isRefreshingRef.current = true
         try {
-            await loadEmails(selectedAccount, undefined, false)
+            await loadEmails(selectedAccount, emailSearchQueryRef.current, false)
         } catch (error) {
             console.error('Manual refresh failed:', error)
         } finally {
             setIsRefreshing(false)
             isRefreshingRef.current = false
         }
+    }
+
+    // 手动刷新
+    const handleRefreshEmails = async () => {
+        await runWithSyncPrompt({
+            label: '刷新',
+            run: refreshEmailsNow
+        })
     }
 
     // 自动同步
@@ -598,7 +794,7 @@ export default function EnhancedClassicMailboxView() {
                 return
             }
 
-            loadEmails(currentAccount, undefined, true)
+            loadEmails(currentAccount, emailSearchQueryRef.current, true)
         }, 1000)
     }
 
@@ -609,14 +805,25 @@ export default function EnhancedClassicMailboxView() {
         }
     }
 
+    const enableAutoSync = async () => {
+        setAutoSyncEnabled(true)
+        startAutoSync()
+    }
+
+    const disableAutoSync = () => {
+        setAutoSyncEnabled(false)
+        stopAutoSync()
+    }
+
     const toggleAutoSync = () => {
         const newAutoSyncEnabled = !autoSyncEnabled
-        setAutoSyncEnabled(newAutoSyncEnabled)
-
         if (newAutoSyncEnabled) {
-            startAutoSync()
+            runWithSyncPrompt({
+                label: '开启自动刷新',
+                run: enableAutoSync
+            })
         } else {
-            stopAutoSync()
+            disableAutoSync()
         }
     }
 
@@ -635,6 +842,10 @@ export default function EnhancedClassicMailboxView() {
         isRefreshingRef.current = isRefreshing
     }, [isRefreshing])
 
+    useEffect(() => {
+        emailSearchQueryRef.current = emailSearchQuery
+    }, [emailSearchQuery])
+
     // 初始加载
     useEffect(() => {
         loadAccounts()
@@ -642,7 +853,7 @@ export default function EnhancedClassicMailboxView() {
 
     useEffect(() => {
         if (selectedAccount) {
-            loadEmails(selectedAccount, undefined, false)
+            loadEmails(selectedAccount, emailSearchQueryRef.current, false)
         }
     }, [selectedAccount, directionFilter])
 
@@ -819,6 +1030,18 @@ export default function EnhancedClassicMailboxView() {
                     )}
                 </div>
 
+                <TemporarySyncPromptModal
+                    isOpen={syncPromptOpen}
+                    accountEmail={syncPromptAccount?.emailAddress}
+                    reason={syncPromptReason}
+                    currentConfigText={syncPromptConfigText}
+                    actionLabel={syncPromptActionLabel}
+                    loading={creatingTemporarySync}
+                    onClose={closeSyncPrompt}
+                    onContinue={continuePendingSyncAction}
+                    onConfirm={confirmTemporarySync}
+                />
+
                 {/* EmailNotificationToast 已移至全局 */}
             </div>
         )
@@ -977,6 +1200,17 @@ export default function EnhancedClassicMailboxView() {
             </div>
 
             {/* EmailNotificationToast 已移至全局 */}
+            <TemporarySyncPromptModal
+                isOpen={syncPromptOpen}
+                accountEmail={syncPromptAccount?.emailAddress}
+                reason={syncPromptReason}
+                currentConfigText={syncPromptConfigText}
+                actionLabel={syncPromptActionLabel}
+                loading={creatingTemporarySync}
+                onClose={closeSyncPrompt}
+                onContinue={continuePendingSyncAction}
+                onConfirm={confirmTemporarySync}
+            />
         </div>
     )
 }

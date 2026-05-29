@@ -49,6 +49,7 @@ export const menuRegistry: MenuItemConfig[] = [
     { id: 'action-debugger', name: '动作调试器', group: 'developer', defaultVisible: true },
     { id: 'filter-action-trigger', name: '过滤动作触发器', group: 'developer', defaultVisible: true },
     { id: 'component-test', name: '组件测试', group: 'developer', defaultVisible: true },
+    { id: 'integration-guide', name: '接入手册', group: 'developer', defaultVisible: true },
 ]
 
 // 分组显示名

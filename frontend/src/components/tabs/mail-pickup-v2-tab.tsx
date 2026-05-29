@@ -52,6 +52,7 @@ import { pickupService } from '@/services/pickup.service'
 import CreateSyncConfigModal from '@/components/modals/create-sync-config-modal'
 import { toast } from 'sonner'
 import { useTabManager } from '@/components/layout/tab-manager'
+import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
 
 // ============ Types ============
 interface ListenConfig {
@@ -150,6 +151,11 @@ export default function MailPickupV2Tab() {
     const listeningStateRef = useRef<{ [email: string]: any }>({})
     const iframeRef = useRef<HTMLIFrameElement>(null)
     const dragItemRef = useRef<string | null>(null)
+    const processedDataRef = useRef<Set<string>>(
+        typeof window !== 'undefined'
+            ? ((window as any).__mailPickupV2ProcessedData = (window as any).__mailPickupV2ProcessedData || new Set<string>())
+            : new Set<string>()
+    )
 
     // ============ Helpers ============
     const formatDuration = (seconds: number): string => {
@@ -229,7 +235,7 @@ export default function MailPickupV2Tab() {
             setAccounts(accountsData)
             const domains = domainsData.domains || []
             setAccountDomains(domains)
-            if (domains.length > 0 && !selectedDomain) setSelectedDomain(domains[0])
+            if (domains.length > 0) setSelectedDomain(prev => prev || domains[0])
             setTemplates(templatesData || [])
         } catch (err) {
             console.error('Error fetching data:', err)
@@ -249,7 +255,7 @@ export default function MailPickupV2Tab() {
     )
 
     // ============ Email Management ============
-    const addMonitoredEmail = (email: string): string => {
+    const addMonitoredEmail = useCallback((email: string): string => {
         const existingEmail = monitoredEmails.find(m => m.email === email)
         if (existingEmail) return existingEmail.id
 
@@ -271,7 +277,7 @@ export default function MailPickupV2Tab() {
         setMonitoredEmails(prev => [...prev, newEmail])
         setSelectedEmailId(id)
         return id
-    }
+    }, [monitoredEmails])
 
     const addFromAccount = (accountEmail: string) => {
         addMonitoredEmail(accountEmail)
@@ -418,6 +424,44 @@ export default function MailPickupV2Tab() {
             setShowAddSection(false)
         }
     }
+
+    const handleTabSwitchData = useCallback((data: any) => {
+        if (!data || data.__processed === true) return
+
+        const { selectedAccount: accountEmail, customDomain: domain, __timestamp } = data
+        const dataId = `mail-pickup-v2:${accountEmail || ''}:${domain || ''}:${__timestamp || Date.now()}`
+        if (processedDataRef.current.has(dataId)) return
+
+        processedDataRef.current.add(dataId)
+
+        if (accountEmail) {
+            const emailId = addMonitoredEmail(accountEmail)
+            setSelectedEmailId(emailId)
+            setAccountSearchTerm('')
+            setShowAccountDropdown(false)
+            setShowAddSection(false)
+        }
+
+        if (domain) {
+            setSelectedDomain(domain)
+            setUseDomain(true)
+        }
+
+        setTimeout(() => {
+            processedDataRef.current.delete(dataId)
+        }, 5000)
+    }, [addMonitoredEmail])
+
+    useEffect(() => {
+        registerTabCallback('mail-pickup-v2', 'onReady', handleTabSwitchData)
+        window.dispatchEvent(new CustomEvent('tabCallbackRegistered', {
+            detail: { tabId: 'mail-pickup-v2', callbackName: 'onReady' }
+        }))
+
+        return () => {
+            unregisterTabCallback('mail-pickup-v2', 'onReady')
+        }
+    }, [handleTabSwitchData])
 
     // ============ Listening Logic ============
     const startListening = useCallback(async (id: string) => {

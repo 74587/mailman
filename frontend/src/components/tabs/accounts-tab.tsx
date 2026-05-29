@@ -577,7 +577,7 @@ export default function AccountsTab() {
         const emailDomain = account.emailAddress.split('@')[1]
         const event = new CustomEvent('switchTab', {
             detail: {
-                tab: 'mail-pickup',
+                tab: 'mail-pickup-v2',
                 data: {
                     selectedAccount: account.emailAddress,
                     customDomain: emailDomain || ''

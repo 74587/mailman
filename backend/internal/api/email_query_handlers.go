@@ -240,6 +240,7 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 	options.HTMLQuery = r.URL.Query().Get("html_query")
 	options.Keyword = r.URL.Query().Get("keyword")
 	options.MailboxName = r.URL.Query().Get("mailbox")
+	options.Direction = r.URL.Query().Get("direction")
 
 	// 如果有to_query参数，先尝试立即同步对应账户的邮件
 	if options.ToQuery != "" {
@@ -286,6 +287,7 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 			"html_query":    options.HTMLQuery,
 			"keyword":       options.Keyword,
 			"mailbox":       options.MailboxName,
+			"direction":     options.Direction,
 			"sort_by":       options.SortBy,
 		},
 	}
@@ -383,6 +385,13 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 	options.HTMLQuery = r.URL.Query().Get("html_query")
 	options.Keyword = r.URL.Query().Get("keyword")
 	options.MailboxName = r.URL.Query().Get("mailbox")
+	options.Direction = r.URL.Query().Get("direction")
+
+	if options.ToQuery != "" {
+		if err := h.syncEmailsForToQuery(options.ToQuery); err != nil {
+			h.logger.Warn("Failed to sync emails for to_query %s: %v", options.ToQuery, err)
+		}
+	}
 
 	// Perform search
 	emails, totalCount, err := h.EmailRepo.SearchEmails(options)
@@ -420,6 +429,7 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 			"html_query":    options.HTMLQuery,
 			"keyword":       options.Keyword,
 			"mailbox":       options.MailboxName,
+			"direction":     options.Direction,
 			"sort_by":       options.SortBy,
 		},
 	}

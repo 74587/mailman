@@ -141,6 +141,92 @@ func emailRecipientLikeExpr(db *gorm.DB) string {
 	return fmt.Sprintf("(%s OR %s)", textLikeExpr(db, "to_addresses"), textLikeExpr(db, "to"))
 }
 
+func emailSearchAddressPatterns(query string) []string {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return nil
+	}
+
+	patterns := make([]string, 0, 4)
+	seen := make(map[string]bool)
+	addPattern := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		pattern := "%" + value + "%"
+		if !seen[pattern] {
+			seen[pattern] = true
+			patterns = append(patterns, pattern)
+		}
+	}
+
+	addPattern(trimmed)
+
+	extracted := models.ExtractEmail(trimmed)
+	if extracted != trimmed {
+		addPattern(extracted)
+	}
+
+	lower := strings.ToLower(extracted)
+	if lower != extracted {
+		addPattern(lower)
+	}
+
+	if strings.HasPrefix(lower, "*@") && len(lower) > 2 {
+		addPattern("@" + lower[2:])
+	}
+
+	atIndex := strings.LastIndex(lower, "@")
+	if atIndex <= 0 || atIndex >= len(lower)-1 {
+		return patterns
+	}
+
+	localPart := lower[:atIndex]
+	domainPart := lower[atIndex+1:]
+	if domainPart == "googlemail.com" {
+		domainPart = "gmail.com"
+	}
+
+	if domainPart == "gmail.com" {
+		if plusIndex := strings.Index(localPart, "+"); plusIndex > 0 {
+			baseAddress := localPart[:plusIndex] + "@" + domainPart
+			addPattern(baseAddress)
+			addPattern(localPart[:plusIndex] + "@googlemail.com")
+		} else {
+			pattern := "%" + localPart + "+%@gmail.com%"
+			if !seen[pattern] {
+				seen[pattern] = true
+				patterns = append(patterns, pattern)
+			}
+			pattern = "%" + localPart + "+%@googlemail.com%"
+			if !seen[pattern] {
+				seen[pattern] = true
+				patterns = append(patterns, pattern)
+			}
+		}
+	}
+
+	return patterns
+}
+
+func emailRecipientSearchExpr(db *gorm.DB, query string) (string, []interface{}) {
+	patterns := emailSearchAddressPatterns(query)
+	if len(patterns) == 0 {
+		return emailRecipientLikeExpr(db), []interface{}{"%%", "%%"}
+	}
+
+	recipientExpr := emailRecipientLikeExpr(db)
+	conditions := make([]string, 0, len(patterns))
+	args := make([]interface{}, 0, len(patterns)*2)
+	for _, pattern := range patterns {
+		conditions = append(conditions, recipientExpr)
+		args = append(args, pattern, pattern)
+	}
+
+	return "(" + strings.Join(conditions, " OR ") + ")", args
+}
+
 // Create creates a new email
 func (r *EmailRepository) Create(email *models.Email) error {
 	// 在保存前提取纯邮箱地址
@@ -458,14 +544,18 @@ func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gor
 	if options.Keyword != "" {
 		// Global keyword search across all text fields
 		keywordPattern := "%" + options.Keyword + "%"
+		recipientSearchExpr, recipientSearchArgs := emailRecipientSearchExpr(r.db, options.Keyword)
+		queryArgs := []interface{}{keywordPattern, keywordPattern}
+		queryArgs = append(queryArgs, recipientSearchArgs...)
+		queryArgs = append(queryArgs, keywordPattern, keywordPattern, keywordPattern)
 		query = query.Where(
 			fmt.Sprintf(
 				"subject LIKE ? OR %s OR %s OR %s OR body LIKE ? OR html_body LIKE ?",
 				textLikeExpr(r.db, "from"),
-				emailRecipientLikeExpr(r.db),
+				recipientSearchExpr,
 				textLikeExpr(r.db, "cc"),
 			),
-			keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern,
+			queryArgs...,
 		)
 	} else {
 		// Individual field searches
@@ -474,8 +564,8 @@ func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gor
 			query = query.Where(textLikeExpr(r.db, "from"), fromPattern)
 		}
 		if options.ToQuery != "" {
-			toPattern := "%" + options.ToQuery + "%"
-			query = query.Where(emailRecipientLikeExpr(r.db), toPattern, toPattern)
+			recipientSearchExpr, recipientSearchArgs := emailRecipientSearchExpr(r.db, options.ToQuery)
+			query = query.Where(recipientSearchExpr, recipientSearchArgs...)
 		}
 		if options.CcQuery != "" {
 			ccPattern := "%" + options.CcQuery + "%"

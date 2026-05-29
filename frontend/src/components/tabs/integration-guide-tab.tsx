@@ -434,7 +434,7 @@ function ArchitectureDiagram({ type }: { type: 'all-in-one' | 'compose' }) {
                                     /api/* → API 路由
                                 </div>
                                 <div className="px-2.5 py-1 rounded-md bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 text-[10px] text-purple-600 dark:text-purple-400 font-medium">
-                                    /* → 静态前端文件
+                                    {'/* → 静态前端文件'}
                                 </div>
                             </div>
                             {/* Volume */}
@@ -544,6 +544,15 @@ const TOC_OAUTH = [
     { id: 'faq', label: '常见问题', icon: AlertCircle },
 ]
 
+const TOC_MAIL_API = [
+    { id: 'mail-api-overview', label: '邮件 API 总览', icon: Mail },
+    { id: 'mail-api-auth', label: '登录与 Token', icon: Key },
+    { id: 'mail-api-accounts', label: '获取邮箱账户', icon: Database },
+    { id: 'mail-api-read', label: '同步并读取邮件', icon: Search },
+    { id: 'mail-api-pickup', label: '取件轮询逻辑', icon: Zap },
+    { id: 'mail-api-code', label: '完整代码示例', icon: Code2 },
+]
+
 const TOC_DEPLOY = [
     { id: 'deploy-overview', label: '部署概述', icon: Rocket },
     { id: 'deploy-makefile', label: 'Makefile 命令', icon: Terminal },
@@ -611,6 +620,27 @@ export default function IntegrationGuideTab() {
                         {/* OAuth 接入部分 */}
                         <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">OAuth 接入</div>
                         {TOC_OAUTH.map((item) => (
+                            <button
+                                key={item.id}
+                                onClick={() => scrollTo(item.id)}
+                                className={cn(
+                                    'flex items-center gap-2 w-full px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 text-left',
+                                    activeSection === item.id
+                                        ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400'
+                                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800/50 hover:text-gray-700 dark:hover:text-gray-300'
+                                )}
+                            >
+                                <item.icon className="w-3.5 h-3.5 flex-shrink-0" />
+                                <span className="truncate">{item.label}</span>
+                            </button>
+                        ))}
+
+                        {/* 分隔线 */}
+                        <div className="my-2 border-t border-gray-200 dark:border-gray-800" />
+
+                        {/* 邮件 API 部分 */}
+                        <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">邮件 API</div>
+                        {TOC_MAIL_API.map((item) => (
                             <button
                                 key={item.id}
                                 onClick={() => scrollTo(item.id)}
@@ -1182,6 +1212,468 @@ done`}
                             ].map((faq, idx) => (
                                 <FAQItem key={idx} question={faq.q} answer={faq.a} />
                             ))}
+                        </div>
+                    </section>
+
+                    {/* ============================================================ */}
+                    {/* ==================== 邮件 API 接入 ==================== */}
+                    {/* ============================================================ */}
+
+                    {/* 分隔线 */}
+                    <div className="relative py-8">
+                        <div className="absolute inset-0 flex items-center">
+                            <div className="w-full border-t-2 border-dashed border-gray-200 dark:border-gray-700" />
+                        </div>
+                        <div className="relative flex justify-center">
+                            <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gradient-to-r from-emerald-500 to-teal-600 text-white text-xs font-bold shadow-lg shadow-emerald-500/25">
+                                <Mail className="w-3.5 h-3.5" />
+                                邮件 API
+                            </span>
+                        </div>
+                    </div>
+
+                    <section data-section="mail-api-overview">
+                        <div className="mb-6">
+                            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 text-xs font-medium mb-3">
+                                <Database className="w-3 h-3" />
+                                Mail API Workflow
+                            </div>
+                            <h1 className="text-3xl font-extrabold text-gray-900 dark:text-white mb-3">
+                                通过 API 获取邮箱账户、读取邮件与执行取件
+                            </h1>
+                            <p className="text-base text-gray-600 dark:text-gray-400 leading-relaxed">
+                                本文档基于后端实际路由和新版取件页面的调用链编写，覆盖从登录、获取账户、同步邮件、读取邮件详情，到使用统一取件轮询接口等待并提取邮件内容的完整流程。
+                            </p>
+                        </div>
+
+                        <div className="grid md:grid-cols-3 gap-3 my-6">
+                            {[
+                                { title: '1. 获取账户', desc: '登录后通过 /accounts 或 /accounts/paginated 获取可用邮箱账户。', icon: Database },
+                                { title: '2. 读取邮件', desc: '先同步账户邮件，再用列表/搜索/详情接口读取数据库中的邮件。', icon: Search },
+                                { title: '3. 取件轮询', desc: '使用 /pickup/poll 临时拉取、搜索并可选执行提取。', icon: Zap },
+                            ].map((item) => (
+                                <div key={item.title} className="rounded-xl border border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-900">
+                                    <item.icon className="w-5 h-5 text-emerald-500 mb-2" />
+                                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-1">{item.title}</h4>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">{item.desc}</p>
+                                </div>
+                            ))}
+                        </div>
+
+                        <Callout type="important">
+                            以下示例统一使用 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">API_BASE=http://localhost:8080/api</code>，也就是已经包含 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">/api</code> 前缀。除登录接口外，其余接口都需要携带 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">Authorization: Bearer TOKEN</code>。
+                        </Callout>
+                    </section>
+
+                    <section data-section="mail-api-auth">
+                        <StepIndicator step={1} title="登录并获取访问令牌" active />
+                        <div className="pl-12 space-y-4">
+                            <p className="text-sm text-gray-600 dark:text-gray-400">
+                                API 调用方需要先登录获取 JWT。后端登录接口返回的 <code className="font-mono text-xs">token</code> 用于后续所有受保护接口。
+                            </p>
+
+                            <div className="flex items-center gap-2 mb-2">
+                                <MethodBadge method="POST" />
+                                <code className="text-sm font-mono text-gray-800 dark:text-gray-200">/api/auth/login</code>
+                            </div>
+
+                            <CollapsibleCode
+                                title="登录获取 Token"
+                                defaultOpen={true}
+                                code={`API_BASE="http://localhost:8080/api"
+
+TOKEN=$(curl -s -X POST "\${API_BASE}/auth/login" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "username": "admin@example.com",
+    "password": "your_password"
+  }' | jq -r '.token')
+
+echo "\${TOKEN}"`}
+                            />
+
+                            <FieldTable fields={[
+                                { name: 'token', type: 'string', required: true, desc: 'Bearer Token，后续请求放入 Authorization header' },
+                                { name: 'expires_at', type: 'string', desc: 'Token 过期时间，RFC3339 格式' },
+                                { name: 'user', type: 'object', desc: '当前登录用户基础信息' },
+                            ]} />
+                        </div>
+                    </section>
+
+                    <section data-section="mail-api-accounts">
+                        <StepIndicator step={2} title="获取邮箱账户" active />
+                        <div className="pl-12 space-y-4">
+                            <p className="text-sm text-gray-600 dark:text-gray-400">
+                                读取邮件前，需要拿到邮箱账户 ID。推荐使用分页接口，它支持搜索、排序和过滤；如果只需要全量账户，也可以调用 <code className="font-mono text-xs">GET /api/accounts</code>。
+                            </p>
+
+                            <div className="flex items-center gap-2 mb-2">
+                                <MethodBadge method="GET" />
+                                <code className="text-sm font-mono text-gray-800 dark:text-gray-200">/api/accounts/paginated</code>
+                            </div>
+
+                            <CollapsibleCode
+                                title="分页获取账户"
+                                defaultOpen={true}
+                                code={`curl "\${API_BASE}/accounts/paginated?page=1&limit=20&search=gmail&sort_by=created_at&sort_order=desc" \\
+  -H "Authorization: Bearer \${TOKEN}"`}
+                            />
+
+                            <CollapsibleCode
+                                title="响应结构示例"
+                                language="json"
+                                code={`{
+  "data": [
+    {
+      "id": 10,
+      "emailAddress": "user@gmail.com",
+      "authType": "oauth2",
+      "mailProviderId": 1,
+      "isDomainMail": false,
+      "domain": "",
+      "isVerified": true,
+      "lastSyncAt": "2026-05-29T08:10:00Z",
+      "errorStatus": "normal"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "limit": 20,
+  "total_pages": 1
+}`}
+                            />
+
+                            <FieldTable fields={[
+                                { name: 'page', type: 'number', desc: '页码，默认 1' },
+                                { name: 'limit', type: 'number', desc: '每页数量，最大 100' },
+                                { name: 'search', type: 'string', desc: '按邮箱地址搜索' },
+                                { name: 'provider_id', type: 'number', desc: '按邮件服务商过滤' },
+                                { name: 'is_verified', type: 'string', desc: 'true 或 false' },
+                                { name: 'error_status', type: 'string', desc: '例如 normal、oauth_expired、network_error' },
+                            ]} />
+                        </div>
+                    </section>
+
+                    <section data-section="mail-api-read">
+                        <StepIndicator step={3} title="同步并读取邮件" active />
+                        <div className="pl-12 space-y-5">
+                            <p className="text-sm text-gray-600 dark:text-gray-400">
+                                邮件列表接口读取的是数据库中的邮件。想拿最新邮件时，先调用同步接口把 IMAP 服务器上的邮件拉入数据库，再调用列表、搜索或详情接口。
+                            </p>
+
+                            <div>
+                                <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-2 flex items-center gap-2">
+                                    <RefreshCw className="w-4 h-4 text-blue-500" /> 1. 同步账户邮件
+                                </h4>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <MethodBadge method="POST" />
+                                    <code className="text-sm font-mono text-gray-800 dark:text-gray-200">{'/api/account-emails/fetch/{account_id}'}</code>
+                                </div>
+                                <CollapsibleCode
+                                    title="增量同步最近邮件"
+                                    defaultOpen={true}
+                                    code={`ACCOUNT_ID=10
+SINCE=$(node -e "console.log(new Date(Date.now() - 60 * 60 * 1000).toISOString())")
+
+curl -X POST "\${API_BASE}/account-emails/fetch/\${ACCOUNT_ID}" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d "{
+    \\"sync_mode\\": \\"incremental\\",
+    \\"mailboxes\\": [\\"INBOX\\"],
+    \\"default_start_date\\": \\"\${SINCE}\\",
+    \\"max_emails_per_mailbox\\": 50,
+    \\"include_body\\": true
+  }"`}
+                                />
+                                <Callout type="tip">
+                                    <code className="font-mono text-xs">sync_mode</code> 默认为 <code className="font-mono text-xs">incremental</code>，没有历史同步记录时会使用 <code className="font-mono text-xs">default_start_date</code> 作为起点。读取正文或后续要做提取时，建议传 <code className="font-mono text-xs">include_body: true</code>。
+                                </Callout>
+                            </div>
+
+                            <div>
+                                <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-2 flex items-center gap-2">
+                                    <Search className="w-4 h-4 text-emerald-500" /> 2. 读取账户邮件列表
+                                </h4>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <MethodBadge method="GET" />
+                                    <code className="text-sm font-mono text-gray-800 dark:text-gray-200">{'/api/account-emails/list/{account_id}'}</code>
+                                </div>
+                                <CollapsibleCode
+                                    title="读取最近邮件"
+                                    defaultOpen={true}
+                                    code={`curl "\${API_BASE}/account-emails/list/\${ACCOUNT_ID}?limit=20&offset=0&sort_by=date_desc&mailbox=INBOX&direction=received" \\
+  -H "Authorization: Bearer \${TOKEN}"`}
+                                />
+                                <FieldTable fields={[
+                                    { name: 'limit', type: 'number', desc: '返回数量，默认 50，最大 100' },
+                                    { name: 'offset', type: 'number', desc: '分页偏移量' },
+                                    { name: 'sort_by', type: 'string', desc: 'date_desc、date_asc、subject_asc、subject_desc' },
+                                    { name: 'from_query/to_query', type: 'string', desc: '按发件人或收件人模糊搜索' },
+                                    { name: 'subject_query/body_query/html_query', type: 'string', desc: '按主题、文本正文或 HTML 正文搜索' },
+                                    { name: 'keyword', type: 'string', desc: '跨发件人、收件人、主题、正文的全局关键词' },
+                                    { name: 'direction', type: 'string', desc: 'received、sent、all' },
+                                ]} />
+                            </div>
+
+                            <div>
+                                <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-2 flex items-center gap-2">
+                                    <Globe className="w-4 h-4 text-purple-500" /> 3. 全局搜索与域名/别名收件人搜索
+                                </h4>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <MethodBadge method="GET" />
+                                    <code className="text-sm font-mono text-gray-800 dark:text-gray-200">/api/emails/search</code>
+                                </div>
+                                <CollapsibleCode
+                                    title="按收件地址搜索"
+                                    code={`curl "\${API_BASE}/emails/search?account_id=\${ACCOUNT_ID}&to_query=code@example.com&start_date=\${SINCE}&limit=10&sort_by=date_desc" \\
+  -H "Authorization: Bearer \${TOKEN}"`}
+                                />
+                                <Callout type="info">
+                                    <code className="font-mono text-xs">to_query</code> 会走收件人搜索增强逻辑：Gmail 别名会尝试点号、加号、googlemail.com 变体；域名邮箱账户会尝试匹配同域名收件地址。该接口在传入 <code className="font-mono text-xs">to_query</code> 时，也会尝试触发对应账户订阅的立即同步；即便同步失败，也会继续返回数据库中已存在的邮件。
+                                </Callout>
+                            </div>
+
+                            <div>
+                                <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-2 flex items-center gap-2">
+                                    <FileText className="w-4 h-4 text-amber-500" /> 4. 读取单封邮件详情
+                                </h4>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <MethodBadge method="GET" />
+                                    <code className="text-sm font-mono text-gray-800 dark:text-gray-200">{'/api/emails/{email_id}'}</code>
+                                </div>
+                                <CollapsibleCode
+                                    title="读取详情"
+                                    code={`EMAIL_ID=123
+
+curl "\${API_BASE}/emails/\${EMAIL_ID}" \\
+  -H "Authorization: Bearer \${TOKEN}"`}
+                                />
+                            </div>
+                        </div>
+                    </section>
+
+                    <section data-section="mail-api-pickup">
+                        <StepIndicator step={4} title="使用统一取件轮询接口" active />
+                        <div className="pl-12 space-y-5">
+                            <p className="text-sm text-gray-600 dark:text-gray-400">
+                                新版取件页面实际使用 <code className="font-mono text-xs">POST /api/pickup/poll</code>。这个接口把“临时同步续期、立即同步、搜索邮件、执行提取”合成一次请求，适合验证码、登录确认邮件、一次性通知等需要短时间等待的场景。
+                            </p>
+
+                            <div className="rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-800 overflow-hidden">
+                                {[
+                                    ['注册/续期临时同步覆盖', '默认 sync_interval=5 秒，keep_alive_seconds=30 秒；每次调用都会续期。'],
+                                    ['立即同步一次', '服务端会调用 SyncNow，确保刚到达的邮件尽快入库。'],
+                                    ['按 account_id、since、to_query 搜索邮件', 'since 必须是 RFC3339 时间；to_query 可用于别名或域名邮箱收件地址。'],
+                                    ['可选执行提取', 'template_id、inline_actions、simple_extract 三选一；都不传则只返回邮件。'],
+                                ].map(([title, desc], idx) => (
+                                    <div key={title} className="flex items-start gap-3 px-4 py-3">
+                                        <span className="flex items-center justify-center w-6 h-6 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 text-xs font-bold flex-shrink-0">{idx + 1}</span>
+                                        <div>
+                                            <div className="text-sm font-semibold text-gray-800 dark:text-gray-200">{title}</div>
+                                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{desc}</div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div className="flex items-center gap-2 mb-2">
+                                <MethodBadge method="POST" />
+                                <code className="text-sm font-mono text-gray-800 dark:text-gray-200">/api/pickup/poll</code>
+                            </div>
+
+                            <CollapsibleCode
+                                title="等待验证码邮件并提取 6 位数字"
+                                defaultOpen={true}
+                                code={`SINCE=$(node -e "console.log(new Date(Date.now() - 5 * 60 * 1000).toISOString())")
+
+curl -X POST "\${API_BASE}/pickup/poll" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d "{
+    \\"account_id\\": \${ACCOUNT_ID},
+    \\"keep_alive_seconds\\": 60,
+    \\"sync_interval\\": 5,
+    \\"since\\": \\"\${SINCE}\\",
+    \\"to_query\\": \\"code@example.com\\",
+    \\"limit\\": 5,
+    \\"simple_extract\\": {
+      \\"field\\": \\"body\\",
+      \\"type\\": \\"regex\\",
+      \\"pattern\\": \\"验证码[:：\\\\s]*([0-9]{6})|||\\$1\\",
+      \\"match_mode\\": \\"first\\"
+    }
+  }"`}
+                            />
+
+                            <CollapsibleCode
+                                title="响应结构示例"
+                                language="json"
+                                code={`{
+  "success": true,
+  "emails": [
+    {
+      "ID": 123,
+      "AccountID": 10,
+      "Subject": "您的验证码",
+      "From": ["Example <notice@example.com>"],
+      "To": ["code@example.com"],
+      "Date": "2026-05-29T08:15:00Z",
+      "Body": "验证码：123456",
+      "MailboxName": "INBOX",
+      "direction": "received"
+    }
+  ],
+  "new_count": 1,
+  "extractions": [
+    {
+      "email_id": 123,
+      "success": true,
+      "status": "success",
+      "extracted_value": "123456"
+    }
+  ],
+  "sync_active": true,
+  "sync_expires_at": "2026-05-29T08:16:00Z"
+}`}
+                            />
+
+                            <FieldTable fields={[
+                                { name: 'account_id', type: 'number', required: true, desc: '邮箱账户 ID' },
+                                { name: 'keep_alive_seconds', type: 'number', desc: '临时同步覆盖有效期，默认 30 秒' },
+                                { name: 'sync_interval', type: 'number', desc: '临时同步间隔，默认 5 秒' },
+                                { name: 'since', type: 'string', desc: '搜索起始时间，RFC3339 格式' },
+                                { name: 'to_query', type: 'string', desc: '收件人过滤，可用于别名或域名邮箱地址' },
+                                { name: 'limit', type: 'number', desc: '返回邮件数量，默认 10' },
+                                { name: 'template_id', type: 'number', desc: '使用已有 V2 取件模板执行提取' },
+                                { name: 'simple_extract', type: 'object', desc: '简单提取配置，支持 regex、js、gotemplate' },
+                            ]} />
+
+                            <Callout type="tip">
+                                如果需要等待一段时间，客户端可以每 5 秒调用一次 <code className="font-mono text-xs">/pickup/poll</code>，直到 <code className="font-mono text-xs">emails.length &gt; 0</code> 或 <code className="font-mono text-xs">extractions</code> 中出现 <code className="font-mono text-xs">status=success</code>。每次调用都会刷新临时同步覆盖的过期时间。
+                            </Callout>
+                        </div>
+                    </section>
+
+                    <section data-section="mail-api-code">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-slate-600 to-gray-800 text-white shadow-sm">
+                                <Code2 className="w-4 h-4" />
+                            </div>
+                            <h3 className="text-lg font-bold text-gray-900 dark:text-white">完整 Node.js 调用示例</h3>
+                        </div>
+
+                        <div className="pl-12 space-y-4">
+                            <p className="text-sm text-gray-600 dark:text-gray-400">
+                                下面的脚本演示完整流程：登录、获取第一个账户、同步最近邮件、读取邮件列表、读取详情、轮询取件并提取验证码。
+                            </p>
+
+                            <CollapsibleCode
+                                title="mailman-mail-api-demo.mjs"
+                                language="js"
+                                defaultOpen={true}
+                                code={`const API_BASE = process.env.API_BASE || 'http://localhost:8080/api'
+const USERNAME = process.env.MAILMAN_USERNAME || 'admin@example.com'
+const PASSWORD = process.env.MAILMAN_PASSWORD || 'your_password'
+
+async function request(path, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.token ? { Authorization: 'Bearer ' + options.token } : {}),
+    ...(options.headers || {}),
+  }
+
+  const response = await fetch(API_BASE + path, {
+    method: options.method || 'GET',
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  })
+
+  if (!response.ok) {
+    throw new Error(response.status + ' ' + await response.text())
+  }
+
+  return response.json()
+}
+
+const login = await request('/auth/login', {
+  method: 'POST',
+  body: { username: USERNAME, password: PASSWORD },
+})
+const token = login.token
+
+const accountsPage = await request('/accounts/paginated?page=1&limit=10&sort_by=created_at&sort_order=desc', { token })
+const account = accountsPage.data?.[0]
+if (!account) throw new Error('No email account found')
+
+const accountId = account.id
+const since = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+
+await request('/account-emails/fetch/' + accountId, {
+  method: 'POST',
+  token,
+  body: {
+    sync_mode: 'incremental',
+    mailboxes: ['INBOX'],
+    default_start_date: since,
+    max_emails_per_mailbox: 50,
+    include_body: true,
+  },
+})
+
+const searchParams = new URLSearchParams({
+  account_id: String(accountId),
+  start_date: since,
+  limit: '10',
+  sort_by: 'date_desc',
+  direction: 'received',
+})
+const list = await request('/emails/search?' + searchParams.toString(), { token })
+console.log('emails found:', list.emails.length)
+
+if (list.emails[0]) {
+  const detail = await request('/emails/' + list.emails[0].ID, { token })
+  console.log('latest subject:', detail.Subject)
+}
+
+const pickup = await request('/pickup/poll', {
+  method: 'POST',
+  token,
+  body: {
+    account_id: accountId,
+    keep_alive_seconds: 60,
+    sync_interval: 5,
+    since,
+    to_query: account.emailAddress,
+    limit: 5,
+    simple_extract: {
+      field: 'body',
+      type: 'regex',
+      pattern: '验证码[:：\\\\s]*([0-9]{6})|||$1',
+      match_mode: 'first',
+    },
+  },
+})
+
+console.log(JSON.stringify({
+  account: account.emailAddress,
+  pickup_emails: pickup.emails.length,
+  extraction: pickup.extractions?.[0],
+  sync_expires_at: pickup.sync_expires_at,
+}, null, 2))`}
+                            />
+
+                            <CollapsibleCode
+                                title="运行方式"
+                                code={`API_BASE="http://localhost:8080/api" \\
+MAILMAN_USERNAME="admin@example.com" \\
+MAILMAN_PASSWORD="your_password" \\
+node mailman-mail-api-demo.mjs`}
+                            />
+
+                            <Callout type="warning">
+                                <code className="font-mono text-xs">since</code> 必须是 RFC3339 时间。跨平台脚本建议像上面的 Node.js 示例一样使用 <code className="font-mono text-xs">new Date(...).toISOString()</code> 生成。
+                            </Callout>
                         </div>
                     </section>
 

@@ -51,6 +51,73 @@ interface EnhancedMailboxSidebarProps {
     loading: boolean
 }
 
+const formatSyncInterval = (seconds?: number) => {
+    if (!seconds || seconds <= 0) return '未设置'
+    if (seconds < 60) return `${seconds}秒`
+    if (seconds % 3600 === 0) return `${seconds / 3600}小时`
+    if (seconds % 60 === 0) return `${seconds / 60}分钟`
+    return `${seconds}秒`
+}
+
+const normalizeGmailAddress = (value: string) => {
+    const email = value.trim().toLowerCase()
+    const atIndex = email.lastIndexOf('@')
+    if (atIndex <= 0 || atIndex >= email.length - 1) return email
+
+    let localPart = email.slice(0, atIndex)
+    let domainPart = email.slice(atIndex + 1)
+    if (domainPart !== 'gmail.com' && domainPart !== 'googlemail.com') {
+        return email
+    }
+
+    const plusIndex = localPart.indexOf('+')
+    if (plusIndex > -1) {
+        localPart = localPart.slice(0, plusIndex)
+    }
+    localPart = localPart.replace(/\./g, '')
+    domainPart = 'gmail.com'
+
+    return `${localPart}@${domainPart}`
+}
+
+const accountMatchesSearch = (account: EmailAccount, rawQuery: string) => {
+    const query = rawQuery.trim().toLowerCase()
+    if (!query) return true
+
+    const providerName = account.mailProvider?.name || ''
+    const providerType = account.mailProvider?.type || ''
+    const domain = account.domain?.trim().toLowerCase() || ''
+    const customSettings = account.customSettings
+        ? Object.values(account.customSettings).join(' ').toLowerCase()
+        : ''
+    const tokens = [
+        account.emailAddress,
+        providerName,
+        providerType,
+        domain,
+        domain ? `*@${domain}` : '',
+        normalizeGmailAddress(account.emailAddress),
+        customSettings
+    ].map(token => token.toLowerCase()).filter(Boolean)
+
+    if (tokens.some(token => token.includes(query))) {
+        return true
+    }
+
+    const queryEmail = query.startsWith('*@') ? query.slice(2) : query
+    const atIndex = queryEmail.lastIndexOf('@')
+    if (atIndex > 0 && atIndex < queryEmail.length - 1) {
+        const queryDomain = queryEmail.slice(atIndex + 1)
+        if (account.isDomainMail && domain && queryDomain === domain) {
+            return true
+        }
+
+        return normalizeGmailAddress(queryEmail) === normalizeGmailAddress(account.emailAddress)
+    }
+
+    return false
+}
+
 export default function EnhancedMailboxSidebar({
     accounts,
     selectedAccount,
@@ -102,7 +169,7 @@ export default function EnhancedMailboxSidebar({
     // 初始化加载和定时刷新同步状态
     useEffect(() => {
         fetchSyncStatuses()
-        const interval = setInterval(fetchSyncStatuses, 3000) // 每3秒刷新
+        const interval = setInterval(fetchSyncStatuses, 10000)
         return () => clearInterval(interval)
     }, [])
 
@@ -141,11 +208,15 @@ export default function EnhancedMailboxSidebar({
                 statusIcon: <WifiOff className="w-3 h-3" />,
                 statusColor: 'text-gray-400',
                 statusText: '未配置',
+                configText: '同步未配置',
+                intervalText: '未设置',
                 timeText: '',
                 tooltip: '此账户未配置自动同步'
             }
         }
 
+        const intervalText = formatSyncInterval(status.sync_interval)
+        const configText = `${status.enable_auto_sync && !status.auto_disabled ? '同步开启' : '同步关闭'} · ${intervalText}`
         const timeAgo = getTimeAgo(status.last_sync_time)
         const lastSyncDisplay = status.last_sync_time
             ? new Date(status.last_sync_time).toLocaleString()
@@ -161,8 +232,10 @@ export default function EnhancedMailboxSidebar({
                 statusIcon: <WifiOff className="w-3 h-3" />,
                 statusColor: 'text-gray-400',
                 statusText: '禁用',
+                configText,
+                intervalText,
                 timeText: timeAgo,
-                tooltip: `${reason}\n上次同步: ${lastSyncDisplay}`
+                tooltip: `${reason}\n同步间隔: ${intervalText}\n上次同步: ${lastSyncDisplay}`
             }
         }
 
@@ -173,8 +246,10 @@ export default function EnhancedMailboxSidebar({
                 statusIcon: <Loader2 className="w-3 h-3 animate-spin" />,
                 statusColor: 'text-blue-500',
                 statusText: '确认中',
+                configText,
+                intervalText,
                 timeText: '',
-                tooltip: '正在确认同步配置...'
+                tooltip: `正在确认同步配置...\n同步间隔: ${intervalText}`
             }
         }
 
@@ -185,8 +260,10 @@ export default function EnhancedMailboxSidebar({
                 statusIcon: <AlertTriangle className="w-3 h-3" />,
                 statusColor: 'text-red-500',
                 statusText: '异常',
+                configText,
+                intervalText,
                 timeText: timeAgo,
-                tooltip: `错误 ${status.consecutive_errors || status.error_count || 0} 次\n${status.last_sync_error || ''}\n上次同步: ${lastSyncDisplay}`
+                tooltip: `错误 ${status.consecutive_errors || status.error_count || 0} 次\n${status.last_sync_error || ''}\n同步间隔: ${intervalText}\n上次同步: ${lastSyncDisplay}`
             }
         }
 
@@ -198,8 +275,10 @@ export default function EnhancedMailboxSidebar({
                 : <Wifi className="w-3 h-3" />,
             statusColor: 'text-green-500',
             statusText: '正常',
+            configText,
+            intervalText,
             timeText: timeAgo,
-            tooltip: `已同步 ${status.sync_count || 0} 次\n同步间隔: ${status.sync_interval}秒\n上次同步: ${lastSyncDisplay}`
+            tooltip: `已同步 ${status.sync_count || 0} 次\n同步间隔: ${intervalText}\n上次同步: ${lastSyncDisplay}`
         }
     }
 
@@ -296,11 +375,7 @@ export default function EnhancedMailboxSidebar({
 
         // 搜索过滤
         if (searchQuery.trim()) {
-            const query = searchQuery.toLowerCase()
-            result = result.filter(account =>
-                account.emailAddress.toLowerCase().includes(query) ||
-                (account.mailProvider?.type || '').toLowerCase().includes(query)
-            )
+            result = result.filter(account => accountMatchesSearch(account, searchQuery))
         }
 
         // 验证状态过滤
@@ -656,7 +731,7 @@ export default function EnhancedMailboxSidebar({
                                                     </p>
 
                                                     {/* 提供商和状态 */}
-                                                    <div className="flex items-center gap-2 mt-1">
+                                                    <div className="flex flex-wrap items-center gap-2 mt-1">
                                                         <span className={cn(
                                                             "text-xs font-medium px-1.5 py-0.5 rounded",
                                                             providerInfo.bgColor,
@@ -696,11 +771,11 @@ export default function EnhancedMailboxSidebar({
                                                                     <span className={syncInfo.statusColor}>
                                                                         {syncInfo.statusIcon}
                                                                     </span>
-                                                                    <span className={cn("text-[10px]", syncInfo.statusColor)}>
-                                                                        {syncInfo.statusText}
+                                                                    <span className={cn("text-[10px] whitespace-nowrap", syncInfo.statusColor)}>
+                                                                        {syncInfo.configText}
                                                                     </span>
                                                                     {syncInfo.timeText && (
-                                                                        <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                                                                        <span className="text-[10px] whitespace-nowrap text-gray-500 dark:text-gray-400">
                                                                             · {syncInfo.timeText}
                                                                         </span>
                                                                     )}

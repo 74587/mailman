@@ -302,7 +302,7 @@ func main() {
 	)
 
 	// Initialize API handler
-	apiHandler := api.NewAPIHandler(fetcherService, parserService, emailAccountRepo, mailProviderRepo, emailRepo, incrementalSyncRepo, emailFetchScheduler, pluginManager, incrementalSyncManager, perAccountSyncManager, emailIngestService)
+	apiHandler := api.NewAPIHandler(fetcherService, parserService, emailAccountRepo, mailProviderRepo, emailRepo, incrementalSyncRepo, emailFetchScheduler, pluginManager, incrementalSyncManager, perAccountSyncManager, syncConfigRepo, emailIngestService)
 
 	// Initialize Email Send handler
 	emailSendHandler := api.NewEmailSendHandlers(emailSenderService)

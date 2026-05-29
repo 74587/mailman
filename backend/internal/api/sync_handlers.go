@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"mailman/internal/models"
+	"mailman/internal/services"
 	"net/http"
 	"strconv"
 
@@ -165,6 +166,61 @@ func (h *APIHandler) GetQueueMetricsHandler(w http.ResponseWriter, r *http.Reque
 	json.NewEncoder(w).Encode(response)
 }
 
+func (h *APIHandler) buildAccountSyncStatusPayload(account models.EmailAccount, runtimeStatus *services.AccountSyncerStatus) map[string]interface{} {
+	payload := map[string]interface{}{
+		"account_id":         account.ID,
+		"account_email":      account.EmailAddress,
+		"enable_auto_sync":   false,
+		"sync_interval":      0,
+		"sync_status":        "not_configured",
+		"auto_disabled":      false,
+		"consecutive_errors": 0,
+		"is_running":         false,
+	}
+
+	if h.SyncConfigRepo != nil {
+		if config, err := h.SyncConfigRepo.GetEffectiveSyncConfig(account.ID); err == nil && config != nil {
+			payload["enable_auto_sync"] = config.EnableAutoSync
+			payload["sync_interval"] = config.SyncInterval
+			payload["sync_status"] = config.SyncStatus
+			payload["sync_folders"] = config.SyncFolders
+			payload["auto_disabled"] = config.AutoDisabled
+			payload["disable_reason"] = config.DisableReason
+			payload["consecutive_errors"] = config.ConsecutiveErrors
+			payload["last_sync_error"] = config.LastSyncError
+			payload["last_sync_time"] = config.LastSyncTime
+			payload["last_sync_end_time"] = config.LastSyncEndTime
+			payload["last_error_time"] = config.LastErrorTime
+		}
+
+		if tempConfig, err := h.SyncConfigRepo.GetTemporaryConfigByAccountID(account.ID); err == nil && tempConfig != nil {
+			payload["is_temporary"] = true
+			payload["temporary_expires_at"] = tempConfig.ExpiresAt
+		} else {
+			payload["is_temporary"] = false
+		}
+	}
+
+	if runtimeStatus != nil {
+		payload["is_running"] = runtimeStatus.IsRunning
+		payload["sync_interval"] = runtimeStatus.SyncInterval
+		payload["sync_count"] = runtimeStatus.SyncCount
+		payload["error_count"] = runtimeStatus.ErrorCount
+		payload["next_sync_time"] = runtimeStatus.NextSyncTime
+		if !runtimeStatus.LastSyncTime.IsZero() {
+			payload["last_sync_time"] = runtimeStatus.LastSyncTime
+		}
+		if runtimeStatus.LastError != "" {
+			payload["last_sync_error"] = runtimeStatus.LastError
+		}
+		if !runtimeStatus.LastErrorTime.IsZero() {
+			payload["last_error_time"] = runtimeStatus.LastErrorTime
+		}
+	}
+
+	return payload
+}
+
 // GetAccountSyncStatusHandler 获取账户同步状态
 func (h *APIHandler) GetAccountSyncStatusHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := GetCurrentOrgID(r)
@@ -175,6 +231,7 @@ func (h *APIHandler) GetAccountSyncStatusHandler(w http.ResponseWriter, r *http.
 
 	// 获取查询参数
 	accountIDStr := r.URL.Query().Get("account_id")
+	includeConfig := r.URL.Query().Get("include_config") == "true"
 
 	if accountIDStr != "" {
 		// 获取单个账户状态
@@ -184,33 +241,51 @@ func (h *APIHandler) GetAccountSyncStatusHandler(w http.ResponseWriter, r *http.
 			return
 		}
 
+		account, accountErr := h.EmailAccountRepo.GetByID(uint(accountID))
+		if accountErr != nil {
+			http.Error(w, "Account not found", http.StatusNotFound)
+			return
+		}
+
 		// 验证账户归属当前组织
-		if orgID > 0 {
-			account, err := h.EmailAccountRepo.GetByID(uint(accountID))
-			if err != nil || account.OrgID != orgID {
-				http.Error(w, "Account not found or access denied", http.StatusForbidden)
-				return
-			}
+		if orgID > 0 && account.OrgID != orgID {
+			http.Error(w, "Account not found or access denied", http.StatusForbidden)
+			return
 		}
 
 		status, err := h.perAccountSyncManager.GetAccountSyncerStatus(uint(accountID))
-		if err != nil {
+		if err != nil && !includeConfig {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
+		}
+
+		var data interface{} = status
+		if includeConfig {
+			data = h.buildAccountSyncStatusPayload(*account, status)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		response := map[string]interface{}{
 			"success": true,
-			"data":    status,
+			"data":    data,
 		}
 		json.NewEncoder(w).Encode(response)
 	} else {
 		// 获取所有账户状态，按组织过滤
 		allStatuses := h.perAccountSyncManager.GetAllAccountSyncerStatuses()
+		statusByAccountID := make(map[uint]*services.AccountSyncerStatus, len(allStatuses))
+		for i := range allStatuses {
+			statusByAccountID[allStatuses[i].AccountID] = &allStatuses[i]
+		}
 
 		var filteredStatuses []interface{}
-		if orgID > 0 {
+		if includeConfig {
+			accounts, _ := h.EmailAccountRepo.GetAll(orgID)
+			filteredStatuses = make([]interface{}, 0, len(accounts))
+			for _, account := range accounts {
+				filteredStatuses = append(filteredStatuses, h.buildAccountSyncStatusPayload(account, statusByAccountID[account.ID]))
+			}
+		} else if orgID > 0 {
 			// 获取当前组织的所有账户ID
 			orgAccounts, _ := h.EmailAccountRepo.GetAll(orgID)
 			orgAccountIDs := make(map[uint]bool)

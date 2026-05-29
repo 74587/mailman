@@ -42,7 +42,6 @@ import {
 import { useState, useEffect, useCallback } from 'react'
 import { useTheme } from '@/components/theme-provider'
 import { useAuth } from '@/context/auth-context'
-import { systemConfigService } from '@/services/system-config.service'
 import { isMenuVisible, subscribeMenuVisibility } from '@/lib/menu-config'
 
 // 菜单项接口定义
@@ -74,6 +73,7 @@ const navigation: MenuItem[] = [
     { name: '取件', id: 'mail-pickup-v2', icon: Package, description: '邮件监听 · 自动提取', permission: { resource: 'trigger', action: 'read' } },
     { name: '取件模板', id: 'pickup', icon: FileText, hidden: true },
     { name: '取件模板', id: 'extractor-v2-list', icon: FileText, description: '管理提取模板', permission: { resource: 'template', action: 'read' } },
+    { name: 'API 文档', id: 'api-docs', icon: BookOpen, description: 'Swagger 接口文档' },
 
 ]
 
@@ -104,8 +104,7 @@ const pluginNavigation: MenuItem[] = [
 
 // 开发者模式菜单组
 const developerNavigation: MenuItem[] = [
-    { name: 'API 文档', id: 'api-docs', icon: BookOpen, description: 'Swagger 接口文档' },
-    { name: '接入手册', id: 'integration-guide', icon: FileText, description: 'OAuth · Gmail · API 接入指南' },
+    { name: '接入手册', id: 'integration-guide', icon: FileText, description: 'OAuth · 邮件 API · 部署指南' },
     { name: '表达式调试器', id: 'expression-debugger', icon: Bug, description: '调试条件表达式' },
     { name: '动作调试器', id: 'action-debugger', icon: PlayCircle, description: '调试动作插件' },
     { name: '过滤动作触发器', id: 'filter-action-trigger', icon: Zap, description: '完整触发器调试' },
@@ -249,9 +248,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     const [pluginMenuExpanded, setPluginMenuExpanded] = useState(true)
     const [developerMenuExpanded, setDeveloperMenuExpanded] = useState(true)
     const [adminMenuExpanded, setAdminMenuExpanded] = useState(true)
-    const [developerMode, setDeveloperMode] = useState(false)
-    const [loading, setLoading] = useState(true)
-    const [menuVersion, setMenuVersion] = useState(0) // 用于触发菜单重新渲染
+    const [, setMenuVersion] = useState(0) // 用于触发菜单重新渲染
     const { theme, setTheme } = useTheme()
     const { logout, isSuperAdmin, hasPermission } = useAuth()
 
@@ -263,25 +260,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
             if (item.permission && !hasPermission(item.permission.resource, item.permission.action)) return false
             return true
         })
-    }, [menuVersion, hasPermission]) // menuVersion 变化时重新计算
-
-    // 获取开发者模式配置
-    useEffect(() => {
-        const loadDeveloperMode = async () => {
-            try {
-                const isDeveloperMode = await systemConfigService.getDeveloperModeConfig()
-                setDeveloperMode(isDeveloperMode)
-                logger.debug('[Sidebar] 开发者模式状态:', isDeveloperMode)
-            } catch (error) {
-                console.error('[Sidebar] 获取开发者模式配置失败:', error)
-                setDeveloperMode(false)
-            } finally {
-                setLoading(false)
-            }
-        }
-
-        loadDeveloperMode()
-    }, [])
+    }, [hasPermission])
 
     // 订阅菜单可见性变化
     useEffect(() => {
@@ -296,33 +275,40 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
         logger.debug('[Sidebar] 当前html类:', document.documentElement.className)
     }, [theme])
 
-    // 菜单组配置 - 根据开发者模式动态显示
+    // 菜单组配置 - 以菜单管理显隐配置和权限为准
     const menuGroups: MenuGroup[] = []
+    const filteredTriggerNav = filterByVisibility(triggerNavigation)
+    const filteredPluginNav = filterByVisibility(pluginNavigation)
+    const filteredDeveloperNav = filterByVisibility(developerNavigation)
 
-    if (developerMode) {
-        menuGroups.push(
-            {
-                title: '高级模组',
-                icon: Zap,
-                items: triggerNavigation,
-                expanded: triggerMenuExpanded,
-                setExpanded: setTriggerMenuExpanded,
-            },
-            {
-                title: '插件管理',
-                icon: Puzzle,
-                items: pluginNavigation,
-                expanded: pluginMenuExpanded,
-                setExpanded: setPluginMenuExpanded,
-            },
-            {
-                title: '开发者模式',
-                icon: Code2,
-                items: developerNavigation,
-                expanded: developerMenuExpanded,
-                setExpanded: setDeveloperMenuExpanded,
-            }
-        )
+    if (filteredTriggerNav.length > 0) {
+        menuGroups.push({
+            title: '高级模组',
+            icon: Zap,
+            items: filteredTriggerNav,
+            expanded: triggerMenuExpanded,
+            setExpanded: setTriggerMenuExpanded,
+        })
+    }
+
+    if (filteredPluginNav.length > 0) {
+        menuGroups.push({
+            title: '插件管理',
+            icon: Puzzle,
+            items: filteredPluginNav,
+            expanded: pluginMenuExpanded,
+            setExpanded: setPluginMenuExpanded,
+        })
+    }
+
+    if (filteredDeveloperNav.length > 0) {
+        menuGroups.push({
+            title: '开发者模式',
+            icon: Code2,
+            items: filteredDeveloperNav,
+            expanded: developerMenuExpanded,
+            setExpanded: setDeveloperMenuExpanded,
+        })
     }
 
     // 系统管理菜单组（所有用户可见，但用户管理仅超管可见）
@@ -330,13 +316,16 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
         ? adminNavigation
         : adminNavigation.filter(item => item.id !== 'user-management')
 
-    menuGroups.push({
-        title: '系统管理',
-        icon: Settings,
-        items: filteredAdminNav,
-        expanded: adminMenuExpanded,
-        setExpanded: setAdminMenuExpanded,
-    })
+    const visibleAdminNav = filterByVisibility(filteredAdminNav)
+    if (visibleAdminNav.length > 0) {
+        menuGroups.push({
+            title: '系统管理',
+            icon: Settings,
+            items: visibleAdminNav,
+            expanded: adminMenuExpanded,
+            setExpanded: setAdminMenuExpanded,
+        })
+    }
 
     return (
         <div

@@ -8,6 +8,7 @@ import (
 	"mailman/internal/utils"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -362,10 +363,21 @@ func (h *SyncHandlers) CreateTemporarySyncConfig(w http.ResponseWriter, r *http.
 		return
 	}
 
+	if req.SyncInterval <= 0 {
+		req.SyncInterval = 5
+	}
+	if req.DurationMinutes <= 0 {
+		req.DurationMinutes = 5
+	}
+	if len(req.SyncFolders) == 0 {
+		req.SyncFolders = []string{"INBOX"}
+	}
+
 	tempConfig := &models.TemporarySyncConfig{
 		AccountID:    uint(id),
 		SyncInterval: req.SyncInterval,
 		SyncFolders:  req.SyncFolders,
+		ExpiresAt:    time.Now().Add(time.Duration(req.DurationMinutes) * time.Minute),
 	}
 
 	if err := h.syncConfigRepo.CreateTemporaryConfig(tempConfig); err != nil {

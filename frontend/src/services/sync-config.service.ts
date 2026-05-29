@@ -176,4 +176,6 @@ export interface AccountSyncStatus {
     sync_count?: number
     error_count?: number
     next_sync_time?: string
+    is_temporary?: boolean
+    temporary_expires_at?: string
 }
