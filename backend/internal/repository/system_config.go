@@ -131,6 +131,19 @@ func (r *SystemConfigRepository) InitializeDefaultConfigs() error {
 			SortOrder:  0,
 		},
 		{
+			Key:         "custom-theme",
+			Name:        "自定义主题配置",
+			Description: "保存系统自定义主题的 CSS 变量和高级 CSS。该配置由外观设置页维护。",
+			ValueType:   models.ConfigTypeJSON,
+			DefaultValue: models.JSONMap{
+				"value": `{"name":"我的主题","variables":{"--background":"220 25% 98%","--foreground":"222 47% 11%","--card":"0 0% 100%","--card-foreground":"222 47% 11%","--popover":"0 0% 100%","--popover-foreground":"222 47% 11%","--primary":"221 83% 53%","--primary-foreground":"0 0% 100%","--secondary":"214 32% 91%","--secondary-foreground":"222 47% 11%","--muted":"214 32% 91%","--muted-foreground":"215 16% 47%","--accent":"213 94% 93%","--accent-foreground":"222 47% 11%","--border":"214 32% 91%","--input":"214 32% 91%","--ring":"221 83% 53%","--radius":"0.75rem","--sidebar-bg":"255 255 255","--sidebar-text":"71 85 105","--sidebar-text-hover":"15 23 42","--sidebar-active":"37 99 235","--sidebar-active-bg":"239 246 255","--sidebar-hover-bg":"241 245 249","--sidebar-border":"226 232 240"},"css":"/* 自定义 CSS 会在 html.custom-theme 下生效。 */\n\nhtml.custom-theme .tab-bar {\n  backdrop-filter: blur(14px);\n}\n\nhtml.custom-theme .card-hover {\n  transition: transform 180ms ease, box-shadow 180ms ease;\n}\n\nhtml.custom-theme .card-hover:hover {\n  transform: translateY(-2px);\n}"}`,
+			},
+			Category:   "ui",
+			IsEditable: true,
+			IsVisible:  false,
+			SortOrder:  1,
+		},
+		{
 			Key:         "keyboard-shortcuts",
 			Name:        "快捷键配置",
 			Description: "自定义键盘快捷键绑定和组合键模式设置。包括组合键模式、超时时间等配置。",

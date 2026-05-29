@@ -1,6 +1,7 @@
 'use client'
 
 export const CUSTOM_THEME_STORAGE_KEY = 'mailman-custom-theme-config'
+export const CUSTOM_THEME_CONFIG_KEY = 'custom-theme'
 export const CUSTOM_THEME_CHANGE_EVENT = 'mailman-custom-theme-change'
 export const CUSTOM_THEME_STYLE_ID = 'mailman-custom-theme-style'
 
@@ -171,6 +172,201 @@ html.custom-theme .dark\\:bg-gray-800\\/50 {
 }`,
         },
     },
+    {
+        id: 'mist',
+        name: '晨雾灰',
+        description: '低饱和、中性色的安静后台',
+        accent: '#64748b',
+        config: {
+            name: '晨雾灰',
+            variables: {
+                ...DEFAULT_CUSTOM_THEME_VARIABLES,
+                '--background': '210 20% 97%',
+                '--foreground': '215 28% 17%',
+                '--primary': '215 20% 38%',
+                '--secondary': '210 16% 90%',
+                '--muted': '210 18% 92%',
+                '--muted-foreground': '215 14% 46%',
+                '--accent': '210 24% 90%',
+                '--border': '214 18% 84%',
+                '--ring': '215 20% 38%',
+                '--sidebar-bg': '248 250 252',
+                '--sidebar-text': '71 85 105',
+                '--sidebar-active': '51 65 85',
+                '--sidebar-active-bg': '226 232 240',
+                '--sidebar-hover-bg': '241 245 249',
+                '--sidebar-border': '226 232 240',
+            },
+            css: `html.custom-theme .shadow-sm {
+  box-shadow: 0 8px 22px rgb(15 23 42 / 0.06) !important;
+}`,
+        },
+    },
+    {
+        id: 'sunset',
+        name: '石榴暖阳',
+        description: '暖色但克制，适合运营看板',
+        accent: '#f97316',
+        config: {
+            name: '石榴暖阳',
+            variables: {
+                ...DEFAULT_CUSTOM_THEME_VARIABLES,
+                '--background': '38 55% 97%',
+                '--foreground': '24 45% 14%',
+                '--primary': '18 88% 54%',
+                '--secondary': '34 82% 91%',
+                '--muted': '35 45% 91%',
+                '--muted-foreground': '26 24% 43%',
+                '--accent': '14 82% 92%',
+                '--border': '31 40% 84%',
+                '--ring': '18 88% 54%',
+                '--sidebar-bg': '255 247 237',
+                '--sidebar-text': '124 45 18',
+                '--sidebar-active': '234 88 12',
+                '--sidebar-active-bg': '255 237 213',
+                '--sidebar-hover-bg': '255 241 226',
+                '--sidebar-border': '254 215 170',
+            },
+            css: `html.custom-theme .bg-red-50 {
+  background-color: rgb(255 237 213 / 0.78) !important;
+}`,
+        },
+    },
+    {
+        id: 'aurora',
+        name: '极光紫青',
+        description: '紫青撞色，适合演示和高活力团队',
+        accent: '#06b6d4',
+        config: {
+            name: '极光紫青',
+            variables: {
+                ...DEFAULT_CUSTOM_THEME_VARIABLES,
+                '--background': '240 45% 98%',
+                '--foreground': '242 38% 16%',
+                '--primary': '186 86% 43%',
+                '--secondary': '250 78% 94%',
+                '--muted': '244 40% 93%',
+                '--muted-foreground': '243 18% 50%',
+                '--accent': '275 78% 93%',
+                '--accent-foreground': '262 45% 28%',
+                '--border': '244 36% 86%',
+                '--ring': '186 86% 43%',
+                '--sidebar-bg': '245 243 255',
+                '--sidebar-text': '76 29 149',
+                '--sidebar-active': '8 145 178',
+                '--sidebar-active-bg': '207 250 254',
+                '--sidebar-hover-bg': '237 233 254',
+                '--sidebar-border': '221 214 254',
+            },
+            css: `html.custom-theme body {
+  background:
+    radial-gradient(circle at 10% 0%, rgb(34 211 238 / 0.18), transparent 28rem),
+    radial-gradient(circle at 90% 10%, rgb(168 85 247 / 0.14), transparent 26rem),
+    hsl(var(--background));
+}`,
+        },
+    },
+    {
+        id: 'contrast',
+        name: '高对比黑',
+        description: '更强可读性，适合暗光和大屏',
+        accent: '#facc15',
+        config: {
+            name: '高对比黑',
+            variables: {
+                ...DEFAULT_CUSTOM_THEME_VARIABLES,
+                '--background': '0 0% 4%',
+                '--foreground': '0 0% 98%',
+                '--card': '0 0% 8%',
+                '--card-foreground': '0 0% 98%',
+                '--popover': '0 0% 8%',
+                '--popover-foreground': '0 0% 98%',
+                '--primary': '48 96% 53%',
+                '--primary-foreground': '0 0% 4%',
+                '--secondary': '0 0% 14%',
+                '--secondary-foreground': '0 0% 98%',
+                '--muted': '0 0% 14%',
+                '--muted-foreground': '0 0% 78%',
+                '--accent': '48 70% 18%',
+                '--accent-foreground': '48 100% 88%',
+                '--border': '0 0% 22%',
+                '--input': '0 0% 22%',
+                '--ring': '48 96% 53%',
+                '--sidebar-bg': '10 10 10',
+                '--sidebar-text': '245 245 245',
+                '--sidebar-text-hover': '255 255 255',
+                '--sidebar-active': '250 204 21',
+                '--sidebar-active-bg': '63 54 18',
+                '--sidebar-hover-bg': '38 38 38',
+                '--sidebar-border': '64 64 64',
+            },
+            css: `html.custom-theme .bg-white,
+html.custom-theme .dark\\:bg-gray-800\\/50 {
+  background-color: rgb(20 20 20 / 0.96) !important;
+}`,
+        },
+    },
+    {
+        id: 'navy',
+        name: '墨蓝专业',
+        description: '沉稳商务风，适合团队长期使用',
+        accent: '#38bdf8',
+        config: {
+            name: '墨蓝专业',
+            variables: {
+                ...DEFAULT_CUSTOM_THEME_VARIABLES,
+                '--background': '213 38% 96%',
+                '--foreground': '218 50% 14%',
+                '--primary': '202 89% 48%',
+                '--secondary': '214 38% 89%',
+                '--muted': '214 32% 91%',
+                '--muted-foreground': '215 18% 45%',
+                '--accent': '204 94% 91%',
+                '--border': '214 28% 84%',
+                '--ring': '202 89% 48%',
+                '--sidebar-bg': '15 23 42',
+                '--sidebar-text': '203 213 225',
+                '--sidebar-text-hover': '248 250 252',
+                '--sidebar-active': '56 189 248',
+                '--sidebar-active-bg': '12 74 110',
+                '--sidebar-hover-bg': '30 41 59',
+                '--sidebar-border': '51 65 85',
+            },
+            css: `html.custom-theme .tab-bar {
+  border-bottom-color: rgb(14 165 233 / 0.18) !important;
+}`,
+        },
+    },
+    {
+        id: 'rose',
+        name: '玫瑰晨曦',
+        description: '柔和粉玫色，轻量但不甜腻',
+        accent: '#e11d48',
+        config: {
+            name: '玫瑰晨曦',
+            variables: {
+                ...DEFAULT_CUSTOM_THEME_VARIABLES,
+                '--background': '350 45% 98%',
+                '--foreground': '345 42% 16%',
+                '--primary': '347 77% 50%',
+                '--secondary': '345 68% 93%',
+                '--muted': '346 40% 93%',
+                '--muted-foreground': '343 18% 48%',
+                '--accent': '330 70% 93%',
+                '--border': '344 35% 86%',
+                '--ring': '347 77% 50%',
+                '--sidebar-bg': '255 241 242',
+                '--sidebar-text': '136 19 55',
+                '--sidebar-active': '225 29 72',
+                '--sidebar-active-bg': '255 228 230',
+                '--sidebar-hover-bg': '255 235 238',
+                '--sidebar-border': '254 205 211',
+            },
+            css: `html.custom-theme .bg-blue-600 {
+  box-shadow: 0 12px 26px rgb(225 29 72 / 0.16);
+}`,
+        },
+    },
 ]
 
 function isBrowser() {
@@ -201,6 +397,20 @@ export function sanitizeCustomCss(css: string): string {
 
 function sanitizeVariableValue(value: string): string {
     return value.replace(/[;{}<>]/g, '').trim()
+}
+
+export function normalizeCustomThemeConfig(config?: Partial<CustomThemeConfig> | null): CustomThemeConfig {
+    return {
+        ...DEFAULT_CUSTOM_THEME_CONFIG,
+        ...(config || {}),
+        name: typeof config?.name === 'string' && config.name.trim() ? config.name : DEFAULT_CUSTOM_THEME_CONFIG.name,
+        variables: {
+            ...DEFAULT_CUSTOM_THEME_VARIABLES,
+            ...(config?.variables || {}),
+        },
+        css: typeof config?.css === 'string' ? sanitizeCustomCss(config.css) : DEFAULT_CUSTOM_THEME_CSS,
+        updatedAt: config?.updatedAt,
+    }
 }
 
 export function buildCustomThemeCss(config: CustomThemeConfig): string {
@@ -291,15 +501,7 @@ export function getStoredCustomThemeConfig(): CustomThemeConfig {
         if (!raw) return DEFAULT_CUSTOM_THEME_CONFIG
 
         const parsed = JSON.parse(raw) as CustomThemeConfig
-        return {
-            ...DEFAULT_CUSTOM_THEME_CONFIG,
-            ...parsed,
-            variables: {
-                ...DEFAULT_CUSTOM_THEME_VARIABLES,
-                ...(parsed.variables || {}),
-            },
-            css: typeof parsed.css === 'string' ? parsed.css : DEFAULT_CUSTOM_THEME_CSS,
-        }
+        return normalizeCustomThemeConfig(parsed)
     } catch {
         return DEFAULT_CUSTOM_THEME_CONFIG
     }
@@ -307,12 +509,7 @@ export function getStoredCustomThemeConfig(): CustomThemeConfig {
 
 export function saveStoredCustomThemeConfig(config: CustomThemeConfig): CustomThemeConfig {
     const nextConfig = {
-        ...config,
-        variables: {
-            ...DEFAULT_CUSTOM_THEME_VARIABLES,
-            ...(config.variables || {}),
-        },
-        css: sanitizeCustomCss(config.css || ''),
+        ...normalizeCustomThemeConfig(config),
         updatedAt: new Date().toISOString(),
     }
 

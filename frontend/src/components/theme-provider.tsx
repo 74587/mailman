@@ -7,7 +7,9 @@ import {
     CUSTOM_THEME_CHANGE_EVENT,
     isCustomThemeTemporarilyDisabled,
     removeCustomThemeStyle,
+    saveStoredCustomThemeConfig,
 } from '@/lib/custom-theme'
+import { systemConfigService } from '@/services/system-config.service'
 
 type Theme = 'dark' | 'light' | 'system' | 'sakura' | 'custom'
 
@@ -97,6 +99,23 @@ export function ThemeProvider({
 
     React.useEffect(() => {
         if (!mounted || typeof window === 'undefined' || theme !== 'custom') return
+
+        const hasAuthToken = Boolean(
+            localStorage.getItem('auth_token') ||
+            localStorage.getItem('sessionToken') ||
+            localStorage.getItem('token')
+        )
+
+        if (hasAuthToken && !isCustomThemeTemporarilyDisabled()) {
+            systemConfigService.getCustomThemeConfig()
+                .then(remoteTheme => {
+                    const cachedTheme = saveStoredCustomThemeConfig(remoteTheme)
+                    applyCustomThemeStyle(cachedTheme)
+                })
+                .catch(error => {
+                    logger.warn('[ThemeProvider] 加载数据库自定义主题失败，继续使用本地缓存:', error)
+                })
+        }
 
         const handleCustomThemeChange = () => {
             if (!isCustomThemeTemporarilyDisabled()) {

@@ -5,7 +5,7 @@ import {
     Settings, Save, RotateCcw, AlertCircle, Search,
     Sun, Moon, Monitor, LayoutGrid, Keyboard, Sliders,
     ChevronRight, Check, LogIn, Sparkles, Palette, Smile,
-    Code2, Download, Upload, Wand2, ShieldAlert
+    Code2, Download, Upload, Wand2, ShieldAlert, Database, Loader2
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { systemConfigService, SystemConfig } from '@/services/system-config.service'
@@ -251,6 +251,9 @@ function AppearanceSection({ theme, setTheme }: { theme: string; setTheme: (t: a
     const [loginThemeLoading, setLoginThemeLoading] = useState(true)
     const [loginThemeSaving, setLoginThemeSaving] = useState(false)
     const [customTheme, setCustomTheme] = useState<CustomThemeConfig>(DEFAULT_CUSTOM_THEME_CONFIG)
+    const [customThemeLoading, setCustomThemeLoading] = useState(true)
+    const [customThemeSaving, setCustomThemeSaving] = useState(false)
+    const [customThemeLoadedFromDb, setCustomThemeLoadedFromDb] = useState(false)
 
     useEffect(() => {
         if (isSuperAdmin) {
@@ -262,8 +265,39 @@ function AppearanceSection({ theme, setTheme }: { theme: string; setTheme: (t: a
     }, [isSuperAdmin])
 
     useEffect(() => {
-        setCustomTheme(getStoredCustomThemeConfig())
-    }, [])
+        let cancelled = false
+
+        const loadCustomTheme = async () => {
+            setCustomThemeLoading(true)
+            try {
+                const remoteTheme = await systemConfigService.getCustomThemeConfig()
+                if (cancelled) return
+
+                const cachedTheme = saveStoredCustomThemeConfig(remoteTheme)
+                setCustomTheme(cachedTheme)
+                setCustomThemeLoadedFromDb(true)
+                if (theme === 'custom') {
+                    applyCustomThemeStyle(cachedTheme)
+                }
+            } catch (error) {
+                console.warn('Failed to load custom theme config from database:', error)
+                if (cancelled) return
+
+                setCustomTheme(getStoredCustomThemeConfig())
+                setCustomThemeLoadedFromDb(false)
+                toast.warning('无法读取数据库主题，已使用本地缓存')
+            } finally {
+                if (!cancelled) {
+                    setCustomThemeLoading(false)
+                }
+            }
+        }
+
+        loadCustomTheme()
+        return () => {
+            cancelled = true
+        }
+    }, [theme])
 
     const handleLoginThemeChange = async (newTheme: string) => {
         setLoginThemeSaving(true)
@@ -322,12 +356,22 @@ function AppearanceSection({ theme, setTheme }: { theme: string; setTheme: (t: a
         }))
     }
 
-    const handleApplyCustomTheme = () => {
-        const nextConfig = saveStoredCustomThemeConfig(customTheme)
-        setCustomTheme(nextConfig)
-        applyCustomThemeStyle(nextConfig)
-        setTheme('custom')
-        toast.success('自定义主题已保存并应用')
+    const handleApplyCustomTheme = async () => {
+        setCustomThemeSaving(true)
+        try {
+            const remoteTheme = await systemConfigService.setCustomThemeConfig(customTheme)
+            const nextConfig = saveStoredCustomThemeConfig(remoteTheme)
+            setCustomTheme(nextConfig)
+            setCustomThemeLoadedFromDb(true)
+            applyCustomThemeStyle(nextConfig)
+            setTheme('custom')
+            toast.success('自定义主题已保存到数据库并应用')
+        } catch (error) {
+            console.error('Failed to save custom theme config:', error)
+            toast.error('保存自定义主题失败，请检查系统配置权限或后端服务')
+        } finally {
+            setCustomThemeSaving(false)
+        }
     }
 
     const handleTemplateApply = (template: typeof CUSTOM_THEME_TEMPLATES[number]) => {
@@ -459,8 +503,26 @@ function AppearanceSection({ theme, setTheme }: { theme: string; setTheme: (t: a
                                 <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">自定义主题</h3>
                             </div>
                             <p className="mt-0.5 text-xs text-gray-400">
-                                使用 CSS 变量快速定制，也可以追加高级 CSS。写坏样式时可用 <span className="font-mono">?disableCustomTheme=1</span> 临时禁用。
+                                使用 CSS 变量快速定制，也可以追加高级 CSS。配置会保存到数据库；写坏样式时可用 <span className="font-mono">?disableCustomTheme=1</span> 临时禁用。
                             </p>
+                            <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-gray-200 px-2.5 py-1 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                                {customThemeLoading ? (
+                                    <>
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                        正在读取数据库主题
+                                    </>
+                                ) : customThemeLoadedFromDb ? (
+                                    <>
+                                        <Database className="h-3 w-3 text-emerald-500" />
+                                        已连接数据库配置
+                                    </>
+                                ) : (
+                                    <>
+                                        <Database className="h-3 w-3 text-amber-500" />
+                                        使用本地缓存
+                                    </>
+                                )}
+                            </div>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
                             <button
@@ -497,10 +559,11 @@ function AppearanceSection({ theme, setTheme }: { theme: string; setTheme: (t: a
                             <button
                                 type="button"
                                 onClick={handleApplyCustomTheme}
+                                disabled={customThemeSaving}
                                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700"
                             >
-                                <Save className="h-3.5 w-3.5" />
-                                保存并应用
+                                {customThemeSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                                {customThemeSaving ? '保存中' : '保存入库并应用'}
                             </button>
                         </div>
                     </div>

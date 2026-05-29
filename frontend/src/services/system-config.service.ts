@@ -1,5 +1,10 @@
 import { logger } from '@/lib/logger';
 import { apiClient } from '@/lib/api-client'
+import {
+    CUSTOM_THEME_CONFIG_KEY,
+    CustomThemeConfig,
+    normalizeCustomThemeConfig,
+} from '@/lib/custom-theme'
 
 export interface SystemConfig {
     key: string
@@ -21,12 +26,16 @@ export interface SystemConfigUpdateRequest {
 class SystemConfigService {
     private baseUrl = ''
 
+    private unwrapResponse<T>(response: any): T {
+        return response?.data !== undefined ? response.data : response
+    }
+
     /**
      * 获取所有系统配置
      */
     async getAllConfigs(): Promise<SystemConfig[]> {
         const response = await apiClient.get(`${this.baseUrl}/system-configs`)
-        return response.data
+        return this.unwrapResponse<SystemConfig[]>(response)
     }
 
     /**
@@ -34,7 +43,7 @@ class SystemConfigService {
      */
     async getConfigsByCategory(category: string): Promise<SystemConfig[]> {
         const response = await apiClient.get(`${this.baseUrl}/system-configs/category/${category}`)
-        return response.data
+        return this.unwrapResponse<SystemConfig[]>(response)
     }
 
     /**
@@ -47,8 +56,8 @@ class SystemConfigService {
         logger.debug('[SystemConfigService] response.data:', response.data)
         logger.debug('[SystemConfigService] response 结构:', Object.keys(response))
 
-        // 尝试不同的数据访问方式
-        const data = response.data || response
+        // 兼容 apiClient 直接返回 data 和早期 AxiosResponse 两种结构
+        const data = this.unwrapResponse<SystemConfig>(response)
         logger.debug('[SystemConfigService] 使用的数据:', data)
         return data
     }
@@ -60,7 +69,7 @@ class SystemConfigService {
         const response = await apiClient.put(`${this.baseUrl}/system-config/${key}`, {
             value
         })
-        return response.data
+        return this.unwrapResponse<SystemConfig>(response)
     }
 
     /**
@@ -68,7 +77,27 @@ class SystemConfigService {
      */
     async resetConfigToDefault(key: string): Promise<SystemConfig> {
         const response = await apiClient.post(`${this.baseUrl}/system-config/${key}/reset`)
-        return response.data
+        return this.unwrapResponse<SystemConfig>(response)
+    }
+
+    /**
+     * 获取数据库中保存的自定义主题配置
+     */
+    async getCustomThemeConfig(): Promise<CustomThemeConfig> {
+        const config = await this.getConfigByKey(CUSTOM_THEME_CONFIG_KEY)
+        return normalizeCustomThemeConfig(config.current_value)
+    }
+
+    /**
+     * 保存自定义主题配置到系统配置表
+     */
+    async setCustomThemeConfig(themeConfig: CustomThemeConfig): Promise<CustomThemeConfig> {
+        const nextConfig = {
+            ...normalizeCustomThemeConfig(themeConfig),
+            updatedAt: new Date().toISOString(),
+        }
+        const config = await this.updateConfigValue(CUSTOM_THEME_CONFIG_KEY, nextConfig)
+        return normalizeCustomThemeConfig(config.current_value)
     }
 
     /**
