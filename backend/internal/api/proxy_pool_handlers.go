@@ -352,8 +352,21 @@ func (h *ProxyPoolHandlers) CreateGroup(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	group.Name = strings.TrimSpace(group.Name)
+	if group.Name == "" {
+		http.Error(w, "Group name is required", http.StatusBadRequest)
+		return
+	}
+	orgID := GetCurrentOrgID(r)
+	if exists, err := h.proxyGroupNameExists(orgID, 0, group.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if exists {
+		http.Error(w, "Group name already exists", http.StatusConflict)
+		return
+	}
 	group.ID = 0
-	group.OrgID = GetCurrentOrgID(r)
+	group.OrgID = orgID
 	if err := h.repo.CreateGroup(&group); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -377,6 +390,18 @@ func (h *ProxyPoolHandlers) UpdateGroup(w http.ResponseWriter, r *http.Request) 
 	var req models.ProxyGroup
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		http.Error(w, "Group name is required", http.StatusBadRequest)
+		return
+	}
+	if exists, err := h.proxyGroupNameExists(orgID, id, req.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if exists {
+		http.Error(w, "Group name already exists", http.StatusConflict)
 		return
 	}
 	group.Name = req.Name
@@ -418,8 +443,21 @@ func (h *ProxyPoolHandlers) CreateTag(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	tag.Name = strings.TrimSpace(tag.Name)
+	if tag.Name == "" {
+		http.Error(w, "Tag name is required", http.StatusBadRequest)
+		return
+	}
+	orgID := GetCurrentOrgID(r)
+	if exists, err := h.proxyTagNameExists(orgID, 0, tag.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if exists {
+		http.Error(w, "Tag name already exists", http.StatusConflict)
+		return
+	}
 	tag.ID = 0
-	tag.OrgID = GetCurrentOrgID(r)
+	tag.OrgID = orgID
 	if err := h.repo.CreateTag(&tag); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -445,6 +483,18 @@ func (h *ProxyPoolHandlers) UpdateTag(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		http.Error(w, "Tag name is required", http.StatusBadRequest)
+		return
+	}
+	if exists, err := h.proxyTagNameExists(orgID, id, req.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if exists {
+		http.Error(w, "Tag name already exists", http.StatusConflict)
+		return
+	}
 	tag.Name = req.Name
 	tag.Color = req.Color
 	tag.SortOrder = req.SortOrder
@@ -466,6 +516,32 @@ func (h *ProxyPoolHandlers) DeleteTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"success": true})
+}
+
+func (h *ProxyPoolHandlers) proxyGroupNameExists(orgID, exceptID uint, name string) (bool, error) {
+	groups, err := h.repo.ListGroups(orgID)
+	if err != nil {
+		return false, err
+	}
+	for _, group := range groups {
+		if group.ID != exceptID && strings.EqualFold(strings.TrimSpace(group.Name), name) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (h *ProxyPoolHandlers) proxyTagNameExists(orgID, exceptID uint, name string) (bool, error) {
+	tags, err := h.repo.ListTags(orgID)
+	if err != nil {
+		return false, err
+	}
+	for _, tag := range tags {
+		if tag.ID != exceptID && strings.EqualFold(strings.TrimSpace(tag.Name), name) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (h *ProxyPoolHandlers) RegisterRoutes(router *mux.Router) {

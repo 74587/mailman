@@ -1,22 +1,38 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
     AlertTriangle,
     CheckCircle2,
     Filter,
+    FolderOpen,
     Loader2,
     Network,
+    Pencil,
     Plus,
     RefreshCw,
+    Save,
     Search,
+    Settings2,
     ShieldCheck,
+    Tag,
     Tags,
     Trash2,
+    X,
     XCircle,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import {
+    Modal,
+    ModalBody,
+    ModalContent,
+    ModalDescription,
+    ModalFooter,
+    ModalHeader,
+    ModalTitle,
+} from '@/components/ui/modal'
+import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 import {
     BulkDeleteProxyPayload,
     proxyPoolService,
@@ -35,15 +51,62 @@ const statusConfig: Record<ProxyStatus, { label: string; className: string; icon
 }
 
 const proxyTypes: ProxyType[] = ['http', 'https', 'ssh', 'socks5']
+const proxyMetaColors = ['#3b82f6', '#6366f1', '#8b5cf6', '#ec4899', '#ef4444', '#f97316', '#f59e0b', '#10b981', '#14b8a6', '#06b6d4', '#64748b']
+
+type ProxyMetaDraft = {
+    name: string
+    color?: string
+    description?: string
+    sortOrder?: number
+}
+
+function sortProxyMeta<T extends { name: string; sortOrder?: number }>(left: T, right: T) {
+    const sortDiff = (left.sortOrder || 0) - (right.sortOrder || 0)
+    if (sortDiff !== 0) return sortDiff
+    return left.name.localeCompare(right.name, 'zh-Hans-CN')
+}
+
+function metaColor(color: string | undefined, fallback: string) {
+    return color || fallback
+}
+
+function colorWithAlpha(color: string | undefined, alpha: string) {
+    const normalized = color?.trim()
+    if (!normalized) return undefined
+    if (/^#[0-9a-fA-F]{6}$/.test(normalized)) return `${normalized}${alpha}`
+    if (/^#[0-9a-fA-F]{3}$/.test(normalized)) {
+        const [, r, g, b] = normalized
+        return `#${r}${r}${g}${g}${b}${b}${alpha}`
+    }
+    return undefined
+}
+
+function metaChipStyle(color: string | undefined, fallback: string) {
+    const finalColor = metaColor(color, fallback)
+    return {
+        backgroundColor: colorWithAlpha(finalColor, '14'),
+        borderColor: colorWithAlpha(finalColor, '55'),
+        color: finalColor,
+    }
+}
+
+function MetaDot({ color, fallback, className }: {
+    color?: string
+    fallback: string
+    className?: string
+}) {
+    return <span className={cn('inline-block h-2.5 w-2.5 shrink-0 rounded-full', className)} style={{ backgroundColor: metaColor(color, fallback) }} />
+}
 
 export default function ProxyPoolTab() {
+    const { confirm } = useConfirmDialog()
     const [proxies, setProxies] = useState<ProxyPoolItem[]>([])
     const [groups, setGroups] = useState<ProxyGroup[]>([])
     const [tags, setTags] = useState<ProxyTag[]>([])
     const [channels, setChannels] = useState<ProxyCheckChannel[]>([])
     const [loading, setLoading] = useState(false)
     const [selectedIds, setSelectedIds] = useState<number[]>([])
-    const [activePanel, setActivePanel] = useState<'list' | 'import' | 'meta' | 'delete'>('list')
+    const [activePanel, setActivePanel] = useState<'list' | 'import' | 'delete'>('list')
     const [search, setSearch] = useState('')
     const [status, setStatus] = useState<ProxyStatus | ''>('')
     const [type, setType] = useState<ProxyType | ''>('')
@@ -59,8 +122,7 @@ export default function ProxyPoolTab() {
     const [bulkCheck, setBulkCheck] = useState(false)
     const [checkChannel, setCheckChannel] = useState('ip-api')
     const [checkResults, setCheckResults] = useState<ProxyCheckResult[]>([])
-    const [newGroupName, setNewGroupName] = useState('')
-    const [newTagName, setNewTagName] = useState('')
+    const [showMetaManager, setShowMetaManager] = useState(false)
     const [deleteReplacement, setDeleteReplacement] = useState<BulkDeleteProxyPayload['replacement']>({ mode: 'clear' })
 
     const limit = 30
@@ -68,7 +130,7 @@ export default function ProxyPoolTab() {
     const loadData = useCallback(async () => {
         setLoading(true)
         try {
-            const [proxyData, groupData, tagData, channelData] = await Promise.all([
+            const [proxyData, channelData] = await Promise.all([
                 proxyPoolService.list({
                     page,
                     limit,
@@ -79,14 +141,10 @@ export default function ProxyPoolTab() {
                     tagIds: selectedTagIds,
                     tagMode,
                 }),
-                proxyPoolService.listGroups(),
-                proxyPoolService.listTags(),
                 proxyPoolService.getCheckChannels(),
             ])
             setProxies(proxyData.items)
             setTotal(proxyData.total)
-            setGroups(groupData)
-            setTags(tagData)
             setChannels(channelData)
         } catch (error: any) {
             toast.error(error.message || '加载代理池失败')
@@ -95,14 +153,32 @@ export default function ProxyPoolTab() {
         }
     }, [page, search, status, type, selectedGroupIds, selectedTagIds, tagMode])
 
-    useEffect(() => {
-        loadData()
-    }, [loadData])
+    const loadMeta = useCallback(async () => {
+        try {
+            const [groupData, tagData] = await Promise.all([
+                proxyPoolService.listGroups(),
+                proxyPoolService.listTags(),
+            ])
+            setGroups(groupData)
+            setTags(tagData)
+        } catch (error: any) {
+            toast.error(error.message || '加载分组标签失败')
+        }
+    }, [])
 
     useEffect(() => {
-        registerRefreshCallback('proxy-pool', loadData)
+        loadData()
+        loadMeta()
+    }, [loadData, loadMeta])
+
+    useEffect(() => {
+        const refreshProxyPool = () => {
+            loadData()
+            loadMeta()
+        }
+        registerRefreshCallback('proxy-pool', refreshProxyPool)
         return () => unregisterRefreshCallback('proxy-pool')
-    }, [loadData])
+    }, [loadData, loadMeta])
 
     const totalPages = Math.max(1, Math.ceil(total / limit))
     const selectedProxies = useMemo(() => proxies.filter(proxy => selectedIds.includes(proxy.id)), [proxies, selectedIds])
@@ -216,16 +292,25 @@ export default function ProxyPoolTab() {
         }
     }
 
-    const createGroup = async (name?: string) => {
-        const groupName = (name ?? newGroupName).trim()
+    const createGroup = async (input: string | ProxyMetaDraft) => {
+        const payload = typeof input === 'string' ? { name: input } : input
+        const groupName = payload.name.trim()
         if (!groupName) return null
+        const existing = groups.find(group => group.name.trim().toLowerCase() === groupName.toLowerCase())
+        if (existing) {
+            toast.info('分组已存在，已复用现有分组')
+            return existing
+        }
         try {
-            const group = await proxyPoolService.createGroup({ name: groupName })
-            if (!name || newGroupName.trim() === groupName) {
-                setNewGroupName('')
-            }
+            const group = await proxyPoolService.createGroup({
+                name: groupName,
+                color: payload?.color,
+                description: payload?.description,
+                sortOrder: payload?.sortOrder,
+            })
+            setGroups(prev => [...prev.filter(item => item.id !== group.id), group].sort(sortProxyMeta))
             toast.success('分组已创建')
-            await loadData()
+            await loadMeta()
             return group
         } catch (error: any) {
             toast.error(error.message || '创建分组失败')
@@ -233,16 +318,24 @@ export default function ProxyPoolTab() {
         }
     }
 
-    const createTag = async (name?: string) => {
-        const tagName = (name ?? newTagName).trim()
+    const createTag = async (input: string | ProxyMetaDraft) => {
+        const payload = typeof input === 'string' ? { name: input } : input
+        const tagName = payload.name.trim()
         if (!tagName) return null
+        const existing = tags.find(tag => tag.name.trim().toLowerCase() === tagName.toLowerCase())
+        if (existing) {
+            toast.info('标签已存在，已复用现有标签')
+            return existing
+        }
         try {
-            const tag = await proxyPoolService.createTag({ name: tagName })
-            if (!name || newTagName.trim() === tagName) {
-                setNewTagName('')
-            }
+            const tag = await proxyPoolService.createTag({
+                name: tagName,
+                color: payload?.color,
+                sortOrder: payload?.sortOrder,
+            })
+            setTags(prev => [...prev.filter(item => item.id !== tag.id), tag].sort(sortProxyMeta))
             toast.success('标签已创建')
-            await loadData()
+            await loadMeta()
             return tag
         } catch (error: any) {
             toast.error(error.message || '创建标签失败')
@@ -250,14 +343,70 @@ export default function ProxyPoolTab() {
         }
     }
 
+    const updateGroup = async (group: ProxyGroup, draft: ProxyMetaDraft) => {
+        const groupName = draft.name.trim()
+        if (!groupName) {
+            toast.error('分组名称不能为空')
+            return null
+        }
+        try {
+            const updated = await proxyPoolService.updateGroup(group.id, {
+                name: groupName,
+                color: draft.color,
+                description: draft.description,
+                sortOrder: draft.sortOrder,
+            })
+            setGroups(prev => prev.map(item => item.id === updated.id ? updated : item).sort(sortProxyMeta))
+            toast.success('分组已更新')
+            await loadMeta()
+            await loadData()
+            return updated
+        } catch (error: any) {
+            toast.error(error.message || '更新分组失败')
+            return null
+        }
+    }
+
+    const updateTag = async (tag: ProxyTag, draft: ProxyMetaDraft) => {
+        const tagName = draft.name.trim()
+        if (!tagName) {
+            toast.error('标签名称不能为空')
+            return null
+        }
+        try {
+            const updated = await proxyPoolService.updateTag(tag.id, {
+                name: tagName,
+                color: draft.color,
+                sortOrder: draft.sortOrder,
+            })
+            setTags(prev => prev.map(item => item.id === updated.id ? updated : item).sort(sortProxyMeta))
+            toast.success('标签已更新')
+            await loadMeta()
+            await loadData()
+            return updated
+        } catch (error: any) {
+            toast.error(error.message || '更新标签失败')
+            return null
+        }
+    }
+
     const deleteGroup = async (group: ProxyGroup) => {
-        if (!window.confirm(`删除分组「${group.name}」？该分组下的代理会变为未分组。`)) return
+        const confirmed = await confirm({
+            title: '删除代理分组',
+            description: `确定删除「${group.name}」吗？该分组下的代理不会被删除，会回到未分组状态。`,
+            confirmText: '删除',
+            cancelText: '取消',
+            variant: 'destructive',
+        })
+        if (!confirmed) return
         try {
             await proxyPoolService.deleteGroup(group.id)
             setSelectedGroupIds(prev => prev.filter(id => id !== group.id))
             setBulkGroupId(prev => prev === group.id ? undefined : prev)
             setDeleteReplacement(prev => ({ ...prev, groupIds: prev.groupIds?.filter(id => id !== group.id) }))
+            setGroups(prev => prev.filter(item => item.id !== group.id))
             toast.success('分组已删除')
+            await loadMeta()
             await loadData()
         } catch (error: any) {
             toast.error(error.message || '删除分组失败')
@@ -265,13 +414,22 @@ export default function ProxyPoolTab() {
     }
 
     const deleteTag = async (tag: ProxyTag) => {
-        if (!window.confirm(`删除标签「${tag.name}」？代理上的该标签会被移除。`)) return
+        const confirmed = await confirm({
+            title: '删除代理标签',
+            description: `确定删除「${tag.name}」吗？代理上的该标签会被移除。`,
+            confirmText: '删除',
+            cancelText: '取消',
+            variant: 'destructive',
+        })
+        if (!confirmed) return
         try {
             await proxyPoolService.deleteTag(tag.id)
             setSelectedTagIds(prev => prev.filter(id => id !== tag.id))
             setBulkTagIds(prev => prev.filter(id => id !== tag.id))
             setDeleteReplacement(prev => ({ ...prev, tagIds: prev.tagIds?.filter(id => id !== tag.id) }))
+            setTags(prev => prev.filter(item => item.id !== tag.id))
             toast.success('标签已删除')
+            await loadMeta()
             await loadData()
         } catch (error: any) {
             toast.error(error.message || '删除标签失败')
@@ -304,6 +462,10 @@ export default function ProxyPoolTab() {
                         <button onClick={batchTest} disabled={loading} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50 disabled:opacity-60 dark:border-gray-700 dark:hover:bg-gray-800">
                             <ShieldCheck className="h-4 w-4" />
                             {selectedIds.length ? `检测已选 ${selectedIds.length}` : '检测筛选结果'}
+                        </button>
+                        <button onClick={() => setShowMetaManager(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
+                            <Settings2 className="h-4 w-4" />
+                            分组标签
                         </button>
                         <button onClick={() => setActivePanel('import')} className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-700">
                             <Plus className="h-4 w-4" />
@@ -459,21 +621,6 @@ export default function ProxyPoolTab() {
                         />
                     )}
 
-                    {activePanel === 'meta' && (
-                        <MetaPanel
-                            groups={groups}
-                            tags={tags}
-                            newGroupName={newGroupName}
-                            setNewGroupName={setNewGroupName}
-                            newTagName={newTagName}
-                            setNewTagName={setNewTagName}
-                            onCreateGroup={createGroup}
-                            onCreateTag={createTag}
-                            onDeleteGroup={deleteGroup}
-                            onDeleteTag={deleteTag}
-                        />
-                    )}
-
                     {activePanel === 'list' && (
                         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
                             <div className="mb-3 flex items-center justify-between">
@@ -482,7 +629,7 @@ export default function ProxyPoolTab() {
                             </div>
                             <div className="grid gap-2">
                                 <button onClick={() => setActivePanel('import')} className="rounded-lg border border-gray-200 px-3 py-2 text-left text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">批量新增代理</button>
-                                <button onClick={() => setActivePanel('meta')} className="rounded-lg border border-gray-200 px-3 py-2 text-left text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">管理分组和标签</button>
+                                <button onClick={() => setShowMetaManager(true)} className="rounded-lg border border-gray-200 px-3 py-2 text-left text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">管理分组和标签</button>
                                 <button onClick={() => setActivePanel('delete')} className="rounded-lg border border-gray-200 px-3 py-2 text-left text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">按筛选条件批量删除</button>
                             </div>
                         </div>
@@ -491,6 +638,18 @@ export default function ProxyPoolTab() {
                     <CheckResultPanel results={checkResults} />
                 </aside>
             </div>
+            <ProxyMetaManagerModal
+                open={showMetaManager}
+                onOpenChange={setShowMetaManager}
+                groups={groups}
+                tags={tags}
+                onCreateGroup={createGroup}
+                onCreateTag={createTag}
+                onUpdateGroup={updateGroup}
+                onUpdateTag={updateTag}
+                onDeleteGroup={deleteGroup}
+                onDeleteTag={deleteTag}
+            />
         </div>
     )
 }
@@ -518,9 +677,17 @@ function ProxyRow({ proxy, selected, onToggle, onTest, onDelete }: {
                 </span>
             </td>
             <td className="px-4 py-3">
-                <div className="text-xs text-gray-700 dark:text-gray-300">{proxy.group?.name || '未分组'}</div>
+                <div className="flex items-center gap-1.5 text-xs text-gray-700 dark:text-gray-300">
+                    {proxy.group ? <MetaDot color={proxy.group.color} fallback={proxyMetaColors[0]} /> : <span className="h-2.5 w-2.5 rounded-full border border-dashed border-gray-300 dark:border-gray-600" />}
+                    <span>{proxy.group?.name || '未分组'}</span>
+                </div>
                 <div className="mt-1 flex max-w-[220px] flex-wrap gap-1">
-                    {(proxy.tags || []).map(tag => <span key={tag.id} className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 dark:bg-gray-800 dark:text-gray-300">{tag.name}</span>)}
+                    {(proxy.tags || []).map(tag => (
+                        <span key={tag.id} className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] dark:bg-gray-800" style={metaChipStyle(tag.color, proxyMetaColors[7])}>
+                            <MetaDot color={tag.color} fallback={proxyMetaColors[7]} className="h-1.5 w-1.5" />
+                            {tag.name}
+                        </span>
+                    ))}
                 </div>
             </td>
             <td className="px-4 py-3 text-xs text-gray-600 dark:text-gray-300">
@@ -559,7 +726,10 @@ function CriteriaBar({ groups, tags, selectedGroupIds, selectedTagIds, tagMode, 
                 <div className="mb-2 text-xs font-medium text-gray-500 dark:text-gray-400">分组筛选（OR）</div>
                 <div className="flex flex-wrap gap-2">
                     {groups.map(group => (
-                        <button key={group.id} onClick={() => onGroupChange(toggle(selectedGroupIds, group.id))} className={cn('rounded-full border px-3 py-1 text-xs', selectedGroupIds.includes(group.id) ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-950/30' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300')}>{group.name}</button>
+                        <button key={group.id} onClick={() => onGroupChange(toggle(selectedGroupIds, group.id))} className={cn('inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs', selectedGroupIds.includes(group.id) ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-950/30' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300')}>
+                            <MetaDot color={group.color} fallback={proxyMetaColors[0]} />
+                            {group.name}
+                        </button>
                     ))}
                 </div>
             </div>
@@ -573,7 +743,10 @@ function CriteriaBar({ groups, tags, selectedGroupIds, selectedTagIds, tagMode, 
                 </div>
                 <div className="flex flex-wrap gap-2">
                     {tags.map(tag => (
-                        <button key={tag.id} onClick={() => onTagChange(toggle(selectedTagIds, tag.id))} className={cn('rounded-full border px-3 py-1 text-xs', selectedTagIds.includes(tag.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300')}>{tag.name}</button>
+                        <button key={tag.id} onClick={() => onTagChange(toggle(selectedTagIds, tag.id))} className={cn('inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs', selectedTagIds.includes(tag.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300')}>
+                            <MetaDot color={tag.color} fallback={proxyMetaColors[7]} />
+                            {tag.name}
+                        </button>
                     ))}
                 </div>
             </div>
@@ -597,25 +770,39 @@ function ImportPanel(props: {
     setCheckProxy: (value: boolean) => void
     channel: string
     setChannel: (value: string) => void
-    onCreateGroup: (name?: string) => Promise<ProxyGroup | null>
-    onCreateTag: (name?: string) => Promise<ProxyTag | null>
+    onCreateGroup: (input: string | ProxyMetaDraft) => Promise<ProxyGroup | null>
+    onCreateTag: (input: string | ProxyMetaDraft) => Promise<ProxyTag | null>
     onImport: () => void
     loading: boolean
 }) {
     const [quickGroupName, setQuickGroupName] = useState('')
     const [quickTagName, setQuickTagName] = useState('')
+    const [creatingGroup, setCreatingGroup] = useState(false)
+    const [creatingTag, setCreatingTag] = useState(false)
     const toggleTag = (id: number) => props.setTagIds(props.tagIds.includes(id) ? props.tagIds.filter(item => item !== id) : [...props.tagIds, id])
     const createAndSelectGroup = async () => {
-        const group = await props.onCreateGroup(quickGroupName)
-        if (!group) return
-        props.setGroupId(group.id)
-        setQuickGroupName('')
+        if (!quickGroupName.trim() || creatingGroup) return
+        setCreatingGroup(true)
+        try {
+            const group = await props.onCreateGroup(quickGroupName)
+            if (!group) return
+            props.setGroupId(group.id)
+            setQuickGroupName('')
+        } finally {
+            setCreatingGroup(false)
+        }
     }
     const createAndSelectTag = async () => {
-        const tag = await props.onCreateTag(quickTagName)
-        if (!tag) return
-        props.setTagIds([...new Set([...props.tagIds, tag.id])])
-        setQuickTagName('')
+        if (!quickTagName.trim() || creatingTag) return
+        setCreatingTag(true)
+        try {
+            const tag = await props.onCreateTag(quickTagName)
+            if (!tag) return
+            props.setTagIds([...new Set([...props.tagIds, tag.id])])
+            setQuickTagName('')
+        } finally {
+            setCreatingTag(false)
+        }
     }
     return (
         <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
@@ -653,7 +840,10 @@ function ImportPanel(props: {
                             placeholder="创建新分组并选中"
                             className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
                         />
-                        <button onClick={createAndSelectGroup} disabled={!quickGroupName.trim()} className="rounded-lg border border-primary-200 px-3 py-2 text-sm text-primary-700 hover:bg-primary-50 disabled:opacity-50 dark:border-primary-900 dark:text-primary-300 dark:hover:bg-primary-950/30">创建</button>
+                        <button onClick={createAndSelectGroup} disabled={!quickGroupName.trim() || creatingGroup} className="inline-flex items-center gap-1.5 rounded-lg border border-primary-200 px-3 py-2 text-sm text-primary-700 hover:bg-primary-50 disabled:opacity-50 dark:border-primary-900 dark:text-primary-300 dark:hover:bg-primary-950/30">
+                            {creatingGroup && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                            创建
+                        </button>
                     </div>
                 </div>
                 <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
@@ -663,7 +853,10 @@ function ImportPanel(props: {
                     </div>
                     <div className="flex flex-wrap gap-2">
                         {props.tags.length === 0 ? <span className="text-xs text-gray-400">暂无标签</span> : props.tags.map(tag => (
-                            <button key={tag.id} onClick={() => toggleTag(tag.id)} className={cn('rounded-full border px-2 py-1 text-xs', props.tagIds.includes(tag.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300')}>{tag.name}</button>
+                            <button key={tag.id} onClick={() => toggleTag(tag.id)} className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs', props.tagIds.includes(tag.id) ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200' : 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300')}>
+                                <MetaDot color={tag.color} fallback={proxyMetaColors[7]} className="h-2 w-2" />
+                                {tag.name}
+                            </button>
                         ))}
                     </div>
                     <div className="mt-2 flex gap-2">
@@ -679,7 +872,10 @@ function ImportPanel(props: {
                             placeholder="创建新标签并选中"
                             className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
                         />
-                        <button onClick={createAndSelectTag} disabled={!quickTagName.trim()} className="rounded-lg border border-emerald-200 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30">创建</button>
+                        <button onClick={createAndSelectTag} disabled={!quickTagName.trim() || creatingTag} className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-900 dark:text-emerald-300 dark:hover:bg-emerald-950/30">
+                            {creatingTag && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                            创建
+                        </button>
                     </div>
                 </div>
                 <textarea value={props.bulkText} onChange={(event) => props.setBulkText(event.target.value)} rows={12} placeholder="请在此填写您的代理信息" className="min-h-[260px] rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-sm dark:border-gray-700 dark:bg-gray-900" />
@@ -739,9 +935,19 @@ function DeletePanel({ selectedCount, replacement, setReplacement, proxies, grou
                 {replacement.mode === 'auto' && (
                     <div className="space-y-3 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
                         <div className="text-xs text-gray-500">分组</div>
-                        <div className="flex flex-wrap gap-2">{groups.map(group => <button key={group.id} onClick={() => toggleGroup(group.id)} className={cn('rounded-full border px-2 py-1 text-xs', replacement.groupIds?.includes(group.id) ? 'border-primary-500 bg-primary-50' : 'border-gray-200 dark:border-gray-700')}>{group.name}</button>)}</div>
+                        <div className="flex flex-wrap gap-2">{groups.map(group => (
+                            <button key={group.id} onClick={() => toggleGroup(group.id)} className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs', replacement.groupIds?.includes(group.id) ? 'border-primary-500 bg-primary-50' : 'border-gray-200 dark:border-gray-700')}>
+                                <MetaDot color={group.color} fallback={proxyMetaColors[0]} className="h-2 w-2" />
+                                {group.name}
+                            </button>
+                        ))}</div>
                         <div className="text-xs text-gray-500">标签</div>
-                        <div className="flex flex-wrap gap-2">{tags.map(tag => <button key={tag.id} onClick={() => toggleTag(tag.id)} className={cn('rounded-full border px-2 py-1 text-xs', replacement.tagIds?.includes(tag.id) ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 dark:border-gray-700')}>{tag.name}</button>)}</div>
+                        <div className="flex flex-wrap gap-2">{tags.map(tag => (
+                            <button key={tag.id} onClick={() => toggleTag(tag.id)} className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs', replacement.tagIds?.includes(tag.id) ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 dark:border-gray-700')}>
+                                <MetaDot color={tag.color} fallback={proxyMetaColors[7]} className="h-2 w-2" />
+                                {tag.name}
+                            </button>
+                        ))}</div>
                         <select value={replacement.tagMode || 'or'} onChange={(event) => setReplacement({ ...replacement, tagMode: event.target.value as ProxyTagFilterMode })} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
                             <option value="or">任一标签</option>
                             <option value="and">全部标签</option>
@@ -757,81 +963,298 @@ function DeletePanel({ selectedCount, replacement, setReplacement, proxies, grou
     )
 }
 
-function MetaPanel({ groups, tags, newGroupName, setNewGroupName, newTagName, setNewTagName, onCreateGroup, onCreateTag, onDeleteGroup, onDeleteTag }: {
+function ProxyMetaManagerModal({ open, onOpenChange, groups, tags, onCreateGroup, onCreateTag, onUpdateGroup, onUpdateTag, onDeleteGroup, onDeleteTag }: {
+    open: boolean
+    onOpenChange: (open: boolean) => void
     groups: ProxyGroup[]
     tags: ProxyTag[]
-    newGroupName: string
-    setNewGroupName: (value: string) => void
-    newTagName: string
-    setNewTagName: (value: string) => void
-    onCreateGroup: (name?: string) => Promise<ProxyGroup | null>
-    onCreateTag: (name?: string) => Promise<ProxyTag | null>
+    onCreateGroup: (input: string | ProxyMetaDraft) => Promise<ProxyGroup | null>
+    onCreateTag: (input: string | ProxyMetaDraft) => Promise<ProxyTag | null>
+    onUpdateGroup: (group: ProxyGroup, draft: ProxyMetaDraft) => Promise<ProxyGroup | null>
+    onUpdateTag: (tag: ProxyTag, draft: ProxyMetaDraft) => Promise<ProxyTag | null>
     onDeleteGroup: (group: ProxyGroup) => void
     onDeleteTag: (tag: ProxyTag) => void
 }) {
+    const [groupDraft, setGroupDraft] = useState<ProxyMetaDraft>({ name: '', color: proxyMetaColors[0] })
+    const [tagDraft, setTagDraft] = useState<ProxyMetaDraft>({ name: '', color: proxyMetaColors[7] })
+
+    const createGroupFromDraft = async () => {
+        const created = await onCreateGroup(groupDraft)
+        if (created) setGroupDraft({ name: '', color: groupDraft.color || proxyMetaColors[0] })
+    }
+    const createTagFromDraft = async () => {
+        const created = await onCreateTag(tagDraft)
+        if (created) setTagDraft({ name: '', color: tagDraft.color || proxyMetaColors[7] })
+    }
+
     return (
-        <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
-            <h3 className="mb-4 font-semibold text-gray-900 dark:text-white">分组与标签</h3>
-            <div className="space-y-4">
-                <div>
-                    <div className="mb-1 text-sm font-medium">代理分组</div>
-                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">删除分组不会删除代理，代理会回到未分组状态。</p>
-                    <div className="mb-2 flex gap-2">
-                        <input
-                            value={newGroupName}
-                            onChange={(event) => setNewGroupName(event.target.value)}
-                            onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                    event.preventDefault()
-                                    onCreateGroup()
-                                }
-                            }}
-                            placeholder="新分组名称"
-                            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
-                        />
-                        <button onClick={() => onCreateGroup()} className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white dark:bg-white dark:text-gray-900">添加</button>
+        <Modal open={open} onOpenChange={onOpenChange}>
+            <ModalContent size="6xl" className="h-[82vh] overflow-hidden">
+                <ModalHeader>
+                    <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-300">
+                            <Settings2 className="h-5 w-5" />
+                        </div>
+                        <div>
+                            <ModalTitle>代理分组与标签</ModalTitle>
+                            <ModalDescription>集中管理代理池的分组、标签和显示颜色，保存后会立即同步到筛选器和批量新增面板。</ModalDescription>
+                        </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                        {groups.length === 0 ? <span className="text-xs text-gray-400">暂无分组</span> : groups.map(group => (
-                            <span key={group.id} className="inline-flex max-w-full items-center gap-1 rounded-full bg-primary-50 py-1 pl-3 pr-1 text-xs text-primary-700 dark:bg-primary-950/30 dark:text-primary-200">
-                                <span className="truncate">{group.name}</span>
-                                <button onClick={() => onDeleteGroup(group)} title="删除分组" className="rounded-full p-1 text-primary-500 hover:bg-primary-100 hover:text-primary-700 dark:hover:bg-primary-900/50">
-                                    <Trash2 className="h-3 w-3" />
-                                </button>
-                            </span>
-                        ))}
+                </ModalHeader>
+                <ModalBody className="min-h-0 p-0">
+                    <div className="grid h-full min-h-0 divide-y divide-gray-200 dark:divide-gray-700 lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+                        <ProxyMetaColumn
+                            title="代理分组"
+                            description="用于按业务、地区或供应商归类代理。删除分组不会删除代理，代理会回到未分组状态。"
+                            icon={<FolderOpen className="h-4 w-4" />}
+                            accent="primary"
+                            emptyText="暂无分组"
+                            createLabel="新建分组"
+                            placeholder="例如：Gmail 美国区"
+                            items={groups}
+                            draft={groupDraft}
+                            setDraft={setGroupDraft}
+                            onCreate={createGroupFromDraft}
+                            onUpdate={onUpdateGroup}
+                            onDelete={onDeleteGroup}
+                        />
+                        <ProxyMetaColumn
+                            title="代理标签"
+                            description="用于给代理追加多个属性，自动匹配时可选择任一标签或全部标签。删除标签会从代理上移除。"
+                            icon={<Tag className="h-4 w-4" />}
+                            accent="emerald"
+                            emptyText="暂无标签"
+                            createLabel="新建标签"
+                            placeholder="例如：高信誉 / Outlook"
+                            items={tags}
+                            draft={tagDraft}
+                            setDraft={setTagDraft}
+                            onCreate={createTagFromDraft}
+                            onUpdate={onUpdateTag}
+                            onDelete={onDeleteTag}
+                        />
+                    </div>
+                </ModalBody>
+                <ModalFooter>
+                    <button onClick={() => onOpenChange(false)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">完成</button>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
+    )
+}
+
+function ProxyMetaColumn<T extends ProxyGroup | ProxyTag>({ title, description, icon, accent, emptyText, createLabel, placeholder, items, draft, setDraft, onCreate, onUpdate, onDelete }: {
+    title: string
+    description: string
+    icon: ReactNode
+    accent: 'primary' | 'emerald'
+    emptyText: string
+    createLabel: string
+    placeholder: string
+    items: T[]
+    draft: ProxyMetaDraft
+    setDraft: (draft: ProxyMetaDraft) => void
+    onCreate: () => void | Promise<void>
+    onUpdate: (item: T, draft: ProxyMetaDraft) => Promise<T | null>
+    onDelete: (item: T) => void | Promise<void>
+}) {
+    const [searchValue, setSearchValue] = useState('')
+    const [editingId, setEditingId] = useState<number | null>(null)
+    const [editingDraft, setEditingDraft] = useState<ProxyMetaDraft>({ name: '' })
+    const [creating, setCreating] = useState(false)
+    const [savingId, setSavingId] = useState<number | null>(null)
+    const [deletingId, setDeletingId] = useState<number | null>(null)
+    const filteredItems = useMemo(() => {
+        const keyword = searchValue.trim().toLowerCase()
+        if (!keyword) return items
+        return items.filter(item => item.name.toLowerCase().includes(keyword))
+    }, [items, searchValue])
+    const accentClasses = {
+        primary: {
+            soft: 'bg-primary-50 text-primary-700 dark:bg-primary-950/30 dark:text-primary-200',
+            border: 'border-primary-200 dark:border-primary-900',
+            button: 'bg-primary-600 hover:bg-primary-700 text-white',
+            ghost: 'text-primary-600 hover:bg-primary-50 dark:text-primary-300 dark:hover:bg-primary-950/30',
+        },
+        emerald: {
+            soft: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200',
+            border: 'border-emerald-200 dark:border-emerald-900',
+            button: 'bg-emerald-600 hover:bg-emerald-700 text-white',
+            ghost: 'text-emerald-600 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/30',
+        },
+    }[accent]
+
+    const startEditing = (item: T) => {
+        setEditingId(item.id)
+        setEditingDraft({
+            name: item.name,
+            color: item.color || draft.color || proxyMetaColors[0],
+            description: 'description' in item ? item.description : undefined,
+            sortOrder: item.sortOrder || 0,
+        })
+    }
+    const createItem = async () => {
+        if (!draft.name.trim() || creating) return
+        setCreating(true)
+        try {
+            await onCreate()
+        } finally {
+            setCreating(false)
+        }
+    }
+    const saveEditing = async (item: T) => {
+        if (savingId) return
+        setSavingId(item.id)
+        try {
+            const updated = await onUpdate(item, editingDraft)
+            if (updated) {
+                setEditingId(null)
+                setEditingDraft({ name: '' })
+            }
+        } finally {
+            setSavingId(null)
+        }
+    }
+    const deleteItem = async (item: T) => {
+        if (deletingId) return
+        setDeletingId(item.id)
+        try {
+            await onDelete(item)
+        } finally {
+            setDeletingId(null)
+        }
+    }
+
+    return (
+        <section className="flex min-h-0 flex-col">
+            <div className="border-b border-gray-200 p-5 dark:border-gray-700">
+                <div className="flex items-start gap-3">
+                    <div className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-lg', accentClasses.soft)}>
+                        {icon}
+                    </div>
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                            <h3 className="font-semibold text-gray-900 dark:text-white">{title}</h3>
+                            <span className={cn('rounded-full px-2 py-0.5 text-xs', accentClasses.soft)}>{items.length}</span>
+                        </div>
+                        <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{description}</p>
                     </div>
                 </div>
-                <div>
-                    <div className="mb-1 text-sm font-medium">代理标签</div>
-                    <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">删除标签会从已绑定代理上移除该标签。</p>
-                    <div className="mb-2 flex gap-2">
+                <div className="mt-4 space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/60">
+                    <div className="flex flex-col gap-2 sm:flex-row">
                         <input
-                            value={newTagName}
-                            onChange={(event) => setNewTagName(event.target.value)}
+                            value={draft.name}
+                            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
                             onKeyDown={(event) => {
                                 if (event.key === 'Enter') {
                                     event.preventDefault()
-                                    onCreateTag()
+                                    createItem()
                                 }
                             }}
-                            placeholder="新标签名称"
-                            className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                            placeholder={placeholder}
+                            className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
                         />
-                        <button onClick={() => onCreateTag()} className="rounded-lg bg-gray-900 px-3 py-2 text-sm text-white dark:bg-white dark:text-gray-900">添加</button>
+                        <button onClick={createItem} disabled={!draft.name.trim() || creating} className={cn('inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium disabled:opacity-50', accentClasses.button)}>
+                            {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                            {createLabel}
+                        </button>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                        {tags.length === 0 ? <span className="text-xs text-gray-400">暂无标签</span> : tags.map(tag => (
-                            <span key={tag.id} className="inline-flex max-w-full items-center gap-1 rounded-full bg-emerald-50 py-1 pl-3 pr-1 text-xs text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200">
-                                <span className="truncate">{tag.name}</span>
-                                <button onClick={() => onDeleteTag(tag)} title="删除标签" className="rounded-full p-1 text-emerald-500 hover:bg-emerald-100 hover:text-emerald-700 dark:hover:bg-emerald-900/50">
-                                    <Trash2 className="h-3 w-3" />
-                                </button>
-                            </span>
-                        ))}
-                    </div>
+                    <MetaColorPicker value={draft.color} onChange={(color) => setDraft({ ...draft, color })} />
+                </div>
+                <div className="relative mt-4">
+                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
+                    <input
+                        value={searchValue}
+                        onChange={(event) => setSearchValue(event.target.value)}
+                        placeholder={`搜索${title}`}
+                        className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm dark:border-gray-700 dark:bg-gray-900"
+                    />
                 </div>
             </div>
+            <div className="min-h-0 flex-1 overflow-auto p-5">
+                {filteredItems.length === 0 ? (
+                    <div className="flex h-40 items-center justify-center rounded-lg border border-dashed border-gray-200 text-sm text-gray-400 dark:border-gray-700">
+                        {emptyText}
+                    </div>
+                ) : (
+                    <div className="space-y-2">
+                        {filteredItems.map(item => {
+                            const isEditing = editingId === item.id
+                            return (
+                                <div key={item.id} className={cn('rounded-lg border bg-white p-3 transition-colors dark:bg-gray-900', isEditing ? accentClasses.border : 'border-gray-200 dark:border-gray-700')}>
+                                    {isEditing ? (
+                                        <div className="space-y-3">
+                                            <input
+                                                value={editingDraft.name}
+                                                onChange={(event) => setEditingDraft({ ...editingDraft, name: event.target.value })}
+                                                onKeyDown={(event) => {
+                                                    if (event.key === 'Enter') {
+                                                        event.preventDefault()
+                                                        saveEditing(item)
+                                                    }
+                                                }}
+                                                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
+                                            />
+                                            <MetaColorPicker value={editingDraft.color} onChange={(color) => setEditingDraft({ ...editingDraft, color })} compact />
+                                            <div className="flex justify-end gap-2">
+                                                <button onClick={() => setEditingId(null)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
+                                                    <X className="h-3.5 w-3.5" />
+                                                    取消
+                                                </button>
+                                                <button onClick={() => saveEditing(item)} disabled={savingId === item.id} className={cn('inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50', accentClasses.button)}>
+                                                    {savingId === item.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                                                    保存
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="flex items-center gap-3">
+                                            <span className="h-3 w-3 shrink-0 rounded-full border border-white shadow-sm dark:border-gray-800" style={{ backgroundColor: item.color || (accent === 'primary' ? proxyMetaColors[0] : proxyMetaColors[7]) }} />
+                                            <div className="min-w-0 flex-1">
+                                                <div className="truncate text-sm font-medium text-gray-900 dark:text-white">{item.name}</div>
+                                                <div className="mt-0.5 text-xs text-gray-400">#{item.id}{item.sortOrder ? ` · 排序 ${item.sortOrder}` : ''}</div>
+                                            </div>
+                                            <button onClick={() => startEditing(item)} title="编辑" className={cn('rounded-lg p-2', accentClasses.ghost)}>
+                                                <Pencil className="h-4 w-4" />
+                                            </button>
+                                            <button onClick={() => deleteItem(item)} disabled={deletingId === item.id} title="删除" className="rounded-lg p-2 text-rose-600 hover:bg-rose-50 disabled:opacity-50 dark:text-rose-300 dark:hover:bg-rose-950/30">
+                                                {deletingId === item.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            )
+                        })}
+                    </div>
+                )}
+            </div>
+        </section>
+    )
+}
+
+function MetaColorPicker({ value, onChange, compact = false }: {
+    value?: string
+    onChange: (color: string) => void
+    compact?: boolean
+}) {
+    return (
+        <div className={cn('flex flex-wrap items-center gap-2', compact ? 'gap-1.5' : '')}>
+            {proxyMetaColors.map(color => (
+                <button
+                    key={color}
+                    type="button"
+                    onClick={() => onChange(color)}
+                    title={color}
+                    className={cn('rounded-full border-2 transition-transform hover:scale-110', compact ? 'h-5 w-5' : 'h-6 w-6', value === color ? 'border-gray-900 dark:border-white' : 'border-white dark:border-gray-800')}
+                    style={{ backgroundColor: color }}
+                />
+            ))}
+            <input
+                value={value || ''}
+                onChange={(event) => onChange(event.target.value)}
+                placeholder="#3b82f6"
+                className={cn('rounded-lg border border-gray-200 bg-white px-2 py-1 font-mono text-xs dark:border-gray-700 dark:bg-gray-900', compact ? 'w-24' : 'w-28')}
+            />
         </div>
     )
 }
