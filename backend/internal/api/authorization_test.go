@@ -51,3 +51,10 @@ func TestOrgMiddlewareSuperAdminFallsBackToFirstActiveOrg(t *testing.T) {
 		t.Fatal("next handler was not called")
 	}
 }
+
+func TestGetCurrentOrgIDFallsBackToDefaultOrg(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/proxy-groups", nil)
+	if got := GetCurrentOrgID(req); got != defaultOrgID {
+		t.Fatalf("GetCurrentOrgID = %d, want %d", got, defaultOrgID)
+	}
+}

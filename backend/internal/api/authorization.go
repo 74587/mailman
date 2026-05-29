@@ -16,6 +16,8 @@ const (
 	PermissionsContextKey ContextKey = "permissions"
 )
 
+const defaultOrgID uint = 1
+
 // AuthorizationContext 授权上下文，包含当前用户的组织和角色信息
 type AuthorizationContext struct {
 	User         *models.User
@@ -146,7 +148,7 @@ func GetCurrentOrgID(r *http.Request) uint {
 	if org != nil {
 		return org.ID
 	}
-	return 0
+	return defaultOrgID
 }
 
 // GetCurrentUserRole 从 Context 获取当前用户角色
