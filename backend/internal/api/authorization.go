@@ -10,9 +10,9 @@ import (
 
 // 授权相关的 Context Key
 const (
-	OrgContextKey        ContextKey = "current_org"
-	OrgMemberContextKey  ContextKey = "org_member"
-	UserRoleContextKey   ContextKey = "user_role"
+	OrgContextKey         ContextKey = "current_org"
+	OrgMemberContextKey   ContextKey = "org_member"
+	UserRoleContextKey    ContextKey = "user_role"
 	PermissionsContextKey ContextKey = "permissions"
 )
 
@@ -46,58 +46,54 @@ func OrgMiddleware(
 			// 超级管理员始终拥有所有权限，但仍然需要加载组织上下文
 			ctx := r.Context()
 
+			var org *models.Organization
+
 			// 如果用户有 CurrentOrgID，加载组织信息
 			if user.CurrentOrgID != nil {
-				org, err := orgRepo.GetByID(*user.CurrentOrgID)
+				currentOrg, err := orgRepo.GetByID(*user.CurrentOrgID)
 				if err != nil {
 					logger.Warn("User %d has invalid current_org_id %d: %v", user.ID, *user.CurrentOrgID, err)
 					// 尝试获取用户的第一个组织
 					orgs, _ := orgRepo.GetUserOrganizations(user.ID)
 					if len(orgs) > 0 {
-						org = &orgs[0]
+						currentOrg = &orgs[0]
 					}
 				}
 
-				if org != nil {
-					ctx = context.WithValue(ctx, OrgContextKey, org)
-
-					// 加载用户在该组织中的成员关系和角色
-					member, err := memberRepo.GetByOrgAndUser(org.ID, user.ID)
-					if err == nil && member != nil {
-						ctx = context.WithValue(ctx, OrgMemberContextKey, member)
-
-						// 加载角色
-						role, err := roleRepo.GetByID(member.RoleID)
-						if err == nil && role != nil {
-							ctx = context.WithValue(ctx, UserRoleContextKey, role)
-						}
-
-						// 加载权限
-						permissions, err := roleRepo.GetRolePermissions(member.RoleID)
-						if err == nil {
-							ctx = context.WithValue(ctx, PermissionsContextKey, permissions)
-						}
-					}
-				}
+				org = currentOrg
 			} else {
 				// 用户没有 CurrentOrgID，尝试设置默认组织
 				orgs, _ := orgRepo.GetUserOrganizations(user.ID)
 				if len(orgs) > 0 {
-					ctx = context.WithValue(ctx, OrgContextKey, &orgs[0])
+					org = &orgs[0]
+				}
+			}
 
-					member, err := memberRepo.GetByOrgAndUser(orgs[0].ID, user.ID)
-					if err == nil && member != nil {
-						ctx = context.WithValue(ctx, OrgMemberContextKey, member)
+			if org == nil && user.IsSuperAdmin {
+				orgs, err := orgRepo.GetAll()
+				if err == nil && len(orgs) > 0 {
+					org = &orgs[0]
+				}
+			}
 
-						role, err := roleRepo.GetByID(member.RoleID)
-						if err == nil && role != nil {
-							ctx = context.WithValue(ctx, UserRoleContextKey, role)
-						}
+			if org != nil {
+				ctx = context.WithValue(ctx, OrgContextKey, org)
 
-						permissions, err := roleRepo.GetRolePermissions(member.RoleID)
-						if err == nil {
-							ctx = context.WithValue(ctx, PermissionsContextKey, permissions)
-						}
+				// 加载用户在该组织中的成员关系和角色
+				member, err := memberRepo.GetByOrgAndUser(org.ID, user.ID)
+				if err == nil && member != nil {
+					ctx = context.WithValue(ctx, OrgMemberContextKey, member)
+
+					// 加载角色
+					role, err := roleRepo.GetByID(member.RoleID)
+					if err == nil && role != nil {
+						ctx = context.WithValue(ctx, UserRoleContextKey, role)
+					}
+
+					// 加载权限
+					permissions, err := roleRepo.GetRolePermissions(member.RoleID)
+					if err == nil {
+						ctx = context.WithValue(ctx, PermissionsContextKey, permissions)
 					}
 				}
 			}

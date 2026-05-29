@@ -4,6 +4,7 @@ import (
 	"errors"
 	"mailman/internal/models"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -261,9 +262,16 @@ func (r *ProxyPoolRepository) UpdateCheckResult(proxyID uint, updates map[string
 	return r.db.Model(&models.ProxyPoolItem{}).Where("id = ?", proxyID).Updates(updates).Error
 }
 
+func (r *ProxyPoolRepository) notDeleted(query *gorm.DB) *gorm.DB {
+	if r.db.Dialector.Name() == "mysql" {
+		return query.Where("(deleted_at IS NULL OR deleted_at = ? OR deleted_at = ?)", "0000-00-00 00:00:00", "0001-01-01 00:00:00")
+	}
+	return query.Where("(deleted_at IS NULL OR deleted_at = ?)", time.Time{})
+}
+
 func (r *ProxyPoolRepository) ListGroups(orgID uint) ([]models.ProxyGroup, error) {
 	var groups []models.ProxyGroup
-	err := r.db.Where("org_id = ?", orgID).Order("sort_order ASC, name ASC").Find(&groups).Error
+	err := r.notDeleted(r.db.Unscoped().Where("org_id = ?", orgID)).Order("sort_order ASC, name ASC").Find(&groups).Error
 	return groups, err
 }
 
@@ -280,13 +288,13 @@ func (r *ProxyPoolRepository) DeleteGroup(orgID, id uint) error {
 		if err := tx.Model(&models.ProxyPoolItem{}).Where("org_id = ? AND group_id = ?", orgID, id).Update("group_id", nil).Error; err != nil {
 			return err
 		}
-		return tx.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGroup{}).Error
+		return tx.Unscoped().Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGroup{}).Error
 	})
 }
 
 func (r *ProxyPoolRepository) GetGroupByID(orgID, id uint) (*models.ProxyGroup, error) {
 	var group models.ProxyGroup
-	if err := r.db.First(&group, "org_id = ? AND id = ?", orgID, id).Error; err != nil {
+	if err := r.notDeleted(r.db.Unscoped().Where("org_id = ? AND id = ?", orgID, id)).First(&group).Error; err != nil {
 		return nil, err
 	}
 	return &group, nil
@@ -294,7 +302,7 @@ func (r *ProxyPoolRepository) GetGroupByID(orgID, id uint) (*models.ProxyGroup, 
 
 func (r *ProxyPoolRepository) ListTags(orgID uint) ([]models.ProxyTag, error) {
 	var tags []models.ProxyTag
-	err := r.db.Where("org_id = ?", orgID).Order("sort_order ASC, name ASC").Find(&tags).Error
+	err := r.notDeleted(r.db.Unscoped().Where("org_id = ?", orgID)).Order("sort_order ASC, name ASC").Find(&tags).Error
 	return tags, err
 }
 
@@ -311,13 +319,13 @@ func (r *ProxyPoolRepository) DeleteTag(orgID, id uint) error {
 		if err := tx.Where("tag_id = ?", id).Delete(&models.ProxyPoolItemTag{}).Error; err != nil {
 			return err
 		}
-		return tx.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyTag{}).Error
+		return tx.Unscoped().Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyTag{}).Error
 	})
 }
 
 func (r *ProxyPoolRepository) GetTagByID(orgID, id uint) (*models.ProxyTag, error) {
 	var tag models.ProxyTag
-	if err := r.db.First(&tag, "org_id = ? AND id = ?", orgID, id).Error; err != nil {
+	if err := r.notDeleted(r.db.Unscoped().Where("org_id = ? AND id = ?", orgID, id)).First(&tag).Error; err != nil {
 		return nil, err
 	}
 	return &tag, nil
