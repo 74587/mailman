@@ -187,6 +187,28 @@ export function AccountsDataTable({
         })
     }, [noteDraft, noteFormatDraft, noteMode, notePreviewAccount])
 
+    const openInternalNoteTab = React.useCallback(() => {
+        if (!notePreviewAccount) return
+
+        const accountForTab = {
+            ...notePreviewAccount,
+            note: noteMode === 'edit' ? noteDraft : notePreviewAccount.note,
+            noteFormat: noteMode === 'edit' ? noteFormatDraft : notePreviewAccount.noteFormat,
+        }
+
+        window.dispatchEvent(new CustomEvent('switchTab', {
+            detail: {
+                tab: `account-note-${notePreviewAccount.id}`,
+                data: {
+                    accountId: notePreviewAccount.id,
+                    account: accountForTab,
+                    mode: noteMode === 'edit' ? 'split' : 'preview',
+                },
+            },
+        }))
+        closeNoteDialog()
+    }, [closeNoteDialog, noteDraft, noteFormatDraft, noteMode, notePreviewAccount])
+
     const previewFormat = noteMode === 'edit' ? noteFormatDraft : notePreviewAccount?.noteFormat
     const previewContent = noteMode === 'edit' ? noteDraft : notePreviewAccount?.note
     const modalWidthClass = noteViewport === 'compact'
@@ -617,12 +639,23 @@ export function AccountsDataTable({
                                     type="button"
                                     variant="outline"
                                     size="sm"
+                                    onClick={openInternalNoteTab}
+                                    disabled={!notePreviewAccount}
+                                    title="在系统内置页签查看"
+                                >
+                                    <StickyNote className="mr-1.5 h-4 w-4" />
+                                    内置 Tab
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
                                     onClick={openStandaloneNotePreview}
                                     disabled={!notePreviewAccount}
-                                    title="在独立标签页查看"
+                                    title="在浏览器标签页查看"
                                 >
                                     <ExternalLink className="mr-1.5 h-4 w-4" />
-                                    独立 Tab
+                                    浏览器 Tab
                                 </Button>
                             </div>
                         </div>

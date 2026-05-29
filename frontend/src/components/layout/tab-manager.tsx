@@ -46,6 +46,7 @@ import {
     ScrollText,
     Package,
     BookOpen,
+    StickyNote,
 } from 'lucide-react'
 
 interface Tab {
@@ -257,6 +258,15 @@ export function TabManager({
                 id: tabId,
                 name: '转发邮件',
                 icon: Send
+            }
+        }
+
+        if (tabId.startsWith('account-note-')) {
+            const accountId = tabId.replace('account-note-', '')
+            return {
+                id: tabId,
+                name: dynamicTabNames[tabId] || `账户备注 #${accountId}`,
+                icon: StickyNote
             }
         }
 

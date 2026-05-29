@@ -88,6 +88,10 @@ function getTabDisplayName(tabId: string): string {
     if (tabId.startsWith('compose-forward-')) {
         return `转发[${tabId}]`
     }
+    if (tabId.startsWith('account-note-')) {
+        const id = tabId.replace('account-note-', '')
+        return `账户备注[${id}]`
+    }
     // 取件模板V2相关Tab
     if (tabId.startsWith('extractor-v2-create-')) {
         return `新建取件模板[${tabId}]`
@@ -315,6 +319,11 @@ export default function MainPage() {
                         else if (tabId.startsWith('compose-reply-all-') || tabId.startsWith('compose-reply-') || tabId.startsWith('compose-forward-')) {
                             const ComposeReplyTab = require('@/components/tabs/compose-reply-tab').default
                             content = <ComposeReplyTab key={tabId} tabId={tabId} />
+                        }
+                        // 账户备注 Tab
+                        else if (tabId.startsWith('account-note-')) {
+                            const AccountNoteTab = require('@/components/accounts/account-note-tab').default
+                            content = guard('email_account', 'read', <AccountNoteTab key={tabId} tabId={tabId} />)
                         }
                         // 取件模板V2创建 Tab
                         else if (tabId.startsWith('extractor-v2-create-')) {
@@ -584,6 +593,7 @@ export default function MainPage() {
                             // 包括需要固定header/footer布局的编辑和创建页面
                             const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide']
                             const isFullscreen = fullscreenTabs.includes(tabId) ||
+                                tabId.startsWith('account-note-') ||
                                 tabId.startsWith('trigger-edit-') ||
                                 tabId.startsWith('trigger-view-') ||
                                 tabId.startsWith('compose-reply-') ||

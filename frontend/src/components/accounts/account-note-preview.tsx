@@ -183,7 +183,11 @@ function buildSandboxedMarkdownDocument(markdown: string) {
 }
 
 function escapeAttribute(value: string) {
-    return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
 }
 
 export function buildAccountNoteStandaloneDocument({
