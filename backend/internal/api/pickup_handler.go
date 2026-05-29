@@ -40,9 +40,9 @@ func (h *PickupHandler) PollHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 参数校验
-	if req.AccountID == 0 {
-		http.Error(w, "account_id is required", http.StatusBadRequest)
+	// 参数校验：account_id 可作为调用方提示；如果没有传，则必须能通过 to_query 在服务层解析到账户。
+	if req.AccountID == 0 && req.ToQuery == "" {
+		http.Error(w, "account_id or to_query is required", http.StatusBadRequest)
 		return
 	}
 

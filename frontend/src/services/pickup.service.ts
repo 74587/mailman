@@ -4,7 +4,7 @@ import type { Email } from '@/types'
 // ============ Request Types ============
 
 export interface PickupPollRequest {
-    account_id: number
+    account_id?: number         // 可选但推荐传；to_query 能解析到账户时以后端解析结果为准
     keep_alive_seconds: number  // 临时同步覆盖有效期(秒)，建议 30-120
     sync_interval: number       // 后端拉取邮件间隔(秒)，默认 5
     since: string               // ISO8601 搜索起始时间
@@ -35,6 +35,9 @@ export interface SimpleExtractConfig {
 
 export interface PickupPollResponse {
     success: boolean
+    account_id: number
+    requested_account_id?: number
+    resolved_by?: 'account_id' | 'to_query'
     emails: Email[]
     new_count: number
     extractions?: ExtractionResultItem[]

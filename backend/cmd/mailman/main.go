@@ -319,7 +319,7 @@ func main() {
 	// Initialize Pickup service and handler
 	extractorSvc := services.NewExtractorService()
 	extractorSvcV2 := services.NewExtractorServiceV2(db)
-	pickupService := services.NewPickupService(emailRepo, extractorSvc, extractorSvcV2, perAccountSyncManager)
+	pickupService := services.NewPickupService(emailRepo, emailAccountRepo, extractorSvc, extractorSvcV2, perAccountSyncManager)
 	pickupHandler := api.NewPickupHandler(pickupService)
 
 	// Initialize Session handler

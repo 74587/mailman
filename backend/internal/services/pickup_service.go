@@ -11,7 +11,7 @@ import (
 
 // PickupPollRequest 取件轮询请求
 type PickupPollRequest struct {
-	AccountID        uint   `json:"account_id"`
+	AccountID        uint   `json:"account_id"`         // 可选但推荐传；to_query 能解析到账户时以后端解析结果为准
 	KeepAliveSeconds int    `json:"keep_alive_seconds"` // 临时同步覆盖有效期(秒)，建议 30-120
 	SyncInterval     int    `json:"sync_interval"`      // 后端拉取邮件间隔(秒)，默认 5
 	Since            string `json:"since"`              // ISO8601 搜索起始时间
@@ -42,12 +42,15 @@ type SimpleExtractConfig struct {
 
 // PickupPollResponse 取件轮询响应
 type PickupPollResponse struct {
-	Success       bool                   `json:"success"`
-	Emails        []models.Email         `json:"emails"`
-	NewCount      int                    `json:"new_count"`
-	Extractions   []ExtractionResultItem `json:"extractions,omitempty"`
-	SyncActive    bool                   `json:"sync_active"`
-	SyncExpiresAt string                 `json:"sync_expires_at"`
+	Success            bool                   `json:"success"`
+	AccountID          uint                   `json:"account_id"`
+	RequestedAccountID uint                   `json:"requested_account_id,omitempty"`
+	ResolvedBy         string                 `json:"resolved_by,omitempty"`
+	Emails             []models.Email         `json:"emails"`
+	NewCount           int                    `json:"new_count"`
+	Extractions        []ExtractionResultItem `json:"extractions,omitempty"`
+	SyncActive         bool                   `json:"sync_active"`
+	SyncExpiresAt      string                 `json:"sync_expires_at"`
 }
 
 // ExtractionResultItem 单封邮件的提取结果
@@ -62,6 +65,7 @@ type ExtractionResultItem struct {
 // PickupService 取件轮询服务
 type PickupService struct {
 	emailRepo      *repository.EmailRepository
+	accountRepo    *repository.EmailAccountRepository
 	extractorSvc   *ExtractorService   // V1
 	extractorSvcV2 *ExtractorServiceV2 // V2
 	syncManager    *PerAccountSyncManager
@@ -71,12 +75,14 @@ type PickupService struct {
 // NewPickupService 创建取件轮询服务
 func NewPickupService(
 	emailRepo *repository.EmailRepository,
+	accountRepo *repository.EmailAccountRepository,
 	extractorSvc *ExtractorService,
 	extractorSvcV2 *ExtractorServiceV2,
 	syncManager *PerAccountSyncManager,
 ) *PickupService {
 	return &PickupService{
 		emailRepo:      emailRepo,
+		accountRepo:    accountRepo,
 		extractorSvc:   extractorSvc,
 		extractorSvcV2: extractorSvcV2,
 		syncManager:    syncManager,
@@ -96,6 +102,13 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	if req.Limit <= 0 {
 		req.Limit = 10
 	}
+
+	requestedAccountID := req.AccountID
+	resolvedAccountID, resolvedBy, err := s.resolvePickupAccountID(req.AccountID, req.ToQuery)
+	if err != nil {
+		return nil, err
+	}
+	req.AccountID = resolvedAccountID
 
 	// 2. 注册/续期取件轮询覆盖（纯内存，零DB写入）
 	s.syncManager.RegisterPickupOverride(req.AccountID, req.SyncInterval, req.KeepAliveSeconds)
@@ -161,13 +174,40 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	}
 
 	return &PickupPollResponse{
-		Success:       true,
-		Emails:        emails,
-		NewCount:      len(emails),
-		Extractions:   extractions,
-		SyncActive:    syncActive,
-		SyncExpiresAt: syncExpiresAt,
+		Success:            true,
+		AccountID:          req.AccountID,
+		RequestedAccountID: requestedAccountID,
+		ResolvedBy:         resolvedBy,
+		Emails:             emails,
+		NewCount:           len(emails),
+		Extractions:        extractions,
+		SyncActive:         syncActive,
+		SyncExpiresAt:      syncExpiresAt,
 	}, nil
+}
+
+func (s *PickupService) resolvePickupAccountID(requestedAccountID uint, toQuery string) (uint, string, error) {
+	recipient := strings.TrimSpace(toQuery)
+	if recipient != "" && s.accountRepo != nil {
+		account, err := s.accountRepo.GetByEmailOrAlias(recipient)
+		if err == nil && account != nil {
+			if s.logger != nil && requestedAccountID != 0 && requestedAccountID != account.ID {
+				s.logger.Info("Pickup account resolved by to_query %q: requested=%d resolved=%d", recipient, requestedAccountID, account.ID)
+			}
+			return account.ID, "to_query", nil
+		}
+		if requestedAccountID == 0 {
+			return 0, "", fmt.Errorf("failed to resolve account for to_query %q: %w", recipient, err)
+		}
+		if s.logger != nil {
+			s.logger.Debug("Pickup to_query %q did not resolve an account, falling back to requested account %d: %v", recipient, requestedAccountID, err)
+		}
+	}
+
+	if requestedAccountID == 0 {
+		return 0, "", fmt.Errorf("account_id is required when to_query cannot resolve an account")
+	}
+	return requestedAccountID, "account_id", nil
 }
 
 // extractWithTemplate 使用已有V2模板提取

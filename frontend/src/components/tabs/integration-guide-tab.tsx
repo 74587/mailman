@@ -1632,7 +1632,7 @@ curl "\${API_BASE}/emails/\${EMAIL_ID}" \\
                                 {[
                                     ['注册/续期临时同步覆盖', '默认 sync_interval=5 秒，keep_alive_seconds=30 秒；每次调用都会续期。'],
                                     ['立即同步一次', '服务端会调用 SyncNow，确保刚到达的邮件尽快入库。'],
-                                    ['按 account_id、since、to_query 搜索邮件', 'since 必须是 RFC3339 时间；to_query 可用于别名或域名邮箱收件地址。'],
+                                    ['后端解析真实账户并搜索邮件', 'to_query 会优先解析 Gmail 别名或域名邮箱所属账户；解析不到时才使用 account_id。'],
                                     ['可选执行提取', 'template_id、inline_actions、simple_extract 三选一；都不传则只返回邮件。'],
                                 ].map(([title, desc], idx) => (
                                     <div key={title} className="flex items-start gap-3 px-4 py-3">
@@ -1679,6 +1679,9 @@ curl -X POST "\${API_BASE}/pickup/poll" \\
                                 language="json"
                                 code={`{
   "success": true,
+  "account_id": 10,
+  "requested_account_id": 99,
+  "resolved_by": "to_query",
   "emails": [
     {
       "ID": 123,
@@ -1707,18 +1710,18 @@ curl -X POST "\${API_BASE}/pickup/poll" \\
                             />
 
                             <FieldTable fields={[
-                                { name: 'account_id', type: 'number', required: true, desc: '邮箱账户 ID' },
+                                { name: 'account_id', type: 'number', desc: '邮箱账户 ID。可作为调用方提示；to_query 能解析到账户时以后端解析结果为准' },
                                 { name: 'keep_alive_seconds', type: 'number', desc: '临时同步覆盖有效期，默认 30 秒' },
                                 { name: 'sync_interval', type: 'number', desc: '临时同步间隔，默认 5 秒' },
                                 { name: 'since', type: 'string', desc: '搜索起始时间，RFC3339 格式' },
-                                { name: 'to_query', type: 'string', desc: '收件人过滤，可用于别名或域名邮箱地址' },
+                                { name: 'to_query', type: 'string', desc: '收件人过滤。可用于解析 Gmail 别名、域名邮箱并筛选目标收件地址' },
                                 { name: 'limit', type: 'number', desc: '返回邮件数量，默认 10' },
                                 { name: 'template_id', type: 'number', desc: '使用已有 V2 取件模板执行提取' },
                                 { name: 'simple_extract', type: 'object', desc: '简单提取配置，支持 regex、js、gotemplate' },
                             ]} />
 
                             <Callout type="tip">
-                                如果需要等待一段时间，客户端可以每 5 秒调用一次 <code className="font-mono text-xs">/pickup/poll</code>，直到 <code className="font-mono text-xs">emails.length &gt; 0</code> 或 <code className="font-mono text-xs">extractions</code> 中出现 <code className="font-mono text-xs">status=success</code>。每次调用都会刷新临时同步覆盖的过期时间。
+                                如果需要等待一段时间，客户端可以每 5 秒调用一次 <code className="font-mono text-xs">/pickup/poll</code>，直到 <code className="font-mono text-xs">emails.length &gt; 0</code> 或 <code className="font-mono text-xs">extractions</code> 中出现 <code className="font-mono text-xs">status=success</code>。每次调用都会刷新临时同步覆盖的过期时间；响应中的 <code className="font-mono text-xs">account_id</code> 是后端最终用于同步的账户。
                             </Callout>
                         </div>
                     </section>
