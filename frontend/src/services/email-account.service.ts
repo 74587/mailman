@@ -77,6 +77,8 @@ export class EmailAccountService {
             proxy: data.proxy,
             isDomainMail: data.is_domain_mail || false,
             domain: data.domain,
+            note: data.note,
+            noteFormat: data.note_format,
             customSettings: data.custom_settings
         };
 
@@ -108,6 +110,8 @@ export class EmailAccountService {
             proxy: data.proxy,
             isDomainMail: data.is_domain_mail || false,
             domain: data.domain,
+            note: data.note,
+            noteFormat: data.note_format,
             customSettings: data.custom_settings
         };
 
@@ -136,6 +140,8 @@ export class EmailAccountService {
             proxy: data.proxy,
             isDomainMail: data.is_domain_mail,
             domain: data.domain,
+            note: data.note,
+            noteFormat: data.note_format,
             customSettings: data.custom_settings
         };
 

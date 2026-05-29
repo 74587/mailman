@@ -21,14 +21,31 @@ import {
     Eye,
     Wifi,
     WifiOff,
+    Code2,
+    FileText,
+    StickyNote,
 } from 'lucide-react'
 import { DataTable, createSelectColumn } from '@/components/ui/data-table'
+import { Button } from '@/components/ui/button'
+import {
+    Modal,
+    ModalBody,
+    ModalContent,
+    ModalFooter,
+    ModalHeader,
+    ModalTitle,
+} from '@/components/ui/modal'
 import { AdaptiveActions, ActionItem } from '@/components/ui/adaptive-actions'
 import { InlineTagSelector } from '@/components/tags/tag-selector'
 import { GmailIcon, OutlookIcon } from '@/components/ui/brand-icons'
 import { EmailAccount } from '@/types'
 import { AccountSyncStatus } from '@/services/sync-config.service'
 import { cn } from '@/lib/utils'
+import {
+    AccountNotePreview,
+    getAccountNotePlainText,
+    normalizeAccountNoteFormat,
+} from './account-note-preview'
 
 interface AccountsDataTableProps {
     accounts: EmailAccount[]
@@ -104,6 +121,8 @@ export function AccountsDataTable({
     sorting,
     onSortingChange,
 }: AccountsDataTableProps) {
+    const [notePreviewAccount, setNotePreviewAccount] = React.useState<EmailAccount | null>(null)
+
     // 将 selectedIds 转换为 RowSelectionState
     const rowSelection = React.useMemo(() => {
         const selection: RowSelectionState = {}
@@ -195,6 +214,37 @@ export function AccountsDataTable({
                         />
                     </div>
                 ),
+            },
+
+            // 备注
+            {
+                id: 'note',
+                header: '备注',
+                size: 150,
+                enableSorting: false,
+                cell: ({ row }) => {
+                    const note = row.original.note?.trim()
+                    const noteFormat = normalizeAccountNoteFormat(row.original.noteFormat)
+
+                    if (!note) {
+                        return <span className="text-xs text-gray-400 dark:text-gray-500">无</span>
+                    }
+
+                    const previewText = getAccountNotePlainText(note, noteFormat) || (noteFormat === 'html' ? 'HTML/JS 备注' : 'Markdown 备注')
+                    const FormatIcon = noteFormat === 'html' ? Code2 : FileText
+
+                    return (
+                        <button
+                            type="button"
+                            onClick={() => setNotePreviewAccount(row.original)}
+                            className="inline-flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white"
+                            title={previewText}
+                        >
+                            <FormatIcon className="h-3.5 w-3.5 shrink-0" />
+                            <span className="truncate">{previewText}</span>
+                        </button>
+                    )
+                },
             },
 
             // 验证状态
@@ -398,16 +448,54 @@ export function AccountsDataTable({
     )
 
     return (
-        <DataTable
-            columns={columns}
-            data={accounts}
-            sorting={sorting}
-            onSortingChange={onSortingChange}
-            rowSelection={rowSelection}
-            onRowSelectionChange={handleRowSelectionChange}
-            getRowId={(row) => String(row.id)}
-            enableColumnResizing={true}
-            compact={true}
-        />
+        <>
+            <DataTable
+                columns={columns}
+                data={accounts}
+                sorting={sorting}
+                onSortingChange={onSortingChange}
+                rowSelection={rowSelection}
+                onRowSelectionChange={handleRowSelectionChange}
+                getRowId={(row) => String(row.id)}
+                enableColumnResizing={true}
+                compact={true}
+            />
+
+            <Modal open={!!notePreviewAccount} onOpenChange={(open) => !open && setNotePreviewAccount(null)}>
+                <ModalContent size="2xl">
+                    <ModalHeader>
+                        <ModalTitle className="flex items-center gap-2">
+                            <StickyNote className="h-5 w-5 text-primary-600" />
+                            账户备注
+                        </ModalTitle>
+                        {notePreviewAccount && (
+                            <div className="flex flex-wrap items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                                <span>{notePreviewAccount.emailAddress}</span>
+                                <span className="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                                    {normalizeAccountNoteFormat(notePreviewAccount.noteFormat) === 'html' ? (
+                                        <Code2 className="h-3.5 w-3.5" />
+                                    ) : (
+                                        <FileText className="h-3.5 w-3.5" />
+                                    )}
+                                    {normalizeAccountNoteFormat(notePreviewAccount.noteFormat) === 'html' ? 'HTML/JS' : 'MARKDOWN'}
+                                </span>
+                            </div>
+                        )}
+                    </ModalHeader>
+                    <ModalBody>
+                        <AccountNotePreview
+                            note={notePreviewAccount?.note}
+                            format={notePreviewAccount?.noteFormat}
+                            className="max-h-[60vh]"
+                        />
+                    </ModalBody>
+                    <ModalFooter>
+                        <Button variant="outline" onClick={() => setNotePreviewAccount(null)}>
+                            关闭
+                        </Button>
+                    </ModalFooter>
+                </ModalContent>
+            </Modal>
+        </>
     )
 }

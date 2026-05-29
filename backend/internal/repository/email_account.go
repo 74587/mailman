@@ -39,7 +39,7 @@ var emailAccountSortColumns = map[string]string{
 
 // AccountFilterParams contains all filter parameters for account queries
 type AccountFilterParams struct {
-	Search         string     // 搜索邮箱地址
+	Search         string     // 搜索邮箱地址、域名和备注
 	ProviderID     *uint      // 按供应商ID过滤
 	TagIDs         []uint     // 按标签ID过滤
 	TagFilterMode  string     // 标签过滤模式: "and" 或 "or"
@@ -197,7 +197,7 @@ func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, so
 	// 如果有搜索参数，添加搜索条件
 	if search != "" {
 		searchTerm := "%" + search + "%"
-		query = query.Where("email_address LIKE ?", searchTerm)
+		query = query.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
 	}
 
 	// 获取总数（应用搜索条件后的）
@@ -212,7 +212,7 @@ func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, so
 	}
 	if search != "" {
 		searchTerm := "%" + search + "%"
-		queryForData = queryForData.Where("email_address LIKE ?", searchTerm)
+		queryForData = queryForData.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
 	}
 
 	err := queryForData.
@@ -248,10 +248,10 @@ func (r *EmailAccountRepository) GetAllPaginatedFiltered(orgID uint, page, limit
 		baseQuery = baseQuery.Where("org_id = ?", orgID)
 	}
 
-	// 搜索邮箱地址
+	// 搜索邮箱地址、域名和备注
 	if filters.Search != "" {
 		searchTerm := "%" + filters.Search + "%"
-		baseQuery = baseQuery.Where("email_address LIKE ?", searchTerm)
+		baseQuery = baseQuery.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
 	}
 
 	// 供应商过滤
@@ -323,7 +323,7 @@ func (r *EmailAccountRepository) GetAllPaginatedFiltered(orgID uint, page, limit
 	// 复制过滤条件
 	if filters.Search != "" {
 		searchTerm := "%" + filters.Search + "%"
-		queryForData = queryForData.Where("email_address LIKE ?", searchTerm)
+		queryForData = queryForData.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
 	}
 	if filters.ProviderID != nil {
 		queryForData = queryForData.Where("mail_provider_id = ?", *filters.ProviderID)
@@ -404,7 +404,7 @@ func (r *EmailAccountRepository) GetAllPaginatedWithTags(orgID uint, page, limit
 	// 如果有搜索参数，添加搜索条件
 	if search != "" {
 		searchTerm := "%" + search + "%"
-		query = query.Where("email_address LIKE ?", searchTerm)
+		query = query.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
 	}
 
 	// 如果有标签过滤，添加标签条件
@@ -438,7 +438,7 @@ func (r *EmailAccountRepository) GetAllPaginatedWithTags(orgID uint, page, limit
 	}
 	if search != "" {
 		searchTerm := "%" + search + "%"
-		queryForData = queryForData.Where("email_address LIKE ?", searchTerm)
+		queryForData = queryForData.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
 	}
 	if len(tagIDs) > 0 {
 		if tagFilterMode == "and" {

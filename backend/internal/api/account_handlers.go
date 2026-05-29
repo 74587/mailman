@@ -43,6 +43,8 @@ func (h *APIHandler) CreateAccountHandler(w http.ResponseWriter, r *http.Request
 		Proxy:            request.Proxy,
 		IsDomainMail:     request.IsDomainMail,
 		Domain:           request.Domain,
+		Note:             request.Note,
+		NoteFormat:       models.NormalizeAccountNoteFormat(request.NoteFormat),
 		CustomSettings:   request.CustomSettings,
 	}
 
@@ -641,6 +643,12 @@ func (h *APIHandler) UpdateAccountHandler(w http.ResponseWriter, r *http.Request
 	if request.Domain != nil {
 		existingAccount.Domain = *request.Domain
 	}
+	if request.Note != nil {
+		existingAccount.Note = *request.Note
+	}
+	if request.NoteFormat != nil {
+		existingAccount.NoteFormat = models.NormalizeAccountNoteFormat(*request.NoteFormat)
+	}
 	if request.CustomSettings != nil {
 		existingAccount.CustomSettings = *request.CustomSettings
 	}
@@ -701,6 +709,8 @@ func (h *APIHandler) UpsertAccountHandler(w http.ResponseWriter, r *http.Request
 			Proxy:            request.Proxy,
 			IsDomainMail:     request.IsDomainMail,
 			Domain:           request.Domain,
+			Note:             request.Note,
+			NoteFormat:       models.NormalizeAccountNoteFormat(request.NoteFormat),
 			CustomSettings:   request.CustomSettings,
 			OrgID:            orgID,
 		}
@@ -737,6 +747,12 @@ func (h *APIHandler) UpsertAccountHandler(w http.ResponseWriter, r *http.Request
 		}
 		if request.CustomSettings != nil {
 			account.CustomSettings = request.CustomSettings
+		}
+		if request.Note != "" {
+			account.Note = request.Note
+		}
+		if request.NoteFormat != "" {
+			account.NoteFormat = models.NormalizeAccountNoteFormat(request.NoteFormat)
 		}
 
 		if err := h.EmailAccountRepo.Update(account); err != nil {

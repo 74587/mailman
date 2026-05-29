@@ -8,8 +8,9 @@ import { oauth2Service } from '@/services/oauth2.service'
 import { syncConfigService } from '@/services/sync-config.service'
 import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
-import { EmailAccount } from '@/types'
+import { AccountNoteFormat, EmailAccount } from '@/types'
 import OAuth2PopupAuth from '@/components/oauth2/oauth2-popup-auth'
+import { AccountNoteEditor } from '@/components/accounts/account-note-editor'
 import {
     Modal,
     ModalContent,
@@ -54,6 +55,8 @@ interface AccountForm {
     proxyPassword: string
     isDomainMail: boolean
     domain: string
+    note: string
+    noteFormat: AccountNoteFormat
     oauth2ProviderConfigId?: number
 }
 
@@ -96,6 +99,8 @@ export default function EnhancedAddAccountModal({
         proxyPassword: '',
         isDomainMail: false,
         domain: '',
+        note: '',
+        noteFormat: 'markdown',
         oauth2ProviderConfigId: undefined
     })
 
@@ -186,6 +191,8 @@ export default function EnhancedAddAccountModal({
             proxyPassword: '',
             isDomainMail: false,
             domain: '',
+            note: '',
+            noteFormat: 'markdown',
             oauth2ProviderConfigId: undefined
         })
         setSyncMode('incremental')
@@ -248,7 +255,9 @@ export default function EnhancedAddAccountModal({
             const payload: any = {
                 email_address: accountForm.email,
                 mail_provider_id: providerId,
-                auth_type: accountForm.authType
+                auth_type: accountForm.authType,
+                note: accountForm.note,
+                note_format: accountForm.noteFormat
             }
 
             if (accountForm.authType === 'password') {
@@ -648,6 +657,13 @@ export default function EnhancedAddAccountModal({
                                                 )}
                                             </div>
                                         )}
+
+                                        <AccountNoteEditor
+                                            value={accountForm.note}
+                                            format={accountForm.noteFormat}
+                                            onValueChange={(note) => setAccountForm(prev => ({ ...prev, note }))}
+                                            onFormatChange={(noteFormat) => setAccountForm(prev => ({ ...prev, noteFormat }))}
+                                        />
                                     </div>
                                 </motion.div>
                             )}

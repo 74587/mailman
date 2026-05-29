@@ -199,6 +199,22 @@ func (m JSONMapInterface) Value() (driver.Value, error) {
 	return string(bytes), nil
 }
 
+type AccountNoteFormat string
+
+const (
+	AccountNoteFormatMarkdown AccountNoteFormat = "markdown"
+	AccountNoteFormatHTML     AccountNoteFormat = "html"
+)
+
+func NormalizeAccountNoteFormat(format AccountNoteFormat) AccountNoteFormat {
+	switch format {
+	case AccountNoteFormatHTML:
+		return AccountNoteFormatHTML
+	default:
+		return AccountNoteFormatMarkdown
+	}
+}
+
 // EmailAccount represents a user's email account credentials and settings.
 type EmailAccount struct {
 	ID               uint                `gorm:"primaryKey" json:"id"`
@@ -214,6 +230,8 @@ type EmailAccount struct {
 	Proxy            string              `json:"proxy,omitempty"`                                                                                            // e.g., "socks5://user:pass@host:port"
 	IsDomainMail     bool                `gorm:"default:false" json:"isDomainMail"`
 	Domain           string              `gorm:"index" json:"domain,omitempty"` // For domain-specific email
+	Note             string              `gorm:"type:text" json:"note"`
+	NoteFormat       AccountNoteFormat   `gorm:"type:varchar(16);not null;default:'markdown'" json:"noteFormat"`
 	CustomSettings   JSONMap             `gorm:"type:json" json:"customSettings"`
 	LastSyncAt       *time.Time          `json:"lastSyncAt,omitempty"`
 	IsVerified       bool                `gorm:"default:false" json:"isVerified"`

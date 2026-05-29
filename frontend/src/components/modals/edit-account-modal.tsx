@@ -4,9 +4,10 @@ import { useState, useEffect } from 'react'
 import { Save, AlertCircle, Eye, EyeOff, Loader2 } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
-import { EmailAccount } from '@/types'
+import { AccountNoteFormat, EmailAccount } from '@/types'
 import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
+import { AccountNoteEditor } from '@/components/accounts/account-note-editor'
 import {
     Modal,
     ModalContent,
@@ -43,6 +44,8 @@ interface EditAccountForm {
     proxyPassword: string
     isDomainMail: boolean
     domain: string
+    note: string
+    noteFormat: AccountNoteFormat
 }
 
 export default function EditAccountModal({
@@ -70,7 +73,9 @@ export default function EditAccountModal({
         proxyUsername: '',
         proxyPassword: '',
         isDomainMail: false,
-        domain: ''
+        domain: '',
+        note: '',
+        noteFormat: 'markdown'
     })
 
     useEffect(() => {
@@ -121,7 +126,9 @@ export default function EditAccountModal({
                 proxyUsername: proxyUsername,
                 proxyPassword: proxyPassword,
                 isDomainMail: data.isDomainMail || false,
-                domain: data.domain || ''
+                domain: data.domain || '',
+                note: data.note || '',
+                noteFormat: data.noteFormat || 'markdown'
             })
         } catch (error) {
             console.error('Failed to load account details:', error)
@@ -141,7 +148,9 @@ export default function EditAccountModal({
                 auth_type: form.authType,
                 mail_provider_id: fullAccount.mailProviderId,
                 is_domain_mail: form.isDomainMail,
-                domain: form.isDomainMail ? form.domain : ''
+                domain: form.isDomainMail ? form.domain : '',
+                note: form.note,
+                note_format: form.noteFormat
             }
 
             if (form.authType === 'password' || form.authType === 'app_password') {
@@ -195,7 +204,9 @@ export default function EditAccountModal({
             proxyUsername: '',
             proxyPassword: '',
             isDomainMail: false,
-            domain: ''
+            domain: '',
+            note: '',
+            noteFormat: 'markdown'
         })
         setFullAccount(null)
         setShowPassword(false)
@@ -214,7 +225,7 @@ export default function EditAccountModal({
                 <ModalHeader>
                     <ModalTitle>编辑邮箱账户</ModalTitle>
                     <ModalDescription>
-                        修改账户认证信息和代理设置
+                        修改账户认证信息、备注和代理设置
                     </ModalDescription>
                 </ModalHeader>
 
@@ -374,6 +385,13 @@ export default function EditAccountModal({
                                     )}
                                 </AnimatePresence>
                             </div>
+
+                            <AccountNoteEditor
+                                value={form.note}
+                                format={form.noteFormat}
+                                onValueChange={(note) => setForm({ ...form, note })}
+                                onFormatChange={(noteFormat) => setForm({ ...form, noteFormat })}
+                            />
 
                             {/* 代理设置 */}
                             <div className="space-y-3">

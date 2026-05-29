@@ -6,6 +6,8 @@ export interface ApiResponse<T> {
 }
 
 // Email Account Types - 匹配后端API响应
+export type AccountNoteFormat = 'markdown' | 'html';
+
 export interface EmailAccount {
     id: number;
     emailAddress: string;
@@ -31,6 +33,8 @@ export interface EmailAccount {
     proxy?: string;
     isDomainMail: boolean;
     domain?: string;
+    note?: string;
+    noteFormat?: AccountNoteFormat;
     customSettings?: Record<string, any>;
     isVerified?: boolean;
     verifiedAt?: string;
@@ -77,6 +81,8 @@ export interface CreateEmailAccountRequest {
     proxy?: string;
     is_domain_mail?: boolean;
     domain?: string;
+    note?: string;
+    note_format?: AccountNoteFormat;
     custom_settings?: Record<string, any>;
 }
 
