@@ -1,8 +1,8 @@
 'use client'
 import { logger } from '@/lib/logger';
 
-import { useState, useEffect } from 'react'
-import { Check, AlertCircle, Loader2, ArrowRight, CheckCircle, Clock, Settings } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Check, AlertCircle, Loader2, ArrowRight, CheckCircle, Clock, Settings, Globe2, StickyNote, Network, Mail } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
 import { syncConfigService } from '@/services/sync-config.service'
@@ -71,7 +71,7 @@ interface AccountForm {
 }
 
 // 工作流程步骤
-type WorkflowStep = 'account' | 'verify' | 'sync' | 'config' | 'complete'
+type WorkflowStep = 'account' | 'advanced' | 'verify' | 'sync' | 'config' | 'complete'
 
 interface StepData {
     createdAccount?: EmailAccount
@@ -92,6 +92,8 @@ export default function EnhancedAddAccountModal({
     const [currentStep, setCurrentStep] = useState<WorkflowStep>('account')
     const [stepData, setStepData] = useState<StepData>({})
     const [loading, setLoading] = useState(false)
+    const bodyShellRef = useRef<HTMLDivElement>(null)
+    const bodyScrollRef = useRef<HTMLDivElement>(null)
 
     // Account form states
     const [providers, setProviders] = useState<MailProvider[]>([])
@@ -132,7 +134,8 @@ export default function EnhancedAddAccountModal({
 
     // 工作流程步骤配置
     const steps = [
-        { key: 'account', title: '添加账户', description: '配置邮件账户信息' },
+        { key: 'account', title: '账户认证', description: '配置邮箱、提供商和认证信息' },
+        { key: 'advanced', title: '高级设置', description: '配置域名邮箱、备注和代理策略' },
         { key: 'verify', title: '验证连接', description: '验证账户连接性' },
         { key: 'sync', title: '首次同步', description: '同步邮件到本地' },
         { key: 'config', title: '同步配置', description: '设置自动同步规则' },
@@ -163,6 +166,14 @@ export default function EnhancedAddAccountModal({
             setAccountForm(prev => ({ ...prev, authType: presetAuthType as 'password' | 'oauth2' }))
         }
     }, [presetAuthType])
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            bodyShellRef.current?.scrollTo({ top: 0 })
+            bodyScrollRef.current?.scrollTo({ top: 0 })
+        }, 0)
+        return () => window.clearTimeout(timer)
+    }, [currentStep])
 
     const loadProviders = async () => {
         try {
@@ -204,6 +215,13 @@ export default function EnhancedAddAccountModal({
         setIncludeBody(true)
         setEnableAutoSync(true)
         setSyncInterval(300)
+        setShowOAuth2Popup(false)
+        setIsCustomProvider(false)
+        setSelectedProvider(null)
+        setCustomImapServer('')
+        setCustomImapPort(993)
+        setCustomSmtpServer('')
+        setCustomSmtpPort(587)
     }
 
     const handleClose = () => {
@@ -213,6 +231,23 @@ export default function EnhancedAddAccountModal({
 
     // 步骤1: 创建或更新账户
     const handleCreateAccount = async () => {
+        if (!accountForm.email) {
+            onError?.('请输入邮箱地址')
+            return
+        }
+        if (accountForm.authType === 'password' && !accountForm.password) {
+            onError?.('请输入密码')
+            return
+        }
+        if (accountForm.authType === 'oauth2' && !accountForm.accessToken) {
+            onError?.('请先完成 OAuth2 认证')
+            return
+        }
+        if (accountForm.isDomainMail && !accountForm.domain.trim()) {
+            onError?.('请填写域名')
+            return
+        }
+
         // 如果是自定义IMAP，先创建provider
         let providerId: number | undefined
 
@@ -464,51 +499,64 @@ export default function EnhancedAddAccountModal({
         return selectedProvider
     }
 
+    const hasProvider = isCustomProvider
+        ? Boolean(customImapServer.trim()) && customImapPort > 0
+        : Boolean(selectedProvider)
+    const hasCredential = accountForm.authType === 'password'
+        ? Boolean(accountForm.password)
+        : Boolean(accountForm.accessToken)
+    const canContinueAccount = Boolean(accountForm.email) && hasProvider && hasCredential
+    const canCreateAccount = canContinueAccount && (!accountForm.isDomainMail || Boolean(accountForm.domain.trim()))
+
     return (
         <>
             <Modal open={isOpen} onOpenChange={(open) => !open && handleClose()}>
-                <ModalContent size="xl" className="max-h-[90vh] flex flex-col">
+                <ModalContent size="full" className="h-[88vh] max-w-[1180px] overflow-hidden">
                     <ModalHeader>
                         <ModalTitle>账户设置向导</ModalTitle>
                         <ModalDescription>{steps[currentStepIndex]?.description}</ModalDescription>
                     </ModalHeader>
 
                     {/* 步骤指示器 */}
-                    <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-                        <div className="flex items-center justify-between">
-                            {steps.map((step, index) => (
-                                <div key={step.key} className="flex items-center">
-                                    <div className={cn(
-                                        "w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium",
-                                        index < currentStepIndex
-                                            ? "bg-green-600 text-white"
-                                            : index === currentStepIndex
-                                                ? "bg-blue-600 text-white"
-                                                : "bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400"
-                                    )}>
-                                        {index < currentStepIndex ? (
-                                            <Check className="h-4 w-4" />
-                                        ) : (
-                                            <span>{index + 1}</span>
+                    <div className="border-b border-gray-200 px-6 py-4 dark:border-gray-700">
+                        <div className="overflow-x-auto pb-1">
+                            <div className="flex min-w-max items-center gap-3">
+                                {steps.map((step, index) => (
+                                    <div key={step.key} className="flex shrink-0 items-center">
+                                        <div className={cn(
+                                            "flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors",
+                                            index < currentStepIndex
+                                                ? "bg-green-600 text-white"
+                                                : index === currentStepIndex
+                                                    ? "bg-blue-600 text-white"
+                                                    : "bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400"
+                                        )}
+                                        >
+                                            {index < currentStepIndex ? (
+                                                <Check className="h-4 w-4" />
+                                            ) : (
+                                                <span>{index + 1}</span>
+                                            )}
+                                        </div>
+                                        <span className={cn(
+                                            "ml-2 text-sm font-medium",
+                                            index <= currentStepIndex
+                                                ? "text-gray-900 dark:text-white"
+                                                : "text-gray-500 dark:text-gray-400"
+                                        )}>
+                                            {step.title}
+                                        </span>
+                                        {index < steps.length - 1 && (
+                                            <ArrowRight className="ml-3 h-4 w-4 text-gray-400" />
                                         )}
                                     </div>
-                                    <span className={cn(
-                                        "ml-2 text-sm font-medium",
-                                        index <= currentStepIndex
-                                            ? "text-gray-900 dark:text-white"
-                                            : "text-gray-500 dark:text-gray-400"
-                                    )}>
-                                        {step.title}
-                                    </span>
-                                    {index < steps.length - 1 && (
-                                        <ArrowRight className="h-4 w-4 ml-4 text-gray-400" />
-                                    )}
-                                </div>
-                            ))}
+                                ))}
+                            </div>
                         </div>
                     </div>
 
-                    <ModalBody>
+                    <ModalBody ref={bodyShellRef} className="min-h-0 overflow-hidden p-0">
+                        <div key={currentStep} ref={bodyScrollRef} className="h-full overflow-y-auto p-6">
                         <AnimatePresence mode="wait">
                             {currentStep === 'account' && (
                                 <motion.div
@@ -518,9 +566,20 @@ export default function EnhancedAddAccountModal({
                                     exit={{ opacity: 0, x: -20 }}
                                     transition={{ duration: 0.2 }}
                                 >
-                                    {/* 添加账户表单 - 复用现有逻辑 */}
-                                    <div className="space-y-4">
-                                        <div>
+                                    <div className="space-y-5">
+                                        <div className="flex items-start gap-3">
+                                            <span className="rounded-xl bg-blue-50 p-2 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300">
+                                                <Mail className="h-5 w-5" />
+                                            </span>
+                                            <div>
+                                                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">账户认证</h3>
+                                                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">先填写登录邮箱、提供商和认证方式，下一步再配置域名、备注和代理。</p>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]">
+                                            <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40">
+                                                <div>
                                             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                                 邮箱地址
                                             </label>
@@ -531,9 +590,9 @@ export default function EnhancedAddAccountModal({
                                                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                                                 placeholder="your.email@example.com"
                                             />
-                                        </div>
+                                                </div>
 
-                                        <div>
+                                                <div>
                                             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                                 邮件提供商
                                             </label>
@@ -612,9 +671,9 @@ export default function EnhancedAddAccountModal({
                                                     <p className="text-xs text-gray-500 dark:text-gray-400">提示：端口 993 通常用于 IMAP SSL，端口 587 通常用于 SMTP TLS</p>
                                                 </div>
                                             )}
-                                        </div>
+                                                </div>
 
-                                        <div>
+                                                <div>
                                             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                                                 认证方式
                                             </label>
@@ -640,7 +699,7 @@ export default function EnhancedAddAccountModal({
                                                     OAuth2
                                                 </label>
                                             </div>
-                                        </div>
+                                                </div>
 
                                         {accountForm.authType === 'password' && (
                                             <div>
@@ -676,19 +735,131 @@ export default function EnhancedAddAccountModal({
                                                 )}
                                             </div>
                                         )}
+                                            </div>
 
-                                        <AccountNoteEditor
-                                            value={accountForm.note}
-                                            format={accountForm.noteFormat}
-                                            onValueChange={(note) => setAccountForm(prev => ({ ...prev, note }))}
-                                            onFormatChange={(noteFormat) => setAccountForm(prev => ({ ...prev, noteFormat }))}
-                                        />
+                                            <div className="space-y-3">
+                                                <motion.div
+                                                    layout
+                                                    className="rounded-xl border border-blue-100 bg-blue-50/80 p-4 dark:border-blue-900/50 dark:bg-blue-950/20"
+                                                >
+                                                    <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">下一步将配置</div>
+                                                    <div className="mt-3 grid gap-3">
+                                                        {[
+                                                            { icon: Globe2, title: '域名邮箱', desc: accountForm.isDomainMail ? accountForm.domain || '待填写域名' : '可选' },
+                                                            { icon: StickyNote, title: '账户备注', desc: accountForm.note.trim() ? '已填写' : '可选' },
+                                                            { icon: Network, title: '代理策略', desc: accountForm.useProxy ? '已启用' : '可选' },
+                                                        ].map(item => {
+                                                            const Icon = item.icon
+                                                            return (
+                                                                <div key={item.title} className="flex items-center gap-3 rounded-lg bg-white/70 px-3 py-2 dark:bg-gray-900/40">
+                                                                    <Icon className="h-4 w-4 text-blue-600 dark:text-blue-300" />
+                                                                    <div className="min-w-0">
+                                                                        <div className="text-sm font-medium text-gray-900 dark:text-white">{item.title}</div>
+                                                                        <div className="truncate text-xs text-gray-500 dark:text-gray-400">{item.desc}</div>
+                                                                    </div>
+                                                                </div>
+                                                            )
+                                                        })}
+                                                    </div>
+                                                </motion.div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </motion.div>
+                            )}
 
+                            {currentStep === 'advanced' && (
+                                <motion.div
+                                    key="advanced"
+                                    initial={{ opacity: 0, x: 20 }}
+                                    animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, x: -20 }}
+                                    transition={{ duration: 0.2 }}
+                                    className="space-y-5"
+                                >
+                                    <div className="flex items-start gap-3">
+                                        <span className="rounded-xl bg-primary-50 p-2 text-primary-600 dark:bg-primary-950/40 dark:text-primary-300">
+                                            <Settings className="h-5 w-5" />
+                                        </span>
+                                        <div>
+                                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">高级设置</h3>
+                                            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">这些设置不会阻塞账户认证，但会影响后续搜索、展示和取件网络策略。</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+                                        <motion.section
+                                            layout
+                                            className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40"
+                                        >
+                                            <div className="flex items-start gap-3">
+                                                <Globe2 className="mt-0.5 h-5 w-5 text-primary-600" />
+                                                <div>
+                                                    <h4 className="font-semibold text-gray-900 dark:text-white">域名邮箱</h4>
+                                                    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">用于搜索和识别发送到域名邮箱或别名邮箱的邮件。</p>
+                                                </div>
+                                            </div>
+                                            <label className="mt-4 flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={accountForm.isDomainMail}
+                                                    onChange={(event) => setAccountForm(prev => ({ ...prev, isDomainMail: event.target.checked }))}
+                                                    className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                                />
+                                                启用域名邮箱
+                                            </label>
+                                            <AnimatePresence>
+                                                {accountForm.isDomainMail && (
+                                                    <motion.div
+                                                        initial={{ height: 0, opacity: 0 }}
+                                                        animate={{ height: 'auto', opacity: 1 }}
+                                                        exit={{ height: 0, opacity: 0 }}
+                                                        transition={{ duration: 0.24 }}
+                                                        className="overflow-hidden"
+                                                    >
+                                                        <div className="mt-4">
+                                                            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">域名</label>
+                                                            <input
+                                                                value={accountForm.domain}
+                                                                onChange={(event) => setAccountForm(prev => ({ ...prev, domain: event.target.value }))}
+                                                                placeholder="example.com"
+                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                                                            />
+                                                        </div>
+                                                    </motion.div>
+                                                )}
+                                            </AnimatePresence>
+                                        </motion.section>
+
+                                        <motion.section
+                                            layout
+                                            className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40"
+                                        >
+                                            <AccountNoteEditor
+                                                value={accountForm.note}
+                                                format={accountForm.noteFormat}
+                                                onValueChange={(note) => setAccountForm(prev => ({ ...prev, note }))}
+                                                onFormatChange={(noteFormat) => setAccountForm(prev => ({ ...prev, noteFormat }))}
+                                            />
+                                        </motion.section>
+                                    </div>
+
+                                    <motion.section
+                                        layout
+                                        className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40"
+                                    >
+                                        <div className="mb-4 flex items-start gap-3">
+                                            <Network className="mt-0.5 h-5 w-5 text-primary-600" />
+                                            <div>
+                                                <h4 className="font-semibold text-gray-900 dark:text-white">代理策略</h4>
+                                                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">可手动填写代理，也可从代理池选择或按分组、标签自动匹配。</p>
+                                            </div>
+                                        </div>
                                         <ProxyConfigSection
                                             value={accountForm}
                                             onChange={(proxyConfig) => setAccountForm(prev => ({ ...prev, ...proxyConfig }))}
                                         />
-                                    </div>
+                                    </motion.section>
                                 </motion.div>
                             )}
 
@@ -908,6 +1079,7 @@ export default function EnhancedAddAccountModal({
                                 </motion.div>
                             )}
                         </AnimatePresence>
+                        </div>
                     </ModalBody>
 
                     <ModalFooter className="justify-between">
@@ -927,8 +1099,18 @@ export default function EnhancedAddAccountModal({
                         <div className="flex space-x-3">
                             {currentStep === 'account' && (
                                 <Button
+                                    onClick={() => setCurrentStep('advanced')}
+                                    disabled={loading || !canContinueAccount}
+                                >
+                                    下一步
+                                    <ArrowRight className="ml-2 h-4 w-4" />
+                                </Button>
+                            )}
+
+                            {currentStep === 'advanced' && (
+                                <Button
                                     onClick={handleCreateAccount}
-                                    disabled={loading || !selectedProvider || !accountForm.email || (accountForm.authType === 'password' && !accountForm.password) || (accountForm.authType === 'oauth2' && !accountForm.accessToken)}
+                                    disabled={loading || !canCreateAccount}
                                 >
                                     {loading && <Loader2 className="h-4 w-4 animate-spin mr-2" />}
                                     {loading ? '创建中...' : '创建账户'}

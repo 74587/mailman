@@ -116,18 +116,19 @@ const ModalHeader = ({
 )
 ModalHeader.displayName = 'ModalHeader'
 
-const ModalBody = ({
+const ModalBody = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({
     className,
     ...props
-}: React.HTMLAttributes<HTMLDivElement>) => (
+}, ref) => (
     <div
+        ref={ref}
         className={cn(
             "flex-1 overflow-y-auto p-6",
             className
         )}
         {...props}
     />
-)
+))
 ModalBody.displayName = 'ModalBody'
 
 const ModalFooter = ({
