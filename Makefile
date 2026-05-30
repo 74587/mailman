@@ -1,4 +1,4 @@
-.PHONY: help dev frontend-build frontend-install \
+.PHONY: help dev frontend-build frontend-install proxy run-mailman-proxy \
        build-all push-all run-all \
        compose-up compose-down compose-logs compose-ps \
        dev-docker dev-docker-logs dev-docker-down \
@@ -17,6 +17,8 @@ help:
 	@echo ""
 	@echo "  Local Development:"
 	@echo "    make dev                 Build frontend + start backend locally"
+	@echo "    make proxy               Build + start local callback proxy"
+	@echo "    make run-mailman-proxy   Build + start local callback proxy"
 	@echo "    make frontend-build      Build frontend static assets only"
 	@echo "    make frontend-install    Install frontend dependencies"
 	@echo ""
@@ -51,6 +53,12 @@ help:
 dev: frontend-build
 	@echo "Starting backend server..."
 	cd backend && go run ./cmd/mailman
+
+# Build + start local callback proxy
+proxy: run-mailman-proxy
+
+run-mailman-proxy:
+	$(MAKE) -C backend run-mailman-proxy
 
 # Build frontend static assets
 frontend-build:
