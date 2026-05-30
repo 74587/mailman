@@ -38,12 +38,13 @@ import {
     Users,
     Crown,
     Network,
+    Briefcase,
     type LucideIcon,
 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
 import { useTheme } from '@/components/theme-provider'
 import { useAuth } from '@/context/auth-context'
-import { isMenuVisible, subscribeMenuVisibility } from '@/lib/menu-config'
+import { applyMenuOrderToItems, isMenuVisible, loadMenuPreferencesFromServer, subscribeMenuVisibility } from '@/lib/menu-config'
 
 // 菜单项接口定义
 interface MenuItem {
@@ -64,29 +65,37 @@ interface MenuGroup {
 }
 
 const navigation: MenuItem[] = [
-    { name: '仪表板', id: 'dashboard', icon: LayoutDashboard },
+    { name: '仪表板', id: 'dashboard', icon: LayoutDashboard, description: '全局概览' },
+]
+
+// 邮箱运营菜单组
+const mailNavigation: MenuItem[] = [
     { name: '邮箱账户管理', id: 'accounts', icon: UserCog, permission: { resource: 'email_account', action: 'read' } },
     { name: '邮件管理', id: 'emails', icon: Mail, hidden: true },  // 隐藏
-    { name: '发送邮件', id: 'compose-email', icon: Send, permission: { resource: 'email', action: 'read' } },
     { name: '经典邮件管理器', id: 'classic-mailbox', icon: Inbox, permission: { resource: 'email', action: 'read' } },
-    { name: '同步配置', id: 'sync-config', icon: RefreshCw, permission: { resource: 'sync_config', action: 'read' } },
-    { name: '代理池管理', id: 'proxy-pool', icon: Network, description: '代理分组 · 标签 · 检测', permission: { resource: 'email_account', action: 'read' } },
+    { name: '发送邮件', id: 'compose-email', icon: Send, permission: { resource: 'email', action: 'read' } },
     { name: '取件', id: 'mail-pickup', icon: Inbox, hidden: true },
     { name: '取件', id: 'mail-pickup-v2', icon: Package, description: '邮件监听 · 自动提取', permission: { resource: 'trigger', action: 'read' } },
     { name: '取件模板', id: 'pickup', icon: FileText, hidden: true },
     { name: '取件模板', id: 'extractor-v2-list', icon: FileText, description: '管理提取模板', permission: { resource: 'template', action: 'read' } },
-    { name: 'API 文档', id: 'api-docs', icon: BookOpen, description: 'Swagger 接口文档' },
+    { name: '同步配置', id: 'sync-config', icon: RefreshCw, permission: { resource: 'sync_config', action: 'read' } },
+    { name: '代理池管理', id: 'proxy-pool', icon: Network, description: '代理分组 · 标签 · 检测', permission: { resource: 'email_account', action: 'read' } },
+]
 
+// 业务资料菜单组
+const businessNavigation: MenuItem[] = [
+    { name: '业务账户', id: 'business-accounts', icon: Briefcase, description: '站点账号 · 2FA · 资料', permission: { resource: 'email_account', action: 'read' } },
+    { name: '业务模块', id: 'business-modules', icon: Package, description: 'Logo · 状态 · 字段模板', permission: { resource: 'email_account', action: 'read' } },
 ]
 
 // 系统管理菜单组
 const adminNavigation: MenuItem[] = [
+    { name: '系统配置', id: 'system-config', icon: Settings, permission: { resource: 'system_config', action: 'read' } },
     { name: '团队管理', id: 'team-management', icon: Building2, description: '组织 · 成员 · 角色', permission: { resource: 'organization', action: 'read' } },
     { name: '用户管理', id: 'user-management', icon: Users, description: '创建和管理系统用户' },
     { name: 'OAuth2 配置', id: 'oauth2-config', icon: Key, permission: { resource: 'system_config', action: 'read' } },
     { name: 'AI 配置', id: 'ai-config', icon: Bot, permission: { resource: 'ai_config', action: 'read' } },
     { name: '访问令牌', id: 'user-sessions', icon: Settings },
-    { name: '系统配置', id: 'system-config', icon: Settings, permission: { resource: 'system_config', action: 'read' } },
 ]
 
 // 高级模组菜单组
@@ -106,6 +115,7 @@ const pluginNavigation: MenuItem[] = [
 
 // 开发者模式菜单组
 const developerNavigation: MenuItem[] = [
+    { name: 'API 文档', id: 'api-docs', icon: BookOpen, description: 'Swagger 接口文档' },
     { name: '接入手册', id: 'integration-guide', icon: FileText, description: 'OAuth · 邮件 API · 部署指南' },
     { name: '表达式调试器', id: 'expression-debugger', icon: Bug, description: '调试条件表达式' },
     { name: '动作调试器', id: 'action-debugger', icon: PlayCircle, description: '调试动作插件' },
@@ -138,7 +148,7 @@ function MenuItemComponent({
             className={cn(
                 'group relative flex w-full items-center rounded-lg text-sm font-medium transition-all duration-200',
                 // 适中的高度和内边距
-                isSubItem ? 'py-2 px-3 ml-2' : 'py-2.5 px-3',
+                isSubItem && !collapsed ? 'py-2 px-3 ml-2' : 'py-2.5 px-3',
                 // 激活状态
                 isActive
                     ? 'bg-gradient-to-r from-blue-500/10 to-indigo-500/10 text-blue-600 dark:from-blue-500/15 dark:to-indigo-500/15 dark:text-blue-400'
@@ -191,17 +201,18 @@ function MenuGroupComponent({
     hasPermission: (resource: string, action: string) => boolean
 }) {
     const hasActiveItem = group.items.some(item => item.id === activeTab)
+    const open = group.expanded || hasActiveItem || collapsed
 
     return (
-        <div className="pt-3">
+        <div className="pt-2">
             {/* 分组标题 */}
             <button
                 onClick={() => group.setExpanded(!group.expanded)}
                 className={cn(
-                    'flex w-full items-center px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all duration-200',
+                    'flex w-full items-center rounded-lg px-3 py-1.5 text-xs font-semibold transition-all duration-200',
                     hasActiveItem
-                        ? 'text-blue-600 dark:text-blue-400'
-                        : 'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300',
+                        ? 'bg-blue-50/80 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400'
+                        : 'text-gray-500 hover:bg-gray-100/70 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-200',
                     collapsed && 'justify-center'
                 )}
             >
@@ -212,9 +223,17 @@ function MenuGroupComponent({
                 {!collapsed && (
                     <>
                         <span className="flex-1 text-left ml-2">{group.title}</span>
+                        <span className={cn(
+                            'mr-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+                            hasActiveItem
+                                ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-300'
+                                : 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500'
+                        )}>
+                            {group.items.length}
+                        </span>
                         <ChevronDown className={cn(
                             'h-3.5 w-3.5 transition-transform duration-200',
-                            group.expanded ? 'rotate-0' : '-rotate-90'
+                            open ? 'rotate-0' : '-rotate-90'
                         )} />
                     </>
                 )}
@@ -224,7 +243,7 @@ function MenuGroupComponent({
             <div
                 className={cn(
                     'overflow-hidden transition-all duration-200',
-                    (group.expanded || collapsed) ? 'max-h-[400px] opacity-100' : 'max-h-0 opacity-0'
+                    open ? 'max-h-[520px] opacity-100' : 'max-h-0 opacity-0'
                 )}
             >
                 <div className="space-y-0.5 mt-1">
@@ -248,15 +267,17 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     const [collapsed, setCollapsed] = useState(false)
     const [triggerMenuExpanded, setTriggerMenuExpanded] = useState(true)
     const [pluginMenuExpanded, setPluginMenuExpanded] = useState(true)
-    const [developerMenuExpanded, setDeveloperMenuExpanded] = useState(true)
+    const [developerMenuExpanded, setDeveloperMenuExpanded] = useState(false)
     const [adminMenuExpanded, setAdminMenuExpanded] = useState(true)
+    const [businessMenuExpanded, setBusinessMenuExpanded] = useState(true)
+    const [mailMenuExpanded, setMailMenuExpanded] = useState(true)
     const [, setMenuVersion] = useState(0) // 用于触发菜单重新渲染
     const { theme, setTheme } = useTheme()
     const { logout, isSuperAdmin, hasPermission } = useAuth()
 
     // 菜单可见性过滤
     const filterByVisibility = useCallback((items: MenuItem[]) => {
-        return items.filter(item => {
+        return applyMenuOrderToItems(items).filter(item => {
             if (item.hidden) return false
             if (!isMenuVisible(item.id)) return false
             if (item.permission && !hasPermission(item.permission.resource, item.permission.action)) return false
@@ -271,6 +292,12 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
         })
     }, [])
 
+    useEffect(() => {
+        loadMenuPreferencesFromServer().catch(error => {
+            logger.warn('[Sidebar] 加载菜单偏好失败:', error)
+        })
+    }, [])
+
     // 监听主题变化
     useEffect(() => {
         logger.debug('[Sidebar] 主题变化:', theme)
@@ -279,37 +306,39 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
 
     // 菜单组配置 - 以菜单管理显隐配置和权限为准
     const menuGroups: MenuGroup[] = []
+    const filteredMailNav = filterByVisibility(mailNavigation)
+    const filteredBusinessNav = filterByVisibility(businessNavigation)
     const filteredTriggerNav = filterByVisibility(triggerNavigation)
     const filteredPluginNav = filterByVisibility(pluginNavigation)
     const filteredDeveloperNav = filterByVisibility(developerNavigation)
 
+    if (filteredMailNav.length > 0) {
+        menuGroups.push({
+            title: '邮箱运营',
+            icon: Mail,
+            items: filteredMailNav,
+            expanded: mailMenuExpanded,
+            setExpanded: setMailMenuExpanded,
+        })
+    }
+
+    if (filteredBusinessNav.length > 0) {
+        menuGroups.push({
+            title: '业务资料',
+            icon: Briefcase,
+            items: filteredBusinessNav,
+            expanded: businessMenuExpanded,
+            setExpanded: setBusinessMenuExpanded,
+        })
+    }
+
     if (filteredTriggerNav.length > 0) {
         menuGroups.push({
-            title: '高级模组',
+            title: '自动化',
             icon: Zap,
             items: filteredTriggerNav,
             expanded: triggerMenuExpanded,
             setExpanded: setTriggerMenuExpanded,
-        })
-    }
-
-    if (filteredPluginNav.length > 0) {
-        menuGroups.push({
-            title: '插件管理',
-            icon: Puzzle,
-            items: filteredPluginNav,
-            expanded: pluginMenuExpanded,
-            setExpanded: setPluginMenuExpanded,
-        })
-    }
-
-    if (filteredDeveloperNav.length > 0) {
-        menuGroups.push({
-            title: '开发者模式',
-            icon: Code2,
-            items: filteredDeveloperNav,
-            expanded: developerMenuExpanded,
-            setExpanded: setDeveloperMenuExpanded,
         })
     }
 
@@ -321,11 +350,31 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     const visibleAdminNav = filterByVisibility(filteredAdminNav)
     if (visibleAdminNav.length > 0) {
         menuGroups.push({
-            title: '系统管理',
+            title: '系统与权限',
             icon: Settings,
             items: visibleAdminNav,
             expanded: adminMenuExpanded,
             setExpanded: setAdminMenuExpanded,
+        })
+    }
+
+    if (filteredPluginNav.length > 0) {
+        menuGroups.push({
+            title: '扩展插件',
+            icon: Puzzle,
+            items: filteredPluginNav,
+            expanded: pluginMenuExpanded,
+            setExpanded: setPluginMenuExpanded,
+        })
+    }
+
+    if (filteredDeveloperNav.length > 0) {
+        menuGroups.push({
+            title: '文档与开发',
+            icon: Code2,
+            items: filteredDeveloperNav,
+            expanded: developerMenuExpanded,
+            setExpanded: setDeveloperMenuExpanded,
         })
     }
 
@@ -340,12 +389,6 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                 collapsed ? 'w-16' : 'w-64'
             )}
         >
-            {/* 背景装饰 */}
-            <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                <div className="absolute -top-24 -left-24 w-48 h-48 bg-blue-500/[0.03] rounded-full blur-3xl dark:bg-blue-500/[0.08]" />
-                <div className="absolute -bottom-24 -right-24 w-48 h-48 bg-purple-500/[0.03] rounded-full blur-3xl dark:bg-purple-500/[0.08]" />
-            </div>
-
             {/* Logo Header */}
             <div className={cn(
                 'relative flex-shrink-0 flex items-center border-b border-gray-200/80 dark:border-gray-800/50',

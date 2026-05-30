@@ -2,9 +2,9 @@
 import { logger } from '@/lib/logger';
 
 import React, { useState, useEffect, useRef } from 'react'
-import { X, Mail, Check } from 'lucide-react'
+import { X, Mail, Inbox, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { addNotification, isProcessed } from '@/lib/notification-store'
+import { addNotification, isProcessed, markAsRead } from '@/lib/notification-store'
 
 // 通知类型定义
 interface EmailNotification {
@@ -18,15 +18,20 @@ interface EmailNotification {
     timestamp: string
 }
 
+interface ToastNotification extends EmailNotification {
+    storeId?: string
+}
+
 // 通知项组件属性
 interface NotificationItemProps {
-    notification: EmailNotification
+    notification: ToastNotification
     onDismiss: () => void
     onClick: () => void
+    ttl?: number
 }
 
 // 单个通知项组件
-function NotificationItem({ notification, onDismiss, onClick }: NotificationItemProps) {
+function NotificationItem({ notification, onDismiss, onClick, ttl = 10000 }: NotificationItemProps) {
     const [isVisible, setIsVisible] = useState(false)
     const [isExiting, setIsExiting] = useState(false)
 
@@ -36,7 +41,15 @@ function NotificationItem({ notification, onDismiss, onClick }: NotificationItem
         return () => clearTimeout(timer)
     }, [])
 
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            handleDismiss()
+        }, ttl)
+        return () => clearTimeout(timer)
+    }, [ttl])
+
     const handleDismiss = () => {
+        if (isExiting) return
         setIsExiting(true)
         setTimeout(onDismiss, 300) // 等待退场动画完成
     }
@@ -50,26 +63,25 @@ function NotificationItem({ notification, onDismiss, onClick }: NotificationItem
         <div
             className={cn(
                 "transform transition-all duration-300 ease-in-out",
-                "bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700",
-                "p-4 mb-3 cursor-pointer hover:shadow-xl",
-                "max-w-sm mx-auto",
+                "bg-white/95 dark:bg-gray-800/95 rounded-xl shadow-xl shadow-gray-900/10 border border-gray-200/90 dark:border-gray-700/90 backdrop-blur",
+                "pointer-events-auto w-[min(360px,calc(100vw-2rem))] cursor-pointer p-3 hover:-translate-y-0.5 hover:shadow-2xl",
                 isVisible && !isExiting ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
             )}
             onClick={handleClick}
         >
             <div className="flex items-start justify-between">
-                <div className="flex items-start space-x-3">
+                <div className="flex min-w-0 items-start space-x-3">
                     <div className="flex-shrink-0">
-                        <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center">
+                        <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/40 rounded-full flex items-center justify-center">
                             <Mail className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                         </div>
                     </div>
 
                     <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                        <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
                             {notification.account_email}
                         </div>
-                        <div className="text-sm text-gray-600 dark:text-gray-400">
+                        <div className="line-clamp-2 text-sm text-gray-600 dark:text-gray-400">
                             {notification.from ? (
                                 <>收到来自 <span className="font-medium">{notification.from}</span> 的邮件</>
                             ) : (
@@ -78,7 +90,7 @@ function NotificationItem({ notification, onDismiss, onClick }: NotificationItem
                         </div>
                         {notification.subject && (
                             <div className="text-xs text-gray-500 dark:text-gray-400 truncate mt-1 font-medium">
-                                📧 {notification.subject}
+                                {notification.subject}
                             </div>
                         )}
                         <div className="text-xs text-gray-400 mt-1">
@@ -92,15 +104,15 @@ function NotificationItem({ notification, onDismiss, onClick }: NotificationItem
                         e.stopPropagation()
                         handleDismiss()
                     }}
-                    className="flex-shrink-0 ml-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                    className="ml-3 flex-shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
                 >
                     <X className="w-4 h-4" />
                 </button>
             </div>
 
-            <div className="mt-3 flex justify-end gap-2">
+            <div className="mt-2 flex justify-end gap-2">
                 <button
-                    className="text-xs bg-gray-200 hover:bg-gray-300 text-gray-700 dark:bg-gray-600 dark:hover:bg-gray-500 dark:text-gray-200 px-3 py-1 rounded-md transition-colors"
+                    className="rounded-md bg-gray-100 px-3 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
                     onClick={(e) => {
                         e.stopPropagation()
                         handleDismiss()
@@ -109,13 +121,61 @@ function NotificationItem({ notification, onDismiss, onClick }: NotificationItem
                     忽略
                 </button>
                 <button
-                    className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md transition-colors"
+                    className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white transition-colors hover:bg-blue-700"
                     onClick={(e) => {
                         e.stopPropagation()
                         handleClick()
                     }}
                 >
                     点击查看
+                </button>
+            </div>
+        </div>
+    )
+}
+
+function NotificationSummary({
+    hiddenCount,
+    totalCount,
+    onOpenCenter,
+    onCollapseAll,
+}: {
+    hiddenCount: number
+    totalCount: number
+    onOpenCenter: () => void
+    onCollapseAll: () => void
+}) {
+    return (
+        <div className="w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-blue-200/80 bg-blue-50/95 shadow-xl shadow-gray-900/10 backdrop-blur dark:border-blue-900/60 dark:bg-blue-950/80">
+            <button
+                onClick={onOpenCenter}
+                className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-blue-100/70 dark:hover:bg-blue-900/50"
+            >
+                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-white">
+                    <Inbox className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">
+                        还有 {hiddenCount} 条新邮件通知
+                    </div>
+                    <div className="text-xs text-blue-600/80 dark:text-blue-300/80">
+                        已收纳到通知中心，共 {totalCount} 条待处理
+                    </div>
+                </div>
+                <ChevronRight className="h-4 w-4 flex-shrink-0 text-blue-500" />
+            </button>
+            <div className="flex items-center justify-between border-t border-blue-100 px-3 py-2 dark:border-blue-900/70">
+                <button
+                    onClick={onOpenCenter}
+                    className="text-xs font-medium text-blue-700 hover:text-blue-800 dark:text-blue-300 dark:hover:text-blue-200"
+                >
+                    打开通知中心
+                </button>
+                <button
+                    onClick={onCollapseAll}
+                    className="rounded-md px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-100 dark:text-blue-300 dark:hover:bg-blue-900/60"
+                >
+                    全部收起
                 </button>
             </div>
         </div>
@@ -129,10 +189,12 @@ interface EmailNotificationToastProps {
 
 // 主通知容器组件
 export default function EmailNotificationToast({ onNotificationClick }: EmailNotificationToastProps) {
-    const [notifications, setNotifications] = useState<EmailNotification[]>([])
+    const [notifications, setNotifications] = useState<ToastNotification[]>([])
     const wsRef = useRef<WebSocket | null>(null)
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
     const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
+    const visibleNotifications = notifications.slice(0, 2)
+    const hiddenCount = Math.max(0, notifications.length - visibleNotifications.length)
 
     // WebSocket连接管理
     const connectWebSocket = () => {
@@ -187,7 +249,7 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
                         // 只有成功添加（非重复）才显示 toast
                         if (stored) {
                             setNotifications(prev => {
-                                const newNotifications = [notification, ...prev.slice(0, 4)]
+                                const newNotifications = [{ ...notification, storeId: stored.id }, ...prev.slice(0, 9)]
                                 return newNotifications
                             })
                         }
@@ -248,6 +310,10 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
     // 处理通知点击 - 导航到经典邮件管理器并选中邮件
     const handleNotificationClick = (notification: EmailNotification) => {
         logger.debug('[EmailNotificationToast] Notification clicked:', notification.account_email, notification.email_id)
+        const storeId = (notification as ToastNotification).storeId
+        if (storeId) {
+            markAsRead(storeId)
+        }
 
         // 使用 switchTab 事件导航到经典邮件管理器
         if (notification.email_id) {
@@ -271,6 +337,11 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
     // 手动移除通知
     const handleDismissNotification = (timestamp: string) => {
         setNotifications(prev => prev.filter(n => n.timestamp !== timestamp))
+    }
+
+    const handleOpenNotificationCenter = () => {
+        setNotifications([])
+        window.dispatchEvent(new CustomEvent('openNotificationDrawer'))
     }
 
     // 组件生命周期
@@ -308,15 +379,35 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
             {renderConnectionStatus()}
 
             {/* 通知容器 */}
-            <div className="fixed top-4 right-4 z-50 space-y-2">
-                {notifications.map((notification) => (
+            <div className="pointer-events-none fixed right-4 top-20 z-50 flex flex-col items-end gap-2">
+                {notifications.length > 1 && (
+                    <button
+                        onClick={() => setNotifications([])}
+                        className="pointer-events-auto rounded-full border border-gray-200 bg-white/90 px-3 py-1 text-xs font-medium text-gray-500 shadow-sm backdrop-blur transition-colors hover:bg-gray-50 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-800/90 dark:text-gray-300 dark:hover:bg-gray-700"
+                    >
+                        收起全部
+                    </button>
+                )}
+
+                {visibleNotifications.map((notification) => (
                     <NotificationItem
-                        key={notification.timestamp}
+                        key={`${notification.timestamp}-${notification.account_id}-${notification.email_id || notification.subject || ''}`}
                         notification={notification}
                         onDismiss={() => handleDismissNotification(notification.timestamp)}
                         onClick={() => handleNotificationClick(notification)}
                     />
                 ))}
+
+                {hiddenCount > 0 && (
+                    <div className="pointer-events-auto">
+                        <NotificationSummary
+                            hiddenCount={hiddenCount}
+                            totalCount={notifications.length}
+                            onOpenCenter={handleOpenNotificationCenter}
+                            onCollapseAll={() => setNotifications([])}
+                        />
+                    </div>
+                )}
             </div>
         </>
     )

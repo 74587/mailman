@@ -85,6 +85,8 @@ func Migrate() error {
 	if err := DB.AutoMigrate(
 		&models.MailProvider{},
 		&models.EmailAccount{},
+		&models.BusinessModule{},
+		&models.BusinessAccount{},
 		&models.Email{},
 		&models.Attachment{},
 		&models.Mailbox{},
@@ -95,6 +97,7 @@ func Migrate() error {
 		&models.AIGeneratedTemplate{},
 		&models.User{},
 		&models.UserSession{},
+		&models.UserMenuPreference{},
 		&models.EmailAccountSyncConfig{},
 		&models.TemporarySyncConfig{},
 		&models.GlobalSyncConfig{},

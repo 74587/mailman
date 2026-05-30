@@ -48,6 +48,7 @@ import {
     BookOpen,
     StickyNote,
     Network,
+    Briefcase,
 } from 'lucide-react'
 
 interface Tab {
@@ -59,6 +60,8 @@ interface Tab {
 const tabConfig: Tab[] = [
     { id: 'dashboard', name: '仪表板', icon: LayoutDashboard },
     { id: 'accounts', name: '邮箱账户管理', icon: UserCog },
+    { id: 'business-modules', name: '业务模块', icon: Package },
+    { id: 'business-accounts', name: '业务账户', icon: Briefcase },
     { id: 'emails', name: '邮件管理', icon: Mail },
     { id: 'classic-mailbox', name: '经典邮件管理器', icon: Inbox },
     { id: 'compose-email', name: '发送邮件', icon: Send },

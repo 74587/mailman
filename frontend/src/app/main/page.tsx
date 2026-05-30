@@ -34,6 +34,8 @@ import { registerPaletteCategory, updatePaletteCategory } from '@/components/com
 const tabNameMap: { [key: string]: string } = {
     'dashboard': '仪表板[dashboard]',
     'accounts': '邮箱账户管理[accounts]',
+    'business-modules': '业务模块[business-modules]',
+    'business-accounts': '业务账户[business-accounts]',
     'emails': '邮件管理[emails]',
     'classic-mailbox': '经典邮件管理器[classic-mailbox]',
     'compose-email': '发送邮件[compose-email]',
@@ -191,6 +193,14 @@ export default function MainPage() {
                         break
                     case 'accounts':
                         content = guard('email_account', 'read', <AccountsTab key={tabId} />)
+                        break
+                    case 'business-modules':
+                        const BusinessModulesTab = require('@/components/tabs/business-modules-tab').default
+                        content = guard('email_account', 'read', <BusinessModulesTab key={tabId} />)
+                        break
+                    case 'business-accounts':
+                        const BusinessAccountsTab = require('@/components/tabs/business-accounts-tab').default
+                        content = guard('email_account', 'read', <BusinessAccountsTab key={tabId} />)
                         break
                     case 'emails':
                         content = <EmailsTab key={tabId} />
@@ -596,7 +606,7 @@ export default function MainPage() {
                         {openTabs.map((tabId) => {
                             // 定义需要全屏显示的 Tab（无 padding 和 container 限制）
                             // 包括需要固定header/footer布局的编辑和创建页面
-                            const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide', 'proxy-pool']
+                            const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide', 'proxy-pool', 'business-modules', 'business-accounts']
                             const isFullscreen = fullscreenTabs.includes(tabId) ||
                                 tabId.startsWith('account-note-') ||
                                 tabId.startsWith('trigger-edit-') ||

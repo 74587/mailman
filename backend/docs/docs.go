@@ -1246,6 +1246,37 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/accounts/{id}/business-accounts": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "List business accounts by email account",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Email Account ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.BusinessAccount"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/accounts/{id}/domain-config": {
             "get": {
                 "description": "Get domain mail config by account ID or by email through /api/accounts/domain-config?email=user@example.com.",
@@ -2178,6 +2209,322 @@ const docTemplate = `{
                                 "type": "string"
                             }
                         }
+                    }
+                }
+            }
+        },
+        "/api/business-accounts": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "List business accounts",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Fuzzy search keyword",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Business account status",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Business module ID",
+                        "name": "moduleId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Email account ID",
+                        "name": "emailAccountId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Filter by whether the business account is linked to an email account",
+                        "name": "emailLinked",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.BusinessAccountsListResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "Create business account",
+                "parameters": [
+                    {
+                        "description": "Business account",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.BusinessAccountRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.BusinessAccount"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/business-accounts/{id}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "Get business account",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Business Account ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.BusinessAccount"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "Update business account",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Business Account ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Business account",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.BusinessAccountRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.BusinessAccount"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "business"
+                ],
+                "summary": "Delete business account",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Business Account ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/business-modules": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "List business modules",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.BusinessModulesListResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "Create business module",
+                "parameters": [
+                    {
+                        "description": "Business module",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.BusinessModuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.BusinessModule"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/business-modules/{id}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "Get business module",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Module ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.BusinessModule"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "business"
+                ],
+                "summary": "Update business module",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Module ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Business module",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.BusinessModuleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.BusinessModule"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "tags": [
+                    "business"
+                ],
+                "summary": "Delete business module",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Module ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
                     }
                 }
             }
@@ -3127,6 +3474,56 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/menu-preferences/me": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "menu"
+                ],
+                "summary": "Get menu preferences",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.MenuPreferenceResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "menu"
+                ],
+                "summary": "Update menu preferences",
+                "parameters": [
+                    {
+                        "description": "Menu preferences",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.MenuPreferenceRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.MenuPreferenceResponse"
                         }
                     }
                 }
@@ -7362,6 +7759,161 @@ const docTemplate = `{
                 }
             }
         },
+        "api.BusinessAccountRequest": {
+            "type": "object",
+            "properties": {
+                "customFields": {
+                    "type": "object"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "emailAccountId": {
+                    "type": "integer"
+                },
+                "extraData": {
+                    "type": "object"
+                },
+                "lastLoginAt": {
+                    "type": "string"
+                },
+                "loginUrl": {
+                    "type": "string"
+                },
+                "moduleId": {
+                    "type": "integer"
+                },
+                "moduleName": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "noteFormat": {
+                    "$ref": "#/definitions/models.AccountNoteFormat"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "phoneNumber": {
+                    "type": "string"
+                },
+                "recoveryCodes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "recoveryEmail": {
+                    "type": "string"
+                },
+                "remoteCreatedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/models.BusinessAccountStatus"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "totpSecret": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                },
+                "website": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.BusinessAccountsListResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BusinessAccount"
+                    }
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "totalPages": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.BusinessModuleRequest": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "fieldSchema": {
+                    "type": "object"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "loginUrl": {
+                    "type": "string"
+                },
+                "logo": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                },
+                "statusOptions": {
+                    "type": "object"
+                },
+                "website": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.BusinessModulesListResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.BusinessModule"
+                    }
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "totalPages": {
+                    "type": "integer"
+                }
+            }
+        },
         "api.CacheStatsResponse": {
             "description": "Email cache statistics",
             "type": "object",
@@ -8991,6 +9543,34 @@ const docTemplate = `{
                 }
             }
         },
+        "api.MenuPreferenceRequest": {
+            "type": "object",
+            "properties": {
+                "order": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "visibility": {
+                    "type": "object"
+                }
+            }
+        },
+        "api.MenuPreferenceResponse": {
+            "type": "object",
+            "properties": {
+                "order": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "visibility": {
+                    "type": "object"
+                }
+            }
+        },
         "api.OpenAIConfigRequest": {
             "type": "object",
             "required": [
@@ -10511,6 +11091,166 @@ const docTemplate = `{
                 "AuthTypeToken",
                 "AuthTypeOAuth2"
             ]
+        },
+        "models.BusinessAccount": {
+            "type": "object",
+            "properties": {
+                "createdAt": {
+                    "type": "string"
+                },
+                "customFields": {
+                    "$ref": "#/definitions/models.JSONMapInterface"
+                },
+                "deletedAt": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "emailAccount": {
+                    "$ref": "#/definitions/models.EmailAccount"
+                },
+                "emailAccountId": {
+                    "type": "integer"
+                },
+                "extraData": {
+                    "$ref": "#/definitions/models.JSONMapInterface"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "lastLoginAt": {
+                    "type": "string"
+                },
+                "loginUrl": {
+                    "type": "string"
+                },
+                "module": {
+                    "$ref": "#/definitions/models.BusinessModule"
+                },
+                "moduleId": {
+                    "type": "integer"
+                },
+                "moduleName": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "noteFormat": {
+                    "$ref": "#/definitions/models.AccountNoteFormat"
+                },
+                "orgId": {
+                    "type": "integer"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "phoneNumber": {
+                    "type": "string"
+                },
+                "recoveryCodes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "recoveryEmail": {
+                    "type": "string"
+                },
+                "remoteCreatedAt": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/models.BusinessAccountStatus"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "totpSecret": {
+                    "type": "string"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                },
+                "website": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.BusinessAccountStatus": {
+            "type": "string",
+            "enum": [
+                "active",
+                "pending",
+                "disabled",
+                "archived"
+            ],
+            "x-enum-varnames": [
+                "BusinessAccountStatusActive",
+                "BusinessAccountStatusPending",
+                "BusinessAccountStatusDisabled",
+                "BusinessAccountStatusArchived"
+            ]
+        },
+        "models.BusinessModule": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "deletedAt": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "fieldSchema": {
+                    "$ref": "#/definitions/models.JSONMapInterface"
+                },
+                "icon": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "loginUrl": {
+                    "type": "string"
+                },
+                "logo": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "orgId": {
+                    "type": "integer"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                },
+                "statusOptions": {
+                    "$ref": "#/definitions/models.JSONMapInterface"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "website": {
+                    "type": "string"
+                }
+            }
         },
         "models.CreateInterceptorRequest": {
             "type": "object",

@@ -11,9 +11,9 @@ type User struct {
 	ID           uint       `gorm:"primaryKey" json:"id"`
 	Username     string     `gorm:"uniqueIndex;not null;type:varchar(255)" json:"username"`
 	Email        string     `gorm:"uniqueIndex;not null;type:varchar(255)" json:"email"`
-	PasswordHash string     `gorm:"not null" json:"-"`       // Never expose password hash in JSON
-	Avatar       string     `gorm:"type:text" json:"avatar"` // Base64 encoded image
-	IsSuperAdmin bool       `gorm:"default:false" json:"is_super_admin"` // 超级管理员
+	PasswordHash string     `gorm:"not null" json:"-"`                     // Never expose password hash in JSON
+	Avatar       string     `gorm:"type:text" json:"avatar"`               // Base64 encoded image
+	IsSuperAdmin bool       `gorm:"default:false" json:"is_super_admin"`   // 超级管理员
 	CurrentOrgID *uint      `gorm:"index" json:"current_org_id,omitempty"` // 当前活跃组织
 	IsActive     bool       `gorm:"default:true" json:"is_active"`
 	LastLoginAt  *time.Time `json:"last_login_at,omitempty"`
@@ -31,6 +31,17 @@ type UserSession struct {
 	ExpiresAt time.Time `gorm:"not null;index" json:"expires_at"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// UserMenuPreference stores sidebar visibility and order for one user.
+type UserMenuPreference struct {
+	ID         uint             `gorm:"primaryKey" json:"id"`
+	UserID     uint             `gorm:"not null;uniqueIndex" json:"userId"`
+	User       User             `gorm:"foreignKey:UserID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
+	Visibility JSONMapInterface `gorm:"type:json" json:"visibility,omitempty" swaggertype:"object"`
+	Order      StringSlice      `gorm:"type:json" json:"order,omitempty"`
+	CreatedAt  time.Time        `json:"createdAt"`
+	UpdatedAt  time.Time        `json:"updatedAt"`
 }
 
 // SetPassword hashes and sets the user's password

@@ -8,7 +8,7 @@ import {
     ExternalLink, Zap, RefreshCw, Settings,
     FileText, Code2, Database, Search,
     Container, HardDrive, Wrench, Network, Terminal, Cpu, Lock, CloudCog,
-    Rocket, Box, Layers, Monitor, Forward, type LucideIcon,
+    Rocket, Box, Layers, Monitor, Forward, Briefcase, type LucideIcon,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { toast } from 'sonner'
@@ -34,13 +34,151 @@ function MethodBadge({ method }: { method: string }) {
     )
 }
 
+type RuntimeDocsContext = {
+    baseUrl: string
+    apiBase: string
+    swaggerUrl: string
+    swaggerJsonUrl: string
+    token: string
+    tokenSource: string
+    hasToken: boolean
+    maskedToken: string
+}
+
+const DOCS_FALLBACK_BASE_URL = 'https://mailman.easycat.io'
+const DOCS_TOKEN_KEYS = ['auth_token', 'sessionToken', 'token'] as const
+
+function trimTrailingSlash(value: string) {
+    return value.replace(/\/+$/, '')
+}
+
+function maskToken(token: string) {
+    if (!token) return '未读取到'
+    if (token.length <= 16) return `${token.slice(0, 4)}...${token.slice(-4)}`
+    return `${token.slice(0, 10)}...${token.slice(-8)}`
+}
+
+function getInitialRuntimeDocsContext(): RuntimeDocsContext {
+    const baseUrl = DOCS_FALLBACK_BASE_URL
+    return {
+        baseUrl,
+        apiBase: `${baseUrl}/api`,
+        swaggerUrl: `${baseUrl}/swagger/index.html`,
+        swaggerJsonUrl: `${baseUrl}/swagger/doc.json`,
+        token: '',
+        tokenSource: '',
+        hasToken: false,
+        maskedToken: maskToken(''),
+    }
+}
+
+function readRuntimeDocsContext(): RuntimeDocsContext {
+    const initial = getInitialRuntimeDocsContext()
+
+    if (typeof window === 'undefined') return initial
+
+    let baseUrl = initial.baseUrl
+    try {
+        baseUrl = trimTrailingSlash(window.location.origin || initial.baseUrl)
+    } catch {
+        baseUrl = initial.baseUrl
+    }
+
+    let token = ''
+    let tokenSource = ''
+    try {
+        for (const key of DOCS_TOKEN_KEYS) {
+            const value = window.localStorage.getItem(key)
+            if (value) {
+                token = value
+                tokenSource = `localStorage.${key}`
+                break
+            }
+        }
+
+        if (!token) {
+            const rawAuthContext = window.localStorage.getItem('auth_context')
+            if (rawAuthContext) {
+                const authContext = JSON.parse(rawAuthContext) as { token?: string }
+                if (authContext.token) {
+                    token = authContext.token
+                    tokenSource = 'localStorage.auth_context.token'
+                }
+            }
+        }
+    } catch {
+        token = ''
+        tokenSource = ''
+    }
+
+    return {
+        baseUrl,
+        apiBase: `${baseUrl}/api`,
+        swaggerUrl: `${baseUrl}/swagger/index.html`,
+        swaggerJsonUrl: `${baseUrl}/swagger/doc.json`,
+        token,
+        tokenSource,
+        hasToken: Boolean(token),
+        maskedToken: maskToken(token),
+    }
+}
+
+function useRuntimeDocsContext() {
+    const [runtime, setRuntime] = useState<RuntimeDocsContext>(() => getInitialRuntimeDocsContext())
+
+    useEffect(() => {
+        const refresh = () => setRuntime(readRuntimeDocsContext())
+        refresh()
+        window.addEventListener('storage', refresh)
+        window.addEventListener('focus', refresh)
+        return () => {
+            window.removeEventListener('storage', refresh)
+            window.removeEventListener('focus', refresh)
+        }
+    }, [])
+
+    return runtime
+}
+
+function renderRuntimeCode(code: string, runtime: RuntimeDocsContext) {
+    const bearerToken = runtime.token || '<CURRENT_AUTH_TOKEN>'
+    const tokenLiteral = JSON.stringify(bearerToken)
+
+    let rendered = code
+        .replace(/\$\{BASE_URL\}/g, runtime.baseUrl)
+        .replace(/\$\{API_BASE\}/g, runtime.apiBase)
+        .replace(/\$\{AUTH_TOKEN\}/g, bearerToken)
+        .replace(/Bearer \$\{TOKEN\}/g, `Bearer ${bearerToken}`)
+        .replace(/API_BASE="http:\/\/localhost:8080\/api"/g, `API_BASE="${runtime.apiBase}"`)
+        .replace(/API_BASE="https:\/\/mailman\.example\.com\/api"/g, `API_BASE="${runtime.apiBase}"`)
+        .replace(
+            /const API_BASE = process\.env\.API_BASE \|\| 'http:\/\/localhost:8080\/api'/g,
+            `const API_BASE = process.env.API_BASE || '${runtime.apiBase}'`
+        )
+        .replace(
+            /const API_BASE = process\.env\.MAILMAN_API_BASE \?\? 'https:\/\/mailman\.example\.com\/api'/g,
+            `const API_BASE = process.env.MAILMAN_API_BASE ?? '${runtime.apiBase}'`
+        )
+        .replace(/const TOKEN = process\.env\.MAILMAN_TOKEN!?/g, `const TOKEN = ${tokenLiteral}`)
+        .replace(/http:\/\/localhost:8080\/api\/oauth2\/callback\/gmail/g, `${runtime.apiBase}/oauth2/callback/gmail`)
+
+    rendered = rendered.replace(
+        /(curl -X POST "[^"\n]*\/api\/oauth2\/session\/start\/gmail\?config_id=1" \\\n\s+-H "Authorization: Bearer [^"\n]+")\s*\1/g,
+        '$1'
+    )
+
+    return rendered
+}
+
 // 可复制的代码块
 function CodeBlock({ code, language = 'bash', title }: { code: string; language?: string; title?: string }) {
     const [copied, setCopied] = useState(false)
+    const runtime = useRuntimeDocsContext()
+    const renderedCode = renderRuntimeCode(code, runtime)
 
     const handleCopy = async () => {
         try {
-            await navigator.clipboard.writeText(code)
+            await navigator.clipboard.writeText(renderedCode)
             setCopied(true)
             toast.success('已复制到剪贴板')
             setTimeout(() => setCopied(false), 2000)
@@ -59,7 +197,7 @@ function CodeBlock({ code, language = 'bash', title }: { code: string; language?
             )}
             <div className="relative">
                 <pre className="p-4 overflow-x-auto text-sm leading-relaxed bg-gray-900 dark:bg-gray-950 text-gray-100 font-mono">
-                    <code>{code}</code>
+                    <code>{renderedCode}</code>
                 </pre>
                 <button
                     onClick={handleCopy}
@@ -110,11 +248,23 @@ function CollapsibleCode({ code, language = 'bash', title, defaultOpen = false }
 
 // API 端点行
 function ApiEndpoint({ method, path, description }: { method: string; path: string; description: string }) {
+    const runtime = useRuntimeDocsContext()
+
     return (
         <div className="flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors group">
             <MethodBadge method={method} />
             <code className="text-sm font-mono text-gray-800 dark:text-gray-200 flex-shrink-0">{path}</code>
             <span className="text-sm text-gray-500 dark:text-gray-400 truncate">{description}</span>
+            <a
+                href={runtime.swaggerUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-gray-400 opacity-0 transition-all hover:bg-blue-50 hover:text-blue-600 group-hover:opacity-100 dark:hover:bg-blue-950/40 dark:hover:text-blue-300"
+                title="在 Swagger 中查看接口"
+            >
+                Swagger
+                <ExternalLink className="h-3 w-3" />
+            </a>
         </div>
     )
 }
@@ -550,6 +700,7 @@ const TOC_MAIL_API = [
     { id: 'mail-api-auth', label: '登录与 Token', icon: Key },
     { id: 'mail-api-accounts', label: '获取邮箱账户', icon: Database },
     { id: 'mail-api-forwarding', label: '转发落件账户', icon: Forward },
+    { id: 'mail-api-business-accounts', label: '业务资料 API', icon: Briefcase },
     { id: 'mail-api-read', label: '同步并读取邮件', icon: Search },
     { id: 'mail-api-pickup', label: '取件轮询逻辑', icon: Zap },
     { id: 'mail-api-code', label: '完整代码示例', icon: Code2 },
@@ -602,7 +753,7 @@ const GUIDE_DOCS: GuideDoc[] = [
         id: 'mail-api',
         title: '邮件 API',
         eyebrow: 'Mailbox Automation',
-        description: '通过 API 获取账户、同步读取邮件，并使用取件轮询等待验证码。',
+        description: '通过 API 获取账户、维护业务资料、同步读取邮件，并使用取件轮询等待验证码。',
         sections: TOC_MAIL_API,
         primarySection: 'mail-api-overview',
         icon: Mail,
@@ -626,12 +777,141 @@ const GUIDE_DOCS: GuideDoc[] = [
     },
 ]
 
+function RuntimeDocsPanel({ doc, activeSection, onJump }: {
+    doc: GuideDoc
+    activeSection: string
+    onJump: (id: string) => void
+}) {
+    const runtime = useRuntimeDocsContext()
+    const [copied, setCopied] = useState<string | null>(null)
+
+    const copyValue = async (label: string, value: string) => {
+        try {
+            await navigator.clipboard.writeText(value)
+            setCopied(label)
+            toast.success(`已复制${label}`)
+            setTimeout(() => setCopied(null), 1600)
+        } catch {
+            toast.error('复制失败')
+        }
+    }
+
+    const runtimeItems = [
+        { label: '页面地址', value: runtime.baseUrl, copyLabel: '页面地址' },
+        { label: 'API Base', value: runtime.apiBase, copyLabel: 'API Base' },
+        { label: 'Bearer Token', value: runtime.hasToken ? runtime.maskedToken : '未读取到 Token', copyLabel: 'Bearer Token' },
+    ]
+
+    return (
+        <div className="mb-8 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white px-4 py-3 dark:border-gray-800 dark:from-gray-900 dark:to-gray-900">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="flex items-center gap-2">
+                        <div className={cn('flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md', doc.accent, doc.glow)}>
+                            <doc.icon className="h-4 w-4" />
+                        </div>
+                        <div>
+                            <div className="text-sm font-bold text-gray-950 dark:text-white">当前文档运行环境</div>
+                            <div className="text-xs text-gray-500 dark:text-gray-400">
+                                示例代码会按当前页面同源地址和当前登录 Token 自动渲染。
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                        <a
+                            href={runtime.swaggerUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300 dark:hover:bg-blue-950/50"
+                        >
+                            Swagger UI
+                            <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                        <a
+                            href={runtime.swaggerJsonUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-600 transition-colors hover:border-gray-300 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+                        >
+                            doc.json
+                            <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <div className="grid gap-3 p-4 lg:grid-cols-3">
+                {runtimeItems.map((item) => {
+                    const copyTarget = item.label === 'Bearer Token' ? runtime.token : item.value
+                    const canCopy = item.label !== 'Bearer Token' || runtime.hasToken
+                    return (
+                        <button
+                            key={item.label}
+                            type="button"
+                            onClick={() => canCopy && copyValue(item.copyLabel, copyTarget)}
+                            disabled={!canCopy}
+                            className={cn(
+                                'group min-w-0 rounded-xl border px-3 py-2.5 text-left transition-all',
+                                canCopy
+                                    ? 'border-gray-200 bg-gray-50 hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50/60 hover:shadow-sm dark:border-gray-800 dark:bg-gray-950/40 dark:hover:border-blue-800 dark:hover:bg-blue-950/20'
+                                    : 'cursor-not-allowed border-amber-200 bg-amber-50 dark:border-amber-900/60 dark:bg-amber-950/20'
+                            )}
+                        >
+                            <div className="mb-1 flex items-center justify-between gap-2">
+                                <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{item.label}</span>
+                                {copied === item.copyLabel ? (
+                                    <Check className="h-3.5 w-3.5 text-emerald-500" />
+                                ) : (
+                                    <Copy className="h-3.5 w-3.5 text-gray-300 transition-colors group-hover:text-blue-500" />
+                                )}
+                            </div>
+                            <div className="truncate font-mono text-xs text-gray-800 dark:text-gray-200">{item.value}</div>
+                            {item.label === 'Bearer Token' && (
+                                <div className="mt-1 text-[11px] text-gray-400">
+                                    {runtime.hasToken ? `来源：${runtime.tokenSource}` : '登录后会优先读取 auth_token/sessionToken/token'}
+                                </div>
+                            )}
+                        </button>
+                    )
+                })}
+            </div>
+
+            <div className="border-t border-gray-100 px-4 py-3 dark:border-gray-800">
+                <div className="mb-2 flex items-center justify-between">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">章节跳转</span>
+                    <span className="text-[11px] text-gray-400">{doc.sections.length} 个章节</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                    {doc.sections.map((section, index) => (
+                        <button
+                            key={section.id}
+                            type="button"
+                            onClick={() => onJump(section.id)}
+                            className={cn(
+                                'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-all',
+                                activeSection === section.id
+                                    ? cn(doc.surface, 'shadow-sm')
+                                    : 'border-gray-200 bg-white text-gray-500 hover:border-blue-200 hover:text-blue-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400 dark:hover:border-blue-800 dark:hover:text-blue-300'
+                            )}
+                        >
+                            <span className="text-[10px] font-bold">{index + 1}</span>
+                            {section.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+        </div>
+    )
+}
+
 // ==================== 主组件 ====================
 
 export default function IntegrationGuideTab() {
     const [activeGuide, setActiveGuide] = useState<GuideId>('mail-api')
     const activeDoc = GUIDE_DOCS.find((doc) => doc.id === activeGuide) || GUIDE_DOCS[0]
     const [activeSection, setActiveSection] = useState(activeDoc.primarySection)
+    const runtime = useRuntimeDocsContext()
     const contentRef = useRef<HTMLDivElement>(null)
     const activeSectionIndex = Math.max(0, activeDoc.sections.findIndex((section) => section.id === activeSection))
     const progressPercent = ((activeSectionIndex + 1) / activeDoc.sections.length) * 100
@@ -689,6 +969,27 @@ export default function IntegrationGuideTab() {
                             <h2 className="text-sm font-bold text-gray-900 dark:text-white">接入手册</h2>
                             <p className="text-[10px] text-gray-400">Integration Guide</p>
                         </div>
+                    </div>
+
+                    <div className="mb-4 grid grid-cols-2 gap-2">
+                        <a
+                            href={runtime.swaggerUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] font-semibold text-blue-700 transition-colors hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300 dark:hover:bg-blue-950/50"
+                        >
+                            Swagger
+                            <ExternalLink className="h-3 w-3" />
+                        </a>
+                        <a
+                            href={runtime.swaggerJsonUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-[11px] font-semibold text-gray-500 transition-colors hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-400 dark:hover:bg-gray-800"
+                        >
+                            doc.json
+                            <ExternalLink className="h-3 w-3" />
+                        </a>
                     </div>
 
                     <nav className="space-y-5">
@@ -829,6 +1130,8 @@ export default function IntegrationGuideTab() {
                         </div>
                     </div>
 
+                    <RuntimeDocsPanel doc={activeDoc} activeSection={activeSection} onJump={scrollTo} />
+
                     <AnimatePresence mode="wait">
                         {activeGuide === 'oauth' && (
                             <motion.div
@@ -878,8 +1181,8 @@ export default function IntegrationGuideTab() {
                                 ))}
                             </div>
                             <Callout type="info">
-                                以下示例中 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">BASE_URL</code> 为你的 Mailman 后端地址（如 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">http://localhost:8080</code>），
-                                <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">AUTH_TOKEN</code> 为你的 JWT 认证 Token。
+                                代码块会在渲染时把 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">BASE_URL</code> 自动替换为当前页面地址 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">{runtime.baseUrl}</code>，
+                                并把 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">AUTH_TOKEN</code> 替换为当前登录 Token。当前 Token 状态：<code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">{runtime.hasToken ? runtime.maskedToken : '未读取到'}</code>。
                             </Callout>
                         </div>
                     </section>
@@ -1515,7 +1818,7 @@ curl -X PUT "\${BASE_URL}/api/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
                         </div>
 
                         <Callout type="important">
-                            以下示例统一使用 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">API_BASE=http://localhost:8080/api</code>，也就是已经包含 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">/api</code> 前缀。除登录接口外，其余接口都需要携带 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">Authorization: Bearer TOKEN</code>。
+                            以下示例统一使用当前页面同源 API：<code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">API_BASE={runtime.apiBase}</code>。除登录接口外，其余接口都需要携带 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">Authorization: Bearer TOKEN</code>，代码块会优先从 <code className="text-xs bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded font-mono">auth_token</code> 渲染当前登录 Token。
                         </Callout>
                     </section>
 
@@ -1746,8 +2049,260 @@ console.log(pickup.account_id, pickup.resolved_by, pickup.emails.length)`}
 	                        </div>
 	                    </section>
 
+	                    <section data-section="mail-api-business-accounts">
+	                        <StepIndicator step={4} title="通过 API 接入业务资料" active />
+	                        <div className="pl-12 space-y-5">
+	                            <p className="text-sm text-gray-600 dark:text-gray-400">
+	                                业务资料由“业务模块”和“业务账户”组成。业务模块负责定义站点或业务线的 logo、官网、登录地址、状态选项和扩展字段模板；业务账户保存具体业务登录资料，可以关联某个邮箱账户，也可以先作为未关联资料独立存在。敏感字段按当前业务要求明文入库，API 调用方可以完整回显密码、2FA、手机号、恢复码、备注和自定义字段。
+	                            </p>
+
+	                            <div className="grid md:grid-cols-3 gap-3">
+	                                {[
+	                                    { title: '业务模块', desc: '例如 Shopify、GitHub、Stripe，用于承载 logo、登录地址、状态和字段模板。', icon: Briefcase },
+	                                    { title: '业务账户', desc: '绑定邮箱账户，保存用户名、密码、2FA、手机号、恢复码和备注。', icon: Key },
+	                                    { title: '模板字段', desc: '模块 fieldSchema.fields 会在前端选择模块时自动预填到 customFields。', icon: Database },
+	                                ].map((item) => (
+	                                    <div key={item.title} className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+	                                        <item.icon className="mb-2 h-5 w-5 text-blue-500" />
+	                                        <h4 className="mb-1 text-sm font-semibold text-gray-900 dark:text-white">{item.title}</h4>
+	                                        <p className="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{item.desc}</p>
+	                                    </div>
+	                                ))}
+	                            </div>
+
+	                            <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+	                                <div className="mb-3 flex items-center gap-2">
+	                                    <Database className="h-4 w-4 text-blue-500" />
+	                                    <h4 className="text-sm font-semibold text-gray-900 dark:text-white">接口清单</h4>
+	                                </div>
+	                                <div className="space-y-1">
+	                                    <ApiEndpoint method="GET" path="/api/business-modules?page=1&limit=50&search=shop" description="分页或模糊搜索业务模块；不传 page/limit 时保持旧版数组响应" />
+	                                    <ApiEndpoint method="POST" path="/api/business-modules" description="创建业务模块，保存 logo、主题色、状态选项和字段模板" />
+	                                    <ApiEndpoint method="PUT" path="/api/business-modules/{id}" description="更新业务模块配置" />
+	                                    <ApiEndpoint method="DELETE" path="/api/business-modules/{id}" description="删除模块，已绑定业务账户会保留但清空模块关联" />
+	                                    <ApiEndpoint method="GET" path="/api/business-accounts" description="分页查询业务账户，支持关键词、模块、邮箱账户、状态和邮箱关联状态筛选" />
+	                                    <ApiEndpoint method="POST" path="/api/business-accounts" description="创建业务账户，保存登录凭据、2FA、备注和扩展字段" />
+	                                    <ApiEndpoint method="PUT" path="/api/business-accounts/{id}" description="更新业务账户；PUT 使用完整业务账户负载覆盖保存" />
+	                                    <ApiEndpoint method="GET" path="/api/accounts/{id}/business-accounts" description="查看某个邮箱账户关联的全部业务账户" />
+	                                </div>
+	                            </div>
+
+	                            <FieldTable fields={[
+	                                { name: 'page/limit', type: 'number', desc: '分页参数，limit 最大 200' },
+	                                { name: 'search', type: 'string', desc: '模糊搜索业务名称、模块名、用户名、网址、描述、备注、手机号和关联邮箱地址' },
+	                                { name: 'moduleId', type: 'number', desc: '只查询某个业务模块下的业务账户' },
+	                                { name: 'emailAccountId', type: 'number', desc: '只查询某个邮箱账户关联的业务账户' },
+	                                { name: 'emailLinked', type: 'boolean', desc: 'true 返回已关联邮箱账户的数据；false 返回未关联邮箱账户的数据；不传返回全部' },
+	                                { name: 'status', type: 'string', desc: '按业务账户状态筛选，支持内置状态或模块自定义状态值' },
+	                            ]} />
+
+	                            <Callout type="tip">
+	                                如果你需要先批量导入业务账号，再慢慢补邮箱，可以创建时不传 <code>emailAccountId</code>。后续列表查询用 <code>emailLinked=false</code> 就能找出未关联邮箱的业务账户；用 <code>emailLinked=true</code> 则只看已经和邮箱账户绑定的数据。
+	                            </Callout>
+
+	                            <CollapsibleCode
+	                                title="推荐接入流程：创建模块、创建业务账户、查询关联状态"
+	                                defaultOpen={true}
+	                                code={`# 1. 创建业务模块
+MODULE=$(curl -s -X POST "\${API_BASE}/business-modules" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Shopify",
+    "website": "https://www.shopify.com",
+    "loginUrl": "https://accounts.shopify.com",
+    "description": "独立站业务后台",
+    "logo": "https://cdn.example.com/shopify-logo.png",
+    "color": "#10b981",
+    "statusOptions": {
+      "items": [
+        { "value": "active", "label": "正常", "color": "#10b981" },
+        { "value": "reviewing", "label": "风控审核", "color": "#f59e0b" },
+        { "value": "suspended", "label": "暂停", "color": "#ef4444" }
+      ]
+    },
+    "fieldSchema": {
+      "fields": [
+        { "key": "storeUrl", "type": "url", "value": "https://store.example.com/admin" },
+        { "key": "staffEmail", "type": "email", "value": "" },
+        { "key": "backup2fa", "type": "totp", "value": "" },
+        { "key": "billingNote", "type": "note", "value": "" }
+      ]
+    }
+  }')
+
+MODULE_ID=$(node -e "console.log(JSON.parse(process.argv[1]).id)" "$MODULE")
+
+# 2. 创建业务账户，敏感字段会按明文保存
+curl -X POST "\${API_BASE}/business-accounts" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d "{
+    \\"emailAccountId\\": \${ACCOUNT_ID},
+    \\"moduleId\\": \${MODULE_ID},
+    \\"displayName\\": \\"Shopify US Store\\",
+    \\"username\\": \\"owner@example.com\\",
+    \\"password\\": \\"plain-password\\",
+    \\"totpSecret\\": \\"JBSWY3DPEHPK3PXP\\",
+    \\"phoneNumber\\": \\"+1 555 0100\\",
+    \\"recoveryCodes\\": [\\"code-1\\", \\"code-2\\"],
+    \\"note\\": \\"## Shopify US Store\\\\n- Owner: Ops Team\\\\n- Renew before 2026-12-31\\",
+    \\"noteFormat\\": \\"markdown\\",
+    \\"tags\\": [\\"shop\\", \\"us\\"],
+    \\"customFields\\": {
+      \\"plan\\": { \\"type\\": \\"text\\", \\"value\\": \\"basic\\" },
+      \\"adminPassword\\": { \\"type\\": \\"password\\", \\"value\\": \\"plain-password\\" },
+      \\"backup2fa\\": { \\"type\\": \\"totp\\", \\"value\\": \\"JBSWY3DPEHPK3PXP\\" },
+      \\"remoteCreatedAt\\": { \\"type\\": \\"date\\", \\"value\\": \\"2026-05-30\\" }
+    }
+  }"
+
+# 3. 只查已关联邮箱账户的业务资料
+curl "\${API_BASE}/business-accounts?page=1&limit=50&emailLinked=true" \\
+  -H "Authorization: Bearer \${TOKEN}"
+
+# 4. 只查还没有关联邮箱账户的业务资料
+curl "\${API_BASE}/business-accounts?page=1&limit=50&emailLinked=false" \\
+  -H "Authorization: Bearer \${TOKEN}"`}
+	                            />
+
+	                            <CollapsibleCode
+	                                title="查询和更新业务账户"
+	                                code={`# 按业务模块、邮箱账户、关键词和关联状态查询
+curl "\${API_BASE}/business-accounts?page=1&limit=50&moduleId=\${MODULE_ID}&emailAccountId=\${ACCOUNT_ID}&emailLinked=true&search=Shopify" \\
+  -H "Authorization: Bearer \${TOKEN}"
+
+# 查看某个邮箱账户下的所有业务账户
+curl "\${API_BASE}/accounts/\${ACCOUNT_ID}/business-accounts" \\
+  -H "Authorization: Bearer \${TOKEN}"
+
+# 更新业务账户
+curl -X PUT "\${API_BASE}/business-accounts/\${BUSINESS_ACCOUNT_ID}" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "moduleId": '"\${MODULE_ID}"',
+    "displayName": "Shopify US Store",
+    "status": "active",
+    "password": "new-plain-password",
+    "note": "<section><h1>Shopify US Store</h1><script>document.body.dataset.ready = 'true'</script></section>",
+    "noteFormat": "html",
+    "customFields": {
+      "plan": "advanced",
+      "owner": "ops-team"
+    }
+  }'
+
+# 更新业务模块配置
+curl -X PUT "\${API_BASE}/business-modules/\${MODULE_ID}" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Shopify",
+    "loginUrl": "https://accounts.shopify.com/store-login",
+    "logo": "data:image/png;base64,...",
+    "statusOptions": {
+      "items": [
+        { "value": "active", "label": "正常", "color": "#10b981" },
+        { "value": "risk_hold", "label": "风控冻结", "color": "#ef4444" }
+      ]
+    }
+  }'`}
+	                            />
+
+	                            <CollapsibleCode
+	                                title="Node.js 调用示例"
+	                                language="ts"
+	                                code={`const API_BASE = process.env.MAILMAN_API_BASE ?? 'https://mailman.example.com/api'
+const TOKEN = process.env.MAILMAN_TOKEN!
+
+async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(API_BASE + path, {
+    ...options,
+    headers: {
+      Authorization: \`Bearer \${TOKEN}\`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  })
+  if (!response.ok) throw new Error(response.status + ' ' + await response.text())
+  if (response.status === 204) return undefined as T
+  return response.json()
+}
+
+type BusinessModule = { id: number; name: string }
+type BusinessAccount = {
+  id: number
+  displayName?: string
+  emailAccountId?: number
+  username?: string
+  password?: string
+  totpSecret?: string
+  note?: string
+  noteFormat?: 'markdown' | 'html'
+}
+
+const module = await api<BusinessModule>('/business-modules', {
+  method: 'POST',
+  body: JSON.stringify({
+    name: 'GitHub',
+    website: 'https://github.com',
+    loginUrl: 'https://github.com/login',
+    color: '#111827',
+    statusOptions: {
+      items: [
+        { value: 'active', label: '正常', color: '#10b981' },
+        { value: 'locked', label: '锁定', color: '#ef4444' },
+      ],
+    },
+  }),
+})
+
+const account = await api<BusinessAccount>('/business-accounts', {
+  method: 'POST',
+  body: JSON.stringify({
+    moduleId: module.id,
+    emailAccountId: 12,
+    displayName: 'GitHub Main',
+    username: 'ops@example.com',
+    password: 'plain-password',
+    totpSecret: 'JBSWY3DPEHPK3PXP',
+    note: '# GitHub Main\\\\n\\\\nUse for deploy keys and webhook ownership.',
+    noteFormat: 'markdown',
+    customFields: {
+      org: { type: 'text', value: 'example-org' },
+      backup2fa: { type: 'totp', value: 'JBSWY3DPEHPK3PXP' },
+    },
+  }),
+})
+
+const linked = await api<{ data: BusinessAccount[]; total: number }>('/business-accounts?emailLinked=true&search=GitHub')
+const unlinked = await api<{ data: BusinessAccount[]; total: number }>('/business-accounts?emailLinked=false')
+
+console.log({ created: account.id, linked: linked.total, needsEmailBinding: unlinked.total })`}
+	                            />
+
+	                            <FieldTable fields={[
+	                                { name: 'emailAccountId', type: 'number', desc: '关联的邮箱账户 ID，可为空' },
+	                                { name: 'moduleId/moduleName', type: 'number/string', required: true, desc: '选择已有业务模块，或直接写入模块名称' },
+	                                { name: 'username/password/totpSecret', type: 'string', desc: '业务系统登录凭据，当前版本不加密入库' },
+	                                { name: 'phoneNumber/recoveryEmail/recoveryCodes', type: 'string/string/string[]', desc: '手机号、恢复邮箱和恢复码' },
+	                                { name: 'status', type: 'string', desc: '可使用内置 active/pending/disabled/archived，也可使用模块 statusOptions.items 中的自定义状态值' },
+	                                { name: 'note/noteFormat', type: 'string/markdown|html', desc: '业务账户备注。Markdown 走 Markdown 预览；HTML/JS 会在沙箱 iframe 中预览，避免样式污染主应用' },
+	                                { name: 'tags', type: 'string[]', desc: '业务账户标签，用于前端筛选和识别' },
+	                                { name: 'customFields', type: 'object', desc: '任意扩展字段。推荐格式为 { fieldName: { type, value } }，type 支持 text、username、password、totp、url、email、phone、date、number、note' },
+	                                { name: 'module.logo', type: 'string', desc: '业务模块 logo，支持 URL 或 data URL，会入库保存并用于模块选择和列表展示' },
+	                                { name: 'module.fieldSchema.fields', type: 'array', desc: '业务账户扩展字段预填模板，前端选择模块时会合并到当前账户草稿' },
+	                            ]} />
+
+	                            <Callout type="warning">
+	                                当前实现按你的要求不做字段加密。前端会按字段类型正确回显数据，其中 totp 类型会在查看时渲染 6 位动态验证码和倒计时。如果后续要多人协作或暴露给第三方调用，建议再补充字段级脱敏、权限分级或审计日志。
+	                            </Callout>
+	                        </div>
+	                    </section>
+
 	                    <section data-section="mail-api-read">
-	                        <StepIndicator step={4} title="同步并读取邮件" active />
+	                        <StepIndicator step={5} title="同步并读取邮件" active />
                         <div className="pl-12 space-y-5">
                             <p className="text-sm text-gray-600 dark:text-gray-400">
                                 邮件列表接口读取的是数据库中的邮件。想拿最新邮件时，先调用同步接口把 IMAP 服务器上的邮件拉入数据库，再调用列表、搜索或详情接口。
@@ -1846,7 +2401,7 @@ curl "\${API_BASE}/emails/\${EMAIL_ID}" \\
                     </section>
 
 	                    <section data-section="mail-api-pickup">
-	                        <StepIndicator step={5} title="使用统一取件轮询接口" active />
+	                        <StepIndicator step={6} title="使用统一取件轮询接口" active />
                         <div className="pl-12 space-y-5">
                             <p className="text-sm text-gray-600 dark:text-gray-400">
                                 新版取件页面实际使用 <code className="font-mono text-xs">POST /api/pickup/poll</code>。这个接口把“临时同步续期、立即同步、搜索邮件、执行提取”合成一次请求，适合验证码、登录确认邮件、一次性通知等需要短时间等待的场景。

@@ -70,6 +70,12 @@ export function Header() {
         return unsubscribe
     }, [])
 
+    useEffect(() => {
+        const openNotificationDrawer = () => setShowNotificationDrawer(true)
+        window.addEventListener('openNotificationDrawer', openNotificationDrawer)
+        return () => window.removeEventListener('openNotificationDrawer', openNotificationDrawer)
+    }, [])
+
     // 加载组织列表
     useEffect(() => {
         const loadOrgs = async () => {

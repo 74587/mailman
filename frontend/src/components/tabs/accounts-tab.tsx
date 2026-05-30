@@ -23,6 +23,7 @@ import { TagWithGroup } from '@/types'
 import { AccountsDataTable } from '@/components/accounts/accounts-data-table'
 import { AccountFilterPanel } from '@/components/accounts/account-filter-panel'
 import { AccountSyncStatus, syncConfigService } from '@/services/sync-config.service'
+import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -188,6 +189,20 @@ export default function AccountsTab() {
     // 标签管理状态
     const [tagFilter, setTagFilter] = useState<number[]>([])
     const [showTagManager, setShowTagManager] = useState(false)
+
+    useEffect(() => {
+        const handleIncomingData = (data: { search?: string }) => {
+            const incomingSearch = data?.search?.trim()
+            if (!incomingSearch) return
+            setSearchQuery(incomingSearch)
+            setSubmittedSearchQuery(incomingSearch)
+            setProviderFilter(null)
+            setPagination(prev => ({ ...prev, page: 1 }))
+        }
+
+        registerTabCallback('accounts', 'onReady', handleIncomingData)
+        return () => unregisterTabCallback('accounts', 'onReady')
+    }, [])
 
     useEffect(() => {
         loadAccounts()
