@@ -26,7 +26,7 @@ import OAuth2ConfigTab from '@/components/tabs/oauth2-config-tab'
 import PluginsTab from '@/components/tabs/plugins-tab'
 import SystemConfigTab from '@/components/tabs/system-config-tab'
 import { cn } from '@/lib/utils'
-import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
+import { hasRefreshCallback, registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
 import type { ShortcutAction, ShortcutCategory } from '@/components/command-palette/command-palette'
 import { registerPaletteCategory, updatePaletteCategory } from '@/components/command-palette/command-palette'
 
@@ -492,6 +492,26 @@ export default function MainPage() {
             window.removeEventListener('closeTab', handleCloseTabEvent as EventListener);
         };
     }, [openTabs, activeTab]);
+
+    // 兜底刷新：未显式注册刷新回调的 Tab，重新挂载当前内容以触发自身初始化加载。
+    useEffect(() => {
+        const handleRefreshTabEvent = (event: CustomEvent) => {
+            const tabId = event.detail?.tabId;
+            if (!tabId || hasRefreshCallback(tabId)) return;
+
+            setTabContents(prev => {
+                if (!prev[tabId]) return prev;
+                const newContents = { ...prev };
+                delete newContents[tabId];
+                return newContents;
+            });
+        };
+
+        window.addEventListener('refreshTab', handleRefreshTabEvent as EventListener);
+        return () => {
+            window.removeEventListener('refreshTab', handleRefreshTabEvent as EventListener);
+        };
+    }, []);
 
     // 监听Tab回调注册
     useEffect(() => {

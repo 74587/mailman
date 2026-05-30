@@ -1,8 +1,8 @@
 'use client'
 import { logger } from '@/lib/logger';
 
-import { FormEvent, useEffect, useState } from 'react'
-import { Plus, Search, MoreVertical, Edit2, Trash2, RefreshCw, CheckCircle, XCircle, AlertCircle, Grid, List, Table, ChevronLeft, ChevronRight, Shield, ShieldCheck, Mail, Inbox, ChevronDown, X, Settings, Square, CheckSquare, Clock, Loader2, TableProperties } from 'lucide-react'
+import { FormEvent, useEffect, useRef, useState } from 'react'
+import { Plus, Search, MoreVertical, Edit2, Trash2, RefreshCw, CheckCircle, XCircle, AlertCircle, Grid, List, Table, ChevronLeft, ChevronRight, Shield, ShieldCheck, Mail, Inbox, ChevronDown, X, Settings, Square, CheckSquare, Clock, Loader2, TableProperties, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
@@ -20,7 +20,7 @@ import BatchAddOutlookModal from '@/components/modals/batch-add-outlook-modal'
 import { GmailIcon, OutlookIcon, ThunderbirdIcon, MailConfigIcon, TokenKeyIcon } from '@/components/ui/brand-icons'
 import { TagFilter, TagManager, TagBadgeList, InlineTagSelector } from '@/components/tags'
 import { TagWithGroup } from '@/types'
-import { AccountsDataTable } from '@/components/accounts/accounts-data-table'
+import { AccountsDataTable, type AccountsDataTableHandle } from '@/components/accounts/accounts-data-table'
 import { AccountFilterPanel } from '@/components/accounts/account-filter-panel'
 import { AccountSyncStatus, syncConfigService } from '@/services/sync-config.service'
 import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
@@ -124,6 +124,7 @@ function Pagination({
 
 export default function AccountsTab() {
     const { confirm } = useConfirmDialog()
+    const dataTableRef = useRef<AccountsDataTableHandle>(null)
     const [accounts, setAccounts] = useState<EmailAccount[]>([])
     const [loading, setLoading] = useState(true)
     const [searchQuery, setSearchQuery] = useState('')
@@ -805,6 +806,17 @@ export default function AccountsTab() {
                         </div>
                         )}
 
+                        {selectedAccounts.length === 0 && viewType === 'datatable' && (
+                            <button
+                                type="button"
+                                onClick={() => dataTableRef.current?.openColumnSettings()}
+                                className="flex items-center space-x-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                            >
+                                <SlidersHorizontal className="h-4 w-4" />
+                                <span>列设置</span>
+                            </button>
+                        )}
+
                         {/* 标签筛选 */}
                         <TagFilter
                             selectedTagIds={tagFilter}
@@ -1369,6 +1381,7 @@ export default function AccountsTab() {
                             ) : (
                                 // 专业表格视图
                                 <AccountsDataTable
+                                    ref={dataTableRef}
                                     accounts={paginatedAccounts}
                                     selectedIds={selectedAccounts}
                                     onSelectionChange={setSelectedAccounts}

@@ -60,6 +60,11 @@ export function unregisterRefreshCallback(tabId: string) {
     logger.debug(`[unregisterRefreshCallback] 已移除${tabId}的刷新回调`);
 }
 
+export function hasRefreshCallback(tabId: string) {
+    if (typeof window === 'undefined') return false;
+    return refreshListeners.has(tabId);
+}
+
 // 初始化刷新事件监听器
 if (typeof window !== 'undefined') {
     window.addEventListener('refreshTab', ((event: CustomEvent) => {

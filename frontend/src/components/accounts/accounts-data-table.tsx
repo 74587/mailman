@@ -82,6 +82,10 @@ interface AccountsDataTableProps {
     onSortingChange?: (sorting: SortingState) => void
 }
 
+export interface AccountsDataTableHandle {
+    openColumnSettings: () => void
+}
+
 // 提供商颜色映射
 const getProviderColor = (provider?: string) => {
     switch (provider?.toLowerCase()) {
@@ -342,7 +346,7 @@ const extractErrorMessage = (error: unknown) => {
     return '保存失败，请稍后重试'
 }
 
-export function AccountsDataTable({
+export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, AccountsDataTableProps>(function AccountsDataTable({
     accounts,
     selectedIds,
     onSelectionChange,
@@ -360,7 +364,7 @@ export function AccountsDataTable({
     syncStatuses,
     sorting,
     onSortingChange,
-}: AccountsDataTableProps) {
+}, ref) {
     const [notePreviewAccount, setNotePreviewAccount] = React.useState<EmailAccount | null>(null)
     const [noteMode, setNoteMode] = React.useState<'preview' | 'edit'>('preview')
     const [noteDraft, setNoteDraft] = React.useState('')
@@ -370,6 +374,10 @@ export function AccountsDataTable({
     const [noteHeight, setNoteHeight] = React.useState(520)
     const [columnSettingsOpen, setColumnSettingsOpen] = React.useState(false)
     const [tableColumnSettings, setTableColumnSettings] = React.useState<TableColumnSettings>(readColumnSettings)
+
+    React.useImperativeHandle(ref, () => ({
+        openColumnSettings: () => setColumnSettingsOpen(true),
+    }), [])
     const [configEditor, setConfigEditor] = React.useState<{ kind: ConfigEditorKind; account: EmailAccount } | null>(null)
     const [domainEnabledDraft, setDomainEnabledDraft] = React.useState(false)
     const [domainDraft, setDomainDraft] = React.useState('')
@@ -1011,7 +1019,6 @@ export function AccountsDataTable({
             .filter((column): column is ColumnDef<EmailAccount, unknown> => Boolean(column))
     }, [allColumns, tableColumnSettings])
 
-    const visibleColumnCount = tableColumnSettings.order.filter((id) => tableColumnSettings.visible[id]).length
     const forwardingPreview = React.useMemo(() => parseForwardedAddressDraft(forwardingDraft), [forwardingDraft])
     const configEditorIcon = configEditor?.kind === 'domain'
         ? Globe2
@@ -1031,21 +1038,6 @@ export function AccountsDataTable({
 
     return (
         <>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <div className="text-xs text-gray-500 dark:text-gray-400">
-                    专业表格已显示 {visibleColumnCount} / {DEFAULT_TABLE_COLUMN_ORDER.length} 列
-                </div>
-                <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setColumnSettingsOpen(true)}
-                >
-                    <SlidersHorizontal className="mr-1.5 h-4 w-4" />
-                    列设置
-                </Button>
-            </div>
-
             <DataTable
                 columns={columns}
                 data={accounts}
@@ -1390,4 +1382,4 @@ export function AccountsDataTable({
             </Modal>
         </>
     )
-}
+})
