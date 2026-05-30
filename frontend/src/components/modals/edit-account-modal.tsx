@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { Save, AlertCircle, Eye, EyeOff, Loader2, Mail, Globe2, StickyNote, Network } from 'lucide-react'
+import { Save, AlertCircle, Eye, EyeOff, Loader2, Mail, Globe2, StickyNote, Network, Forward } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
 import { AccountNoteFormat, EmailAccount, ProxyAccountMode, ProxyFallbackMode, ProxyTagFilterMode, ProxyType } from '@/types'
@@ -53,11 +53,12 @@ interface EditAccountForm {
     proxyMatchTagMode: ProxyTagFilterMode
     isDomainMail: boolean
     domain: string
+    forwardedAddresses: string
     note: string
     noteFormat: AccountNoteFormat
 }
 
-type EditAccountSection = 'identity' | 'domain' | 'note' | 'proxy'
+type EditAccountSection = 'identity' | 'domain' | 'forwarding' | 'note' | 'proxy'
 
 interface EditSectionItem {
     key: EditAccountSection
@@ -65,6 +66,18 @@ interface EditSectionItem {
     description: string
     meta: string
     icon: typeof Mail
+}
+
+const parseRoutingAddressLines = (value: string): string[] => {
+    return value
+        .split(/[\n,;]+/)
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean)
+        .filter((item, index, array) => array.indexOf(item) === index)
+}
+
+const formatRoutingAddressLines = (addresses?: string[]): string => {
+    return (addresses || []).join('\n')
 }
 
 export default function EditAccountModal({
@@ -93,6 +106,7 @@ export default function EditAccountModal({
         ...defaultProxyConfigValue(),
         isDomainMail: false,
         domain: '',
+        forwardedAddresses: '',
         note: '',
         noteFormat: 'markdown'
     })
@@ -149,6 +163,7 @@ export default function EditAccountModal({
                 proxyMatchTagMode: data.proxyMatchTagMode || 'or',
                 isDomainMail: data.isDomainMail || false,
                 domain: data.domain || '',
+                forwardedAddresses: formatRoutingAddressLines(data.forwardedAddresses),
                 note: data.note || '',
                 noteFormat: data.noteFormat || 'markdown'
             })
@@ -186,6 +201,7 @@ export default function EditAccountModal({
                 mail_provider_id: fullAccount.mailProviderId,
                 is_domain_mail: form.isDomainMail,
                 domain: form.isDomainMail ? form.domain : '',
+                forwarded_addresses: parseRoutingAddressLines(form.forwardedAddresses),
                 note: form.note,
                 note_format: form.noteFormat
             }
@@ -252,6 +268,7 @@ export default function EditAccountModal({
             ...defaultProxyConfigValue(),
             isDomainMail: false,
             domain: '',
+            forwardedAddresses: '',
             note: '',
             noteFormat: 'markdown'
         })
@@ -283,6 +300,15 @@ export default function EditAccountModal({
             icon: Globe2,
         },
         {
+            key: 'forwarding',
+            title: '转发收件',
+            description: '原始收件地址映射',
+            meta: parseRoutingAddressLines(form.forwardedAddresses).length > 0
+                ? `${parseRoutingAddressLines(form.forwardedAddresses).length} 个地址`
+                : '未配置',
+            icon: Forward,
+        },
+        {
             key: 'note',
             title: '账户备注',
             description: 'Markdown / HTML / JS 内容',
@@ -304,7 +330,7 @@ export default function EditAccountModal({
                 <ModalHeader>
                     <ModalTitle>编辑邮箱账户</ModalTitle>
                     <ModalDescription>
-                        修改账户认证信息、备注和代理设置
+                        修改账户认证信息、转发收件、备注和代理设置
                     </ModalDescription>
                 </ModalHeader>
 
@@ -544,6 +570,50 @@ export default function EditAccountModal({
                                                         </motion.div>
                                                     )}
                                                 </AnimatePresence>
+                                            </div>
+                                        </motion.div>
+                                    )}
+
+                                    {activeSection === 'forwarding' && (
+                                        <motion.div
+                                            key="forwarding"
+                                            initial={{ opacity: 0, x: 18 }}
+                                            animate={{ opacity: 1, x: 0 }}
+                                            exit={{ opacity: 0, x: -18 }}
+                                            transition={{ duration: 0.18 }}
+                                            className="space-y-5"
+                                        >
+                                            <PanelHeader
+                                                icon={<Forward className="h-5 w-5" />}
+                                                title="转发收件"
+                                                description="当多个原始邮箱通过服务器转发到此账户时，把原始收件地址登记在这里。"
+                                            />
+                                            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+                                                <section className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40">
+                                                    <div className="space-y-2">
+                                                        <Label>原始收件地址</Label>
+                                                        <Textarea
+                                                            value={form.forwardedAddresses}
+                                                            onChange={(event) => setForm({ ...form, forwardedAddresses: event.target.value })}
+                                                            rows={12}
+                                                            placeholder={"one@example.com\norders@example.net\n*@campaign.example"}
+                                                            className="font-mono text-sm"
+                                                        />
+                                                        <p className="text-sm text-gray-500 dark:text-gray-400">
+                                                            一行一个，也支持逗号或分号分隔。取件时传入这些地址，后端会同步当前账户并匹配邮件收件人或转发相关邮件头。
+                                                        </p>
+                                                    </div>
+                                                </section>
+                                                <aside className="rounded-xl border border-blue-100 bg-blue-50 p-5 text-sm text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-100">
+                                                    <div className="font-semibold">适用场景</div>
+                                                    <div className="mt-3 space-y-3 text-blue-800/90 dark:text-blue-100/80">
+                                                        <p>邮箱 1、2、3 由服务器转发到账户 A 时，在账户 A 中填写邮箱 1、2、3。</p>
+                                                        <p>之后 API 或取件页使用原始地址搜索，系统会自动落到真实取件账户 A。</p>
+                                                    </div>
+                                                    <div className="mt-5 rounded-lg bg-white/70 p-3 font-mono text-xs text-blue-950 dark:bg-blue-950/50 dark:text-blue-50">
+                                                        to_query = source@example.com
+                                                    </div>
+                                                </aside>
                                             </div>
                                         </motion.div>
                                     )}

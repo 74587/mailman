@@ -141,13 +141,20 @@ func TestPickupResolveAccountIDUsesRecipientAddress(t *testing.T) {
 		Domain:       "example.com",
 		IsVerified:   true,
 	}
+	forwardAccount := models.EmailAccount{
+		OrgID:              1,
+		EmailAddress:       "inbox-a@receiver.com",
+		AuthType:           models.AuthTypePassword,
+		ForwardedAddresses: models.StringSlice{"source-a@external.com", "*@forwarded.test"},
+		IsVerified:         true,
+	}
 	fallbackAccount := models.EmailAccount{
 		OrgID:        1,
 		EmailAddress: "fallback@other.com",
 		AuthType:     models.AuthTypePassword,
 		IsVerified:   true,
 	}
-	for _, account := range []*models.EmailAccount{&gmailAccount, &domainAccount, &fallbackAccount} {
+	for _, account := range []*models.EmailAccount{&gmailAccount, &domainAccount, &forwardAccount, &fallbackAccount} {
 		if err := db.Create(account).Error; err != nil {
 			t.Fatalf("failed to create account %s: %v", account.EmailAddress, err)
 		}
@@ -184,6 +191,20 @@ func TestPickupResolveAccountIDUsesRecipientAddress(t *testing.T) {
 			requestedID: 0,
 			toQuery:     "*@example.com",
 			wantID:      domainAccount.ID,
+			wantBy:      "to_query",
+		},
+		{
+			name:        "forwarded source address overrides wrong requested account",
+			requestedID: fallbackAccount.ID,
+			toQuery:     "source-a@external.com",
+			wantID:      forwardAccount.ID,
+			wantBy:      "to_query",
+		},
+		{
+			name:        "forwarded wildcard resolves without requested account",
+			requestedID: 0,
+			toQuery:     "anything@forwarded.test",
+			wantID:      forwardAccount.ID,
 			wantBy:      "to_query",
 		},
 		{

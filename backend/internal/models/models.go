@@ -215,6 +215,52 @@ func NormalizeAccountNoteFormat(format AccountNoteFormat) AccountNoteFormat {
 	}
 }
 
+func NormalizeEmailRoutingAddress(value string) string {
+	normalized := strings.TrimSpace(strings.ToLower(ExtractEmail(value)))
+	if normalized == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(normalized, "*@") && len(normalized) > 2 {
+		return normalized
+	}
+
+	if strings.HasPrefix(normalized, "@") && len(normalized) > 1 {
+		return "*" + normalized
+	}
+
+	return normalized
+}
+
+func NormalizeEmailRoutingAddresses(addresses StringSlice) StringSlice {
+	normalized := make(StringSlice, 0, len(addresses))
+	seen := make(map[string]bool, len(addresses))
+	for _, address := range addresses {
+		value := NormalizeEmailRoutingAddress(address)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		normalized = append(normalized, value)
+	}
+	return normalized
+}
+
+func EmailRoutingAddressMatches(query, configured string) bool {
+	recipient := NormalizeEmailRoutingAddress(query)
+	candidate := NormalizeEmailRoutingAddress(configured)
+	if recipient == "" || candidate == "" {
+		return false
+	}
+	if recipient == candidate {
+		return true
+	}
+	if strings.HasPrefix(candidate, "*@") && len(candidate) > 2 {
+		return strings.HasSuffix(recipient, candidate[1:])
+	}
+	return false
+}
+
 // EmailAccount represents a user's email account credentials and settings.
 type EmailAccount struct {
 	ID                   uint                `gorm:"primaryKey" json:"id"`
@@ -239,6 +285,7 @@ type EmailAccount struct {
 	ProxyMatchTagMode    ProxyTagFilterMode  `gorm:"type:varchar(8);not null;default:'or'" json:"proxyMatchTagMode"`         // and/or
 	IsDomainMail         bool                `gorm:"default:false" json:"isDomainMail"`
 	Domain               string              `gorm:"index" json:"domain,omitempty"` // For domain-specific email
+	ForwardedAddresses   StringSlice         `gorm:"type:json" json:"forwardedAddresses,omitempty"`
 	Note                 string              `gorm:"type:text" json:"note"`
 	NoteFormat           AccountNoteFormat   `gorm:"type:varchar(16);not null;default:'markdown'" json:"noteFormat"`
 	CustomSettings       JSONMap             `gorm:"type:json" json:"customSettings"`

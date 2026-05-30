@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 	"mailman/internal/models"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ var emailAccountSortColumns = map[string]string{
 
 // AccountFilterParams contains all filter parameters for account queries
 type AccountFilterParams struct {
-	Search         string     // 搜索邮箱地址、域名和备注
+	Search         string     // 搜索邮箱地址、域名、转发收件地址和备注
 	ProviderID     *uint      // 按供应商ID过滤
 	TagIDs         []uint     // 按标签ID过滤
 	TagFilterMode  string     // 标签过滤模式: "and" 或 "or"
@@ -54,6 +55,10 @@ type AccountFilterParams struct {
 // NewEmailAccountRepository creates a new EmailAccountRepository
 func NewEmailAccountRepository(db *gorm.DB) *EmailAccountRepository {
 	return &EmailAccountRepository{db: db}
+}
+
+func (r *EmailAccountRepository) accountSearchCondition() string {
+	return fmt.Sprintf("(email_address LIKE ? OR domain LIKE ? OR note LIKE ? OR %s)", textLikeExpr(r.db, "forwarded_addresses"))
 }
 
 // GetDB returns the database connection
@@ -105,7 +110,7 @@ func (r *EmailAccountRepository) GetByEmail(email string) (*models.EmailAccount,
 	return &account, nil
 }
 
-// GetByEmailOrAlias retrieves an email account by email address, handling Gmail aliases and domain emails
+// GetByEmailOrAlias retrieves an email account by email address, handling Gmail aliases, forwarding routes, and domain emails
 func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailAccount, error) {
 	// First try exact match
 	account, err := r.GetByEmail(email)
@@ -127,6 +132,12 @@ func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailA
 		}
 	}
 
+	// Handle forwarding routes: original recipient addresses that land in this account
+	account, err = r.GetByForwardedAddress(email)
+	if err == nil {
+		return account, nil
+	}
+
 	// Handle domain emails - find account that owns this domain
 	atIndex := strings.Index(email, "@")
 	if atIndex > 0 && atIndex < len(email)-1 {
@@ -137,6 +148,32 @@ func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailA
 			First(&domainAccount).Error
 		if err == nil {
 			return &domainAccount, nil
+		}
+	}
+
+	return nil, errors.New("email account not found")
+}
+
+func (r *EmailAccountRepository) GetByForwardedAddress(email string) (*models.EmailAccount, error) {
+	recipient := models.NormalizeEmailRoutingAddress(email)
+	if recipient == "" {
+		return nil, errors.New("email account not found")
+	}
+
+	var accounts []models.EmailAccount
+	err := r.db.Preload("MailProvider").
+		Where(textLikeExpr(r.db, "forwarded_addresses"), "%@%").
+		Order("id ASC").
+		Find(&accounts).Error
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range accounts {
+		for _, forwardedAddress := range accounts[i].ForwardedAddresses {
+			if models.EmailRoutingAddressMatches(recipient, forwardedAddress) {
+				return &accounts[i], nil
+			}
 		}
 	}
 
@@ -197,7 +234,7 @@ func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, so
 	// 如果有搜索参数，添加搜索条件
 	if search != "" {
 		searchTerm := "%" + search + "%"
-		query = query.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
+		query = query.Where(r.accountSearchCondition(), searchTerm, searchTerm, searchTerm, searchTerm)
 	}
 
 	// 获取总数（应用搜索条件后的）
@@ -212,7 +249,7 @@ func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, so
 	}
 	if search != "" {
 		searchTerm := "%" + search + "%"
-		queryForData = queryForData.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
+		queryForData = queryForData.Where(r.accountSearchCondition(), searchTerm, searchTerm, searchTerm, searchTerm)
 	}
 
 	err := queryForData.
@@ -251,7 +288,7 @@ func (r *EmailAccountRepository) GetAllPaginatedFiltered(orgID uint, page, limit
 	// 搜索邮箱地址、域名和备注
 	if filters.Search != "" {
 		searchTerm := "%" + filters.Search + "%"
-		baseQuery = baseQuery.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
+		baseQuery = baseQuery.Where(r.accountSearchCondition(), searchTerm, searchTerm, searchTerm, searchTerm)
 	}
 
 	// 供应商过滤
@@ -323,7 +360,7 @@ func (r *EmailAccountRepository) GetAllPaginatedFiltered(orgID uint, page, limit
 	// 复制过滤条件
 	if filters.Search != "" {
 		searchTerm := "%" + filters.Search + "%"
-		queryForData = queryForData.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
+		queryForData = queryForData.Where(r.accountSearchCondition(), searchTerm, searchTerm, searchTerm, searchTerm)
 	}
 	if filters.ProviderID != nil {
 		queryForData = queryForData.Where("mail_provider_id = ?", *filters.ProviderID)
@@ -404,7 +441,7 @@ func (r *EmailAccountRepository) GetAllPaginatedWithTags(orgID uint, page, limit
 	// 如果有搜索参数，添加搜索条件
 	if search != "" {
 		searchTerm := "%" + search + "%"
-		query = query.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
+		query = query.Where(r.accountSearchCondition(), searchTerm, searchTerm, searchTerm, searchTerm)
 	}
 
 	// 如果有标签过滤，添加标签条件
@@ -438,7 +475,7 @@ func (r *EmailAccountRepository) GetAllPaginatedWithTags(orgID uint, page, limit
 	}
 	if search != "" {
 		searchTerm := "%" + search + "%"
-		queryForData = queryForData.Where("(email_address LIKE ? OR domain LIKE ? OR note LIKE ?)", searchTerm, searchTerm, searchTerm)
+		queryForData = queryForData.Where(r.accountSearchCondition(), searchTerm, searchTerm, searchTerm, searchTerm)
 	}
 	if len(tagIDs) > 0 {
 		if tagFilterMode == "and" {

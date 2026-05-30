@@ -28,6 +28,14 @@ export interface MailboxSyncResult {
     error?: string;
 }
 
+export interface AccountForwardedAddressesResponse {
+    accountId: number;
+    emailAddress: string;
+    forwardedAddresses: string[];
+    count: number;
+    changed?: boolean;
+}
+
 export class EmailAccountService {
     private basePath = '/accounts';
 
@@ -85,6 +93,7 @@ export class EmailAccountService {
             proxyMatchTagMode: data.proxy_match_tag_mode,
             isDomainMail: data.is_domain_mail || false,
             domain: data.domain,
+            forwardedAddresses: data.forwarded_addresses,
             note: data.note,
             noteFormat: data.note_format,
             customSettings: data.custom_settings
@@ -126,6 +135,7 @@ export class EmailAccountService {
             proxyMatchTagMode: data.proxy_match_tag_mode,
             isDomainMail: data.is_domain_mail || false,
             domain: data.domain,
+            forwardedAddresses: data.forwarded_addresses,
             note: data.note,
             noteFormat: data.note_format,
             customSettings: data.custom_settings
@@ -164,6 +174,7 @@ export class EmailAccountService {
             proxyMatchTagMode: data.proxy_match_tag_mode,
             isDomainMail: data.is_domain_mail,
             domain: data.domain,
+            forwardedAddresses: data.forwarded_addresses,
             note: data.note,
             noteFormat: data.note_format,
             customSettings: data.custom_settings
@@ -178,6 +189,57 @@ export class EmailAccountService {
 
         const response = await apiClient.put<EmailAccount>(`${this.basePath}/${id}`, payload);
         return response;
+    }
+
+    async getForwardedAddresses(target: { id?: number; email?: string }): Promise<AccountForwardedAddressesResponse> {
+        const response = await apiClient.get<AccountForwardedAddressesResponse>(
+            this.forwardedAddressesPath(target),
+            this.forwardedAddressesConfig(target)
+        );
+        return response;
+    }
+
+    async setForwardedAddresses(target: { id?: number; email?: string }, forwardedAddresses: string[]): Promise<AccountForwardedAddressesResponse> {
+        const response = await apiClient.put<AccountForwardedAddressesResponse>(
+            this.forwardedAddressesPath(target),
+            { forwardedAddresses },
+            this.forwardedAddressesConfig(target)
+        );
+        return response;
+    }
+
+    async addForwardedAddress(target: { id?: number; email?: string }, address: string): Promise<AccountForwardedAddressesResponse> {
+        const response = await apiClient.post<AccountForwardedAddressesResponse>(
+            this.forwardedAddressesPath(target),
+            { address },
+            this.forwardedAddressesConfig(target)
+        );
+        return response;
+    }
+
+    async removeForwardedAddress(target: { id?: number; email?: string }, address: string): Promise<AccountForwardedAddressesResponse> {
+        const response = await apiClient.delete<AccountForwardedAddressesResponse>(
+            this.forwardedAddressesPath(target),
+            {
+                ...this.forwardedAddressesConfig(target),
+                data: { address },
+            }
+        );
+        return response;
+    }
+
+    private forwardedAddressesPath(target: { id?: number; email?: string }): string {
+        if (target.id) {
+            return `${this.basePath}/${target.id}/forwarded-addresses`;
+        }
+        return `${this.basePath}/forwarded-addresses`;
+    }
+
+    private forwardedAddressesConfig(target: { id?: number; email?: string }): { params?: { email?: string } } | undefined {
+        if (!target.id && target.email) {
+            return { params: { email: target.email } };
+        }
+        return undefined;
     }
 
     /**

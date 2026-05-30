@@ -113,6 +113,7 @@ export interface EmailAccount {
     proxyMatchTagMode?: ProxyTagFilterMode;
     isDomainMail: boolean;
     domain?: string;
+    forwardedAddresses?: string[];
     note?: string;
     noteFormat?: AccountNoteFormat;
     customSettings?: Record<string, any>;
@@ -169,6 +170,7 @@ export interface CreateEmailAccountRequest {
     proxy_match_tag_mode?: ProxyTagFilterMode;
     is_domain_mail?: boolean;
     domain?: string;
+    forwarded_addresses?: string[];
     note?: string;
     note_format?: AccountNoteFormat;
     custom_settings?: Record<string, any>;

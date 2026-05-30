@@ -523,10 +523,19 @@ func (s *FetcherService) convertGmailMessage(gmailMsg *gmail.Message, accountID 
 		Size:      int64(gmailMsg.SizeEstimate),
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+		Headers:   models.JSONMap{},
 	}
 
 	// Parse headers
 	for _, header := range gmailMsg.Payload.Headers {
+		if header.Name != "" && header.Value != "" {
+			if existing := email.Headers[header.Name]; existing != "" {
+				email.Headers[header.Name] = existing + "\n" + header.Value
+			} else {
+				email.Headers[header.Name] = header.Value
+			}
+		}
+
 		switch header.Name {
 		case "Message-ID":
 			// Store original RFC Message-ID if available

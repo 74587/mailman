@@ -37,6 +37,7 @@ func (s *ParserService) ParseEmail(rawEmail []byte) (*models.Email, error) {
 
 	// 保存原始邮件报文
 	email.RawMessage = string(rawEmail)
+	email.Headers = collectMailHeaders(header)
 
 	// Parse basic headers
 	if subject, err := header.Subject(); err == nil {
@@ -122,6 +123,24 @@ func (s *ParserService) ParseEmail(rawEmail []byte) (*models.Email, error) {
 	email.HasAttachments = len(attachments) > 0
 
 	return email, nil
+}
+
+func collectMailHeaders(header mail.Header) models.JSONMap {
+	headers := models.JSONMap{}
+	fields := header.Fields()
+	for fields.Next() {
+		key := fields.Key()
+		value := fields.Value()
+		if key == "" || value == "" {
+			continue
+		}
+		if existing := headers[key]; existing != "" {
+			headers[key] = existing + "\n" + value
+		} else {
+			headers[key] = value
+		}
+	}
+	return headers
 }
 
 // ParseMultipartEmail parses a multipart email

@@ -153,6 +153,7 @@ func TestEmailSearchQueryPostgresQuotesRecipientFields(t *testing.T) {
 	for _, fragment := range []string{
 		`"to_addresses"::text LIKE`,
 		`"to"::text LIKE`,
+		`"headers"::text LIKE`,
 		`ORDER BY "to" DESC`,
 	} {
 		if !strings.Contains(sql, fragment) {

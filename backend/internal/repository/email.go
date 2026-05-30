@@ -137,8 +137,16 @@ func buildEmailOrderClause(db *gorm.DB, sortBy string, includeID bool) string {
 	return strings.Join(clauses, ", ")
 }
 
+func emailRecipientLikeExprs(db *gorm.DB) []string {
+	return []string{
+		textLikeExpr(db, "to_addresses"),
+		textLikeExpr(db, "to"),
+		textLikeExpr(db, "headers"),
+	}
+}
+
 func emailRecipientLikeExpr(db *gorm.DB) string {
-	return fmt.Sprintf("(%s OR %s)", textLikeExpr(db, "to_addresses"), textLikeExpr(db, "to"))
+	return "(" + strings.Join(emailRecipientLikeExprs(db), " OR ") + ")"
 }
 
 func emailSearchAddressPatterns(query string) []string {
@@ -213,15 +221,23 @@ func emailSearchAddressPatterns(query string) []string {
 func emailRecipientSearchExpr(db *gorm.DB, query string) (string, []interface{}) {
 	patterns := emailSearchAddressPatterns(query)
 	if len(patterns) == 0 {
-		return emailRecipientLikeExpr(db), []interface{}{"%%", "%%"}
+		exprs := emailRecipientLikeExprs(db)
+		args := make([]interface{}, 0, len(exprs))
+		for range exprs {
+			args = append(args, "%%")
+		}
+		return emailRecipientLikeExpr(db), args
 	}
 
-	recipientExpr := emailRecipientLikeExpr(db)
+	recipientExprs := emailRecipientLikeExprs(db)
+	recipientExpr := "(" + strings.Join(recipientExprs, " OR ") + ")"
 	conditions := make([]string, 0, len(patterns))
-	args := make([]interface{}, 0, len(patterns)*2)
+	args := make([]interface{}, 0, len(patterns)*len(recipientExprs))
 	for _, pattern := range patterns {
 		conditions = append(conditions, recipientExpr)
-		args = append(args, pattern, pattern)
+		for range recipientExprs {
+			args = append(args, pattern)
+		}
 	}
 
 	return "(" + strings.Join(conditions, " OR ") + ")", args

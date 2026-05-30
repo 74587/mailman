@@ -8,7 +8,7 @@ import {
     ExternalLink, Zap, RefreshCw, Settings,
     FileText, Code2, Database, Search,
     Container, HardDrive, Wrench, Network, Terminal, Cpu, Lock, CloudCog,
-    Rocket, Box, Layers, Monitor, type LucideIcon,
+    Rocket, Box, Layers, Monitor, Forward, type LucideIcon,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { toast } from 'sonner'
@@ -549,6 +549,7 @@ const TOC_MAIL_API = [
     { id: 'mail-api-overview', label: '邮件 API 总览', icon: Mail },
     { id: 'mail-api-auth', label: '登录与 Token', icon: Key },
     { id: 'mail-api-accounts', label: '获取邮箱账户', icon: Database },
+    { id: 'mail-api-forwarding', label: '转发落件账户', icon: Forward },
     { id: 'mail-api-read', label: '同步并读取邮件', icon: Search },
     { id: 'mail-api-pickup', label: '取件轮询逻辑', icon: Zap },
     { id: 'mail-api-code', label: '完整代码示例', icon: Code2 },
@@ -1092,10 +1093,10 @@ curl "\${BASE_URL}/api/oauth2/session/poll/aB3dEfGhIjKlMnOpQrStUvWxYz123456" \\
 while true; do
   RESPONSE=$(curl -s "\${BASE_URL}/api/oauth2/session/poll/\${STATE}" \\
     -H "Authorization: Bearer \${AUTH_TOKEN}")
-  
+
   STATUS=$(echo $RESPONSE | jq -r '.status')
   echo "当前状态: $STATUS"
-  
+
   if [ "$STATUS" = "success" ]; then
     echo "✅ 授权成功!"
     echo "邮箱: $(echo $RESPONSE | jq -r '.emailAddress')"
@@ -1104,7 +1105,7 @@ while true; do
     echo "❌ 授权失败: $STATUS"
     break
   fi
-  
+
   sleep 3
 done`}
                             />
@@ -1150,12 +1151,34 @@ done`}
                                 { name: 'oauth2ProviderId', type: 'uint', desc: '关联的 OAuth2 全局配置 ID' },
                                 { name: 'mailProviderId', type: 'uint', desc: '邮件服务提供商 ID' },
                                 { name: 'customSettings', type: 'object', required: true, desc: '包含 tokens 和认证信息' },
+                                { name: 'forwardedAddresses', type: 'string[]', desc: '转发到此账户的原始收件地址，支持 source@example.com 或 *@example.org' },
                                 { name: 'proxy', type: 'string', desc: '代理设置，如 socks5://user:pass@host:port' },
                             ]} />
 
                             <Callout type="tip">
                                 也可以使用 <code className="font-mono text-xs">POST /api/accounts/upsert</code> 接口——如果账户已存在则自动更新。
                             </Callout>
+
+                            <CollapsibleCode
+                                title="追加/移除转发收件地址"
+                                code={`# 按账户 ID 追加
+curl -X POST "\${BASE_URL}/api/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer \${AUTH_TOKEN}" \\
+  -d '{"address":"source@example.com"}'
+
+# 按邮箱移除
+curl -X DELETE "\${BASE_URL}/api/accounts/forwarded-addresses?email=user@gmail.com" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer \${AUTH_TOKEN}" \\
+  -d '{"address":"source@example.com"}'
+
+# 替换整组
+curl -X PUT "\${BASE_URL}/api/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer \${AUTH_TOKEN}" \\
+  -d '{"forwardedAddresses":["source@example.com","*@example.org"]}'`}
+                            />
                         </div>
                     </section>
 
@@ -1258,6 +1281,18 @@ done`}
                                     <ApiEndpoint method="GET" path="/api/accounts/{id}" description="获取单个账户" />
                                     <ApiEndpoint method="PUT" path="/api/accounts/{id}" description="更新账户" />
                                     <ApiEndpoint method="DELETE" path="/api/accounts/{id}" description="删除账户" />
+                                    <ApiEndpoint method="GET" path="/api/accounts/{id}/forwarded-addresses" description="获取账户转发收件地址" />
+                                    <ApiEndpoint method="POST" path="/api/accounts/{id}/forwarded-addresses" description="追加一个转发收件地址" />
+                                    <ApiEndpoint method="DELETE" path="/api/accounts/{id}/forwarded-addresses" description="移除一个转发收件地址" />
+                                    <ApiEndpoint method="PUT" path="/api/accounts/{id}/forwarded-addresses" description="替换转发收件地址列表" />
+                                    <ApiEndpoint method="GET" path="/api/accounts/by-email/{email}/forwarded-addresses" description="按邮箱获取转发收件地址" />
+                                    <ApiEndpoint method="POST" path="/api/accounts/by-email/{email}/forwarded-addresses" description="按邮箱追加转发收件地址" />
+                                    <ApiEndpoint method="DELETE" path="/api/accounts/by-email/{email}/forwarded-addresses" description="按邮箱移除转发收件地址" />
+                                    <ApiEndpoint method="PUT" path="/api/accounts/by-email/{email}/forwarded-addresses" description="按邮箱替换转发收件地址列表" />
+                                    <ApiEndpoint method="GET" path="/api/accounts/forwarded-addresses?email=..." description="通过 query email 获取转发收件地址" />
+                                    <ApiEndpoint method="POST" path="/api/accounts/forwarded-addresses?email=..." description="通过 query email 追加转发收件地址" />
+                                    <ApiEndpoint method="DELETE" path="/api/accounts/forwarded-addresses?email=..." description="通过 query email 移除转发收件地址" />
+                                    <ApiEndpoint method="PUT" path="/api/accounts/forwarded-addresses?email=..." description="通过 query email 替换转发收件地址列表" />
                                 </div>
                             </div>
                         </div>
@@ -1414,11 +1449,12 @@ done`}
                             </p>
                         </div>
 
-                        <div className="grid md:grid-cols-3 gap-3 my-6">
+                        <div className="grid md:grid-cols-4 gap-3 my-6">
                             {[
                                 { title: '1. 获取账户', desc: '登录后通过 /accounts 或 /accounts/paginated 获取可用邮箱账户。', icon: Database },
-                                { title: '2. 读取邮件', desc: '先同步账户邮件，再用列表/搜索/详情接口读取数据库中的邮件。', icon: Search },
-                                { title: '3. 取件轮询', desc: '使用 /pickup/poll 临时拉取、搜索并可选执行提取。', icon: Zap },
+                                { title: '2. 转发落件', desc: '把原始收件地址绑定到账户 A，后续按原地址读取邮件。', icon: Forward },
+                                { title: '3. 读取邮件', desc: '先同步账户邮件，再用列表/搜索/详情接口读取数据库中的邮件。', icon: Search },
+                                { title: '4. 取件轮询', desc: '使用 /pickup/poll 临时拉取、搜索并可选执行提取。', icon: Zap },
                             ].map((item) => (
                                 <div key={item.title} className="rounded-xl border border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-900">
                                     <item.icon className="w-5 h-5 text-emerald-500 mb-2" />
@@ -1501,7 +1537,8 @@ echo "\${TOKEN}"`}
       "domain": "",
       "isVerified": true,
       "lastSyncAt": "2026-05-29T08:10:00Z",
-      "errorStatus": "normal"
+      "errorStatus": "normal",
+      "forwardedAddresses": ["source@example.com"]
     }
   ],
   "total": 1,
@@ -1514,16 +1551,153 @@ echo "\${TOKEN}"`}
                             <FieldTable fields={[
                                 { name: 'page', type: 'number', desc: '页码，默认 1' },
                                 { name: 'limit', type: 'number', desc: '每页数量，最大 100' },
-                                { name: 'search', type: 'string', desc: '按邮箱地址搜索' },
+                                { name: 'search', type: 'string', desc: '按邮箱、域名、转发地址和备注搜索' },
                                 { name: 'provider_id', type: 'number', desc: '按邮件服务商过滤' },
                                 { name: 'is_verified', type: 'string', desc: 'true 或 false' },
                                 { name: 'error_status', type: 'string', desc: '例如 normal、oauth_expired、network_error' },
                             ]} />
-                        </div>
-                    </section>
+	                        </div>
+	                    </section>
 
-                    <section data-section="mail-api-read">
-                        <StepIndicator step={3} title="同步并读取邮件" active />
+	                    <section data-section="mail-api-forwarding">
+	                        <StepIndicator step={3} title="配置转发落件账户" active />
+	                        <div className="pl-12 space-y-5">
+	                            <p className="text-sm text-gray-600 dark:text-gray-400">
+	                                如果邮箱 1、2、3 到 N 都在邮件服务器侧转发到账户 A，请把这些“原始收件地址”写入账户 A 的转发收件列表。后端会在搜索和取件时先解析 <code className="font-mono text-xs">to_query</code>，命中转发地址后自动使用账户 A 同步和读取邮件。
+	                            </p>
+
+	                            <div className="grid md:grid-cols-3 gap-3">
+	                                {[
+	                                    { title: '落件账户', desc: '实际登录和同步的邮箱账户，例如 inbox-a@gmail.com。', icon: Mail },
+	                                    { title: '转发地址', desc: '服务器转发前的原始收件地址，例如 source@example.com。', icon: Forward },
+	                                    { title: '读取方式', desc: '读取时继续使用原始地址作为 to_query，业务侧不用关心落件账户。', icon: Search },
+	                                ].map((item) => (
+	                                    <div key={item.title} className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+	                                        <item.icon className="mb-2 h-5 w-5 text-blue-500" />
+	                                        <h4 className="mb-1 text-sm font-semibold text-gray-900 dark:text-white">{item.title}</h4>
+	                                        <p className="text-xs leading-relaxed text-gray-500 dark:text-gray-400">{item.desc}</p>
+	                                    </div>
+	                                ))}
+	                            </div>
+
+	                            <CollapsibleCode
+	                                title="查看和替换转发收件地址"
+	                                defaultOpen={true}
+	                                code={`ACCOUNT_ID=10
+DEST_EMAIL="inbox-a@gmail.com"
+
+# 按账户 ID 查看
+curl "\${API_BASE}/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
+  -H "Authorization: Bearer \${TOKEN}"
+
+# 按落件邮箱查看
+curl "\${API_BASE}/accounts/forwarded-addresses?email=\${DEST_EMAIL}" \\
+  -H "Authorization: Bearer \${TOKEN}"
+
+# 替换整组，支持精确地址和 *@domain 通配
+curl -X PUT "\${API_BASE}/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "forwardedAddresses": [
+      "source-1@example.com",
+      "source-2@example.com",
+      "*@campaign.example"
+    ]
+  }'`}
+	                            />
+
+	                            <CollapsibleCode
+	                                title="追加或移除单个转发地址"
+	                                code={`# 追加，按账户 ID
+curl -X POST "\${API_BASE}/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"address":"source-3@example.com"}'
+
+# 追加，按落件邮箱
+curl -X POST "\${API_BASE}/accounts/forwarded-addresses?email=\${DEST_EMAIL}" \\
+  -H "Authorization: Bearer \${TOKEN}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"address":"source-4@example.com"}'
+
+# 移除，DELETE 支持 body 或 address 查询参数
+curl -X DELETE "\${API_BASE}/accounts/by-email/\${DEST_EMAIL}/forwarded-addresses?address=source-4@example.com" \\
+  -H "Authorization: Bearer \${TOKEN}"`}
+	                            />
+
+	                            <CollapsibleCode
+	                                title="转发地址接口响应"
+	                                language="json"
+	                                code={`{
+  "accountId": 10,
+  "emailAddress": "inbox-a@gmail.com",
+  "forwardedAddresses": [
+    "source-1@example.com",
+    "source-2@example.com",
+    "*@campaign.example"
+  ],
+  "count": 3,
+  "changed": true
+}`}
+	                            />
+
+	                            <FieldTable fields={[
+	                                { name: 'forwardedAddresses', type: 'string[]', desc: '替换整组转发地址，写入后会统一小写、去空格并去重' },
+	                                { name: 'address', type: 'string', desc: '追加或移除一个转发地址，支持 user@example.com 或 *@example.com' },
+	                                { name: 'email', type: 'string', desc: '通过 /accounts/forwarded-addresses?email=... 按落件邮箱定位账户' },
+	                                { name: 'changed', type: 'boolean', desc: '本次操作是否真的改变了账户转发列表' },
+	                            ]} />
+
+	                            <Callout type="info">
+	                                匹配优先级为：账户邮箱或 Gmail 别名优先，其次是转发收件地址，最后才是域名邮箱兜底。同步和搜索时会同时查收件人字段与邮件头，因此常见转发头中的 Delivered-To、Original-To、X-Original-To 等信息也能参与 <code className="font-mono text-xs">to_query</code> 搜索。
+	                            </Callout>
+
+	                            <CollapsibleCode
+	                                title="Node.js：按原始收件地址取件"
+	                                language="js"
+	                                code={`const API_BASE = process.env.API_BASE || 'http://localhost:8080/api'
+const TOKEN = process.env.MAILMAN_TOKEN
+
+async function api(path, { method = 'GET', body } = {}) {
+  const response = await fetch(API_BASE + path, {
+    method,
+    headers: {
+      Authorization: 'Bearer ' + TOKEN,
+      'Content-Type': 'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!response.ok) throw new Error(response.status + ' ' + await response.text())
+  return response.json()
+}
+
+const destinationEmail = 'inbox-a@gmail.com'
+const originalRecipient = 'source-1@example.com'
+
+await api('/accounts/forwarded-addresses?email=' + encodeURIComponent(destinationEmail), {
+  method: 'POST',
+  body: { address: originalRecipient },
+})
+
+const pickup = await api('/pickup/poll', {
+  method: 'POST',
+  body: {
+    keep_alive_seconds: 60,
+    sync_interval: 5,
+    since: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    to_query: originalRecipient,
+    limit: 5,
+  },
+})
+
+console.log(pickup.account_id, pickup.resolved_by, pickup.emails.length)`}
+	                            />
+	                        </div>
+	                    </section>
+
+	                    <section data-section="mail-api-read">
+	                        <StepIndicator step={4} title="同步并读取邮件" active />
                         <div className="pl-12 space-y-5">
                             <p className="text-sm text-gray-600 dark:text-gray-400">
                                 邮件列表接口读取的是数据库中的邮件。想拿最新邮件时，先调用同步接口把 IMAP 服务器上的邮件拉入数据库，再调用列表、搜索或详情接口。
@@ -1586,7 +1760,7 @@ curl -X POST "\${API_BASE}/account-emails/fetch/\${ACCOUNT_ID}" \\
 
                             <div>
                                 <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-2 flex items-center gap-2">
-                                    <Globe className="w-4 h-4 text-purple-500" /> 3. 全局搜索与域名/别名收件人搜索
+                                    <Globe className="w-4 h-4 text-purple-500" /> 3. 全局搜索与域名/别名/转发收件人搜索
                                 </h4>
                                 <div className="flex items-center gap-2 mb-2">
                                     <MethodBadge method="GET" />
@@ -1598,7 +1772,7 @@ curl -X POST "\${API_BASE}/account-emails/fetch/\${ACCOUNT_ID}" \\
   -H "Authorization: Bearer \${TOKEN}"`}
                                 />
                                 <Callout type="info">
-                                    <code className="font-mono text-xs">to_query</code> 会走收件人搜索增强逻辑：Gmail 别名会尝试点号、加号、googlemail.com 变体；域名邮箱账户会尝试匹配同域名收件地址。该接口在传入 <code className="font-mono text-xs">to_query</code> 时，也会尝试触发对应账户订阅的立即同步；即便同步失败，也会继续返回数据库中已存在的邮件。
+                                    <code className="font-mono text-xs">to_query</code> 会走收件人搜索增强逻辑：Gmail 别名会尝试点号、加号、googlemail.com 变体；转发收件地址会解析到实际落件账户；域名邮箱账户会尝试匹配同域名收件地址。该接口在传入 <code className="font-mono text-xs">to_query</code> 时，也会尝试触发对应账户订阅的立即同步；即便同步失败，也会继续返回数据库中已存在的邮件。
                                 </Callout>
                             </div>
 
@@ -1621,8 +1795,8 @@ curl "\${API_BASE}/emails/\${EMAIL_ID}" \\
                         </div>
                     </section>
 
-                    <section data-section="mail-api-pickup">
-                        <StepIndicator step={4} title="使用统一取件轮询接口" active />
+	                    <section data-section="mail-api-pickup">
+	                        <StepIndicator step={5} title="使用统一取件轮询接口" active />
                         <div className="pl-12 space-y-5">
                             <p className="text-sm text-gray-600 dark:text-gray-400">
                                 新版取件页面实际使用 <code className="font-mono text-xs">POST /api/pickup/poll</code>。这个接口把“临时同步续期、立即同步、搜索邮件、执行提取”合成一次请求，适合验证码、登录确认邮件、一次性通知等需要短时间等待的场景。
@@ -1632,7 +1806,7 @@ curl "\${API_BASE}/emails/\${EMAIL_ID}" \\
                                 {[
                                     ['注册/续期临时同步覆盖', '默认 sync_interval=5 秒，keep_alive_seconds=30 秒；每次调用都会续期。'],
                                     ['立即同步一次', '服务端会调用 SyncNow，确保刚到达的邮件尽快入库。'],
-                                    ['后端解析真实账户并搜索邮件', 'to_query 会优先解析 Gmail 别名或域名邮箱所属账户；解析不到时才使用 account_id。'],
+                                    ['后端解析真实账户并搜索邮件', 'to_query 会优先解析 Gmail 别名、转发收件地址或域名邮箱所属账户；解析不到时才使用 account_id。'],
                                     ['可选执行提取', 'template_id、inline_actions、simple_extract 三选一；都不传则只返回邮件。'],
                                 ].map(([title, desc], idx) => (
                                     <div key={title} className="flex items-start gap-3 px-4 py-3">
@@ -1714,7 +1888,7 @@ curl -X POST "\${API_BASE}/pickup/poll" \\
                                 { name: 'keep_alive_seconds', type: 'number', desc: '临时同步覆盖有效期，默认 30 秒' },
                                 { name: 'sync_interval', type: 'number', desc: '临时同步间隔，默认 5 秒' },
                                 { name: 'since', type: 'string', desc: '搜索起始时间，RFC3339 格式' },
-                                { name: 'to_query', type: 'string', desc: '收件人过滤。可用于解析 Gmail 别名、域名邮箱并筛选目标收件地址' },
+                                { name: 'to_query', type: 'string', desc: '收件人过滤。可用于解析 Gmail 别名、转发收件地址、域名邮箱并筛选目标收件地址' },
                                 { name: 'limit', type: 'number', desc: '返回邮件数量，默认 10' },
                                 { name: 'template_id', type: 'number', desc: '使用已有 V2 取件模板执行提取' },
                                 { name: 'simple_extract', type: 'object', desc: '简单提取配置，支持 regex、js、gotemplate' },
@@ -1736,7 +1910,7 @@ curl -X POST "\${API_BASE}/pickup/poll" \\
 
                         <div className="pl-12 space-y-4">
                             <p className="text-sm text-gray-600 dark:text-gray-400">
-                                下面的脚本演示完整流程：登录、获取第一个账户、同步最近邮件、读取邮件列表、读取详情、轮询取件并提取验证码。
+	                                下面的脚本演示完整流程：登录、获取第一个账户、同步最近邮件、读取邮件列表、读取详情、轮询取件并提取验证码。如果业务使用转发邮箱，把 <code className="font-mono text-xs">MAILMAN_TO_QUERY</code> 设置为原始收件地址即可。
                             </p>
 
                             <CollapsibleCode
@@ -1746,6 +1920,7 @@ curl -X POST "\${API_BASE}/pickup/poll" \\
                                 code={`const API_BASE = process.env.API_BASE || 'http://localhost:8080/api'
 const USERNAME = process.env.MAILMAN_USERNAME || 'admin@example.com'
 const PASSWORD = process.env.MAILMAN_PASSWORD || 'your_password'
+const TO_QUERY = process.env.MAILMAN_TO_QUERY
 
 async function request(path, options = {}) {
   const headers = {
@@ -1779,6 +1954,7 @@ if (!account) throw new Error('No email account found')
 
 const accountId = account.id
 const since = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+const recipientQuery = TO_QUERY || account.emailAddress
 
 await request('/account-emails/fetch/' + accountId, {
   method: 'POST',
@@ -1815,7 +1991,7 @@ const pickup = await request('/pickup/poll', {
     keep_alive_seconds: 60,
     sync_interval: 5,
     since,
-    to_query: account.emailAddress,
+    to_query: recipientQuery,
     limit: 5,
     simple_extract: {
       field: 'body',
@@ -1828,6 +2004,7 @@ const pickup = await request('/pickup/poll', {
 
 console.log(JSON.stringify({
   account: account.emailAddress,
+  to_query: recipientQuery,
   pickup_emails: pickup.emails.length,
   extraction: pickup.extractions?.[0],
   sync_expires_at: pickup.sync_expires_at,

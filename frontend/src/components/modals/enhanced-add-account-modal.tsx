@@ -2,7 +2,7 @@
 import { logger } from '@/lib/logger';
 
 import { useState, useEffect, useRef, type ReactNode } from 'react'
-import { Check, AlertCircle, Loader2, ArrowRight, CheckCircle, Clock, Settings, Globe2, StickyNote, Network, Mail } from 'lucide-react'
+import { Check, AlertCircle, Loader2, ArrowRight, CheckCircle, Clock, Settings, Globe2, StickyNote, Network, Mail, Forward } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
 import { syncConfigService } from '@/services/sync-config.service'
@@ -65,6 +65,7 @@ interface AccountForm {
     proxyMatchTagMode: ProxyTagFilterMode
     isDomainMail: boolean
     domain: string
+    forwardedAddresses: string
     note: string
     noteFormat: AccountNoteFormat
     oauth2ProviderConfigId?: number
@@ -72,7 +73,7 @@ interface AccountForm {
 
 // 工作流程步骤
 type WorkflowStep = 'account' | 'advanced' | 'verify' | 'sync' | 'config' | 'complete'
-type AddAccountSection = 'identity' | 'domain' | 'note' | 'proxy'
+type AddAccountSection = 'identity' | 'domain' | 'forwarding' | 'note' | 'proxy'
 
 interface AddSectionItem {
     key: AddAccountSection
@@ -87,6 +88,14 @@ interface StepData {
     verificationResult?: any
     syncResult?: any
     configResult?: any
+}
+
+const parseRoutingAddressLines = (value: string): string[] => {
+    return value
+        .split(/[\n,;]+/)
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean)
+        .filter((item, index, array) => array.indexOf(item) === index)
 }
 
 export default function EnhancedAddAccountModal({
@@ -118,6 +127,7 @@ export default function EnhancedAddAccountModal({
         ...defaultProxyConfigValue(),
         isDomainMail: false,
         domain: '',
+        forwardedAddresses: '',
         note: '',
         noteFormat: 'markdown',
         oauth2ProviderConfigId: undefined
@@ -145,7 +155,7 @@ export default function EnhancedAddAccountModal({
     // 工作流程步骤配置
     const steps = [
         { key: 'account', title: '账户认证', description: '配置邮箱、提供商和认证信息' },
-        { key: 'advanced', title: '高级设置', description: '配置域名邮箱、备注和代理策略' },
+        { key: 'advanced', title: '高级设置', description: '配置域名邮箱、转发收件、备注和代理策略' },
         { key: 'verify', title: '验证连接', description: '验证账户连接性' },
         { key: 'sync', title: '首次同步', description: '同步邮件到本地' },
         { key: 'config', title: '同步配置', description: '设置自动同步规则' },
@@ -217,6 +227,7 @@ export default function EnhancedAddAccountModal({
             ...defaultProxyConfigValue(),
             isDomainMail: false,
             domain: '',
+            forwardedAddresses: '',
             note: '',
             noteFormat: 'markdown',
             oauth2ProviderConfigId: undefined
@@ -306,6 +317,7 @@ export default function EnhancedAddAccountModal({
                 email_address: accountForm.email,
                 mail_provider_id: providerId,
                 auth_type: accountForm.authType,
+                forwarded_addresses: parseRoutingAddressLines(accountForm.forwardedAddresses),
                 note: accountForm.note,
                 note_format: accountForm.noteFormat
             }
@@ -534,6 +546,15 @@ export default function EnhancedAddAccountModal({
             description: '域名收件身份配置',
             meta: accountForm.isDomainMail ? (accountForm.domain || '已启用') : '未启用',
             icon: Globe2,
+        },
+        {
+            key: 'forwarding',
+            title: '转发收件',
+            description: '原始收件地址映射',
+            meta: parseRoutingAddressLines(accountForm.forwardedAddresses).length > 0
+                ? `${parseRoutingAddressLines(accountForm.forwardedAddresses).length} 个地址`
+                : '未配置',
+            icon: Forward,
         },
         {
             key: 'note',
@@ -921,6 +942,50 @@ export default function EnhancedAddAccountModal({
                                                                 )}
                                                             </AnimatePresence>
                                                         </section>
+                                                    </motion.div>
+                                                )}
+
+                                                {activeAccountSection === 'forwarding' && (
+                                                    <motion.div
+                                                        key="forwarding"
+                                                        initial={{ opacity: 0, x: 18 }}
+                                                        animate={{ opacity: 1, x: 0 }}
+                                                        exit={{ opacity: 0, x: -18 }}
+                                                        transition={{ duration: 0.18 }}
+                                                        className="space-y-5"
+                                                    >
+                                                        <AddPanelHeader
+                                                            icon={<Forward className="h-5 w-5" />}
+                                                            title="转发收件"
+                                                            description="把会转发到此账户的原始邮箱写在这里。"
+                                                        />
+                                                        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
+                                                            <section className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40">
+                                                                <div className="space-y-2">
+                                                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">原始收件地址</label>
+                                                                    <textarea
+                                                                        value={accountForm.forwardedAddresses}
+                                                                        onChange={(event) => setAccountForm(prev => ({ ...prev, forwardedAddresses: event.target.value }))}
+                                                                        rows={12}
+                                                                        placeholder={"one@example.com\norders@example.net\n*@campaign.example"}
+                                                                        className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                                                                    />
+                                                                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                                                                        一行一个，也支持逗号或分号分隔。取件时传入这些地址，系统会自动落到当前账户。
+                                                                    </p>
+                                                                </div>
+                                                            </section>
+                                                            <aside className="rounded-xl border border-blue-100 bg-blue-50 p-5 text-sm text-blue-900 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-100">
+                                                                <div className="font-semibold">示例</div>
+                                                                <div className="mt-3 space-y-3 text-blue-800/90 dark:text-blue-100/80">
+                                                                    <p>server-one@example.com 转发到账户 A，就把 server-one@example.com 填到账户 A。</p>
+                                                                    <p>也可以填 *@project.example 代表同域名下的转发地址。</p>
+                                                                </div>
+                                                                <div className="mt-5 rounded-lg bg-white/70 p-3 font-mono text-xs text-blue-950 dark:bg-blue-950/50 dark:text-blue-50">
+                                                                    to_query = server-one@example.com
+                                                                </div>
+                                                            </aside>
+                                                        </div>
                                                     </motion.div>
                                                 )}
 

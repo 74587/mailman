@@ -104,6 +104,7 @@ type UpdateAccountRequest struct {
 	ProxyMatchTagMode    *models.ProxyTagFilterMode `json:"proxyMatchTagMode,omitempty"`
 	IsDomainMail         *bool                      `json:"isDomainMail,omitempty"`
 	Domain               *string                    `json:"domain,omitempty"`
+	ForwardedAddresses   *models.StringSlice        `json:"forwardedAddresses,omitempty"`
 	Note                 *string                    `json:"note,omitempty"`
 	NoteFormat           *models.AccountNoteFormat  `json:"noteFormat,omitempty"`
 	CustomSettings       *models.JSONMap            `json:"customSettings,omitempty"`
@@ -130,9 +131,36 @@ type CreateAccountRequest struct {
 	ProxyMatchTagMode    models.ProxyTagFilterMode `json:"proxyMatchTagMode,omitempty"`
 	IsDomainMail         bool                      `json:"isDomainMail"`
 	Domain               string                    `json:"domain,omitempty"`
+	ForwardedAddresses   models.StringSlice        `json:"forwardedAddresses,omitempty"`
 	Note                 string                    `json:"note,omitempty"`
 	NoteFormat           models.AccountNoteFormat  `json:"noteFormat,omitempty"`
 	CustomSettings       models.JSONMap            `json:"customSettings,omitempty"`
+}
+
+// AccountForwardedAddressesRequest represents a full forwarded recipient list update.
+// @Description Request body for replacing an account's forwarded recipient address list
+type AccountForwardedAddressesRequest struct {
+	ForwardedAddresses      models.StringSlice `json:"forwardedAddresses,omitempty" example:"[\"source@example.com\",\"*@example.org\"]"`
+	ForwardedAddressesSnake models.StringSlice `json:"forwarded_addresses,omitempty" swaggerignore:"true"`
+	Addresses               models.StringSlice `json:"addresses,omitempty" example:"[\"source@example.com\"]"`
+}
+
+// AccountForwardedAddressRequest represents a single forwarded recipient address mutation.
+// @Description Request body for appending or removing one forwarded recipient address
+type AccountForwardedAddressRequest struct {
+	Address               string `json:"address,omitempty" example:"source@example.com"`
+	ForwardedAddress      string `json:"forwardedAddress,omitempty" example:"source@example.com"`
+	ForwardedAddressSnake string `json:"forwarded_address,omitempty" swaggerignore:"true"`
+}
+
+// AccountForwardedAddressesResponse represents forwarded recipient addresses for an account.
+// @Description Forwarded recipient address list for an email account
+type AccountForwardedAddressesResponse struct {
+	AccountID          uint               `json:"accountId" example:"1"`
+	EmailAddress       string             `json:"emailAddress" example:"inbox@example.com"`
+	ForwardedAddresses models.StringSlice `json:"forwardedAddresses" example:"[\"source@example.com\",\"*@example.org\"]"`
+	Count              int                `json:"count" example:"2"`
+	Changed            bool               `json:"changed" example:"true"`
 }
 
 // CreateProviderRequest represents the request body for creating a custom mail provider

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/services"
@@ -51,6 +52,7 @@ func (h *APIHandler) CreateAccountHandler(w http.ResponseWriter, r *http.Request
 		ProxyMatchTagMode:    models.NormalizeProxyTagFilterMode(request.ProxyMatchTagMode),
 		IsDomainMail:         request.IsDomainMail,
 		Domain:               request.Domain,
+		ForwardedAddresses:   models.NormalizeEmailRoutingAddresses(request.ForwardedAddresses),
 		Note:                 request.Note,
 		NoteFormat:           models.NormalizeAccountNoteFormat(request.NoteFormat),
 		CustomSettings:       request.CustomSettings,
@@ -609,6 +611,268 @@ func (h *APIHandler) GetAccountHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(account)
 }
 
+func (req AccountForwardedAddressesRequest) values() models.StringSlice {
+	if len(req.ForwardedAddresses) > 0 {
+		return req.ForwardedAddresses
+	}
+	if len(req.ForwardedAddressesSnake) > 0 {
+		return req.ForwardedAddressesSnake
+	}
+	return req.Addresses
+}
+
+func (req AccountForwardedAddressRequest) value() string {
+	if strings.TrimSpace(req.Address) != "" {
+		return req.Address
+	}
+	if strings.TrimSpace(req.ForwardedAddress) != "" {
+		return req.ForwardedAddress
+	}
+	return req.ForwardedAddressSnake
+}
+
+func accountForwardedAddressesResponse(account *models.EmailAccount, changed bool) AccountForwardedAddressesResponse {
+	addresses := models.NormalizeEmailRoutingAddresses(account.ForwardedAddresses)
+	return AccountForwardedAddressesResponse{
+		AccountID:          account.ID,
+		EmailAddress:       account.EmailAddress,
+		ForwardedAddresses: addresses,
+		Count:              len(addresses),
+		Changed:            changed,
+	}
+}
+
+func (h *APIHandler) resolveForwardedAddressAccount(w http.ResponseWriter, r *http.Request) (*models.EmailAccount, bool) {
+	orgID := GetCurrentOrgID(r)
+	vars := mux.Vars(r)
+
+	if rawID := strings.TrimSpace(vars["id"]); rawID != "" {
+		id, err := strconv.ParseUint(rawID, 10, 32)
+		if err != nil {
+			http.Error(w, "Invalid account ID", http.StatusBadRequest)
+			return nil, false
+		}
+
+		account, err := h.EmailAccountRepo.GetByID(uint(id))
+		if err != nil {
+			http.Error(w, "Account not found", http.StatusNotFound)
+			return nil, false
+		}
+		if orgID > 0 && account.OrgID != orgID {
+			http.Error(w, "Access denied", http.StatusForbidden)
+			return nil, false
+		}
+		return account, true
+	}
+
+	email := strings.TrimSpace(vars["email"])
+	if email == "" {
+		query := r.URL.Query()
+		email = strings.TrimSpace(query.Get("email"))
+		if email == "" {
+			email = strings.TrimSpace(query.Get("emailAddress"))
+		}
+		if email == "" {
+			email = strings.TrimSpace(query.Get("email_address"))
+		}
+	}
+	if email == "" {
+		http.Error(w, "email is required", http.StatusBadRequest)
+		return nil, false
+	}
+
+	account, err := h.EmailAccountRepo.GetByEmail(email)
+	if err != nil {
+		http.Error(w, "Account not found", http.StatusNotFound)
+		return nil, false
+	}
+	if orgID > 0 && account.OrgID != orgID {
+		http.Error(w, "Access denied", http.StatusForbidden)
+		return nil, false
+	}
+
+	return account, true
+}
+
+// ListAccountForwardedAddressesHandler lists forwarded recipient addresses for an account.
+// @Summary List account forwarded recipient addresses
+// @Description List forwarded recipient addresses by account ID, or by email through /api/accounts/forwarded-addresses?email=user@example.com.
+// @Tags accounts
+// @Produce json
+// @Param id path int false "Account ID"
+// @Param email query string false "Account email address"
+// @Success 200 {object} AccountForwardedAddressesResponse
+// @Router /api/accounts/{id}/forwarded-addresses [get]
+// @Router /api/accounts/forwarded-addresses [get]
+func (h *APIHandler) ListAccountForwardedAddressesHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveForwardedAddressAccount(w, r)
+	if !ok {
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountForwardedAddressesResponse(account, false))
+}
+
+// SetAccountForwardedAddressesHandler replaces forwarded recipient addresses for an account.
+// @Summary Replace account forwarded recipient addresses
+// @Description Replace the full forwarded recipient address list by account ID or by email.
+// @Tags accounts
+// @Accept json
+// @Produce json
+// @Param request body AccountForwardedAddressesRequest true "Forwarded recipient addresses"
+// @Success 200 {object} AccountForwardedAddressesResponse
+// @Router /api/accounts/{id}/forwarded-addresses [put]
+// @Router /api/accounts/forwarded-addresses [put]
+func (h *APIHandler) SetAccountForwardedAddressesHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveForwardedAddressAccount(w, r)
+	if !ok {
+		return
+	}
+
+	var req AccountForwardedAddressesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	previous := strings.Join(models.NormalizeEmailRoutingAddresses(account.ForwardedAddresses), "\n")
+	account.ForwardedAddresses = models.NormalizeEmailRoutingAddresses(req.values())
+	changed := previous != strings.Join(account.ForwardedAddresses, "\n")
+
+	if err := h.EmailAccountRepo.Update(account); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	userID := getUserIDFromContext(r)
+	h.activityLogger.LogAccountActivity(models.ActivityAccountUpdated, account, userID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountForwardedAddressesResponse(account, changed))
+}
+
+// AddAccountForwardedAddressHandler appends one forwarded recipient address for an account.
+// @Summary Append one account forwarded recipient address
+// @Description Append one forwarded recipient address by account ID or by email. Existing values are kept and duplicates are ignored.
+// @Tags accounts
+// @Accept json
+// @Produce json
+// @Param request body AccountForwardedAddressRequest true "Forwarded recipient address"
+// @Success 200 {object} AccountForwardedAddressesResponse
+// @Router /api/accounts/{id}/forwarded-addresses [post]
+// @Router /api/accounts/forwarded-addresses [post]
+func (h *APIHandler) AddAccountForwardedAddressHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveForwardedAddressAccount(w, r)
+	if !ok {
+		return
+	}
+
+	var req AccountForwardedAddressRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	address := req.value()
+	if address == "" {
+		address = r.URL.Query().Get("address")
+	}
+	normalized := models.NormalizeEmailRoutingAddress(address)
+	if normalized == "" {
+		http.Error(w, "address is required", http.StatusBadRequest)
+		return
+	}
+
+	addresses := models.NormalizeEmailRoutingAddresses(account.ForwardedAddresses)
+	changed := true
+	for _, existing := range addresses {
+		if existing == normalized {
+			changed = false
+			break
+		}
+	}
+	if changed {
+		addresses = append(addresses, normalized)
+		account.ForwardedAddresses = addresses
+		if err := h.EmailAccountRepo.Update(account); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		userID := getUserIDFromContext(r)
+		h.activityLogger.LogAccountActivity(models.ActivityAccountUpdated, account, userID)
+	} else {
+		account.ForwardedAddresses = addresses
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountForwardedAddressesResponse(account, changed))
+}
+
+// RemoveAccountForwardedAddressHandler removes one forwarded recipient address for an account.
+// @Summary Remove one account forwarded recipient address
+// @Description Remove one forwarded recipient address by account ID or by email. Missing values are treated as no-op.
+// @Tags accounts
+// @Accept json
+// @Produce json
+// @Param request body AccountForwardedAddressRequest false "Forwarded recipient address"
+// @Param address query string false "Forwarded recipient address"
+// @Success 200 {object} AccountForwardedAddressesResponse
+// @Router /api/accounts/{id}/forwarded-addresses [delete]
+// @Router /api/accounts/forwarded-addresses [delete]
+func (h *APIHandler) RemoveAccountForwardedAddressHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveForwardedAddressAccount(w, r)
+	if !ok {
+		return
+	}
+
+	var req AccountForwardedAddressRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	address := req.value()
+	if address == "" {
+		address = r.URL.Query().Get("address")
+	}
+	normalized := models.NormalizeEmailRoutingAddress(address)
+	if normalized == "" {
+		http.Error(w, "address is required", http.StatusBadRequest)
+		return
+	}
+
+	addresses := models.NormalizeEmailRoutingAddresses(account.ForwardedAddresses)
+	next := make(models.StringSlice, 0, len(addresses))
+	changed := false
+	for _, existing := range addresses {
+		if existing == normalized {
+			changed = true
+			continue
+		}
+		next = append(next, existing)
+	}
+
+	if changed {
+		account.ForwardedAddresses = next
+		if err := h.EmailAccountRepo.Update(account); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		userID := getUserIDFromContext(r)
+		h.activityLogger.LogAccountActivity(models.ActivityAccountUpdated, account, userID)
+	} else {
+		account.ForwardedAddresses = addresses
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountForwardedAddressesResponse(account, changed))
+}
+
 // UpdateAccountHandler updates an email account
 // @Summary Update an email account
 // @Description Update an email account (supports partial updates)
@@ -708,6 +972,9 @@ func (h *APIHandler) UpdateAccountHandler(w http.ResponseWriter, r *http.Request
 	if request.Domain != nil {
 		existingAccount.Domain = *request.Domain
 	}
+	if request.ForwardedAddresses != nil {
+		existingAccount.ForwardedAddresses = models.NormalizeEmailRoutingAddresses(*request.ForwardedAddresses)
+	}
 	if request.Note != nil {
 		existingAccount.Note = *request.Note
 	}
@@ -789,6 +1056,7 @@ func (h *APIHandler) UpsertAccountHandler(w http.ResponseWriter, r *http.Request
 			ProxyMatchTagMode:    models.NormalizeProxyTagFilterMode(request.ProxyMatchTagMode),
 			IsDomainMail:         request.IsDomainMail,
 			Domain:               request.Domain,
+			ForwardedAddresses:   models.NormalizeEmailRoutingAddresses(request.ForwardedAddresses),
 			Note:                 request.Note,
 			NoteFormat:           models.NormalizeAccountNoteFormat(request.NoteFormat),
 			CustomSettings:       request.CustomSettings,
@@ -858,6 +1126,9 @@ func (h *APIHandler) UpsertAccountHandler(w http.ResponseWriter, r *http.Request
 		}
 		if request.CustomSettings != nil {
 			account.CustomSettings = request.CustomSettings
+		}
+		if len(request.ForwardedAddresses) > 0 {
+			account.ForwardedAddresses = models.NormalizeEmailRoutingAddresses(request.ForwardedAddresses)
 		}
 		if request.Note != "" {
 			account.Note = request.Note

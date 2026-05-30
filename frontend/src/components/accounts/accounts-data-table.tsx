@@ -28,6 +28,9 @@ import {
     Minimize2,
     Save,
     StickyNote,
+    Forward,
+    Globe2,
+    Network,
 } from 'lucide-react'
 import { DataTable, createSelectColumn } from '@/components/ui/data-table'
 import { Button } from '@/components/ui/button'
@@ -109,6 +112,25 @@ const getErrorStatusDisplay = (status?: string) => {
         default:
             return { icon: CheckCircle, color: 'text-green-500', bgColor: 'bg-green-50 dark:bg-green-900/20', label: '正常' }
     }
+}
+
+const hasProxyConfig = (account: EmailAccount) => {
+    return Boolean(
+        account.proxy ||
+        account.proxyId ||
+        account.proxyMode === 'selected' ||
+        account.proxyMode === 'auto' ||
+        account.proxyMatchGroupIds?.length ||
+        account.proxyMatchTagIds?.length
+    )
+}
+
+const getProxyLabel = (account: EmailAccount) => {
+    if (account.proxyMode === 'auto') return '自动'
+    if (account.proxyMode === 'selected') return '代理池'
+    if (account.proxy) return '手动'
+    if (account.proxyId) return '代理池'
+    return '未启用'
 }
 
 export function AccountsDataTable({
@@ -308,6 +330,84 @@ export function AccountsDataTable({
                         />
                     </div>
                 ),
+            },
+
+            // 路由与代理配置
+            {
+                id: 'routingConfig',
+                header: '配置',
+                size: 170,
+                enableSorting: false,
+                cell: ({ row }) => {
+                    const account = row.original
+                    const domainEnabled = Boolean(account.isDomainMail && account.domain?.trim())
+                    const forwardedAddresses = account.forwardedAddresses || []
+                    const proxyEnabled = hasProxyConfig(account)
+
+                    const items = [
+                        {
+                            key: 'domain',
+                            icon: Globe2,
+                            label: '域名',
+                            active: domainEnabled,
+                            text: '域名',
+                            title: domainEnabled
+                                ? `域名邮箱: ${account.domain}`
+                                : '未启用域名邮箱',
+                            className: domainEnabled
+                                ? 'border-purple-200 bg-purple-50 text-purple-700 dark:border-purple-900/50 dark:bg-purple-950/40 dark:text-purple-200'
+                                : 'border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-700 dark:bg-gray-800/70 dark:text-gray-500',
+                        },
+                        {
+                            key: 'forwarding',
+                            icon: Forward,
+                            label: '转发',
+                            active: forwardedAddresses.length > 0,
+                            text: forwardedAddresses.length > 0 ? `转发 ${forwardedAddresses.length}` : '转发',
+                            title: forwardedAddresses.length > 0
+                                ? `转发收件地址:\n${forwardedAddresses.join('\n')}`
+                                : '未配置转发收件地址',
+                            className: forwardedAddresses.length > 0
+                                ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/50 dark:bg-blue-950/40 dark:text-blue-200'
+                                : 'border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-700 dark:bg-gray-800/70 dark:text-gray-500',
+                        },
+                        {
+                            key: 'proxy',
+                            icon: Network,
+                            label: '代理',
+                            active: proxyEnabled,
+                            text: proxyEnabled ? `代理 ${getProxyLabel(account)}` : '代理',
+                            title: proxyEnabled
+                                ? `已启用代理策略: ${getProxyLabel(account)}`
+                                : '未启用代理',
+                            className: proxyEnabled
+                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-200'
+                                : 'border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-700 dark:bg-gray-800/70 dark:text-gray-500',
+                        },
+                    ]
+
+                    return (
+                        <div className="flex max-w-[170px] flex-wrap gap-1">
+                            {items.map((item) => {
+                                const Icon = item.icon
+                                return (
+                                    <span
+                                        key={item.key}
+                                        className={cn(
+                                            'inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-medium leading-4 transition-colors',
+                                            item.active && 'shadow-sm',
+                                            item.className
+                                        )}
+                                        title={item.title}
+                                    >
+                                        <Icon className="h-3 w-3 shrink-0" />
+                                        <span className="truncate">{item.text}</span>
+                                    </span>
+                                )
+                            })}
+                        </div>
+                    )
+                },
             },
 
             // 备注

@@ -667,6 +667,12 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 					}
 
 					// Update email with parsed content
+					if parsedEmail.RawMessage != "" {
+						email.RawMessage = parsedEmail.RawMessage
+					}
+					if len(parsedEmail.Headers) > 0 {
+						email.Headers = parsedEmail.Headers
+					}
 					if parsedEmail.Body != "" {
 						email.Body = parsedEmail.Body
 					}
