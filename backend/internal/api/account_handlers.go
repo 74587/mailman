@@ -642,7 +642,7 @@ func accountForwardedAddressesResponse(account *models.EmailAccount, changed boo
 	}
 }
 
-func (h *APIHandler) resolveForwardedAddressAccount(w http.ResponseWriter, r *http.Request) (*models.EmailAccount, bool) {
+func (h *APIHandler) resolveAccountConfigTarget(w http.ResponseWriter, r *http.Request) (*models.EmailAccount, bool) {
 	orgID := GetCurrentOrgID(r)
 	vars := mux.Vars(r)
 
@@ -692,6 +692,10 @@ func (h *APIHandler) resolveForwardedAddressAccount(w http.ResponseWriter, r *ht
 	}
 
 	return account, true
+}
+
+func (h *APIHandler) resolveForwardedAddressAccount(w http.ResponseWriter, r *http.Request) (*models.EmailAccount, bool) {
+	return h.resolveAccountConfigTarget(w, r)
 }
 
 // ListAccountForwardedAddressesHandler lists forwarded recipient addresses for an account.
@@ -871,6 +875,341 @@ func (h *APIHandler) RemoveAccountForwardedAddressHandler(w http.ResponseWriter,
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(accountForwardedAddressesResponse(account, changed))
+}
+
+func normalizeAccountDomain(domain string) string {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	domain = strings.TrimPrefix(domain, "@")
+	domain = strings.TrimPrefix(domain, "*.")
+	return domain
+}
+
+func (req AccountDomainConfigRequest) enabled(current bool) bool {
+	if req.Enabled != nil {
+		return *req.Enabled
+	}
+	if req.IsDomainMail != nil {
+		return *req.IsDomainMail
+	}
+	if req.IsDomainMailSnake != nil {
+		return *req.IsDomainMailSnake
+	}
+	if strings.TrimSpace(req.Domain) != "" {
+		return true
+	}
+	return current
+}
+
+func accountDomainConfigResponse(account *models.EmailAccount, changed bool) AccountDomainConfigResponse {
+	return AccountDomainConfigResponse{
+		AccountID:    account.ID,
+		EmailAddress: account.EmailAddress,
+		IsDomainMail: account.IsDomainMail,
+		Domain:       account.Domain,
+		Changed:      changed,
+	}
+}
+
+// GetAccountDomainConfigHandler returns domain mail config for an account.
+// @Summary Get account domain mail config
+// @Description Get domain mail config by account ID or by email through /api/accounts/domain-config?email=user@example.com.
+// @Tags accounts
+// @Produce json
+// @Param id path int false "Account ID"
+// @Param email query string false "Account email address"
+// @Success 200 {object} AccountDomainConfigResponse
+// @Router /api/accounts/{id}/domain-config [get]
+// @Router /api/accounts/domain-config [get]
+func (h *APIHandler) GetAccountDomainConfigHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveAccountConfigTarget(w, r)
+	if !ok {
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountDomainConfigResponse(account, false))
+}
+
+// SetAccountDomainConfigHandler replaces domain mail config for an account.
+// @Summary Replace account domain mail config
+// @Description Enable, update, or disable the domain mail config by account ID or by email.
+// @Tags accounts
+// @Accept json
+// @Produce json
+// @Param request body AccountDomainConfigRequest true "Domain mail config"
+// @Success 200 {object} AccountDomainConfigResponse
+// @Router /api/accounts/{id}/domain-config [put]
+// @Router /api/accounts/domain-config [put]
+func (h *APIHandler) SetAccountDomainConfigHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveAccountConfigTarget(w, r)
+	if !ok {
+		return
+	}
+
+	var req AccountDomainConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	enabled := req.enabled(account.IsDomainMail)
+	domain := normalizeAccountDomain(account.Domain)
+	if strings.TrimSpace(req.Domain) != "" || !enabled {
+		domain = normalizeAccountDomain(req.Domain)
+	}
+
+	if enabled && domain == "" {
+		http.Error(w, "domain is required when domain mail is enabled", http.StatusBadRequest)
+		return
+	}
+
+	previousEnabled := account.IsDomainMail
+	previousDomain := normalizeAccountDomain(account.Domain)
+	account.IsDomainMail = enabled
+	if enabled {
+		account.Domain = domain
+	} else {
+		account.Domain = ""
+	}
+	changed := previousEnabled != account.IsDomainMail || previousDomain != account.Domain
+
+	if changed {
+		if err := h.EmailAccountRepo.Update(account); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		userID := getUserIDFromContext(r)
+		h.activityLogger.LogAccountActivity(models.ActivityAccountUpdated, account, userID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountDomainConfigResponse(account, changed))
+}
+
+// DeleteAccountDomainConfigHandler disables domain mail config for an account.
+// @Summary Disable account domain mail config
+// @Description Disable and clear domain mail config by account ID or by email.
+// @Tags accounts
+// @Produce json
+// @Success 200 {object} AccountDomainConfigResponse
+// @Router /api/accounts/{id}/domain-config [delete]
+// @Router /api/accounts/domain-config [delete]
+func (h *APIHandler) DeleteAccountDomainConfigHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveAccountConfigTarget(w, r)
+	if !ok {
+		return
+	}
+
+	changed := account.IsDomainMail || strings.TrimSpace(account.Domain) != ""
+	if changed {
+		account.IsDomainMail = false
+		account.Domain = ""
+		if err := h.EmailAccountRepo.Update(account); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		userID := getUserIDFromContext(r)
+		h.activityLogger.LogAccountActivity(models.ActivityAccountUpdated, account, userID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountDomainConfigResponse(account, changed))
+}
+
+func accountProxyConfigEnabled(account *models.EmailAccount) bool {
+	return strings.TrimSpace(account.Proxy) != "" ||
+		account.ProxyID != nil ||
+		account.ProxyMode == models.ProxyAccountModeSelected ||
+		account.ProxyMode == models.ProxyAccountModeAuto ||
+		len(account.ProxyMatchGroupIDs) > 0 ||
+		len(account.ProxyMatchTagIDs) > 0
+}
+
+func accountProxyConfigResponse(account *models.EmailAccount, changed bool) AccountProxyConfigResponse {
+	return AccountProxyConfigResponse{
+		AccountID:            account.ID,
+		EmailAddress:         account.EmailAddress,
+		Enabled:              accountProxyConfigEnabled(account),
+		Proxy:                account.Proxy,
+		ProxyMode:            models.NormalizeProxyAccountMode(account.ProxyMode),
+		ProxyID:              account.ProxyID,
+		ProxyFallbackMode:    models.NormalizeProxyFallbackMode(account.ProxyFallbackMode),
+		ProxyFallbackProxyID: account.ProxyFallbackProxyID,
+		ProxyFallbackProxy:   account.ProxyFallbackProxy,
+		ProxyMatchGroupIDs:   account.ProxyMatchGroupIDs,
+		ProxyMatchTagIDs:     account.ProxyMatchTagIDs,
+		ProxyMatchTagMode:    models.NormalizeProxyTagFilterMode(account.ProxyMatchTagMode),
+		Changed:              changed,
+	}
+}
+
+func clearAccountProxyConfig(account *models.EmailAccount) {
+	account.Proxy = ""
+	account.ProxyMode = models.ProxyAccountModeManual
+	account.ProxyID = nil
+	account.ProxyFallbackMode = models.ProxyFallbackInterrupt
+	account.ProxyFallbackProxyID = nil
+	account.ProxyFallbackProxy = ""
+	account.ProxyMatchGroupIDs = models.UintSlice{}
+	account.ProxyMatchTagIDs = models.UintSlice{}
+	account.ProxyMatchTagMode = models.ProxyTagFilterOR
+}
+
+func uintPtrFingerprint(ptr *uint) string {
+	if ptr == nil {
+		return ""
+	}
+	return strconv.FormatUint(uint64(*ptr), 10)
+}
+
+func uintSliceFingerprint(values models.UintSlice) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.FormatUint(uint64(value), 10))
+	}
+	return strings.Join(parts, ",")
+}
+
+func accountProxyFingerprint(account *models.EmailAccount) string {
+	return strings.Join([]string{
+		strconv.FormatBool(accountProxyConfigEnabled(account)),
+		account.Proxy,
+		string(models.NormalizeProxyAccountMode(account.ProxyMode)),
+		uintPtrFingerprint(account.ProxyID),
+		string(models.NormalizeProxyFallbackMode(account.ProxyFallbackMode)),
+		uintPtrFingerprint(account.ProxyFallbackProxyID),
+		account.ProxyFallbackProxy,
+		uintSliceFingerprint(account.ProxyMatchGroupIDs),
+		uintSliceFingerprint(account.ProxyMatchTagIDs),
+		string(models.NormalizeProxyTagFilterMode(account.ProxyMatchTagMode)),
+	}, "|")
+}
+
+func (req AccountProxyConfigRequest) enabled(current bool) bool {
+	if req.Enabled != nil {
+		return *req.Enabled
+	}
+	if req.UseProxy != nil {
+		return *req.UseProxy
+	}
+	return current ||
+		strings.TrimSpace(req.Proxy) != "" ||
+		req.ProxyID != nil ||
+		req.ProxyMode != "" ||
+		len(req.ProxyMatchGroupIDs) > 0 ||
+		len(req.ProxyMatchTagIDs) > 0
+}
+
+// GetAccountProxyConfigHandler returns proxy config for an account.
+// @Summary Get account proxy config
+// @Description Get proxy config by account ID or by email through /api/accounts/proxy-config?email=user@example.com.
+// @Tags accounts
+// @Produce json
+// @Param id path int false "Account ID"
+// @Param email query string false "Account email address"
+// @Success 200 {object} AccountProxyConfigResponse
+// @Router /api/accounts/{id}/proxy-config [get]
+// @Router /api/accounts/proxy-config [get]
+func (h *APIHandler) GetAccountProxyConfigHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveAccountConfigTarget(w, r)
+	if !ok {
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountProxyConfigResponse(account, false))
+}
+
+// SetAccountProxyConfigHandler replaces proxy config for an account.
+// @Summary Replace account proxy config
+// @Description Enable, update, or disable proxy config by account ID or by email.
+// @Tags accounts
+// @Accept json
+// @Produce json
+// @Param request body AccountProxyConfigRequest true "Proxy config"
+// @Success 200 {object} AccountProxyConfigResponse
+// @Router /api/accounts/{id}/proxy-config [put]
+// @Router /api/accounts/proxy-config [put]
+func (h *APIHandler) SetAccountProxyConfigHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveAccountConfigTarget(w, r)
+	if !ok {
+		return
+	}
+
+	var req AccountProxyConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	previous := accountProxyFingerprint(account)
+	if !req.enabled(accountProxyConfigEnabled(account)) {
+		clearAccountProxyConfig(account)
+	} else {
+		account.Proxy = strings.TrimSpace(req.Proxy)
+		account.ProxyMode = models.NormalizeProxyAccountMode(req.ProxyMode)
+		account.ProxyID = req.ProxyID
+		account.ProxyFallbackMode = models.NormalizeProxyFallbackMode(req.ProxyFallbackMode)
+		account.ProxyFallbackProxyID = req.ProxyFallbackProxyID
+		account.ProxyFallbackProxy = strings.TrimSpace(req.ProxyFallbackProxy)
+		account.ProxyMatchGroupIDs = req.ProxyMatchGroupIDs
+		account.ProxyMatchTagIDs = req.ProxyMatchTagIDs
+		account.ProxyMatchTagMode = models.NormalizeProxyTagFilterMode(req.ProxyMatchTagMode)
+
+		if h.ProxyPoolService != nil {
+			if err := h.ProxyPoolService.PrepareAccountProxy(account); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
+	changed := previous != accountProxyFingerprint(account)
+	if changed {
+		if err := h.EmailAccountRepo.Update(account); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		userID := getUserIDFromContext(r)
+		h.activityLogger.LogAccountActivity(models.ActivityAccountUpdated, account, userID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountProxyConfigResponse(account, changed))
+}
+
+// DeleteAccountProxyConfigHandler disables proxy config for an account.
+// @Summary Disable account proxy config
+// @Description Disable and clear proxy config by account ID or by email.
+// @Tags accounts
+// @Produce json
+// @Success 200 {object} AccountProxyConfigResponse
+// @Router /api/accounts/{id}/proxy-config [delete]
+// @Router /api/accounts/proxy-config [delete]
+func (h *APIHandler) DeleteAccountProxyConfigHandler(w http.ResponseWriter, r *http.Request) {
+	account, ok := h.resolveAccountConfigTarget(w, r)
+	if !ok {
+		return
+	}
+
+	previous := accountProxyFingerprint(account)
+	clearAccountProxyConfig(account)
+	changed := previous != accountProxyFingerprint(account)
+	if changed {
+		if err := h.EmailAccountRepo.Update(account); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		userID := getUserIDFromContext(r)
+		h.activityLogger.LogAccountActivity(models.ActivityAccountUpdated, account, userID)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(accountProxyConfigResponse(account, changed))
 }
 
 // UpdateAccountHandler updates an email account

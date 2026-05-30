@@ -163,6 +163,59 @@ type AccountForwardedAddressesResponse struct {
 	Changed            bool               `json:"changed" example:"true"`
 }
 
+// AccountDomainConfigRequest represents an independent domain mail config update.
+// @Description Request body for enabling, updating, or disabling an account's domain mail routing config
+type AccountDomainConfigRequest struct {
+	IsDomainMail      *bool  `json:"isDomainMail,omitempty" example:"true"`
+	IsDomainMailSnake *bool  `json:"is_domain_mail,omitempty" swaggerignore:"true"`
+	Enabled           *bool  `json:"enabled,omitempty" example:"true"`
+	Domain            string `json:"domain,omitempty" example:"example.com"`
+}
+
+// AccountDomainConfigResponse represents domain mail routing config for an account.
+// @Description Domain mail routing config for an email account
+type AccountDomainConfigResponse struct {
+	AccountID    uint   `json:"accountId" example:"1"`
+	EmailAddress string `json:"emailAddress" example:"inbox@example.com"`
+	IsDomainMail bool   `json:"isDomainMail" example:"true"`
+	Domain       string `json:"domain,omitempty" example:"example.com"`
+	Changed      bool   `json:"changed" example:"true"`
+}
+
+// AccountProxyConfigRequest represents an independent proxy config update.
+// @Description Request body for updating or disabling an account's proxy routing config
+type AccountProxyConfigRequest struct {
+	Enabled              *bool                     `json:"enabled,omitempty" example:"true"`
+	UseProxy             *bool                     `json:"useProxy,omitempty" example:"true"`
+	Proxy                string                    `json:"proxy,omitempty" example:"socks5://proxy.example.com:1080"`
+	ProxyMode            models.ProxyAccountMode   `json:"proxyMode,omitempty" example:"manual"`
+	ProxyID              *uint                     `json:"proxyId,omitempty" example:"1"`
+	ProxyFallbackMode    models.ProxyFallbackMode  `json:"proxyFallbackMode,omitempty" example:"interrupt"`
+	ProxyFallbackProxyID *uint                     `json:"proxyFallbackProxyId,omitempty" example:"2"`
+	ProxyFallbackProxy   string                    `json:"proxyFallbackProxy,omitempty" example:"socks5://backup.example.com:1080"`
+	ProxyMatchGroupIDs   models.UintSlice          `json:"proxyMatchGroupIds,omitempty" example:"[1,2]"`
+	ProxyMatchTagIDs     models.UintSlice          `json:"proxyMatchTagIds,omitempty" example:"[3,4]"`
+	ProxyMatchTagMode    models.ProxyTagFilterMode `json:"proxyMatchTagMode,omitempty" example:"or"`
+}
+
+// AccountProxyConfigResponse represents proxy routing config for an account.
+// @Description Proxy routing config for an email account
+type AccountProxyConfigResponse struct {
+	AccountID            uint                      `json:"accountId" example:"1"`
+	EmailAddress         string                    `json:"emailAddress" example:"inbox@example.com"`
+	Enabled              bool                      `json:"enabled" example:"true"`
+	Proxy                string                    `json:"proxy,omitempty" example:"socks5://proxy.example.com:1080"`
+	ProxyMode            models.ProxyAccountMode   `json:"proxyMode" example:"manual"`
+	ProxyID              *uint                     `json:"proxyId,omitempty" example:"1"`
+	ProxyFallbackMode    models.ProxyFallbackMode  `json:"proxyFallbackMode" example:"interrupt"`
+	ProxyFallbackProxyID *uint                     `json:"proxyFallbackProxyId,omitempty" example:"2"`
+	ProxyFallbackProxy   string                    `json:"proxyFallbackProxy,omitempty" example:"socks5://backup.example.com:1080"`
+	ProxyMatchGroupIDs   models.UintSlice          `json:"proxyMatchGroupIds,omitempty" example:"[1,2]"`
+	ProxyMatchTagIDs     models.UintSlice          `json:"proxyMatchTagIds,omitempty" example:"[3,4]"`
+	ProxyMatchTagMode    models.ProxyTagFilterMode `json:"proxyMatchTagMode" example:"or"`
+	Changed              bool                      `json:"changed" example:"true"`
+}
+
 // CreateProviderRequest represents the request body for creating a custom mail provider
 // @Description Request body for creating a custom mail provider
 type CreateProviderRequest struct {

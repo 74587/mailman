@@ -5,7 +5,10 @@ import {
     UpdateEmailAccountRequest,
     PaginationParams,
     AccountFilterParams,
-    PaginatedResponse
+    PaginatedResponse,
+    ProxyAccountMode,
+    ProxyFallbackMode,
+    ProxyTagFilterMode
 } from '@/types';
 
 // 同步响应类型
@@ -33,6 +36,41 @@ export interface AccountForwardedAddressesResponse {
     emailAddress: string;
     forwardedAddresses: string[];
     count: number;
+    changed?: boolean;
+}
+
+export interface AccountDomainConfigRequest {
+    isDomainMail?: boolean;
+    enabled?: boolean;
+    domain?: string;
+}
+
+export interface AccountDomainConfigResponse {
+    accountId: number;
+    emailAddress: string;
+    isDomainMail: boolean;
+    domain?: string;
+    changed?: boolean;
+}
+
+export interface AccountProxyConfigRequest {
+    enabled?: boolean;
+    useProxy?: boolean;
+    proxy?: string;
+    proxyMode?: ProxyAccountMode;
+    proxyId?: number;
+    proxyFallbackMode?: ProxyFallbackMode;
+    proxyFallbackProxyId?: number;
+    proxyFallbackProxy?: string;
+    proxyMatchGroupIds?: number[];
+    proxyMatchTagIds?: number[];
+    proxyMatchTagMode?: ProxyTagFilterMode;
+}
+
+export interface AccountProxyConfigResponse extends AccountProxyConfigRequest {
+    accountId: number;
+    emailAddress: string;
+    enabled: boolean;
     changed?: boolean;
 }
 
@@ -228,6 +266,30 @@ export class EmailAccountService {
         return response;
     }
 
+    async getDomainConfig(target: { id?: number; email?: string }): Promise<AccountDomainConfigResponse> {
+        return apiClient.get<AccountDomainConfigResponse>(this.accountConfigPath(target, 'domain-config'));
+    }
+
+    async setDomainConfig(target: { id?: number; email?: string }, data: AccountDomainConfigRequest): Promise<AccountDomainConfigResponse> {
+        return apiClient.put<AccountDomainConfigResponse>(this.accountConfigPath(target, 'domain-config'), data);
+    }
+
+    async clearDomainConfig(target: { id?: number; email?: string }): Promise<AccountDomainConfigResponse> {
+        return apiClient.delete<AccountDomainConfigResponse>(this.accountConfigPath(target, 'domain-config'));
+    }
+
+    async getProxyConfig(target: { id?: number; email?: string }): Promise<AccountProxyConfigResponse> {
+        return apiClient.get<AccountProxyConfigResponse>(this.accountConfigPath(target, 'proxy-config'));
+    }
+
+    async setProxyConfig(target: { id?: number; email?: string }, data: AccountProxyConfigRequest): Promise<AccountProxyConfigResponse> {
+        return apiClient.put<AccountProxyConfigResponse>(this.accountConfigPath(target, 'proxy-config'), data);
+    }
+
+    async clearProxyConfig(target: { id?: number; email?: string }): Promise<AccountProxyConfigResponse> {
+        return apiClient.delete<AccountProxyConfigResponse>(this.accountConfigPath(target, 'proxy-config'));
+    }
+
     private forwardedAddressesPath(target: { id?: number; email?: string }): string {
         if (target.id) {
             return `${this.basePath}/${target.id}/forwarded-addresses`;
@@ -240,6 +302,16 @@ export class EmailAccountService {
             return { params: { email: target.email } };
         }
         return undefined;
+    }
+
+    private accountConfigPath(target: { id?: number; email?: string }, suffix: 'domain-config' | 'proxy-config'): string {
+        if (target.id) {
+            return `${this.basePath}/${target.id}/${suffix}`;
+        }
+        if (target.email) {
+            return `${this.basePath}/by-email/${encodeURIComponent(target.email)}/${suffix}`;
+        }
+        return `${this.basePath}/${suffix}`;
     }
 
     /**

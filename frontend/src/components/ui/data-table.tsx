@@ -172,7 +172,7 @@ export function DataTable<TData, TValue>({
                                 )}
                             >
                                 {row.getVisibleCells().map((cell) => {
-                                    const isInteractiveCol = ['tags', 'actions', 'select', 'note'].includes(cell.column.id)
+                                    const isInteractiveCol = ['tags', 'actions', 'select', 'note', 'routingConfig'].includes(cell.column.id)
                                     return (
                                     <td
                                         key={cell.id}
