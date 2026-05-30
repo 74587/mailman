@@ -1,7 +1,7 @@
 'use client'
 import { logger } from '@/lib/logger';
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { Check, AlertCircle, Loader2, ArrowRight, CheckCircle, Clock, Settings, Globe2, StickyNote, Network, Mail } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
@@ -72,6 +72,15 @@ interface AccountForm {
 
 // 工作流程步骤
 type WorkflowStep = 'account' | 'advanced' | 'verify' | 'sync' | 'config' | 'complete'
+type AddAccountSection = 'identity' | 'domain' | 'note' | 'proxy'
+
+interface AddSectionItem {
+    key: AddAccountSection
+    title: string
+    description: string
+    meta: string
+    icon: typeof Mail
+}
 
 interface StepData {
     createdAccount?: EmailAccount
@@ -90,6 +99,7 @@ export default function EnhancedAddAccountModal({
     autoTriggerOAuth2
 }: EnhancedAddAccountModalProps) {
     const [currentStep, setCurrentStep] = useState<WorkflowStep>('account')
+    const [activeAccountSection, setActiveAccountSection] = useState<AddAccountSection>('identity')
     const [stepData, setStepData] = useState<StepData>({})
     const [loading, setLoading] = useState(false)
     const bodyShellRef = useRef<HTMLDivElement>(null)
@@ -195,6 +205,7 @@ export default function EnhancedAddAccountModal({
 
     const resetForm = () => {
         setCurrentStep('account')
+        setActiveAccountSection('identity')
         setStepData({})
         setAccountForm({
             email: '',
@@ -507,6 +518,66 @@ export default function EnhancedAddAccountModal({
         : Boolean(accountForm.accessToken)
     const canContinueAccount = Boolean(accountForm.email) && hasProvider && hasCredential
     const canCreateAccount = canContinueAccount && (!accountForm.isDomainMail || Boolean(accountForm.domain.trim()))
+    const addSections: AddSectionItem[] = [
+        {
+            key: 'identity',
+            title: '账户认证',
+            description: '邮箱、提供商和登录凭据',
+            meta: accountForm.authType === 'oauth2'
+                ? (accountForm.accessToken ? 'OAuth2 已授权' : 'OAuth2')
+                : (accountForm.password ? '密码已填写' : '密码'),
+            icon: Mail,
+        },
+        {
+            key: 'domain',
+            title: '域名邮箱',
+            description: '域名收件身份配置',
+            meta: accountForm.isDomainMail ? (accountForm.domain || '已启用') : '未启用',
+            icon: Globe2,
+        },
+        {
+            key: 'note',
+            title: '账户备注',
+            description: 'Markdown / HTML / JS 内容',
+            meta: accountForm.note.trim() ? '已填写' : '未填写',
+            icon: StickyNote,
+        },
+        {
+            key: 'proxy',
+            title: '代理策略',
+            description: '手动、选择或自动匹配代理',
+            meta: accountForm.useProxy ? '已启用' : '未启用',
+            icon: Network,
+        },
+    ]
+
+    const navigateWizardStep = (step: WorkflowStep, section?: AddAccountSection) => {
+        setCurrentStep(step)
+
+        if (step === 'account') {
+            setActiveAccountSection('identity')
+            return
+        }
+
+        if (step === 'advanced') {
+            setActiveAccountSection(section || (activeAccountSection === 'identity' ? 'domain' : activeAccountSection))
+        }
+    }
+
+    const handleAddSectionClick = (section: AddAccountSection) => {
+        setActiveAccountSection(section)
+        setCurrentStep(section === 'identity' ? 'account' : 'advanced')
+    }
+
+    const isWizardStepComplete = (stepKey: WorkflowStep) => {
+        if (stepKey === 'account') {
+            return canContinueAccount
+        }
+        if (stepKey === 'advanced') {
+            return Boolean(stepData.createdAccount) || canCreateAccount
+        }
+        return true
+    }
 
     return (
         <>
@@ -521,18 +592,22 @@ export default function EnhancedAddAccountModal({
                     <div className="border-b border-gray-200 px-6 py-4 dark:border-gray-700">
                         <div className="overflow-x-auto pb-1">
                             <div className="flex min-w-max items-center gap-3">
-                                {steps.map((step, index) => (
+                                {steps.map((step, index) => {
+                                    const isCompleted = index < currentStepIndex && isWizardStepComplete(step.key as WorkflowStep)
+                                    const isActive = index === currentStepIndex
+
+                                    return (
                                     <div key={step.key} className="flex shrink-0 items-center">
                                         <div className={cn(
                                             "flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors",
-                                            index < currentStepIndex
+                                            isCompleted
                                                 ? "bg-green-600 text-white"
-                                                : index === currentStepIndex
+                                                : isActive
                                                     ? "bg-blue-600 text-white"
                                                     : "bg-gray-200 text-gray-500 dark:bg-gray-600 dark:text-gray-400"
                                         )}
                                         >
-                                            {index < currentStepIndex ? (
+                                            {isCompleted ? (
                                                 <Check className="h-4 w-4" />
                                             ) : (
                                                 <span>{index + 1}</span>
@@ -540,7 +615,7 @@ export default function EnhancedAddAccountModal({
                                         </div>
                                         <span className={cn(
                                             "ml-2 text-sm font-medium",
-                                            index <= currentStepIndex
+                                            isCompleted || isActive
                                                 ? "text-gray-900 dark:text-white"
                                                 : "text-gray-500 dark:text-gray-400"
                                         )}>
@@ -550,316 +625,352 @@ export default function EnhancedAddAccountModal({
                                             <ArrowRight className="ml-3 h-4 w-4 text-gray-400" />
                                         )}
                                     </div>
-                                ))}
+                                    )
+                                })}
                             </div>
                         </div>
                     </div>
 
                     <ModalBody ref={bodyShellRef} className="min-h-0 overflow-hidden p-0">
-                        <div key={currentStep} ref={bodyScrollRef} className="h-full overflow-y-auto p-6">
+                        <div
+                            key={currentStep}
+                            ref={bodyScrollRef}
+                            className={cn(
+                                'h-full overflow-y-auto',
+                                currentStep === 'account' || currentStep === 'advanced' ? 'p-0' : 'p-6'
+                            )}
+                        >
                         <AnimatePresence mode="wait">
-                            {currentStep === 'account' && (
+                            {(currentStep === 'account' || currentStep === 'advanced') && (
                                 <motion.div
-                                    key="account"
+                                    key="account-settings"
                                     initial={{ opacity: 0, x: 20 }}
                                     animate={{ opacity: 1, x: 0 }}
                                     exit={{ opacity: 0, x: -20 }}
                                     transition={{ duration: 0.2 }}
+                                    className="h-full"
                                 >
-                                    <div className="space-y-5">
-                                        <div className="flex items-start gap-3">
-                                            <span className="rounded-xl bg-blue-50 p-2 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300">
-                                                <Mail className="h-5 w-5" />
-                                            </span>
-                                            <div>
-                                                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">账户认证</h3>
-                                                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">先填写登录邮箱、提供商和认证方式，下一步再配置域名、备注和代理。</p>
-                                            </div>
-                                        </div>
-
-                                        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]">
-                                            <div className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40">
-                                                <div>
-                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                                                邮箱地址
-                                            </label>
-                                            <input
-                                                type="email"
-                                                value={accountForm.email}
-                                                onChange={(e) => setAccountForm(prev => ({ ...prev, email: e.target.value }))}
-                                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
-                                                placeholder="your.email@example.com"
-                                            />
+                                    <div className="grid h-full min-h-[560px] grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[290px_minmax(0,1fr)] lg:grid-rows-1">
+                                        <aside className="border-b border-gray-200 bg-gray-50/80 p-4 dark:border-gray-700 dark:bg-gray-900/40 lg:border-b-0 lg:border-r">
+                                            <div className="mb-4 hidden rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200 lg:block">
+                                                <div className="font-medium">{accountForm.email || '新建邮箱账户'}</div>
+                                                <div className="mt-1 text-xs opacity-80">
+                                                    {isCustomProvider ? '自定义 IMAP' : selectedProvider?.name || '待选择提供商'}
                                                 </div>
-
-                                                <div>
-                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                                                邮件提供商
-                                            </label>
-                                            <select
-                                                value={isCustomProvider ? 'custom' : (selectedProvider?.id || '')}
-                                                onChange={(e) => {
-                                                    const value = e.target.value
-                                                    if (value === 'custom') {
-                                                        setIsCustomProvider(true)
-                                                        setSelectedProvider(null)
-                                                    } else {
-                                                        setIsCustomProvider(false)
-                                                        const provider = providers.find(p => p.id === parseInt(value))
-                                                        setSelectedProvider(provider || null)
-                                                    }
-                                                }}
-                                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
-                                            >
-                                                <option value="">请选择邮件提供商</option>
-                                                {providers.map(provider => (
-                                                    <option key={provider.id} value={provider.id}>
-                                                        {provider.name}
-                                                    </option>
-                                                ))}
-                                                <option value="custom">🔧 自定义 IMAP 服务器</option>
-                                            </select>
-
-                                            {/* 自定义IMAP配置表单 */}
-                                            {isCustomProvider && (
-                                                <div className="mt-4 space-y-3 rounded-lg border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900/20">
-                                                    <h4 className="text-sm font-medium text-blue-900 dark:text-blue-200">自定义 IMAP 服务器配置</h4>
-                                                    <div className="grid grid-cols-2 gap-3">
-                                                        <div>
-                                                            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">IMAP 服务器 *</label>
-                                                            <input
-                                                                type="text"
-                                                                value={customImapServer}
-                                                                onChange={(e) => setCustomImapServer(e.target.value)}
-                                                                placeholder="如 imap.example.com"
-                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                                                                required
-                                                            />
-                                                        </div>
-                                                        <div>
-                                                            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">IMAP 端口 *</label>
-                                                            <input
-                                                                type="number"
-                                                                value={customImapPort}
-                                                                onChange={(e) => setCustomImapPort(parseInt(e.target.value) || 993)}
-                                                                placeholder="993"
-                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                                                                required
-                                                            />
-                                                        </div>
-                                                        <div>
-                                                            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">SMTP 服务器</label>
-                                                            <input
-                                                                type="text"
-                                                                value={customSmtpServer}
-                                                                onChange={(e) => setCustomSmtpServer(e.target.value)}
-                                                                placeholder="如 smtp.example.com"
-                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                                                            />
-                                                        </div>
-                                                        <div>
-                                                            <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">SMTP 端口</label>
-                                                            <input
-                                                                type="number"
-                                                                value={customSmtpPort}
-                                                                onChange={(e) => setCustomSmtpPort(parseInt(e.target.value) || 587)}
-                                                                placeholder="587"
-                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                    <p className="text-xs text-gray-500 dark:text-gray-400">提示：端口 993 通常用于 IMAP SSL，端口 587 通常用于 SMTP TLS</p>
-                                                </div>
-                                            )}
-                                                </div>
-
-                                                <div>
-                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                                                认证方式
-                                            </label>
-                                            <div className="flex space-x-4">
-                                                <label className="flex items-center">
-                                                    <input
-                                                        type="radio"
-                                                        value="password"
-                                                        checked={accountForm.authType === 'password'}
-                                                        onChange={(e) => setAccountForm(prev => ({ ...prev, authType: e.target.value as 'password' | 'oauth2' }))}
-                                                        className="mr-2"
-                                                    />
-                                                    密码认证
-                                                </label>
-                                                <label className="flex items-center">
-                                                    <input
-                                                        type="radio"
-                                                        value="oauth2"
-                                                        checked={accountForm.authType === 'oauth2'}
-                                                        onChange={(e) => setAccountForm(prev => ({ ...prev, authType: e.target.value as 'password' | 'oauth2' }))}
-                                                        className="mr-2"
-                                                    />
-                                                    OAuth2
-                                                </label>
                                             </div>
-                                                </div>
-
-                                        {accountForm.authType === 'password' && (
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                                                    密码
-                                                </label>
-                                                <input
-                                                    type="password"
-                                                    value={accountForm.password}
-                                                    onChange={(e) => setAccountForm(prev => ({ ...prev, password: e.target.value }))}
-                                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
-                                                    placeholder="请输入密码"
-                                                />
+                                            <div className="flex gap-2 overflow-x-auto pb-1 lg:flex-col lg:overflow-visible lg:pb-0">
+                                                {addSections.map((section) => {
+                                                    const Icon = section.icon
+                                                    const isActive = activeAccountSection === section.key
+                                                    return (
+                                                        <button
+                                                            key={section.key}
+                                                            type="button"
+                                                            onClick={() => handleAddSectionClick(section.key)}
+                                                            className={cn(
+                                                                'min-w-[210px] rounded-xl border p-3 text-left transition-all duration-200 lg:min-w-0',
+                                                                isActive
+                                                                    ? 'border-primary-200 bg-white shadow-sm ring-2 ring-primary-100 dark:border-primary-800 dark:bg-gray-800 dark:ring-primary-950'
+                                                                    : 'border-transparent text-gray-600 hover:border-gray-200 hover:bg-white dark:text-gray-300 dark:hover:border-gray-700 dark:hover:bg-gray-800/70'
+                                                            )}
+                                                        >
+                                                            <div className="flex items-start gap-3">
+                                                                <span className={cn(
+                                                                    'rounded-lg p-2 transition-colors',
+                                                                    isActive
+                                                                        ? 'bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-300'
+                                                                        : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+                                                                )}>
+                                                                    <Icon className="h-4 w-4" />
+                                                                </span>
+                                                                <span className="min-w-0 flex-1">
+                                                                    <span className="block text-sm font-semibold text-gray-900 dark:text-white">{section.title}</span>
+                                                                    <span className="mt-1 block text-xs text-gray-500 dark:text-gray-400">{section.description}</span>
+                                                                    <span className="mt-2 inline-flex max-w-full rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                                                                        <span className="truncate">{section.meta}</span>
+                                                                    </span>
+                                                                </span>
+                                                            </div>
+                                                        </button>
+                                                    )
+                                                })}
                                             </div>
-                                        )}
+                                        </aside>
 
-                                        {accountForm.authType === 'oauth2' && (
-                                            <div className="space-y-4">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setShowOAuth2Popup(true)}
-                                                    className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                                                >
-                                                    启动 OAuth2 认证
-                                                </button>
-                                                {accountForm.accessToken && (
-                                                    <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
-                                                        <div className="flex items-center">
-                                                            <CheckCircle className="h-4 w-4 text-green-600 mr-2" />
-                                                            <span className="text-sm text-green-800">OAuth2 认证成功</span>
+                                        <div className="min-h-0 overflow-y-auto p-6">
+                                            <AnimatePresence mode="wait">
+                                                {activeAccountSection === 'identity' && (
+                                                    <motion.div
+                                                        key="identity"
+                                                        initial={{ opacity: 0, x: 18 }}
+                                                        animate={{ opacity: 1, x: 0 }}
+                                                        exit={{ opacity: 0, x: -18 }}
+                                                        transition={{ duration: 0.18 }}
+                                                        className="space-y-5"
+                                                    >
+                                                        <AddPanelHeader
+                                                            icon={<Mail className="h-5 w-5" />}
+                                                            title="账户认证"
+                                                            description="填写登录邮箱、提供商和认证方式。域名邮箱、备注和代理可以从左侧直接配置。"
+                                                        />
+
+                                                        <div className="grid gap-4 xl:grid-cols-2">
+                                                            <div className="space-y-2">
+                                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">邮箱地址</label>
+                                                                <input
+                                                                    type="email"
+                                                                    value={accountForm.email}
+                                                                    onChange={(e) => setAccountForm(prev => ({ ...prev, email: e.target.value }))}
+                                                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                                                                    placeholder="your.email@example.com"
+                                                                />
+                                                            </div>
+
+                                                            <div className="space-y-2">
+                                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">邮件提供商</label>
+                                                                <select
+                                                                    value={isCustomProvider ? 'custom' : (selectedProvider?.id || '')}
+                                                                    onChange={(e) => {
+                                                                        const value = e.target.value
+                                                                        if (value === 'custom') {
+                                                                            setIsCustomProvider(true)
+                                                                            setSelectedProvider(null)
+                                                                        } else {
+                                                                            setIsCustomProvider(false)
+                                                                            const provider = providers.find(p => p.id === parseInt(value))
+                                                                            setSelectedProvider(provider || null)
+                                                                        }
+                                                                    }}
+                                                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                                                                >
+                                                                    <option value="">请选择邮件提供商</option>
+                                                                    {providers.map(provider => (
+                                                                        <option key={provider.id} value={provider.id}>
+                                                                            {provider.name}
+                                                                        </option>
+                                                                    ))}
+                                                                    <option value="custom">自定义 IMAP 服务器</option>
+                                                                </select>
+                                                            </div>
                                                         </div>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        )}
-                                            </div>
 
-                                            <div className="space-y-3">
-                                                <motion.div
-                                                    layout
-                                                    className="rounded-xl border border-blue-100 bg-blue-50/80 p-4 dark:border-blue-900/50 dark:bg-blue-950/20"
-                                                >
-                                                    <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">下一步将配置</div>
-                                                    <div className="mt-3 grid gap-3">
-                                                        {[
-                                                            { icon: Globe2, title: '域名邮箱', desc: accountForm.isDomainMail ? accountForm.domain || '待填写域名' : '可选' },
-                                                            { icon: StickyNote, title: '账户备注', desc: accountForm.note.trim() ? '已填写' : '可选' },
-                                                            { icon: Network, title: '代理策略', desc: accountForm.useProxy ? '已启用' : '可选' },
-                                                        ].map(item => {
-                                                            const Icon = item.icon
-                                                            return (
-                                                                <div key={item.title} className="flex items-center gap-3 rounded-lg bg-white/70 px-3 py-2 dark:bg-gray-900/40">
-                                                                    <Icon className="h-4 w-4 text-blue-600 dark:text-blue-300" />
-                                                                    <div className="min-w-0">
-                                                                        <div className="text-sm font-medium text-gray-900 dark:text-white">{item.title}</div>
-                                                                        <div className="truncate text-xs text-gray-500 dark:text-gray-400">{item.desc}</div>
+                                                        {isCustomProvider && (
+                                                            <div className="space-y-3 rounded-xl border border-blue-200 bg-blue-50 p-4 dark:border-blue-800 dark:bg-blue-900/20">
+                                                                <h4 className="text-sm font-semibold text-blue-900 dark:text-blue-200">自定义 IMAP 服务器配置</h4>
+                                                                <div className="grid gap-3 md:grid-cols-2">
+                                                                    <div>
+                                                                        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">IMAP 服务器 *</label>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={customImapServer}
+                                                                            onChange={(e) => setCustomImapServer(e.target.value)}
+                                                                            placeholder="如 imap.example.com"
+                                                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                                            required
+                                                                        />
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">IMAP 端口 *</label>
+                                                                        <input
+                                                                            type="number"
+                                                                            value={customImapPort}
+                                                                            onChange={(e) => setCustomImapPort(parseInt(e.target.value) || 993)}
+                                                                            placeholder="993"
+                                                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                                            required
+                                                                        />
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">SMTP 服务器</label>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={customSmtpServer}
+                                                                            onChange={(e) => setCustomSmtpServer(e.target.value)}
+                                                                            placeholder="如 smtp.example.com"
+                                                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                                        />
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">SMTP 端口</label>
+                                                                        <input
+                                                                            type="number"
+                                                                            value={customSmtpPort}
+                                                                            onChange={(e) => setCustomSmtpPort(parseInt(e.target.value) || 587)}
+                                                                            placeholder="587"
+                                                                            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
+                                                                        />
                                                                     </div>
                                                                 </div>
-                                                            )
-                                                        })}
-                                                    </div>
-                                                </motion.div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </motion.div>
-                            )}
+                                                                <p className="text-xs text-gray-500 dark:text-gray-400">提示：端口 993 通常用于 IMAP SSL，端口 587 通常用于 SMTP TLS</p>
+                                                            </div>
+                                                        )}
 
-                            {currentStep === 'advanced' && (
-                                <motion.div
-                                    key="advanced"
-                                    initial={{ opacity: 0, x: 20 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    exit={{ opacity: 0, x: -20 }}
-                                    transition={{ duration: 0.2 }}
-                                    className="space-y-5"
-                                >
-                                    <div className="flex items-start gap-3">
-                                        <span className="rounded-xl bg-primary-50 p-2 text-primary-600 dark:bg-primary-950/40 dark:text-primary-300">
-                                            <Settings className="h-5 w-5" />
-                                        </span>
-                                        <div>
-                                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">高级设置</h3>
-                                            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">这些设置不会阻塞账户认证，但会影响后续搜索、展示和取件网络策略。</p>
-                                        </div>
-                                    </div>
-
-                                    <div className="grid gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-                                        <motion.section
-                                            layout
-                                            className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40"
-                                        >
-                                            <div className="flex items-start gap-3">
-                                                <Globe2 className="mt-0.5 h-5 w-5 text-primary-600" />
-                                                <div>
-                                                    <h4 className="font-semibold text-gray-900 dark:text-white">域名邮箱</h4>
-                                                    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">用于搜索和识别发送到域名邮箱或别名邮箱的邮件。</p>
-                                                </div>
-                                            </div>
-                                            <label className="mt-4 flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={accountForm.isDomainMail}
-                                                    onChange={(event) => setAccountForm(prev => ({ ...prev, isDomainMail: event.target.checked }))}
-                                                    className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                                                />
-                                                启用域名邮箱
-                                            </label>
-                                            <AnimatePresence>
-                                                {accountForm.isDomainMail && (
-                                                    <motion.div
-                                                        initial={{ height: 0, opacity: 0 }}
-                                                        animate={{ height: 'auto', opacity: 1 }}
-                                                        exit={{ height: 0, opacity: 0 }}
-                                                        transition={{ duration: 0.24 }}
-                                                        className="overflow-hidden"
-                                                    >
-                                                        <div className="mt-4">
-                                                            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">域名</label>
-                                                            <input
-                                                                value={accountForm.domain}
-                                                                onChange={(event) => setAccountForm(prev => ({ ...prev, domain: event.target.value }))}
-                                                                placeholder="example.com"
-                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
-                                                            />
+                                                        <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900/40">
+                                                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">认证方式</label>
+                                                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setAccountForm(prev => ({ ...prev, authType: 'password' }))}
+                                                                    className={cn(
+                                                                        'rounded-lg border px-4 py-3 text-left transition-colors',
+                                                                        accountForm.authType === 'password'
+                                                                            ? 'border-primary-500 bg-primary-50 text-primary-900 dark:bg-primary-950/40 dark:text-primary-100'
+                                                                            : 'border-gray-200 text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300'
+                                                                    )}
+                                                                >
+                                                                    <div className="text-sm font-medium">密码认证</div>
+                                                                    <div className="mt-1 text-xs opacity-70">普通密码或应用专用密码</div>
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setAccountForm(prev => ({ ...prev, authType: 'oauth2' }))}
+                                                                    className={cn(
+                                                                        'rounded-lg border px-4 py-3 text-left transition-colors',
+                                                                        accountForm.authType === 'oauth2'
+                                                                            ? 'border-primary-500 bg-primary-50 text-primary-900 dark:bg-primary-950/40 dark:text-primary-100'
+                                                                            : 'border-gray-200 text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300'
+                                                                    )}
+                                                                >
+                                                                    <div className="text-sm font-medium">OAuth2</div>
+                                                                    <div className="mt-1 text-xs opacity-70">使用授权窗口完成登录</div>
+                                                                </button>
+                                                            </div>
                                                         </div>
+
+                                                        {accountForm.authType === 'password' && (
+                                                            <div className="space-y-2">
+                                                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">密码</label>
+                                                                <input
+                                                                    type="password"
+                                                                    value={accountForm.password}
+                                                                    onChange={(e) => setAccountForm(prev => ({ ...prev, password: e.target.value }))}
+                                                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                                                                    placeholder="请输入密码"
+                                                                />
+                                                            </div>
+                                                        )}
+
+                                                        {accountForm.authType === 'oauth2' && (
+                                                            <div className="space-y-4">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setShowOAuth2Popup(true)}
+                                                                    className="w-full rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
+                                                                >
+                                                                    启动 OAuth2 认证
+                                                                </button>
+                                                                {accountForm.accessToken && (
+                                                                    <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                                                                        <div className="flex items-center">
+                                                                            <CheckCircle className="mr-2 h-4 w-4 text-green-600" />
+                                                                            <span className="text-sm text-green-800">OAuth2 认证成功</span>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </motion.div>
+                                                )}
+
+                                                {activeAccountSection === 'domain' && (
+                                                    <motion.div
+                                                        key="domain"
+                                                        initial={{ opacity: 0, x: 18 }}
+                                                        animate={{ opacity: 1, x: 0 }}
+                                                        exit={{ opacity: 0, x: -18 }}
+                                                        transition={{ duration: 0.18 }}
+                                                        className="space-y-5"
+                                                    >
+                                                        <AddPanelHeader
+                                                            icon={<Globe2 className="h-5 w-5" />}
+                                                            title="域名邮箱"
+                                                            description="用于搜索和识别发送到域名邮箱或别名邮箱的邮件。"
+                                                        />
+                                                        <section className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40">
+                                                            <label className="flex items-start gap-3">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={accountForm.isDomainMail}
+                                                                    onChange={(event) => setAccountForm(prev => ({ ...prev, isDomainMail: event.target.checked }))}
+                                                                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                                                />
+                                                                <span>
+                                                                    <span className="block text-sm font-semibold text-gray-900 dark:text-white">启用域名邮箱</span>
+                                                                    <span className="mt-1 block text-sm text-gray-500 dark:text-gray-400">开启后会保存该账户对应的域名，便于搜索、匹配和取件场景识别。</span>
+                                                                </span>
+                                                            </label>
+                                                            <AnimatePresence>
+                                                                {accountForm.isDomainMail && (
+                                                                    <motion.div
+                                                                        initial={{ height: 0, opacity: 0 }}
+                                                                        animate={{ height: 'auto', opacity: 1 }}
+                                                                        exit={{ height: 0, opacity: 0 }}
+                                                                        transition={{ duration: 0.24 }}
+                                                                        className="overflow-hidden"
+                                                                    >
+                                                                        <div className="mt-5 max-w-xl">
+                                                                            <label className="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">域名</label>
+                                                                            <input
+                                                                                value={accountForm.domain}
+                                                                                onChange={(event) => setAccountForm(prev => ({ ...prev, domain: event.target.value }))}
+                                                                                placeholder="example.com"
+                                                                                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+                                                                            />
+                                                                        </div>
+                                                                    </motion.div>
+                                                                )}
+                                                            </AnimatePresence>
+                                                        </section>
+                                                    </motion.div>
+                                                )}
+
+                                                {activeAccountSection === 'note' && (
+                                                    <motion.div
+                                                        key="note"
+                                                        initial={{ opacity: 0, x: 18 }}
+                                                        animate={{ opacity: 1, x: 0 }}
+                                                        exit={{ opacity: 0, x: -18 }}
+                                                        transition={{ duration: 0.18 }}
+                                                        className="space-y-5"
+                                                    >
+                                                        <AddPanelHeader
+                                                            icon={<StickyNote className="h-5 w-5" />}
+                                                            title="账户备注"
+                                                            description="记录账号用途、风控信息或可交互 HTML/JS 内容。"
+                                                        />
+                                                        <AccountNoteEditor
+                                                            value={accountForm.note}
+                                                            format={accountForm.noteFormat}
+                                                            onValueChange={(note) => setAccountForm(prev => ({ ...prev, note }))}
+                                                            onFormatChange={(noteFormat) => setAccountForm(prev => ({ ...prev, noteFormat }))}
+                                                            className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40"
+                                                        />
+                                                    </motion.div>
+                                                )}
+
+                                                {activeAccountSection === 'proxy' && (
+                                                    <motion.div
+                                                        key="proxy"
+                                                        initial={{ opacity: 0, x: 18 }}
+                                                        animate={{ opacity: 1, x: 0 }}
+                                                        exit={{ opacity: 0, x: -18 }}
+                                                        transition={{ duration: 0.18 }}
+                                                        className="space-y-5"
+                                                    >
+                                                        <AddPanelHeader
+                                                            icon={<Network className="h-5 w-5" />}
+                                                            title="代理策略"
+                                                            description="为这个邮箱账户配置固定代理、代理池匹配和不可用时的兜底策略。"
+                                                        />
+                                                        <ProxyConfigSection
+                                                            value={accountForm}
+                                                            onChange={(proxyConfig) => setAccountForm(prev => ({ ...prev, ...proxyConfig }))}
+                                                        />
                                                     </motion.div>
                                                 )}
                                             </AnimatePresence>
-                                        </motion.section>
-
-                                        <motion.section
-                                            layout
-                                            className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40"
-                                        >
-                                            <AccountNoteEditor
-                                                value={accountForm.note}
-                                                format={accountForm.noteFormat}
-                                                onValueChange={(note) => setAccountForm(prev => ({ ...prev, note }))}
-                                                onFormatChange={(noteFormat) => setAccountForm(prev => ({ ...prev, noteFormat }))}
-                                            />
-                                        </motion.section>
-                                    </div>
-
-                                    <motion.section
-                                        layout
-                                        className="rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-900/40"
-                                    >
-                                        <div className="mb-4 flex items-start gap-3">
-                                            <Network className="mt-0.5 h-5 w-5 text-primary-600" />
-                                            <div>
-                                                <h4 className="font-semibold text-gray-900 dark:text-white">代理策略</h4>
-                                                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">可手动填写代理，也可从代理池选择或按分组、标签自动匹配。</p>
-                                            </div>
                                         </div>
-                                        <ProxyConfigSection
-                                            value={accountForm}
-                                            onChange={(proxyConfig) => setAccountForm(prev => ({ ...prev, ...proxyConfig }))}
-                                        />
-                                    </motion.section>
+                                    </div>
                                 </motion.div>
                             )}
 
@@ -1088,7 +1199,7 @@ export default function EnhancedAddAccountModal({
                             onClick={currentStep === 'account' ? handleClose : () => {
                                 const currentIndex = steps.findIndex(step => step.key === currentStep)
                                 if (currentIndex > 0) {
-                                    setCurrentStep(steps[currentIndex - 1].key as WorkflowStep)
+                                    navigateWizardStep(steps[currentIndex - 1].key as WorkflowStep)
                                 }
                             }}
                             disabled={loading}
@@ -1099,7 +1210,7 @@ export default function EnhancedAddAccountModal({
                         <div className="flex space-x-3">
                             {currentStep === 'account' && (
                                 <Button
-                                    onClick={() => setCurrentStep('advanced')}
+                                    onClick={() => navigateWizardStep('advanced', 'domain')}
                                     disabled={loading || !canContinueAccount}
                                 >
                                     下一步
@@ -1162,5 +1273,27 @@ export default function EnhancedAddAccountModal({
                 />
             )}
         </>
+    )
+}
+
+function AddPanelHeader({
+    icon,
+    title,
+    description,
+}: {
+    icon: ReactNode
+    title: string
+    description: string
+}) {
+    return (
+        <div className="flex items-start gap-3">
+            <span className="rounded-xl bg-primary-50 p-2 text-primary-600 dark:bg-primary-950/40 dark:text-primary-300">
+                {icon}
+            </span>
+            <div>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
+                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{description}</p>
+            </div>
+        </div>
     )
 }
