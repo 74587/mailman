@@ -6,6 +6,7 @@ const nextConfig = {
     reactStrictMode: true,
     swcMinify: true,
     output: 'export',
+    trailingSlash: true,
 
     images: {
         unoptimized: true, // Required for static export
