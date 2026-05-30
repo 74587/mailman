@@ -372,7 +372,7 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
             {renderConnectionStatus()}
 
             {/* 通知容器 */}
-            <div className="pointer-events-none fixed right-28 top-14 z-50 max-[640px]:right-4 max-[640px]:top-16">
+            <div className="pointer-events-none fixed right-28 top-3 z-50 max-[640px]:right-4 max-[640px]:top-16">
                 {notifications.length > 0 && (
                     <NotificationCarousel
                         notifications={notifications}
