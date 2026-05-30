@@ -2,9 +2,12 @@
 import { logger } from '@/lib/logger';
 
 import React, { useState, useEffect, useRef } from 'react'
-import { X, Mail, Inbox, ChevronLeft, ChevronRight } from 'lucide-react'
+import { X, Mail, Inbox, ChevronLeft, ChevronRight, Eye, ExternalLink, Loader2, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { addNotification, isProcessed, markAsRead } from '@/lib/notification-store'
+import EmailPreviewPanel from '@/components/mailbox/email-preview-panel'
+import { emailService } from '@/services/email.service'
+import { Email } from '@/types'
 
 // 通知类型定义
 interface EmailNotification {
@@ -28,6 +31,7 @@ function NotificationCarousel({
     onIndexChange,
     onDismiss,
     onClick,
+    onPreview,
     onOpenCenter,
     onCollapseAll,
 }: {
@@ -36,6 +40,7 @@ function NotificationCarousel({
     onIndexChange: (index: number) => void
     onDismiss: (notification: ToastNotification) => void
     onClick: (notification: ToastNotification) => void
+    onPreview: (notification: ToastNotification) => void
     onOpenCenter: () => void
     onCollapseAll: () => void
 }) {
@@ -80,7 +85,7 @@ function NotificationCarousel({
                     {notifications.map((notification) => (
                         <div key={`${notification.timestamp}-${notification.account_id}-${notification.email_id || notification.subject || ''}`} className="w-full flex-shrink-0 p-3">
                             <button
-                                onClick={() => onClick(notification)}
+                                onClick={() => notification.email_id ? onPreview(notification) : onClick(notification)}
                                 className="flex w-full items-start gap-3 rounded-xl px-1 py-1 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/30"
                             >
                                 <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/40">
@@ -159,13 +164,101 @@ function NotificationCarousel({
                     >
                         忽略
                     </button>
+                    {notifications[currentIndex].email_id && (
+                        <button
+                            onClick={() => onPreview(notifications[currentIndex])}
+                            className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-3 py-1 text-xs text-white transition-colors hover:bg-blue-700"
+                        >
+                            <Eye className="h-3.5 w-3.5" />
+                            预览
+                        </button>
+                    )}
                     <button
                         onClick={() => onClick(notifications[currentIndex])}
-                        className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white transition-colors hover:bg-blue-700"
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-700"
                     >
-                        点击查看
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        打开
                     </button>
                 </div>
+            </div>
+        </div>
+    )
+}
+
+function EmailQuickPreview({
+    email,
+    loading,
+    error,
+    accountId,
+    accountEmail,
+    onClose,
+    onOpenFull,
+}: {
+    email: Email | null
+    loading: boolean
+    error: string | null
+    accountId?: number | null
+    accountEmail?: string
+    onClose: () => void
+    onOpenFull: () => void
+}) {
+    return (
+        <div className="pointer-events-auto h-[min(680px,calc(100vh-5.5rem))] w-[min(620px,calc(100vw-31rem))] min-w-[460px] overflow-hidden rounded-2xl border border-gray-200/90 bg-white shadow-2xl shadow-gray-900/10 dark:border-gray-700 dark:bg-gray-800 max-[980px]:fixed max-[980px]:left-4 max-[980px]:right-4 max-[980px]:top-20 max-[980px]:h-[calc(100vh-7rem)] max-[980px]:w-auto max-[980px]:min-w-0">
+            <div className="flex h-12 items-center justify-between border-b border-gray-100 px-4 dark:border-gray-700/70">
+                <div className="min-w-0">
+                    <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">邮件快速预览</div>
+                    {accountEmail && (
+                        <div className="truncate text-xs text-gray-500 dark:text-gray-400">{accountEmail}</div>
+                    )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                    <button
+                        type="button"
+                        onClick={onOpenFull}
+                        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-900/30"
+                    >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        打开邮件
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                        title="关闭预览"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+            </div>
+            <div className="h-[calc(100%-3rem)]">
+                {error ? (
+                    <div className="flex h-full items-center justify-center p-6">
+                        <div className="max-w-sm text-center">
+                            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-50 text-red-500 dark:bg-red-900/20 dark:text-red-300">
+                                <AlertCircle className="h-6 w-6" />
+                            </div>
+                            <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">预览加载失败</div>
+                            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{error}</p>
+                            <button
+                                type="button"
+                                onClick={onOpenFull}
+                                className="mt-4 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-blue-700"
+                            >
+                                打开完整邮件
+                            </button>
+                        </div>
+                    </div>
+                ) : loading ? (
+                    <div className="flex h-full items-center justify-center">
+                        <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                            <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+                            正在加载邮件内容...
+                        </div>
+                    </div>
+                ) : (
+                    <EmailPreviewPanel email={email} loading={false} accountId={accountId} />
+                )}
             </div>
         </div>
     )
@@ -180,6 +273,11 @@ interface EmailNotificationToastProps {
 export default function EmailNotificationToast({ onNotificationClick }: EmailNotificationToastProps) {
     const [notifications, setNotifications] = useState<ToastNotification[]>([])
     const [currentIndex, setCurrentIndex] = useState(0)
+    const [previewNotification, setPreviewNotification] = useState<ToastNotification | null>(null)
+    const [previewEmail, setPreviewEmail] = useState<Email | null>(null)
+    const [previewLoading, setPreviewLoading] = useState(false)
+    const [previewError, setPreviewError] = useState<string | null>(null)
+    const previewRequestRef = useRef(0)
     const wsRef = useRef<WebSocket | null>(null)
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
     const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
@@ -323,12 +421,46 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
         }
     }
 
+    const handlePreviewNotification = async (notification: ToastNotification) => {
+        if (!notification.email_id) {
+            handleNotificationClick(notification)
+            return
+        }
+
+        const storeId = notification.storeId
+        if (storeId) {
+            markAsRead(storeId)
+        }
+
+        setPreviewNotification(notification)
+        setPreviewEmail(null)
+        setPreviewError(null)
+        setPreviewLoading(true)
+        const requestId = previewRequestRef.current + 1
+        previewRequestRef.current = requestId
+
+        try {
+            const email = await emailService.getEmail(notification.email_id)
+            if (previewRequestRef.current !== requestId) return
+            setPreviewEmail(email)
+        } catch (error) {
+            if (previewRequestRef.current !== requestId) return
+            console.error('[EmailNotificationToast] Failed to load email preview:', error)
+            setPreviewError('无法加载邮件详情，可以打开完整邮件页面查看。')
+        } finally {
+            if (previewRequestRef.current === requestId) {
+                setPreviewLoading(false)
+            }
+        }
+    }
+
     // 手动移除通知
     const handleDismissNotification = (timestamp: string) => {
         setNotifications(prev => prev.filter(n => n.timestamp !== timestamp))
     }
 
     const handleOpenNotificationCenter = () => {
+        setPreviewNotification(null)
         setNotifications([])
         window.dispatchEvent(new CustomEvent('openNotificationDrawer'))
     }
@@ -345,6 +477,22 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
     useEffect(() => {
         setCurrentIndex(prev => Math.min(prev, Math.max(0, notifications.length - 1)))
     }, [notifications.length])
+
+    useEffect(() => {
+        if (!previewNotification) return
+
+        const stillExists = notifications.some((notification) =>
+            notification.timestamp === previewNotification.timestamp &&
+            notification.account_id === previewNotification.account_id &&
+            notification.email_id === previewNotification.email_id
+        )
+
+        if (!stillExists) {
+            setPreviewNotification(null)
+            setPreviewEmail(null)
+            setPreviewError(null)
+        }
+    }, [notifications, previewNotification])
 
     // 连接状态指示器
     const renderConnectionStatus = () => {
@@ -372,17 +520,38 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
             {renderConnectionStatus()}
 
             {/* 通知容器 */}
-            <div className="pointer-events-none fixed right-28 top-3 z-50 max-[640px]:right-4 max-[640px]:top-16">
+            <div className="pointer-events-none fixed right-28 top-3 z-50 flex items-start gap-3 max-[640px]:right-4 max-[640px]:top-16">
                 {notifications.length > 0 && (
-                    <NotificationCarousel
-                        notifications={notifications}
-                        currentIndex={currentIndex}
-                        onIndexChange={setCurrentIndex}
-                        onDismiss={(notification) => handleDismissNotification(notification.timestamp)}
-                        onClick={handleNotificationClick}
-                        onOpenCenter={handleOpenNotificationCenter}
-                        onCollapseAll={() => setNotifications([])}
-                    />
+                    <>
+                        {previewNotification && (
+                            <EmailQuickPreview
+                                email={previewEmail}
+                                loading={previewLoading}
+                                error={previewError}
+                                accountId={previewNotification.account_id}
+                                accountEmail={previewNotification.account_email}
+                                onClose={() => {
+                                    setPreviewNotification(null)
+                                    setPreviewEmail(null)
+                                    setPreviewError(null)
+                                }}
+                                onOpenFull={() => handleNotificationClick(previewNotification)}
+                            />
+                        )}
+                        <NotificationCarousel
+                            notifications={notifications}
+                            currentIndex={currentIndex}
+                            onIndexChange={setCurrentIndex}
+                            onDismiss={(notification) => handleDismissNotification(notification.timestamp)}
+                            onClick={handleNotificationClick}
+                            onPreview={handlePreviewNotification}
+                            onOpenCenter={handleOpenNotificationCenter}
+                            onCollapseAll={() => {
+                                setPreviewNotification(null)
+                                setNotifications([])
+                            }}
+                        />
+                    </>
                 )}
             </div>
         </>
