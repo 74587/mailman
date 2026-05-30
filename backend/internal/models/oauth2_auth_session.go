@@ -53,10 +53,11 @@ func (s *OAuth2AuthSession) GetCustomSettings() JSONMap {
 	}
 
 	settings := JSONMap{
-		"access_token":  s.AccessToken,
-		"refresh_token": s.RefreshToken,
-		"token_type":    s.TokenType,
-		"expires_at":    fmt.Sprintf("%d", s.TokenExpiresAt),
+		"access_token":              s.AccessToken,
+		"refresh_token":             s.RefreshToken,
+		"token_type":                s.TokenType,
+		"expires_at":                fmt.Sprintf("%d", s.TokenExpiresAt),
+		"oauth2_provider_config_id": fmt.Sprintf("%d", s.ProviderID),
 	}
 
 	// 添加client_id和client_secret（从关联的全局配置获取）

@@ -150,6 +150,134 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/account-emails/folders": {
+            "get": {
+                "description": "Get all unique mailbox folders (like INBOX, Sent, Drafts, etc.) across all accounts",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "account-emails"
+                ],
+                "summary": "Get all unique email folders",
+                "responses": {
+                    "200": {
+                        "description": "Response with folders array",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/account-emails/list/all": {
+            "get": {
+                "description": "Get all emails across all accounts with support for date range, text search, and keyword filtering",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "account-emails"
+                ],
+                "summary": "Get all emails with advanced search",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Limit (default: 50, max: 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination (default: 0)",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: date_desc, date_asc, subject_asc, subject_desc (default: date_desc)",
+                        "name": "sort_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Start date for filtering (RFC3339 format)",
+                        "name": "start_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End date for filtering (RFC3339 format)",
+                        "name": "end_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search in From field (fuzzy match)",
+                        "name": "from_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search in To field (fuzzy match)",
+                        "name": "to_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search in CC field (fuzzy match)",
+                        "name": "cc_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search in Subject field (fuzzy match)",
+                        "name": "subject_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search in email body (fuzzy match)",
+                        "name": "body_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search in HTML body (fuzzy match)",
+                        "name": "html_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Global keyword search across all text fields",
+                        "name": "keyword",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by mailbox name (comma-separated for multiple)",
+                        "name": "mailbox",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Response with emails array and pagination info",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/account-emails/list/{id}": {
             "get": {
                 "description": "Get emails for an account with support for date range, text search, and keyword filtering",
@@ -319,9 +447,431 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/accounts/batch-add-tag": {
+            "post": {
+                "description": "为多个账户添加一个标签",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "批量添加标签",
+                "parameters": [
+                    {
+                        "description": "账户ID列表和标签ID",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.BatchAddRemoveTagRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/batch-remove-tag": {
+            "post": {
+                "description": "从多个账户移除一个标签",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "批量移除标签",
+                "parameters": [
+                    {
+                        "description": "账户ID列表和标签ID",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.BatchAddRemoveTagRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/batch-tags": {
+            "post": {
+                "description": "为多个账户设置相同的标签（替换现有标签）",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "批量设置账户标签",
+                "parameters": [
+                    {
+                        "description": "账户和标签ID列表",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.BatchAccountTagsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/batch-verify": {
+            "post": {
+                "description": "Verify connectivity for multiple email accounts in batch",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Batch verify account connectivity",
+                "parameters": [
+                    {
+                        "description": "Batch account verification request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.BatchVerifyAccountsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.BatchVerifyAccountsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/domain-config": {
+            "get": {
+                "description": "Get domain mail config by account ID or by email through /api/accounts/domain-config?email=user@example.com.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Get account domain mail config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Account email address",
+                        "name": "email",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountDomainConfigResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Enable, update, or disable the domain mail config by account ID or by email.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Replace account domain mail config",
+                "parameters": [
+                    {
+                        "description": "Domain mail config",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountDomainConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountDomainConfigResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Disable and clear domain mail config by account ID or by email.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Disable account domain mail config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountDomainConfigResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/forwarded-addresses": {
+            "get": {
+                "description": "List forwarded recipient addresses by account ID, or by email through /api/accounts/forwarded-addresses?email=user@example.com.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "List account forwarded recipient addresses",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Account email address",
+                        "name": "email",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Replace the full forwarded recipient address list by account ID or by email.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Replace account forwarded recipient addresses",
+                "parameters": [
+                    {
+                        "description": "Forwarded recipient addresses",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Append one forwarded recipient address by account ID or by email. Existing values are kept and duplicates are ignored.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Append one account forwarded recipient address",
+                "parameters": [
+                    {
+                        "description": "Forwarded recipient address",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Remove one forwarded recipient address by account ID or by email. Missing values are treated as no-op.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Remove one account forwarded recipient address",
+                "parameters": [
+                    {
+                        "description": "Forwarded recipient address",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Forwarded recipient address",
+                        "name": "address",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/oauth2/onboard": {
+            "post": {
+                "description": "Create/update an OAuth2 email account after authorization, verify connectivity, run initial sync, and save automatic sync settings in one request.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Create or update OAuth2 account with verification, initial sync, and sync settings",
+                "parameters": [
+                    {
+                        "description": "OAuth2 account onboarding request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateOAuth2AccountOnboardingRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateOAuth2AccountOnboardingResponse"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateOAuth2AccountOnboardingResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/accounts/paginated": {
             "get": {
-                "description": "Get email accounts with pagination support",
+                "description": "Get email accounts with pagination support and comprehensive filtering",
                 "consumes": [
                     "application/json"
                 ],
@@ -359,8 +909,62 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Search term for email address (default: ”)",
+                        "description": "Search term for email address",
                         "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated tag IDs for filtering",
+                        "name": "tag_ids",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Tag filter mode: 'or' or 'and' (default: or)",
+                        "name": "tag_filter_mode",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Filter by mail provider ID",
+                        "name": "provider_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by verification status: 'true' or 'false'",
+                        "name": "is_verified",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by error status",
+                        "name": "error_status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by creation time start (RFC3339)",
+                        "name": "created_after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by creation time end (RFC3339)",
+                        "name": "created_before",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by last sync time start (RFC3339)",
+                        "name": "last_sync_after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by last sync time end (RFC3339)",
+                        "name": "last_sync_before",
                         "in": "query"
                     }
                 ],
@@ -369,6 +973,130 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/api.PaginatedAccountsResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/proxy-config": {
+            "get": {
+                "description": "Get proxy config by account ID or by email through /api/accounts/proxy-config?email=user@example.com.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Get account proxy config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Account email address",
+                        "name": "email",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountProxyConfigResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Enable, update, or disable proxy config by account ID or by email.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Replace account proxy config",
+                "parameters": [
+                    {
+                        "description": "Proxy config",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountProxyConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountProxyConfigResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Disable and clear proxy config by account ID or by email.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Disable account proxy config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountProxyConfigResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/upsert": {
+            "post": {
+                "description": "Create a new email account or update existing one based on email address",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Create or update an email account",
+                "parameters": [
+                    {
+                        "description": "Email Account",
+                        "name": "account",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateAccountRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.EmailAccount"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.EmailAccount"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
                         }
                     }
                 }
@@ -518,6 +1246,225 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/accounts/{id}/domain-config": {
+            "get": {
+                "description": "Get domain mail config by account ID or by email through /api/accounts/domain-config?email=user@example.com.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Get account domain mail config",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Account ID",
+                        "name": "id",
+                        "in": "path"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Account email address",
+                        "name": "email",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountDomainConfigResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Enable, update, or disable the domain mail config by account ID or by email.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Replace account domain mail config",
+                "parameters": [
+                    {
+                        "description": "Domain mail config",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountDomainConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountDomainConfigResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Disable and clear domain mail config by account ID or by email.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Disable account domain mail config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountDomainConfigResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/{id}/forwarded-addresses": {
+            "get": {
+                "description": "List forwarded recipient addresses by account ID, or by email through /api/accounts/forwarded-addresses?email=user@example.com.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "List account forwarded recipient addresses",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Account ID",
+                        "name": "id",
+                        "in": "path"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Account email address",
+                        "name": "email",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Replace the full forwarded recipient address list by account ID or by email.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Replace account forwarded recipient addresses",
+                "parameters": [
+                    {
+                        "description": "Forwarded recipient addresses",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Append one forwarded recipient address by account ID or by email. Existing values are kept and duplicates are ignored.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Append one account forwarded recipient address",
+                "parameters": [
+                    {
+                        "description": "Forwarded recipient address",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Remove one forwarded recipient address by account ID or by email. Missing values are treated as no-op.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Remove one account forwarded recipient address",
+                "parameters": [
+                    {
+                        "description": "Forwarded recipient address",
+                        "name": "request",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Forwarded recipient address",
+                        "name": "address",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountForwardedAddressesResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/accounts/{id}/last-sync-record": {
             "get": {
                 "description": "Get the most recent sync record for a specific account across all mailboxes",
@@ -563,6 +1510,90 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/{id}/proxy-config": {
+            "get": {
+                "description": "Get proxy config by account ID or by email through /api/accounts/proxy-config?email=user@example.com.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Get account proxy config",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Account ID",
+                        "name": "id",
+                        "in": "path"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Account email address",
+                        "name": "email",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountProxyConfigResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Enable, update, or disable proxy config by account ID or by email.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Replace account proxy config",
+                "parameters": [
+                    {
+                        "description": "Proxy config",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountProxyConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountProxyConfigResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Disable and clear proxy config by account ID or by email.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "accounts"
+                ],
+                "summary": "Disable account proxy config",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.AccountProxyConfigResponse"
                         }
                     }
                 }
@@ -668,6 +1699,80 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/accounts/{id}/tags": {
+            "get": {
+                "description": "获取指定账户的所有标签",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "获取账户的标签",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "账户ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.TagWithGroup"
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "设置账户的标签（替换所有现有标签）",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "设置账户的标签",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "账户ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "标签ID列表",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.SetAccountTagsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.TagWithGroup"
+                            }
                         }
                     }
                 }
@@ -1020,6 +2125,63 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/auth/update": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "更新用户信息，包括头像、用户名、邮箱和密码",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "更新用户信息",
+                "parameters": [
+                    {
+                        "description": "用户信息更新数据",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateUserRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.User"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/cache/stats": {
             "get": {
                 "description": "Get email cache statistics and performance metrics",
@@ -1044,6 +2206,87 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/check-email": {
+            "post": {
+                "description": "Check for new emails for a specific email address. Uses intelligent email resolution to handle Gmail aliases, domain emails, and real email addresses. Returns immediately without polling.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "emails"
+                ],
+                "summary": "Check for new emails once",
+                "parameters": [
+                    {
+                        "description": "Request body with email and optional extractors",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CheckEmailRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Email check result",
+                        "schema": {
+                            "$ref": "#/definitions/api.CheckEmailResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request - Invalid parameters",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found - Email address cannot be resolved to any account",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/dashboard/stats": {
+            "get": {
+                "description": "Get comprehensive email statistics including accounts, emails, triggers and growth rates",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "dashboard"
+                ],
+                "summary": "Get email statistics for dashboard",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.EmailStatsResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
                         }
                     }
                 }
@@ -1186,6 +2429,156 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/emails/search": {
+            "get": {
+                "description": "Search emails with optional account filtering and to_query parameter",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "emails"
+                ],
+                "summary": "Search emails with optional account ID",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Account ID (optional)",
+                        "name": "account_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by recipient email",
+                        "name": "to_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by sender email",
+                        "name": "from_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Limit results (default 50, max 100)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Offset for pagination",
+                        "name": "offset",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order (date_desc, date_asc, etc.)",
+                        "name": "sort_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Start date (RFC3339 format)",
+                        "name": "start_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End date (RFC3339 format)",
+                        "name": "end_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by subject",
+                        "name": "subject_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by email body",
+                        "name": "body_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by HTML body",
+                        "name": "html_query",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Global search across all fields",
+                        "name": "keyword",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by mailbox name",
+                        "name": "mailbox",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Response with emails array and pagination info",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/emails/send": {
+            "post": {
+                "description": "Send an email using the specified account",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "emails"
+                ],
+                "summary": "Send an email",
+                "parameters": [
+                    {
+                        "description": "Email send request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.SendEmailRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SendEmailResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.SendEmailResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.SendEmailResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/emails/{id}": {
             "get": {
                 "description": "Get an email by ID",
@@ -1213,6 +2606,108 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/models.Email"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/emails/{id}/sync-attachments": {
+            "post": {
+                "description": "Download and sync attachments for a specific email",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "emails"
+                ],
+                "summary": "Sync email attachments",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Email ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/emails/{id}/trigger": {
+            "post": {
+                "description": "Manually trigger event processing for a specific email by ID",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "emails"
+                ],
+                "summary": "Trigger email processing",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Email ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
                         }
                     }
                 }
@@ -2242,6 +3737,104 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/pickup/poll": {
+            "post": {
+                "description": "合并「续期同步」「搜索邮件」「执行提取」为一个原子操作。每次调用自动在内存中注册/续期临时同步覆盖，确保后端持续拉取该账户的邮件。",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "pickup"
+                ],
+                "summary": "统一取件轮询",
+                "parameters": [
+                    {
+                        "description": "取件轮询请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/services.PickupPollRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/services.PickupPollResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/poll-email": {
+            "post": {
+                "description": "Poll for new emails for a specific account. This is a fallback mechanism when WebSocket is not available.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "emails"
+                ],
+                "summary": "Poll for new emails with optional filtering and extraction (fallback for WebSocket)",
+                "parameters": [
+                    {
+                        "description": "Request body with account identification and optional extractors",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.WaitEmailWebSocketRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Response with email status and data",
+                        "schema": {
+                            "$ref": "#/definitions/api.PollEmailResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request - Invalid parameters",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found - Account not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/api/providers": {
             "get": {
                 "description": "Get all mail providers",
@@ -2263,6 +3856,79 @@ const docTemplate = `{
                             "items": {
                                 "$ref": "#/definitions/models.MailProvider"
                             }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Create a new mail provider configuration",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Create a mail provider",
+                "parameters": [
+                    {
+                        "description": "Mail Provider",
+                        "name": "provider",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.MailProvider"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.MailProvider"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/public/login-theme": {
+            "get": {
+                "description": "获取当前登录页面的视觉主题配置（公开端点）",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system-config"
+                ],
+                "summary": "获取登录页主题",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
                         }
                     }
                 }
@@ -2312,6 +3978,233 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/sessions": {
+            "get": {
+                "description": "获取当前用户的所有会话",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "获取用户会话",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "页码",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.UserSession"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "为当前用户创建新会话",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "创建用户会话",
+                "parameters": [
+                    {
+                        "description": "会话参数",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateSessionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.UserSession"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/sessions/{id}": {
+            "put": {
+                "description": "更新指定会话的过期时间",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "更新用户会话",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "会话ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "更新参数",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateSessionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.UserSession"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "删除指定的会话",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "删除用户会话",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "会话ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
                         }
                     }
                 }
@@ -2445,6 +4338,1969 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/system-config/{key}": {
+            "get": {
+                "description": "根据配置键获取系统配置信息",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system-config"
+                ],
+                "summary": "获取系统配置",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "配置键",
+                        "name": "key",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SystemConfigResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "根据配置键更新系统配置的值",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system-config"
+                ],
+                "summary": "更新系统配置值",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "配置键",
+                        "name": "key",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "配置值",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.SystemConfigRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SystemConfigResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/system-config/{key}/reset": {
+            "post": {
+                "description": "将指定的系统配置重置为默认值",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system-config"
+                ],
+                "summary": "重置系统配置为默认值",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "配置键",
+                        "name": "key",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SystemConfigResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/system-configs": {
+            "get": {
+                "description": "获取所有可见的系统配置",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system-config"
+                ],
+                "summary": "获取所有系统配置",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.SystemConfigResponse"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/system-configs/category/{category}": {
+            "get": {
+                "description": "根据配置分类获取相关的系统配置",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system-config"
+                ],
+                "summary": "根据分类获取系统配置",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "配置分类",
+                        "name": "category",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.SystemConfigResponse"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tag-groups": {
+            "get": {
+                "description": "获取所有标签组及其包含的标签",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "获取所有标签组",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.TagGroupWithTags"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "创建新的标签组",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "创建标签组",
+                "parameters": [
+                    {
+                        "description": "标签组信息",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateTagGroupRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.TagGroupWithTags"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tag-groups/{id}": {
+            "get": {
+                "description": "根据ID获取标签组及其标签",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "获取单个标签组",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "标签组ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TagGroupWithTags"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "更新标签组信息",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "更新标签组",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "标签组ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "标签组信息",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateTagGroupRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.TagGroupWithTags"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "删除标签组及其所有标签",
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "删除标签组",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "标签组ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/tags": {
+            "get": {
+                "description": "获取所有标签",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "获取所有标签",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.TagWithGroup"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "在指定标签组中创建标签",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "创建标签",
+                "parameters": [
+                    {
+                        "description": "标签信息",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateTagRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.Tag"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tags/usage": {
+            "get": {
+                "description": "获取每个标签关联的账户数量",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "获取标签使用统计",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "integer"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tags/{id}": {
+            "put": {
+                "description": "更新标签信息",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "更新标签",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "标签ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "标签信息",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateTagRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Tag"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "删除标签",
+                "tags": [
+                    "Tags"
+                ],
+                "summary": "删除标签",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "标签ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/trigger-logs": {
+            "get": {
+                "description": "Get trigger execution logs with pagination and filtering",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Get trigger execution logs",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default: 10)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status: success, failed, partial",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Start date (RFC3339 format)",
+                        "name": "start_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End date (RFC3339 format)",
+                        "name": "end_date",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/trigger-stats": {
+            "get": {
+                "description": "Get trigger statistics and worker status",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Get trigger statistics",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/triggers": {
+            "get": {
+                "description": "Get triggers with pagination and search support",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Get triggers with pagination",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default: 10)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort field (default: created_at)",
+                        "name": "sort_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc or desc (default: desc)",
+                        "name": "sort_order",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search term for trigger name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status: enabled or disabled",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.PaginatedTriggersResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Create a new email trigger with conditions and actions",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Create a new email trigger",
+                "parameters": [
+                    {
+                        "description": "Create trigger request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateTriggerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.TriggerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/triggers/evaluate-expression": {
+            "post": {
+                "description": "Evaluate a condition expression with test data",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Evaluate a condition expression",
+                "parameters": [
+                    {
+                        "description": "Expression and test data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.EvaluateExpressionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.EvaluateExpressionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/triggers/execute-action": {
+            "post": {
+                "description": "Execute a single action with test data",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Execute a single action",
+                "parameters": [
+                    {
+                        "description": "Action configuration and test data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.ExecuteActionRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ExecuteActionResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/triggers/execute-actions": {
+            "post": {
+                "description": "Execute multiple actions sequentially with test data",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Execute multiple actions",
+                "parameters": [
+                    {
+                        "description": "Actions configuration and test data",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.ExecuteActionsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ExecuteActionsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/triggers/{id}": {
+            "get": {
+                "description": "Get a trigger by ID with worker status",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Get a trigger by ID",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Trigger ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.TriggerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Update a trigger (supports partial updates)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Update a trigger",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Trigger ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update trigger request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateTriggerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.TriggerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete a trigger by ID",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Delete a trigger",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Trigger ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/triggers/{id}/disable": {
+            "post": {
+                "description": "Disable a trigger by ID",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Disable a trigger",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Trigger ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.TriggerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/triggers/{id}/enable": {
+            "post": {
+                "description": "Enable a trigger by ID",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Enable a trigger",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Trigger ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.TriggerResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/triggers/{id}/logs": {
+            "get": {
+                "description": "Get trigger execution logs with pagination and filtering",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggers"
+                ],
+                "summary": "Get trigger execution logs",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Trigger ID (optional for global logs)",
+                        "name": "id",
+                        "in": "path"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default: 10)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status: success, failed, partial",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Start date (RFC3339 format)",
+                        "name": "start_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "End date (RFC3339 format)",
+                        "name": "end_date",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates": {
+            "get": {
+                "description": "Get all extractor templates",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Get all extractor templates V2",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/api.ExtractorTemplateV2Response"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Create a new extractor template with expressions, actions, and output config",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Create a new extractor template V2",
+                "parameters": [
+                    {
+                        "description": "Create request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateExtractorTemplateV2Request"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.ExtractorTemplateV2Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/categories": {
+            "get": {
+                "description": "Get all categories used in extractor templates",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Get all categories",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/debug": {
+            "post": {
+                "description": "Debug an extractor template with detailed step-by-step execution",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Debug an extractor template V2",
+                "parameters": [
+                    {
+                        "description": "Debug request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.DebugExtractorV2Request"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.DebugExtractionResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/match": {
+            "get": {
+                "description": "Find all extractor templates that match a specific email's filter conditions",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Find matching templates for an email",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Email ID",
+                        "name": "emailId",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/api.ExtractorTemplateV2Response"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/paginated": {
+            "get": {
+                "description": "Get extractor templates with pagination and filtering",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Get paginated extractor templates V2",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "Page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Items per page",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search term",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Category filter",
+                        "name": "category",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Enabled filter",
+                        "name": "enabled",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.PaginatedExtractorTemplateV2Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/test": {
+            "post": {
+                "description": "Test an extractor template with expressions and actions without saving",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Test an extractor template V2",
+                "parameters": [
+                    {
+                        "description": "Test request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.TestExtractorV2Request"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.ExtractionResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/{id}": {
+            "get": {
+                "description": "Get a specific extractor template by its ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Get an extractor template V2 by ID",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Template ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ExtractorTemplateV2Response"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Update an existing extractor template",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Update an extractor template V2",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Template ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateExtractorTemplateV2Request"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.ExtractorTemplateV2Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Delete an extractor template by ID",
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Delete an extractor template V2",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Template ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/{id}/execute": {
+            "post": {
+                "description": "Execute an extractor template on a specific email",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Execute an extractor template V2",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Template ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Execute request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.ExecuteExtractorV2Request"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.ExtractionResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/{id}/logs": {
+            "get": {
+                "description": "Get extraction execution logs for a specific template",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Get extraction logs for a template",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Template ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "Page number",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Items per page",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/extractor-templates/{id}/stats": {
+            "get": {
+                "description": "Get extraction statistics for a specific template",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "extractor-templates-v2"
+                ],
+                "summary": "Get statistics for a template",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Template ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "integer"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/triggers": {
+            "get": {
+                "description": "Get TriggerV2 triggers with pagination and search support",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggersv2"
+                ],
+                "summary": "Get TriggerV2 triggers with pagination",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Page number (default: 1)",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Items per page (default: 10)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort field (default: created_at)",
+                        "name": "sort_by",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Sort order: asc or desc (default: desc)",
+                        "name": "sort_order",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Search term for trigger name",
+                        "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status: enabled or disabled",
+                        "name": "status",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.PaginatedTriggerV2Response"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Create a new TriggerV2 email trigger with expression-based conditions and actions",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggersv2"
+                ],
+                "summary": "Create a new TriggerV2 email trigger",
+                "parameters": [
+                    {
+                        "description": "Create TriggerV2 request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateTriggerV2Request"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.TriggerV2Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v2/triggers/{id}": {
+            "get": {
+                "description": "Get a TriggerV2 trigger by ID with subscription status",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggersv2"
+                ],
+                "summary": "Get a TriggerV2 trigger by ID",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Trigger ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.TriggerV2Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Update a TriggerV2 trigger (supports partial updates)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "triggersv2"
+                ],
+                "summary": "Update a TriggerV2 trigger",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Trigger ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Update TriggerV2 request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.UpdateTriggerV2Request"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.TriggerV2Response"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/wait-email": {
             "post": {
                 "description": "Wait for new emails to arrive for a specific account or email address. Supports timeout, interval checking, and content extraction using the same extractors as the extract-emails endpoint. Only one of accountId or email parameters must be provided.",
@@ -2492,6 +6348,496 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/emails/{id}/sync-attachments": {
+            "post": {
+                "description": "Re-fetch email from server and download attachment content",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Emails"
+                ],
+                "summary": "Sync email attachments",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Email ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Sync options",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/api.SyncAttachmentsRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.SyncAttachmentsResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/interceptors": {
+            "get": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "获取拦截器列表",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "作用域过滤: global, local",
+                        "name": "scope",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.Interceptor"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "创建拦截器",
+                "parameters": [
+                    {
+                        "description": "拦截器配置",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.CreateInterceptorRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/models.Interceptor"
+                        }
+                    }
+                }
+            }
+        },
+        "/interceptors/logs": {
+            "get": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "获取拦截器执行日志列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "拦截器ID",
+                        "name": "interceptor_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "触发器ID",
+                        "name": "trigger_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "成功状态",
+                        "name": "success",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "执行阶段: before, after, around",
+                        "name": "phase",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "开始日期 (RFC3339)",
+                        "name": "start_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "结束日期 (RFC3339)",
+                        "name": "end_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "页码，默认1",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量，默认20",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/interceptors/logs/stats": {
+            "get": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "获取拦截器执行日志统计",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "拦截器ID",
+                        "name": "interceptor_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "触发器ID",
+                        "name": "trigger_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "开始日期 (RFC3339)",
+                        "name": "start_date",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "结束日期 (RFC3339)",
+                        "name": "end_date",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/interceptors/logs/{id}": {
+            "get": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "获取拦截器执行日志详情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "日志ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.InterceptorLog"
+                        }
+                    }
+                }
+            }
+        },
+        "/interceptors/order": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "批量更新拦截器顺序",
+                "parameters": [
+                    {
+                        "description": "ID到顺序的映射",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "integer"
+                            }
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    }
+                }
+            }
+        },
+        "/interceptors/plugins": {
+            "get": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "获取拦截器插件列表",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.InterceptorPluginInfo"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/interceptors/{id}": {
+            "get": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "获取拦截器详情",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "拦截器ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Interceptor"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "更新拦截器",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "拦截器ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "更新内容",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/models.UpdateInterceptorRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Interceptor"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "删除拦截器",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "拦截器ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/interceptors/{id}/disable": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "禁用拦截器",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "拦截器ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Interceptor"
+                        }
+                    }
+                }
+            }
+        },
+        "/interceptors/{id}/enable": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Interceptors"
+                ],
+                "summary": "启用拦截器",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "拦截器ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Interceptor"
                         }
                     }
                 }
@@ -2617,6 +6963,405 @@ const docTemplate = `{
                 }
             }
         },
+        "api.AccountDomainConfigRequest": {
+            "description": "Request body for enabling, updating, or disabling an account's domain mail routing config",
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string",
+                    "example": "example.com"
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "isDomainMail": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "api.AccountDomainConfigResponse": {
+            "description": "Domain mail routing config for an email account",
+            "type": "object",
+            "properties": {
+                "accountId": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "changed": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "domain": {
+                    "type": "string",
+                    "example": "example.com"
+                },
+                "emailAddress": {
+                    "type": "string",
+                    "example": "inbox@example.com"
+                },
+                "isDomainMail": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "api.AccountForwardedAddressRequest": {
+            "description": "Request body for appending or removing one forwarded recipient address",
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "string",
+                    "example": "source@example.com"
+                },
+                "forwardedAddress": {
+                    "type": "string",
+                    "example": "source@example.com"
+                }
+            }
+        },
+        "api.AccountForwardedAddressesRequest": {
+            "description": "Request body for replacing an account's forwarded recipient address list",
+            "type": "object",
+            "properties": {
+                "addresses": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "[\"source@example.com\"]"
+                    ]
+                },
+                "forwardedAddresses": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "[\"source@example.com\"",
+                        "\"*@example.org\"]"
+                    ]
+                }
+            }
+        },
+        "api.AccountForwardedAddressesResponse": {
+            "description": "Forwarded recipient address list for an email account",
+            "type": "object",
+            "properties": {
+                "accountId": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "changed": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "count": {
+                    "type": "integer",
+                    "example": 2
+                },
+                "emailAddress": {
+                    "type": "string",
+                    "example": "inbox@example.com"
+                },
+                "forwardedAddresses": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "[\"source@example.com\"",
+                        "\"*@example.org\"]"
+                    ]
+                }
+            }
+        },
+        "api.AccountInfo": {
+            "description": "Basic account information for resolved email",
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "description": "Domain (if domain email)",
+                    "type": "string",
+                    "example": "example.com"
+                },
+                "email_address": {
+                    "description": "Account email address",
+                    "type": "string",
+                    "example": "user@example.com"
+                },
+                "id": {
+                    "description": "Account ID",
+                    "type": "integer",
+                    "example": 1
+                },
+                "is_domain_mail": {
+                    "description": "Whether this is a domain email account",
+                    "type": "boolean",
+                    "example": false
+                }
+            }
+        },
+        "api.AccountOnboardSyncConfigRequest": {
+            "description": "Sync configuration options for OAuth2 account onboarding",
+            "type": "object",
+            "properties": {
+                "enable_auto_sync": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "sync_folders": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "[\"INBOX\"]"
+                    ]
+                },
+                "sync_interval": {
+                    "type": "integer",
+                    "example": 300
+                }
+            }
+        },
+        "api.AccountProxyConfigRequest": {
+            "description": "Request body for updating or disabling an account's proxy routing config",
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "proxy": {
+                    "type": "string",
+                    "example": "socks5://proxy.example.com:1080"
+                },
+                "proxyFallbackMode": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyFallbackMode"
+                        }
+                    ],
+                    "example": "interrupt"
+                },
+                "proxyFallbackProxy": {
+                    "type": "string",
+                    "example": "socks5://backup.example.com:1080"
+                },
+                "proxyFallbackProxyId": {
+                    "type": "integer",
+                    "example": 2
+                },
+                "proxyId": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "proxyMatchGroupIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    },
+                    "example": [
+                        1,
+                        2
+                    ]
+                },
+                "proxyMatchTagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    },
+                    "example": [
+                        3,
+                        4
+                    ]
+                },
+                "proxyMatchTagMode": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyTagFilterMode"
+                        }
+                    ],
+                    "example": "or"
+                },
+                "proxyMode": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyAccountMode"
+                        }
+                    ],
+                    "example": "manual"
+                },
+                "useProxy": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "api.AccountProxyConfigResponse": {
+            "description": "Proxy routing config for an email account",
+            "type": "object",
+            "properties": {
+                "accountId": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "changed": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "emailAddress": {
+                    "type": "string",
+                    "example": "inbox@example.com"
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "proxy": {
+                    "type": "string",
+                    "example": "socks5://proxy.example.com:1080"
+                },
+                "proxyFallbackMode": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyFallbackMode"
+                        }
+                    ],
+                    "example": "interrupt"
+                },
+                "proxyFallbackProxy": {
+                    "type": "string",
+                    "example": "socks5://backup.example.com:1080"
+                },
+                "proxyFallbackProxyId": {
+                    "type": "integer",
+                    "example": 2
+                },
+                "proxyId": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "proxyMatchGroupIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    },
+                    "example": [
+                        1,
+                        2
+                    ]
+                },
+                "proxyMatchTagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    },
+                    "example": [
+                        3,
+                        4
+                    ]
+                },
+                "proxyMatchTagMode": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyTagFilterMode"
+                        }
+                    ],
+                    "example": "or"
+                },
+                "proxyMode": {
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyAccountMode"
+                        }
+                    ],
+                    "example": "manual"
+                }
+            }
+        },
+        "api.BatchAccountTagsRequest": {
+            "type": "object",
+            "properties": {
+                "accountIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "tagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
+        "api.BatchAddRemoveTagRequest": {
+            "type": "object",
+            "properties": {
+                "accountIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "tagId": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.BatchVerifyAccountResult": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "integer"
+                },
+                "email_address": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.BatchVerifyAccountsRequest": {
+            "type": "object",
+            "properties": {
+                "account_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
+        "api.BatchVerifyAccountsResponse": {
+            "type": "object",
+            "properties": {
+                "error_count": {
+                    "type": "integer"
+                },
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.BatchVerifyAccountResult"
+                    }
+                },
+                "success_count": {
+                    "type": "integer"
+                }
+            }
+        },
         "api.CacheStatsResponse": {
             "description": "Email cache statistics",
             "type": "object",
@@ -2707,20 +7452,90 @@ const docTemplate = `{
                 }
             }
         },
+        "api.CheckEmailRequest": {
+            "description": "Simple request for checking if new emails have arrived",
+            "type": "object",
+            "properties": {
+                "email": {
+                    "description": "Email address to check",
+                    "type": "string",
+                    "example": "user@example.com"
+                },
+                "extract": {
+                    "description": "Extraction configurations (same as extract-emails endpoint)",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.ExtractorConfig"
+                    }
+                },
+                "start_time": {
+                    "description": "Start time for filtering emails (default: current time)",
+                    "type": "string",
+                    "example": "2024-01-01T00:00:00Z"
+                }
+            }
+        },
+        "api.CheckEmailResponse": {
+            "description": "Response for checking emails (simplified for frontend polling)",
+            "type": "object",
+            "properties": {
+                "email": {
+                    "description": "The found email (if any)",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.Email"
+                        }
+                    ]
+                },
+                "error": {
+                    "description": "Error details (if any)",
+                    "type": "string"
+                },
+                "found": {
+                    "description": "Whether an email was found",
+                    "type": "boolean",
+                    "example": true
+                },
+                "matches": {
+                    "description": "Extracted content (if extractors were provided)",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "message": {
+                    "description": "Message describing the result",
+                    "type": "string",
+                    "example": "Email found"
+                },
+                "resolved_account": {
+                    "description": "Resolved account information",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/api.AccountInfo"
+                        }
+                    ]
+                },
+                "status": {
+                    "description": "Status of the operation",
+                    "type": "string",
+                    "example": "success"
+                }
+            }
+        },
         "api.CreateAccountRequest": {
             "description": "Request body for creating an email account",
             "type": "object",
             "required": [
                 "authType",
-                "emailAddress",
-                "mailProviderId"
+                "emailAddress"
             ],
             "properties": {
                 "authType": {
                     "$ref": "#/definitions/models.AuthType"
                 },
                 "customSettings": {
-                    "$ref": "#/definitions/models.JSONMap"
+                    "type": "object"
                 },
                 "domain": {
                     "type": "string"
@@ -2728,10 +7543,27 @@ const docTemplate = `{
                 "emailAddress": {
                     "type": "string"
                 },
+                "forwardedAddresses": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "isDomainMail": {
                     "type": "boolean"
                 },
                 "mailProviderId": {
+                    "description": "Make optional - only required for accounts that need predefined providers",
+                    "type": "integer"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "noteFormat": {
+                    "$ref": "#/definitions/models.AccountNoteFormat"
+                },
+                "oauth2ProviderId": {
+                    "description": "关联特定的OAuth2配置",
                     "type": "integer"
                 },
                 "password": {
@@ -2739,6 +7571,36 @@ const docTemplate = `{
                 },
                 "proxy": {
                     "type": "string"
+                },
+                "proxyFallbackMode": {
+                    "$ref": "#/definitions/models.ProxyFallbackMode"
+                },
+                "proxyFallbackProxy": {
+                    "type": "string"
+                },
+                "proxyFallbackProxyId": {
+                    "type": "integer"
+                },
+                "proxyId": {
+                    "type": "integer"
+                },
+                "proxyMatchGroupIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagMode": {
+                    "$ref": "#/definitions/models.ProxyTagFilterMode"
+                },
+                "proxyMode": {
+                    "$ref": "#/definitions/models.ProxyAccountMode"
                 },
                 "token": {
                     "type": "string"
@@ -2767,6 +7629,196 @@ const docTemplate = `{
                 "name": {
                     "type": "string",
                     "example": "Invoice Extractor"
+                }
+            }
+        },
+        "api.CreateExtractorTemplateV2Request": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerAction"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerExpression"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "outputConfig": {
+                    "$ref": "#/definitions/models.ExtractorOutputConfig"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "api.CreateOAuth2AccountOnboardingRequest": {
+            "description": "Create/update an OAuth2 email account, verify connectivity, run initial sync, and save auto-sync settings in one request",
+            "type": "object",
+            "required": [
+                "authType",
+                "emailAddress"
+            ],
+            "properties": {
+                "authType": {
+                    "$ref": "#/definitions/models.AuthType"
+                },
+                "create_sync_config": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "customSettings": {
+                    "type": "object"
+                },
+                "domain": {
+                    "type": "string"
+                },
+                "emailAddress": {
+                    "type": "string"
+                },
+                "forwardedAddresses": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "initial_sync": {
+                    "$ref": "#/definitions/api.FetchAndStoreRequest"
+                },
+                "isDomainMail": {
+                    "type": "boolean"
+                },
+                "mailProviderId": {
+                    "description": "Make optional - only required for accounts that need predefined providers",
+                    "type": "integer"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "noteFormat": {
+                    "$ref": "#/definitions/models.AccountNoteFormat"
+                },
+                "oauth2ProviderId": {
+                    "description": "关联特定的OAuth2配置",
+                    "type": "integer"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "proxy": {
+                    "type": "string"
+                },
+                "proxyFallbackMode": {
+                    "$ref": "#/definitions/models.ProxyFallbackMode"
+                },
+                "proxyFallbackProxy": {
+                    "type": "string"
+                },
+                "proxyFallbackProxyId": {
+                    "type": "integer"
+                },
+                "proxyId": {
+                    "type": "integer"
+                },
+                "proxyMatchGroupIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagMode": {
+                    "$ref": "#/definitions/models.ProxyTagFilterMode"
+                },
+                "proxyMode": {
+                    "$ref": "#/definitions/models.ProxyAccountMode"
+                },
+                "run_initial_sync": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "sync_config": {
+                    "$ref": "#/definitions/api.AccountOnboardSyncConfigRequest"
+                },
+                "token": {
+                    "type": "string"
+                },
+                "update_existing": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "verify": {
+                    "type": "boolean",
+                    "example": true
+                }
+            }
+        },
+        "api.CreateOAuth2AccountOnboardingResponse": {
+            "description": "Result for the one-step OAuth2 account onboarding flow",
+            "type": "object",
+            "properties": {
+                "account": {
+                    "$ref": "#/definitions/models.EmailAccount"
+                },
+                "completed": {
+                    "type": "boolean"
+                },
+                "created": {
+                    "type": "boolean"
+                },
+                "failed_stage": {
+                    "type": "string"
+                },
+                "initial_sync": {
+                    "$ref": "#/definitions/api.FetchAndStoreResponse"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "sync_config": {
+                    "$ref": "#/definitions/models.EmailAccountSyncConfig"
+                },
+                "updated": {
+                    "type": "boolean"
+                },
+                "verification": {
+                    "$ref": "#/definitions/api.BatchVerifyAccountResult"
+                }
+            }
+        },
+        "api.CreateSessionRequest": {
+            "type": "object",
+            "required": [
+                "expires_in_days"
+            ],
+            "properties": {
+                "expires_in_days": {
+                    "type": "integer",
+                    "maximum": 365,
+                    "minimum": 1
                 }
             }
         },
@@ -2807,6 +7859,101 @@ const docTemplate = `{
                 }
             }
         },
+        "api.CreateTagGroupRequest": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "selectionType": {
+                    "$ref": "#/definitions/models.TagGroupSelectionType"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.CreateTagRequest": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "groupId": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.CreateTriggerRequest": {
+            "type": "object"
+        },
+        "api.CreateTriggerV2Request": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerAction"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerExpression"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.CustomEmailContent": {
+            "type": "object",
+            "properties": {
+                "body": {
+                    "type": "string"
+                },
+                "cc": {
+                    "type": "string"
+                },
+                "from": {
+                    "type": "string"
+                },
+                "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "htmlBody": {
+                    "type": "string"
+                },
+                "subject": {
+                    "type": "string"
+                },
+                "to": {
+                    "type": "string"
+                }
+            }
+        },
         "api.CustomEmailForTesting": {
             "description": "Custom email content for testing extractors",
             "type": "object",
@@ -2837,6 +7984,50 @@ const docTemplate = `{
                 }
             }
         },
+        "api.DebugExtractorV2Request": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerAction"
+                    }
+                },
+                "customEmail": {
+                    "$ref": "#/definitions/api.CustomEmailContent"
+                },
+                "emailId": {
+                    "type": "integer"
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerExpression"
+                    }
+                },
+                "outputConfig": {
+                    "$ref": "#/definitions/models.ExtractorOutputConfig"
+                },
+                "stepByStep": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.EmailAttachment": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "description": "Base64 encoded",
+                    "type": "string"
+                },
+                "contentType": {
+                    "type": "string"
+                },
+                "filename": {
+                    "type": "string"
+                }
+            }
+        },
         "api.EmailDomainsResponse": {
             "type": "object",
             "properties": {
@@ -2851,6 +8042,49 @@ const docTemplate = `{
                 },
                 "status": {
                     "type": "string"
+                }
+            }
+        },
+        "api.EmailStatsResponse": {
+            "type": "object",
+            "properties": {
+                "enabledTriggers": {
+                    "type": "integer"
+                },
+                "errorAccounts": {
+                    "type": "integer"
+                },
+                "syncingAccounts": {
+                    "type": "integer"
+                },
+                "todayEmails": {
+                    "type": "integer"
+                },
+                "todayGrowthRate": {
+                    "description": "今日邮件增长率 (今日vs昨日)",
+                    "type": "number"
+                },
+                "totalAccounts": {
+                    "description": "账户统计",
+                    "type": "integer"
+                },
+                "totalEmails": {
+                    "description": "邮件统计",
+                    "type": "integer"
+                },
+                "totalGrowthRate": {
+                    "description": "总邮件增长率 (今日vs昨日24:00)",
+                    "type": "number"
+                },
+                "totalTriggers": {
+                    "description": "触发器统计",
+                    "type": "integer"
+                },
+                "unreadEmails": {
+                    "type": "integer"
+                },
+                "verifiedAccounts": {
+                    "type": "integer"
                 }
             }
         },
@@ -2872,6 +8106,105 @@ const docTemplate = `{
                     "description": "Error message",
                     "type": "string",
                     "example": "Invalid request"
+                }
+            }
+        },
+        "api.EvaluateExpressionRequest": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "expression": {
+                    "$ref": "#/definitions/engine.ConditionExpression"
+                }
+            }
+        },
+        "api.EvaluateExpressionResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "result": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.ExecuteActionRequest": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "data": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "plugin_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.ExecuteActionResponse": {
+            "type": "object",
+            "properties": {
+                "duration_ms": {
+                    "type": "integer"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "plugin_info": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "result": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.ExecuteActionsRequest": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.ExecuteActionRequest"
+                    }
+                },
+                "data": {
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            }
+        },
+        "api.ExecuteActionsResponse": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.ExecuteActionResponse"
+                    }
+                },
+                "summary": {
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            }
+        },
+        "api.ExecuteExtractorV2Request": {
+            "type": "object",
+            "properties": {
+                "emailId": {
+                    "type": "integer"
                 }
             }
         },
@@ -3115,6 +8448,68 @@ const docTemplate = `{
                 "updated_at": {
                     "type": "string",
                     "example": "2024-01-01T00:00:00Z"
+                }
+            }
+        },
+        "api.ExtractorTemplateV2Response": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerAction"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "compatibility": {
+                    "$ref": "#/definitions/models.ExtractorTemplateCompatibility"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerExpression"
+                    }
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "lastError": {
+                    "type": "string"
+                },
+                "lastExtractedAt": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "outputConfig": {
+                    "$ref": "#/definitions/models.ExtractorOutputConfig"
+                },
+                "successExtractions": {
+                    "type": "integer"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "totalExtractions": {
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
                 }
             }
         },
@@ -3543,6 +8938,9 @@ const docTemplate = `{
                 "user": {
                     "type": "object",
                     "properties": {
+                        "avatar": {
+                            "type": "string"
+                        },
                         "email": {
                             "type": "string"
                         },
@@ -3697,6 +9095,29 @@ const docTemplate = `{
                 }
             }
         },
+        "api.PaginatedExtractorTemplateV2Response": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer"
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "templates": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.ExtractorTemplateV2Response"
+                    }
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "totalPages": {
+                    "type": "integer"
+                }
+            }
+        },
         "api.PaginatedExtractorTemplatesResponse": {
             "description": "Paginated response for extractor templates",
             "type": "object",
@@ -3718,6 +9139,88 @@ const docTemplate = `{
                 },
                 "total_pages": {
                     "type": "integer"
+                }
+            }
+        },
+        "api.PaginatedTriggerV2Response": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerV2Response"
+                    }
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "total_pages": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.PaginatedTriggersResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerResponse"
+                    }
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "page": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                },
+                "total_pages": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.PollEmailResponse": {
+            "description": "Response with polling result, optional matched email, extraction matches, and processed message IDs",
+            "type": "object",
+            "properties": {
+                "elapsedTime": {
+                    "type": "number",
+                    "example": 1.25
+                },
+                "email": {
+                    "$ref": "#/definitions/models.Email"
+                },
+                "found": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "matches": {},
+                "message": {
+                    "type": "string",
+                    "example": "Email found"
+                },
+                "processedIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "message-id-1",
+                        "message-id-2"
+                    ]
+                },
+                "status": {
+                    "type": "string",
+                    "example": "success"
                 }
             }
         },
@@ -3749,6 +9252,72 @@ const docTemplate = `{
                     "description": "Status of the operation",
                     "type": "string",
                     "example": "success"
+                }
+            }
+        },
+        "api.SendEmailRequest": {
+            "type": "object",
+            "properties": {
+                "accountId": {
+                    "type": "integer"
+                },
+                "attachments": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.EmailAttachment"
+                    }
+                },
+                "bcc": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "cc": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "htmlContent": {
+                    "type": "string"
+                },
+                "subject": {
+                    "type": "string"
+                },
+                "textContent": {
+                    "type": "string"
+                },
+                "to": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "api.SendEmailResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "messageId": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.SetAccountTagsRequest": {
+            "type": "object",
+            "properties": {
+                "tagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 }
             }
         },
@@ -3855,6 +9424,29 @@ const docTemplate = `{
                 }
             }
         },
+        "api.SyncAttachmentsRequest": {
+            "type": "object",
+            "properties": {
+                "force_download": {
+                    "description": "Force download even if system config is disabled",
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.SyncAttachmentsResponse": {
+            "type": "object",
+            "properties": {
+                "attachments_count": {
+                    "type": "integer"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
         "api.TestExtractorResult": {
             "description": "Result of testing a single extractor",
             "type": "object",
@@ -3898,6 +9490,32 @@ const docTemplate = `{
                 }
             }
         },
+        "api.TestExtractorV2Request": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerAction"
+                    }
+                },
+                "customEmail": {
+                    "$ref": "#/definitions/api.CustomEmailContent"
+                },
+                "emailId": {
+                    "type": "integer"
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerExpression"
+                    }
+                },
+                "outputConfig": {
+                    "$ref": "#/definitions/models.ExtractorOutputConfig"
+                }
+            }
+        },
         "api.TestOpenAIConfigResponse": {
             "type": "object",
             "properties": {
@@ -3924,6 +9542,246 @@ const docTemplate = `{
                 }
             }
         },
+        "api.TriggerAction": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "executionOrder": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "pluginId": {
+                    "type": "string"
+                },
+                "pluginName": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.TriggerExpression": {
+            "type": "object",
+            "properties": {
+                "conditions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerExpression"
+                    }
+                },
+                "field": {
+                    "type": "string"
+                },
+                "fields": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "id": {
+                    "type": "string"
+                },
+                "not": {
+                    "type": "boolean"
+                },
+                "operator": {
+                    "type": "string"
+                },
+                "pluginId": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "value": {}
+            }
+        },
+        "api.TriggerResponse": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "description": "触发动作",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerActionConfig"
+                    }
+                },
+                "check_interval": {
+                    "description": "检查配置",
+                    "type": "integer"
+                },
+                "condition": {
+                    "description": "触发条件和动作",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.TriggerConditionConfig"
+                        }
+                    ]
+                },
+                "created_at": {
+                    "description": "时间戳",
+                    "type": "string"
+                },
+                "custom_filters": {
+                    "description": "自定义过滤器",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_models.JSONMap"
+                        }
+                    ]
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "description": {
+                    "description": "触发器描述",
+                    "type": "string"
+                },
+                "email_address": {
+                    "description": "过滤参数（复用EmailFilter结构）",
+                    "type": "string"
+                },
+                "enable_logging": {
+                    "description": "日志配置",
+                    "type": "boolean"
+                },
+                "end_date": {
+                    "description": "结束日期",
+                    "type": "string"
+                },
+                "folders": {
+                    "description": "文件夹列表",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "from": {
+                    "description": "发件人过滤",
+                    "type": "string"
+                },
+                "has_attachment": {
+                    "description": "是否有附件",
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "labels": {
+                    "description": "标签过滤",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "last_error": {
+                    "description": "最后错误信息",
+                    "type": "string"
+                },
+                "last_executed_at": {
+                    "description": "最后执行时间",
+                    "type": "string"
+                },
+                "name": {
+                    "description": "触发器名称",
+                    "type": "string"
+                },
+                "start_date": {
+                    "description": "开始日期",
+                    "type": "string"
+                },
+                "status": {
+                    "description": "触发器状态",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_models.TriggerStatus"
+                        }
+                    ]
+                },
+                "subject": {
+                    "description": "主题过滤",
+                    "type": "string"
+                },
+                "success_executions": {
+                    "description": "成功执行次数",
+                    "type": "integer"
+                },
+                "to": {
+                    "description": "收件人过滤",
+                    "type": "string"
+                },
+                "total_executions": {
+                    "description": "统计信息",
+                    "type": "integer"
+                },
+                "unread": {
+                    "description": "是否未读",
+                    "type": "boolean"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "worker_status": {
+                    "type": "object",
+                    "additionalProperties": true
+                }
+            }
+        },
+        "api.TriggerV2Response": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerAction"
+                    }
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerExpression"
+                    }
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "lastError": {
+                    "type": "string"
+                },
+                "lastExecutedAt": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "subscriptionStatus": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "successExecutions": {
+                    "type": "integer"
+                },
+                "totalExecutions": {
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
         "api.UpdateAccountRequest": {
             "description": "Request body for updating an email account (partial update supported)",
             "type": "object",
@@ -3932,13 +9790,19 @@ const docTemplate = `{
                     "$ref": "#/definitions/models.AuthType"
                 },
                 "customSettings": {
-                    "$ref": "#/definitions/models.JSONMap"
+                    "type": "object"
                 },
                 "domain": {
                     "type": "string"
                 },
                 "emailAddress": {
                     "type": "string"
+                },
+                "forwardedAddresses": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "isDomainMail": {
                     "type": "boolean"
@@ -3949,11 +9813,50 @@ const docTemplate = `{
                 "mailProviderId": {
                     "type": "integer"
                 },
+                "note": {
+                    "type": "string"
+                },
+                "noteFormat": {
+                    "$ref": "#/definitions/models.AccountNoteFormat"
+                },
+                "oauth2ProviderId": {
+                    "type": "integer"
+                },
                 "password": {
                     "type": "string"
                 },
                 "proxy": {
                     "type": "string"
+                },
+                "proxyFallbackMode": {
+                    "$ref": "#/definitions/models.ProxyFallbackMode"
+                },
+                "proxyFallbackProxy": {
+                    "type": "string"
+                },
+                "proxyFallbackProxyId": {
+                    "type": "integer"
+                },
+                "proxyId": {
+                    "type": "integer"
+                },
+                "proxyMatchGroupIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagMode": {
+                    "$ref": "#/definitions/models.ProxyTagFilterMode"
+                },
+                "proxyMode": {
+                    "$ref": "#/definitions/models.ProxyAccountMode"
                 },
                 "token": {
                     "type": "string"
@@ -3977,6 +9880,140 @@ const docTemplate = `{
                 "name": {
                     "type": "string",
                     "example": "Updated Invoice Extractor"
+                }
+            }
+        },
+        "api.UpdateExtractorTemplateV2Request": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerAction"
+                    }
+                },
+                "category": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerExpression"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "outputConfig": {
+                    "$ref": "#/definitions/models.ExtractorOutputConfig"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "api.UpdateSessionRequest": {
+            "type": "object",
+            "required": [
+                "expires_in_days"
+            ],
+            "properties": {
+                "expires_in_days": {
+                    "type": "integer",
+                    "maximum": 365,
+                    "minimum": 1
+                }
+            }
+        },
+        "api.UpdateTagGroupRequest": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "selectionType": {
+                    "$ref": "#/definitions/models.TagGroupSelectionType"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.UpdateTagRequest": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.UpdateTriggerRequest": {
+            "type": "object"
+        },
+        "api.UpdateTriggerV2Request": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerAction"
+                    }
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.TriggerExpression"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.UpdateUserRequest": {
+            "type": "object",
+            "properties": {
+                "avatar": {
+                    "type": "string"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "new_password": {
+                    "type": "string"
+                },
+                "old_password": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
                 }
             }
         },
@@ -4006,6 +10043,36 @@ const docTemplate = `{
                 },
                 "proxy": {
                     "type": "string"
+                },
+                "proxyFallbackMode": {
+                    "$ref": "#/definitions/models.ProxyFallbackMode"
+                },
+                "proxyFallbackProxy": {
+                    "type": "string"
+                },
+                "proxyFallbackProxyId": {
+                    "type": "integer"
+                },
+                "proxyId": {
+                    "type": "integer"
+                },
+                "proxyMatchGroupIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagIds": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagMode": {
+                    "$ref": "#/definitions/models.ProxyTagFilterMode"
+                },
+                "proxyMode": {
+                    "$ref": "#/definitions/models.ProxyAccountMode"
                 }
             }
         },
@@ -4032,6 +10099,11 @@ const docTemplate = `{
                     "type": "integer",
                     "example": 1
                 },
+                "create_strategy": {
+                    "description": "Strategy for ensuring sync is active: \"none\" (default), \"ensure\", \"force\"",
+                    "type": "string",
+                    "example": "ensure"
+                },
                 "email": {
                     "description": "Email address (mutually exclusive with AccountID)",
                     "type": "string",
@@ -4053,6 +10125,11 @@ const docTemplate = `{
                     "description": "Start time for filtering emails (default: current time)",
                     "type": "string",
                     "example": "2024-01-01T00:00:00Z"
+                },
+                "sync_interval": {
+                    "description": "Interval for temporary sync in seconds (default: 30)",
+                    "type": "integer",
+                    "example": 30
                 },
                 "timeout": {
                     "description": "Timeout in seconds (default: 30)",
@@ -4104,6 +10181,187 @@ const docTemplate = `{
                     "description": "Status of the operation",
                     "type": "string",
                     "example": "success"
+                }
+            }
+        },
+        "api.WaitEmailWebSocketRequest": {
+            "type": "object",
+            "properties": {
+                "accountId": {
+                    "type": "integer"
+                },
+                "email": {
+                    "type": "string"
+                },
+                "extract": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.ExtractorConfig"
+                    }
+                },
+                "interval": {
+                    "type": "integer"
+                },
+                "startTime": {
+                    "type": "string"
+                },
+                "timeout": {
+                    "type": "integer"
+                }
+            }
+        },
+        "engine.ConditionExpression": {
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "array",
+                    "items": {}
+                },
+                "conditions": {
+                    "description": "支持前端格式",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/engine.ConditionExpression"
+                    }
+                },
+                "field": {
+                    "type": "string"
+                },
+                "fields": {
+                    "description": "插件条件字段",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "function": {
+                    "type": "string"
+                },
+                "left": {
+                    "$ref": "#/definitions/engine.ConditionExpression"
+                },
+                "operator": {
+                    "type": "string"
+                },
+                "right": {
+                    "$ref": "#/definitions/engine.ConditionExpression"
+                },
+                "type": {
+                    "$ref": "#/definitions/engine.ExpressionType"
+                },
+                "value": {}
+            }
+        },
+        "engine.ExpressionType": {
+            "type": "string",
+            "enum": [
+                "comparison",
+                "logical",
+                "function",
+                "field",
+                "value"
+            ],
+            "x-enum-varnames": [
+                "ExpressionTypeComparison",
+                "ExpressionTypeLogical",
+                "ExpressionTypeFunction",
+                "ExpressionTypeField",
+                "ExpressionTypeValue"
+            ]
+        },
+        "internal_models.DeletedAt": {
+            "type": "object",
+            "properties": {
+                "time": {
+                    "type": "string"
+                },
+                "valid": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "internal_models.ExecutionMode": {
+            "type": "string",
+            "enum": [
+                "sync",
+                "async"
+            ],
+            "x-enum-comments": {
+                "ExecutionModeAsync": "异步执行",
+                "ExecutionModeSync": "同步执行"
+            },
+            "x-enum-varnames": [
+                "ExecutionModeSync",
+                "ExecutionModeAsync"
+            ]
+        },
+        "internal_models.JSONMap": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "string"
+            }
+        },
+        "internal_models.TriggerStatus": {
+            "type": "string",
+            "enum": [
+                "enabled",
+                "disabled"
+            ],
+            "x-enum-varnames": [
+                "TriggerStatusEnabled",
+                "TriggerStatusDisabled"
+            ]
+        },
+        "models.AccountNoteFormat": {
+            "type": "string",
+            "enum": [
+                "markdown",
+                "html"
+            ],
+            "x-enum-varnames": [
+                "AccountNoteFormatMarkdown",
+                "AccountNoteFormatHTML"
+            ]
+        },
+        "models.ActionExecutionResult": {
+            "type": "object",
+            "properties": {
+                "actionId": {
+                    "type": "string"
+                },
+                "duration": {
+                    "type": "integer"
+                },
+                "endTime": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "input": {
+                    "description": "输入参数",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "output": {
+                    "description": "输出结果",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "pluginId": {
+                    "type": "string"
+                },
+                "pluginName": {
+                    "type": "string"
+                },
+                "result": {},
+                "startTime": {
+                    "type": "string"
+                },
+                "stopPipeline": {
+                    "description": "是否中断后续流程",
+                    "type": "boolean"
+                },
+                "success": {
+                    "type": "boolean"
                 }
             }
         },
@@ -4165,7 +10423,14 @@ const docTemplate = `{
                 "ai_extraction",
                 "ai_template_created",
                 "user_login",
-                "user_logout"
+                "user_logout",
+                "trigger_created",
+                "trigger_updated",
+                "trigger_deleted",
+                "trigger_enabled",
+                "trigger_disabled",
+                "trigger_executed",
+                "general"
             ],
             "x-enum-varnames": [
                 "ActivityEmailReceived",
@@ -4185,7 +10450,14 @@ const docTemplate = `{
                 "ActivityAIExtraction",
                 "ActivityAITemplateCreated",
                 "ActivityUserLogin",
-                "ActivityUserLogout"
+                "ActivityUserLogout",
+                "ActivityTriggerCreated",
+                "ActivityTriggerUpdated",
+                "ActivityTriggerDeleted",
+                "ActivityTriggerEnabled",
+                "ActivityTriggerDisabled",
+                "ActivityTriggerExecuted",
+                "ActivityTypeGeneral"
             ]
         },
         "models.Attachment": {
@@ -4196,6 +10468,10 @@ const docTemplate = `{
                     "items": {
                         "type": "integer"
                     }
+                },
+                "contentType": {
+                    "description": "内容类型",
+                    "type": "string"
                 },
                 "createdAt": {
                     "type": "string"
@@ -4236,13 +10512,105 @@ const docTemplate = `{
                 "AuthTypeOAuth2"
             ]
         },
-        "models.DeletedAt": {
+        "models.CreateInterceptorRequest": {
             "type": "object",
+            "required": [
+                "name",
+                "phases",
+                "plugin_id",
+                "scope"
+            ],
             "properties": {
-                "time": {
+                "description": {
                     "type": "string"
                 },
-                "valid": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "error_handling": {
+                    "$ref": "#/definitions/models.InterceptorErrorConfig"
+                },
+                "execution": {
+                    "$ref": "#/definitions/models.InterceptorExecutionConfig"
+                },
+                "extractor_id": {
+                    "type": "integer"
+                },
+                "filter": {
+                    "$ref": "#/definitions/models.InterceptorFilter"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "phases": {
+                    "$ref": "#/definitions/models.InterceptorPhases"
+                },
+                "plugin_config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "plugin_id": {
+                    "type": "string"
+                },
+                "scope": {
+                    "enum": [
+                        "global",
+                        "local"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.InterceptorScope"
+                        }
+                    ]
+                },
+                "skip_config": {
+                    "$ref": "#/definitions/models.InterceptorSkipConfig"
+                },
+                "trigger_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.DebugExtractionResult": {
+            "type": "object",
+            "properties": {
+                "actionResults": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ActionExecutionResult"
+                    }
+                },
+                "duration": {
+                    "description": "ms",
+                    "type": "integer"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "executionTrace": {
+                    "$ref": "#/definitions/models.ExecutionTrace"
+                },
+                "extractedValue": {},
+                "filterEvaluation": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "filterMatched": {
+                    "type": "boolean"
+                },
+                "status": {
+                    "$ref": "#/definitions/models.ExtractionV2Status"
+                },
+                "stepResults": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.StepDebugResult"
+                    }
+                },
+                "success": {
                     "type": "boolean"
                 }
             }
@@ -4268,10 +10636,24 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "bccAddresses": {
+                    "description": "密送纯邮箱地址列表",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "body": {
                     "type": "string"
                 },
                 "cc": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "ccAddresses": {
+                    "description": "抄送纯邮箱地址列表",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -4284,7 +10666,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "deletedAt": {
-                    "$ref": "#/definitions/models.DeletedAt"
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "direction": {
+                    "description": "邮件方向: received/sent",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.EmailDirection"
+                        }
+                    ]
                 },
                 "flags": {
                     "description": "IMAP flags",
@@ -4299,11 +10689,31 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "fromAddress": {
+                    "description": "提取后的纯邮箱地址（不带显示名）",
+                    "type": "string"
+                },
+                "hasAttachments": {
+                    "description": "是否有附件",
+                    "type": "boolean"
+                },
+                "headers": {
+                    "description": "其他邮件头",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_models.JSONMap"
+                        }
+                    ]
+                },
                 "htmlbody": {
                     "type": "string"
                 },
                 "id": {
                     "type": "integer"
+                },
+                "inReplyTo": {
+                    "description": "In-Reply-To header",
+                    "type": "string"
                 },
                 "mailboxName": {
                     "description": "IMAP mailbox name",
@@ -4317,13 +10727,35 @@ const docTemplate = `{
                     "description": "存储原始邮件报文",
                     "type": "string"
                 },
+                "receivedAt": {
+                    "description": "接收时间",
+                    "type": "string"
+                },
+                "references": {
+                    "description": "References header",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "size": {
                     "type": "integer"
                 },
                 "subject": {
                     "type": "string"
                 },
+                "textBody": {
+                    "description": "纯文本内容",
+                    "type": "string"
+                },
                 "to": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "toAddresses": {
+                    "description": "收件人纯邮箱地址列表",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -4340,14 +10772,18 @@ const docTemplate = `{
                 "authType": {
                     "$ref": "#/definitions/models.AuthType"
                 },
+                "autoDisabledAt": {
+                    "description": "自动禁用时间",
+                    "type": "string"
+                },
                 "createdAt": {
                     "type": "string"
                 },
                 "customSettings": {
-                    "$ref": "#/definitions/models.JSONMap"
+                    "$ref": "#/definitions/internal_models.JSONMap"
                 },
                 "deletedAt": {
-                    "$ref": "#/definitions/models.DeletedAt"
+                    "$ref": "#/definitions/internal_models.DeletedAt"
                 },
                 "domain": {
                     "description": "For domain-specific email",
@@ -4355,6 +10791,28 @@ const docTemplate = `{
                 },
                 "emailAddress": {
                     "type": "string"
+                },
+                "errorCount": {
+                    "description": "累计错误次数",
+                    "type": "integer"
+                },
+                "errorMessage": {
+                    "description": "详细错误信息",
+                    "type": "string"
+                },
+                "errorStatus": {
+                    "description": "错误状态管理字段",
+                    "type": "string"
+                },
+                "errorTimestamp": {
+                    "description": "最后错误发生时间",
+                    "type": "string"
+                },
+                "forwardedAddresses": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "id": {
                     "type": "integer"
@@ -4369,9 +10827,37 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "mailProvider": {
-                    "$ref": "#/definitions/models.MailProvider"
+                    "description": "Make optional",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.MailProvider"
+                        }
+                    ]
                 },
                 "mailProviderId": {
+                    "description": "Make optional - only for accounts that need predefined providers",
+                    "type": "integer"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "noteFormat": {
+                    "$ref": "#/definitions/models.AccountNoteFormat"
+                },
+                "oauth2Provider": {
+                    "description": "OAuth2配置关联",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.OAuth2GlobalConfig"
+                        }
+                    ]
+                },
+                "oauth2ProviderId": {
+                    "description": "For OAuth2 authentication, references OAuth2GlobalConfig",
+                    "type": "integer"
+                },
+                "orgId": {
+                    "description": "所属组织",
                     "type": "integer"
                 },
                 "password": {
@@ -4382,6 +10868,66 @@ const docTemplate = `{
                     "description": "e.g., \"socks5://user:pass@host:port\"",
                     "type": "string"
                 },
+                "proxyFallbackMode": {
+                    "description": "interrupt, manual_backup, auto_select",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyFallbackMode"
+                        }
+                    ]
+                },
+                "proxyFallbackProxy": {
+                    "description": "Manual backup proxy URL",
+                    "type": "string"
+                },
+                "proxyFallbackProxyId": {
+                    "description": "Backup proxy from pool",
+                    "type": "integer"
+                },
+                "proxyId": {
+                    "description": "Selected proxy from pool",
+                    "type": "integer"
+                },
+                "proxyMatchGroupIds": {
+                    "description": "Auto-match group IDs",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagIds": {
+                    "description": "Auto-match tag IDs",
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "proxyMatchTagMode": {
+                    "description": "and/or",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyTagFilterMode"
+                        }
+                    ]
+                },
+                "proxyMode": {
+                    "description": "manual, selected, auto",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ProxyAccountMode"
+                        }
+                    ]
+                },
+                "proxyPoolItem": {
+                    "$ref": "#/definitions/models.ProxyPoolItem"
+                },
+                "tags": {
+                    "description": "标签关联",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Tag"
+                    }
+                },
                 "token": {
                     "description": "For AuthTypeToken",
                     "type": "string"
@@ -4390,6 +10936,348 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "verifiedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.EmailAccountSyncConfig": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "description": "Associations",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.EmailAccount"
+                        }
+                    ]
+                },
+                "account_id": {
+                    "type": "integer"
+                },
+                "auto_disabled": {
+                    "description": "自动禁用相关字段",
+                    "type": "boolean"
+                },
+                "consecutive_errors": {
+                    "description": "连续错误次数",
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "disable_reason": {
+                    "description": "自动禁用原因",
+                    "type": "string"
+                },
+                "enable_auto_sync": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "last_error_time": {
+                    "description": "最后错误时间",
+                    "type": "string"
+                },
+                "last_history_id": {
+                    "description": "Gmail API History ID for incremental sync",
+                    "type": "string"
+                },
+                "last_recovery_attempt": {
+                    "description": "最后恢复尝试时间",
+                    "type": "string"
+                },
+                "last_sync_end_time": {
+                    "description": "上次同步结束时间",
+                    "type": "string"
+                },
+                "last_sync_error": {
+                    "type": "string"
+                },
+                "last_sync_message_id": {
+                    "type": "string"
+                },
+                "last_sync_time": {
+                    "description": "上次同步开始时间",
+                    "type": "string"
+                },
+                "recovery_attempts": {
+                    "description": "恢复相关字段",
+                    "type": "integer"
+                },
+                "sync_folders": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "sync_interval": {
+                    "description": "seconds",
+                    "type": "integer"
+                },
+                "sync_status": {
+                    "description": "idle, syncing, error",
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.EmailDirection": {
+            "type": "string",
+            "enum": [
+                "received",
+                "sent"
+            ],
+            "x-enum-comments": {
+                "EmailDirectionReceived": "收件（默认）",
+                "EmailDirectionSent": "发件"
+            },
+            "x-enum-varnames": [
+                "EmailDirectionReceived",
+                "EmailDirectionSent"
+            ]
+        },
+        "models.ErrorHandlingPolicy": {
+            "type": "string",
+            "enum": [
+                "abort",
+                "continue",
+                "skip_action"
+            ],
+            "x-enum-comments": {
+                "ErrorPolicyAbort": "中断执行",
+                "ErrorPolicyContinue": "继续执行",
+                "ErrorPolicySkipAction": "跳过当前动作"
+            },
+            "x-enum-varnames": [
+                "ErrorPolicyAbort",
+                "ErrorPolicyContinue",
+                "ErrorPolicySkipAction"
+            ]
+        },
+        "models.ExecutionStep": {
+            "type": "object",
+            "properties": {
+                "duration": {
+                    "description": "毫秒",
+                    "type": "integer"
+                },
+                "endTime": {
+                    "type": "string"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "input": {
+                    "description": "输入参数",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "name": {
+                    "description": "人类可读的名称",
+                    "type": "string"
+                },
+                "output": {
+                    "description": "输出/结果",
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "pluginId": {
+                    "description": "插件标识符",
+                    "type": "string"
+                },
+                "startTime": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                },
+                "type": {
+                    "description": "\"filter\" 或 \"action\"",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ExecutionStepType"
+                        }
+                    ]
+                }
+            }
+        },
+        "models.ExecutionStepType": {
+            "type": "string",
+            "enum": [
+                "filter",
+                "action"
+            ],
+            "x-enum-varnames": [
+                "ExecutionStepTypeFilter",
+                "ExecutionStepTypeAction"
+            ]
+        },
+        "models.ExecutionTrace": {
+            "type": "object",
+            "properties": {
+                "endTime": {
+                    "type": "string"
+                },
+                "startTime": {
+                    "type": "string"
+                },
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ExecutionStep"
+                    }
+                },
+                "totalMs": {
+                    "type": "integer"
+                },
+                "totalSteps": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.ExtractionResult": {
+            "type": "object",
+            "properties": {
+                "actionResults": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ActionExecutionResult"
+                    }
+                },
+                "duration": {
+                    "description": "ms",
+                    "type": "integer"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "executionTrace": {
+                    "$ref": "#/definitions/models.ExecutionTrace"
+                },
+                "extractedValue": {},
+                "filterMatched": {
+                    "type": "boolean"
+                },
+                "status": {
+                    "$ref": "#/definitions/models.ExtractionV2Status"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "models.ExtractionV2Status": {
+            "type": "string",
+            "enum": [
+                "success",
+                "failed",
+                "no_match",
+                "partial",
+                "skipped"
+            ],
+            "x-enum-comments": {
+                "ExtractionV2StatusFailed": "失败",
+                "ExtractionV2StatusNoMatch": "过滤条件不匹配",
+                "ExtractionV2StatusPartial": "部分成功",
+                "ExtractionV2StatusSkipped": "跳过（模板禁用等）",
+                "ExtractionV2StatusSuccess": "成功"
+            },
+            "x-enum-varnames": [
+                "ExtractionV2StatusSuccess",
+                "ExtractionV2StatusFailed",
+                "ExtractionV2StatusNoMatch",
+                "ExtractionV2StatusPartial",
+                "ExtractionV2StatusSkipped"
+            ]
+        },
+        "models.ExtractorCompatibilityIssue": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "pluginId": {
+                    "type": "string"
+                },
+                "pluginName": {
+                    "type": "string"
+                },
+                "severity": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ExtractorOutputConfig": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "description": "输出字段描述",
+                    "type": "string"
+                },
+                "field": {
+                    "description": "从动作链输出中提取的字段名",
+                    "type": "string"
+                },
+                "format": {
+                    "description": "输出格式",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ExtractorOutputFormat"
+                        }
+                    ]
+                },
+                "template": {
+                    "description": "输出模板（用于格式化）",
+                    "type": "string"
+                }
+            }
+        },
+        "models.ExtractorOutputFormat": {
+            "type": "string",
+            "enum": [
+                "text",
+                "json",
+                "array",
+                "object"
+            ],
+            "x-enum-comments": {
+                "ExtractorOutputFormatArray": "数组",
+                "ExtractorOutputFormatJSON": "JSON对象",
+                "ExtractorOutputFormatObject": "结构化对象",
+                "ExtractorOutputFormatText": "纯文本"
+            },
+            "x-enum-varnames": [
+                "ExtractorOutputFormatText",
+                "ExtractorOutputFormatJSON",
+                "ExtractorOutputFormatArray",
+                "ExtractorOutputFormatObject"
+            ]
+        },
+        "models.ExtractorTemplateCompatibility": {
+            "type": "object",
+            "properties": {
+                "compatible": {
+                    "type": "boolean"
+                },
+                "issues": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ExtractorCompatibilityIssue"
+                    }
+                },
+                "message": {
                     "type": "string"
                 }
             }
@@ -4414,6 +11302,24 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
+        },
+        "models.FilterMode": {
+            "type": "string",
+            "enum": [
+                "all",
+                "include",
+                "exclude"
+            ],
+            "x-enum-comments": {
+                "FilterModeAll": "全部动作",
+                "FilterModeExclude": "排除指定动作类型",
+                "FilterModeInclude": "仅指定动作类型"
+            },
+            "x-enum-varnames": [
+                "FilterModeAll",
+                "FilterModeInclude",
+                "FilterModeExclude"
+            ]
         },
         "models.IncrementalSyncRecord": {
             "type": "object",
@@ -4447,11 +11353,318 @@ const docTemplate = `{
                 }
             }
         },
-        "models.JSONMap": {
+        "models.Interceptor": {
             "type": "object",
-            "additionalProperties": {
-                "type": "string"
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "error_handling": {
+                    "$ref": "#/definitions/models.InterceptorErrorConfig"
+                },
+                "execution": {
+                    "$ref": "#/definitions/models.InterceptorExecutionConfig"
+                },
+                "extractor_id": {
+                    "description": "局部拦截器关联的提取器",
+                    "type": "integer"
+                },
+                "filter": {
+                    "$ref": "#/definitions/models.InterceptorFilter"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "orgId": {
+                    "type": "integer"
+                },
+                "phases": {
+                    "$ref": "#/definitions/models.InterceptorPhases"
+                },
+                "plugin_config": {
+                    "$ref": "#/definitions/models.JSONMapInterface"
+                },
+                "plugin_id": {
+                    "type": "string"
+                },
+                "scope": {
+                    "$ref": "#/definitions/models.InterceptorScope"
+                },
+                "skip_config": {
+                    "$ref": "#/definitions/models.InterceptorSkipConfig"
+                },
+                "trigger_id": {
+                    "description": "局部拦截器关联的触发器",
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
             }
+        },
+        "models.InterceptorAsyncConfig": {
+            "type": "object",
+            "properties": {
+                "max_concurrency": {
+                    "description": "最大并发数",
+                    "type": "integer"
+                },
+                "max_retries": {
+                    "description": "最大重试次数",
+                    "type": "integer"
+                },
+                "queue_name": {
+                    "description": "队列名称",
+                    "type": "string"
+                },
+                "retry_on_error": {
+                    "description": "失败时是否重试",
+                    "type": "boolean"
+                },
+                "timeout_seconds": {
+                    "description": "超时时间(秒)",
+                    "type": "integer"
+                }
+            }
+        },
+        "models.InterceptorErrorConfig": {
+            "type": "object",
+            "properties": {
+                "after_error_policy": {
+                    "description": "后置阶段错误策略",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ErrorHandlingPolicy"
+                        }
+                    ]
+                },
+                "before_error_policy": {
+                    "description": "前置阶段错误策略",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.ErrorHandlingPolicy"
+                        }
+                    ]
+                },
+                "max_retries": {
+                    "description": "最大重试次数",
+                    "type": "integer"
+                },
+                "retry_delay_seconds": {
+                    "description": "重试间隔(秒)",
+                    "type": "integer"
+                }
+            }
+        },
+        "models.InterceptorExecutionConfig": {
+            "type": "object",
+            "properties": {
+                "after_mode": {
+                    "description": "后置阶段执行模式",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/internal_models.ExecutionMode"
+                        }
+                    ]
+                },
+                "async_config": {
+                    "description": "异步配置",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.InterceptorAsyncConfig"
+                        }
+                    ]
+                }
+            }
+        },
+        "models.InterceptorFilter": {
+            "type": "object",
+            "properties": {
+                "action_types": {
+                    "description": "动作类型列表",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "expressions": {
+                    "description": "表达式列表(复用触发器表达式格式)",
+                    "type": "array",
+                    "items": {}
+                },
+                "mode": {
+                    "description": "过滤模式",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.FilterMode"
+                        }
+                    ]
+                },
+                "use_advanced_filter": {
+                    "description": "是否使用高级表达式过滤",
+                    "type": "boolean"
+                }
+            }
+        },
+        "models.InterceptorLog": {
+            "type": "object",
+            "properties": {
+                "action_id": {
+                    "type": "string"
+                },
+                "action_plugin_id": {
+                    "type": "string"
+                },
+                "action_result": {
+                    "description": "仅后置阶段",
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "decision_made": {
+                    "description": "skip/abort/continue",
+                    "type": "string"
+                },
+                "duration": {
+                    "description": "毫秒",
+                    "type": "integer"
+                },
+                "email_id": {
+                    "type": "integer"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "input_data": {
+                    "type": "string"
+                },
+                "interceptor_id": {
+                    "type": "integer"
+                },
+                "interceptor_name": {
+                    "type": "string"
+                },
+                "output_data": {
+                    "type": "string"
+                },
+                "phase": {
+                    "description": "before/after",
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                },
+                "trigger_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.InterceptorPhases": {
+            "type": "object",
+            "properties": {
+                "after": {
+                    "description": "后置阶段",
+                    "type": "boolean"
+                },
+                "before": {
+                    "description": "前置阶段",
+                    "type": "boolean"
+                }
+            }
+        },
+        "models.InterceptorPluginInfo": {
+            "type": "object",
+            "properties": {
+                "config_schema": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "default_config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "supports_after": {
+                    "type": "boolean"
+                },
+                "supports_before": {
+                    "type": "boolean"
+                },
+                "type": {
+                    "description": "拦截器类型: before_only, after_only, around",
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.InterceptorScope": {
+            "type": "string",
+            "enum": [
+                "global",
+                "local"
+            ],
+            "x-enum-comments": {
+                "InterceptorScopeGlobal": "全局拦截器",
+                "InterceptorScopeLocal": "局部拦截器(绑定到触发器/提取器)"
+            },
+            "x-enum-varnames": [
+                "InterceptorScopeGlobal",
+                "InterceptorScopeLocal"
+            ]
+        },
+        "models.InterceptorSkipConfig": {
+            "type": "object",
+            "properties": {
+                "execute_after_on_skip": {
+                    "description": "跳过后是否执行后置",
+                    "type": "boolean"
+                },
+                "log_skipped": {
+                    "description": "是否记录被跳过的动作",
+                    "type": "boolean"
+                },
+                "skip_behavior": {
+                    "description": "跳过后行为",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.SkipBehavior"
+                        }
+                    ]
+                }
+            }
+        },
+        "models.JSONMapInterface": {
+            "type": "object",
+            "additionalProperties": true
         },
         "models.MailProvider": {
             "type": "object",
@@ -4460,7 +11673,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "deletedAt": {
-                    "$ref": "#/definitions/models.DeletedAt"
+                    "$ref": "#/definitions/internal_models.DeletedAt"
                 },
                 "id": {
                     "type": "integer"
@@ -4502,14 +11715,781 @@ const docTemplate = `{
                 "ProviderTypeCustom"
             ]
         },
-        "models.User": {
+        "models.OAuth2GlobalConfig": {
             "type": "object",
             "properties": {
+                "client_id": {
+                    "type": "string"
+                },
+                "client_secret": {
+                    "type": "string"
+                },
                 "created_at": {
                     "type": "string"
                 },
                 "deleted_at": {
-                    "$ref": "#/definitions/models.DeletedAt"
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "is_enabled": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "description": "配置名称，用于区分不同的OAuth2配置",
+                    "type": "string"
+                },
+                "provider_type": {
+                    "description": "去掉唯一约束，改为普通索引",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.MailProviderType"
+                        }
+                    ]
+                },
+                "redirect_uri": {
+                    "type": "string"
+                },
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ProxyAccountMode": {
+            "type": "string",
+            "enum": [
+                "manual",
+                "selected",
+                "auto"
+            ],
+            "x-enum-varnames": [
+                "ProxyAccountModeManual",
+                "ProxyAccountModeSelected",
+                "ProxyAccountModeAuto"
+            ]
+        },
+        "models.ProxyFallbackMode": {
+            "type": "string",
+            "enum": [
+                "interrupt",
+                "manual_backup",
+                "auto_select"
+            ],
+            "x-enum-varnames": [
+                "ProxyFallbackInterrupt",
+                "ProxyFallbackManual",
+                "ProxyFallbackAutoSelect"
+            ]
+        },
+        "models.ProxyGroup": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "deletedAt": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "orgId": {
+                    "type": "integer"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ProxyPoolItem": {
+            "type": "object",
+            "properties": {
+                "checkCount": {
+                    "type": "integer"
+                },
+                "checkLatencyMs": {
+                    "type": "integer"
+                },
+                "city": {
+                    "type": "string"
+                },
+                "country": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "deletedAt": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "exitIp": {
+                    "type": "string"
+                },
+                "failureCount": {
+                    "type": "integer"
+                },
+                "group": {
+                    "$ref": "#/definitions/models.ProxyGroup"
+                },
+                "groupId": {
+                    "type": "integer"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "isp": {
+                    "type": "string"
+                },
+                "lastCheckAt": {
+                    "type": "string"
+                },
+                "lastError": {
+                    "type": "string"
+                },
+                "lastFailureAt": {
+                    "type": "string"
+                },
+                "lastSuccessAt": {
+                    "type": "string"
+                },
+                "metadata": {
+                    "$ref": "#/definitions/internal_models.JSONMap"
+                },
+                "orgId": {
+                    "type": "integer"
+                },
+                "password": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "refreshUrl": {
+                    "type": "string"
+                },
+                "region": {
+                    "type": "string"
+                },
+                "remark": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "status": {
+                    "$ref": "#/definitions/models.ProxyStatus"
+                },
+                "successCount": {
+                    "type": "integer"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.ProxyTag"
+                    }
+                },
+                "type": {
+                    "$ref": "#/definitions/models.ProxyType"
+                },
+                "updatedAt": {
+                    "type": "string"
+                },
+                "usageScope": {
+                    "type": "string"
+                },
+                "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ProxyStatus": {
+            "type": "string",
+            "enum": [
+                "unknown",
+                "available",
+                "unavailable",
+                "checking"
+            ],
+            "x-enum-varnames": [
+                "ProxyStatusUnknown",
+                "ProxyStatusAvailable",
+                "ProxyStatusUnavailable",
+                "ProxyStatusChecking"
+            ]
+        },
+        "models.ProxyTag": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "deletedAt": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "orgId": {
+                    "type": "integer"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.ProxyTagFilterMode": {
+            "type": "string",
+            "enum": [
+                "or",
+                "and"
+            ],
+            "x-enum-varnames": [
+                "ProxyTagFilterOR",
+                "ProxyTagFilterAND"
+            ]
+        },
+        "models.ProxyType": {
+            "type": "string",
+            "enum": [
+                "http",
+                "https",
+                "ssh",
+                "socks5"
+            ],
+            "x-enum-varnames": [
+                "ProxyTypeHTTP",
+                "ProxyTypeHTTPS",
+                "ProxyTypeSSH",
+                "ProxyTypeSocks5"
+            ]
+        },
+        "models.SkipBehavior": {
+            "type": "string",
+            "enum": [
+                "continue",
+                "abort"
+            ],
+            "x-enum-comments": {
+                "SkipBehaviorAbort": "中断整个动作链",
+                "SkipBehaviorContinue": "继续执行后续动作"
+            },
+            "x-enum-varnames": [
+                "SkipBehaviorContinue",
+                "SkipBehaviorAbort"
+            ]
+        },
+        "models.StepDebugResult": {
+            "type": "object",
+            "properties": {
+                "duration": {
+                    "description": "ms",
+                    "type": "integer"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "input": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "output": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "stepIndex": {
+                    "type": "integer"
+                },
+                "stepName": {
+                    "type": "string"
+                },
+                "stepType": {
+                    "description": "\"filter\" | \"action\"",
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "models.SystemConfigRequest": {
+            "type": "object",
+            "required": [
+                "value"
+            ],
+            "properties": {
+                "value": {}
+            }
+        },
+        "models.SystemConfigResponse": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string"
+                },
+                "current_value": {},
+                "default_value": {},
+                "description": {
+                    "type": "string"
+                },
+                "is_editable": {
+                    "type": "boolean"
+                },
+                "is_visible": {
+                    "type": "boolean"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "value_type": {
+                    "$ref": "#/definitions/models.SystemConfigValueType"
+                }
+            }
+        },
+        "models.SystemConfigValueType": {
+            "type": "string",
+            "enum": [
+                "string",
+                "number",
+                "float",
+                "boolean",
+                "json"
+            ],
+            "x-enum-comments": {
+                "ConfigTypeBoolean": "真假",
+                "ConfigTypeFloat": "小数",
+                "ConfigTypeJSON": "JSON对象",
+                "ConfigTypeNumber": "数值",
+                "ConfigTypeString": "字符串"
+            },
+            "x-enum-varnames": [
+                "ConfigTypeString",
+                "ConfigTypeNumber",
+                "ConfigTypeFloat",
+                "ConfigTypeBoolean",
+                "ConfigTypeJSON"
+            ]
+        },
+        "models.Tag": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "description": "标签颜色（可覆盖组颜色）",
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "deletedAt": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "group": {
+                    "description": "关联的标签组",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.TagGroup"
+                        }
+                    ]
+                },
+                "groupId": {
+                    "description": "所属标签组ID",
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "description": "标签名称",
+                    "type": "string"
+                },
+                "sortOrder": {
+                    "description": "排序顺序",
+                    "type": "integer"
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.TagGroup": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "description": "标签组颜色",
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "deletedAt": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "selectionType": {
+                    "description": "选择类型: single 或 multiple",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.TagGroupSelectionType"
+                        }
+                    ]
+                },
+                "sortOrder": {
+                    "description": "排序顺序",
+                    "type": "integer"
+                },
+                "tags": {
+                    "description": "关联的标签",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Tag"
+                    }
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.TagGroupSelectionType": {
+            "type": "string",
+            "enum": [
+                "single",
+                "multiple"
+            ],
+            "x-enum-comments": {
+                "TagGroupSelectionMultiple": "多选",
+                "TagGroupSelectionSingle": "单选（互斥）"
+            },
+            "x-enum-varnames": [
+                "TagGroupSelectionSingle",
+                "TagGroupSelectionMultiple"
+            ]
+        },
+        "models.TagGroupWithTags": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "createdAt": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "selectionType": {
+                    "$ref": "#/definitions/models.TagGroupSelectionType"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TagSimple"
+                    }
+                },
+                "updatedAt": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.TagSimple": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "groupId": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "sortOrder": {
+                    "type": "integer"
+                }
+            }
+        },
+        "models.TagWithGroup": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "groupId": {
+                    "type": "integer"
+                },
+                "groupName": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.TriggerAction": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "$ref": "#/definitions/models.JSONMapInterface"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "executionOrder": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "pluginId": {
+                    "type": "string"
+                },
+                "pluginName": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.TriggerActionConfig": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "description": "动作配置（JSON字符串或模板）",
+                    "type": "string"
+                },
+                "description": {
+                    "description": "动作描述",
+                    "type": "string"
+                },
+                "enabled": {
+                    "description": "是否启用此动作",
+                    "type": "boolean"
+                },
+                "name": {
+                    "description": "动作名称",
+                    "type": "string"
+                },
+                "order": {
+                    "description": "执行顺序",
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "动作类型",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/models.TriggerActionType"
+                        }
+                    ]
+                }
+            }
+        },
+        "models.TriggerActionType": {
+            "type": "string",
+            "enum": [
+                "modify_content",
+                "smtp"
+            ],
+            "x-enum-comments": {
+                "TriggerActionTypeModifyContent": "修改邮件内容",
+                "TriggerActionTypeSMTP": "SMTP转发（未来扩展）"
+            },
+            "x-enum-varnames": [
+                "TriggerActionTypeModifyContent",
+                "TriggerActionTypeSMTP"
+            ]
+        },
+        "models.TriggerConditionConfig": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "description": "脚本内容",
+                    "type": "string"
+                },
+                "timeout": {
+                    "description": "超时时间（秒）",
+                    "type": "integer"
+                },
+                "type": {
+                    "description": "js, gotemplate",
+                    "type": "string"
+                }
+            }
+        },
+        "models.TriggerExpression": {
+            "type": "object",
+            "properties": {
+                "conditions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerExpression"
+                    }
+                },
+                "field": {
+                    "type": "string"
+                },
+                "fields": {
+                    "$ref": "#/definitions/models.JSONMapInterface"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "not": {
+                    "type": "boolean"
+                },
+                "operator": {
+                    "$ref": "#/definitions/models.TriggerOperator"
+                },
+                "pluginId": {
+                    "type": "string"
+                },
+                "type": {
+                    "$ref": "#/definitions/models.TriggerExpressionType"
+                },
+                "value": {}
+            }
+        },
+        "models.TriggerExpressionType": {
+            "type": "string",
+            "enum": [
+                "group",
+                "condition",
+                "plugin",
+                "expression"
+            ],
+            "x-enum-comments": {
+                "TriggerExpressionTypeExpression": "For custom expression languages (JS, CEL, Go-Template, JSONPath)"
+            },
+            "x-enum-varnames": [
+                "TriggerExpressionTypeGroup",
+                "TriggerExpressionTypeCondition",
+                "TriggerExpressionTypePlugin",
+                "TriggerExpressionTypeExpression"
+            ]
+        },
+        "models.TriggerOperator": {
+            "type": "string",
+            "enum": [
+                "and",
+                "or",
+                "not"
+            ],
+            "x-enum-varnames": [
+                "TriggerOperatorAnd",
+                "TriggerOperatorOr",
+                "TriggerOperatorNot"
+            ]
+        },
+        "models.UpdateInterceptorRequest": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "error_handling": {
+                    "$ref": "#/definitions/models.InterceptorErrorConfig"
+                },
+                "execution": {
+                    "$ref": "#/definitions/models.InterceptorExecutionConfig"
+                },
+                "filter": {
+                    "$ref": "#/definitions/models.InterceptorFilter"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "phases": {
+                    "$ref": "#/definitions/models.InterceptorPhases"
+                },
+                "plugin_config": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "plugin_id": {
+                    "type": "string"
+                },
+                "skip_config": {
+                    "$ref": "#/definitions/models.InterceptorSkipConfig"
+                }
+            }
+        },
+        "models.User": {
+            "type": "object",
+            "properties": {
+                "avatar": {
+                    "description": "Base64 encoded image",
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "current_org_id": {
+                    "description": "当前活跃组织",
+                    "type": "integer"
+                },
+                "deleted_at": {
+                    "$ref": "#/definitions/internal_models.DeletedAt"
                 },
                 "email": {
                     "type": "string"
@@ -4520,6 +12500,10 @@ const docTemplate = `{
                 "is_active": {
                     "type": "boolean"
                 },
+                "is_super_admin": {
+                    "description": "超级管理员",
+                    "type": "boolean"
+                },
                 "last_login_at": {
                     "type": "string"
                 },
@@ -4527,6 +12511,180 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "username": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.UserSession": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "token": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "user_id": {
+                    "type": "integer"
+                }
+            }
+        },
+        "services.ExtractionResultItem": {
+            "type": "object",
+            "properties": {
+                "email_id": {
+                    "type": "integer"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "extracted_value": {},
+                "status": {
+                    "description": "success, failed, no_match, skipped",
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "services.InlineActionsConfig": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerAction"
+                    }
+                },
+                "expressions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.TriggerExpression"
+                    }
+                },
+                "output_config": {
+                    "$ref": "#/definitions/models.ExtractorOutputConfig"
+                }
+            }
+        },
+        "services.PickupPollRequest": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "description": "可选但推荐传；to_query 能解析到账户时以后端解析结果为准",
+                    "type": "integer"
+                },
+                "inline_actions": {
+                    "description": "方式2: 内联V2动作",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/services.InlineActionsConfig"
+                        }
+                    ]
+                },
+                "keep_alive_seconds": {
+                    "description": "临时同步覆盖有效期(秒)，建议 30-120",
+                    "type": "integer"
+                },
+                "limit": {
+                    "description": "返回数量限制，默认 10",
+                    "type": "integer"
+                },
+                "simple_extract": {
+                    "description": "方式3: 简单提取（V1风格）",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/services.SimpleExtractConfig"
+                        }
+                    ]
+                },
+                "since": {
+                    "description": "ISO8601 搜索起始时间",
+                    "type": "string"
+                },
+                "sync_interval": {
+                    "description": "后端拉取邮件间隔(秒)，默认 5",
+                    "type": "integer"
+                },
+                "template_id": {
+                    "description": "提取模式（三选一，可都不传表示只搜索不提取）",
+                    "type": "integer"
+                },
+                "to_query": {
+                    "description": "收件人过滤",
+                    "type": "string"
+                }
+            }
+        },
+        "services.PickupPollResponse": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "integer"
+                },
+                "emails": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/models.Email"
+                    }
+                },
+                "extractions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/services.ExtractionResultItem"
+                    }
+                },
+                "new_count": {
+                    "type": "integer"
+                },
+                "requested_account_id": {
+                    "type": "integer"
+                },
+                "resolved_by": {
+                    "type": "string"
+                },
+                "success": {
+                    "type": "boolean"
+                },
+                "sync_active": {
+                    "type": "boolean"
+                },
+                "sync_expires_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "services.SimpleExtractConfig": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "description": "body, subject, from, html_body",
+                    "type": "string"
+                },
+                "match_index": {
+                    "description": "0-based index; negative indexes count from the end",
+                    "type": "integer"
+                },
+                "match_mode": {
+                    "description": "all, first, last, index",
+                    "type": "string"
+                },
+                "pattern": {
+                    "description": "正则表达式或脚本",
+                    "type": "string"
+                },
+                "type": {
+                    "description": "regex, js, gotemplate",
                     "type": "string"
                 }
             }

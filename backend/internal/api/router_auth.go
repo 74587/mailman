@@ -134,6 +134,7 @@ func NewRouterWithAuth(
 	accountRouter.HandleFunc("/accounts/{id}/proxy-config", handler.GetAccountProxyConfigHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/{id}/proxy-config", handler.SetAccountProxyConfigHandler).Methods("PUT")
 	accountRouter.HandleFunc("/accounts/{id}/proxy-config", handler.DeleteAccountProxyConfigHandler).Methods("DELETE")
+	accountRouter.HandleFunc("/accounts/oauth2/onboard", handler.CreateOAuth2AccountOnboardingHandler).Methods("POST")
 	accountRouter.HandleFunc("/accounts/{id}", handler.GetAccountHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/{id}", handler.UpdateAccountHandler).Methods("PUT")
 	accountRouter.HandleFunc("/accounts/{id}", handler.DeleteAccountHandler).Methods("DELETE")

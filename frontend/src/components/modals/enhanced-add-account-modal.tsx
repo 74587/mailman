@@ -1,14 +1,14 @@
 'use client'
 import { logger } from '@/lib/logger';
 
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { Check, AlertCircle, Loader2, ArrowRight, CheckCircle, Clock, Settings, Globe2, StickyNote, Network, Mail, Forward } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
 import { syncConfigService } from '@/services/sync-config.service'
 import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AccountNoteFormat, EmailAccount, ProxyAccountMode, ProxyFallbackMode, ProxyTagFilterMode, ProxyType } from '@/types'
+import { AccountNoteFormat, EmailAccount, OAuth2GlobalConfig, ProxyAccountMode, ProxyFallbackMode, ProxyTagFilterMode, ProxyType } from '@/types'
 import OAuth2PopupAuth from '@/components/oauth2/oauth2-popup-auth'
 import { AccountNoteEditor } from '@/components/accounts/account-note-editor'
 import { ProxyConfigSection, defaultProxyConfigValue } from '@/components/proxy/proxy-config-section'
@@ -143,7 +143,8 @@ export default function EnhancedAddAccountModal({
     const [syncInterval, setSyncInterval] = useState(300) // 5 minutes
 
     const [showOAuth2Popup, setShowOAuth2Popup] = useState(false)
-    const [oauth2Providers, setOAuth2Providers] = useState<any[]>([])
+    const [oauth2Providers, setOAuth2Providers] = useState<OAuth2GlobalConfig[]>([])
+    const autoTriggeredOAuth2Ref = useRef(false)
 
     // 自定义IMAP服务器配置
     const [isCustomProvider, setIsCustomProvider] = useState(false)
@@ -195,6 +196,58 @@ export default function EnhancedAddAccountModal({
         return () => window.clearTimeout(timer)
     }, [currentStep])
 
+    const selectedProviderType = selectedProvider?.type?.toLowerCase()
+    const availableOAuth2Providers = useMemo(
+        () => oauth2Providers.filter(config => config.provider_type === selectedProviderType && config.is_enabled),
+        [oauth2Providers, selectedProviderType]
+    )
+
+    useEffect(() => {
+        if (accountForm.authType !== 'oauth2' || availableOAuth2Providers.length === 0) {
+            return
+        }
+
+        const currentConfigStillAvailable = availableOAuth2Providers.some(config => config.id === accountForm.oauth2ProviderConfigId)
+        if (!currentConfigStillAvailable) {
+            setAccountForm(prev => ({
+                ...prev,
+                oauth2ProviderConfigId: availableOAuth2Providers[0].id,
+            }))
+        }
+    }, [accountForm.authType, accountForm.oauth2ProviderConfigId, availableOAuth2Providers])
+
+    useEffect(() => {
+        if (!isOpen) {
+            autoTriggeredOAuth2Ref.current = false
+        }
+    }, [isOpen])
+
+    useEffect(() => {
+        if (!isOpen || !autoTriggerOAuth2 || autoTriggeredOAuth2Ref.current) {
+            return
+        }
+        if (accountForm.authType !== 'oauth2' || !selectedProviderType) {
+            return
+        }
+        if (selectedProviderType !== 'gmail' && selectedProviderType !== 'outlook') {
+            return
+        }
+        if (availableOAuth2Providers.length === 0 || !accountForm.oauth2ProviderConfigId) {
+            return
+        }
+
+        autoTriggeredOAuth2Ref.current = true
+        const timer = window.setTimeout(() => setShowOAuth2Popup(true), 200)
+        return () => window.clearTimeout(timer)
+    }, [
+        accountForm.authType,
+        accountForm.oauth2ProviderConfigId,
+        autoTriggerOAuth2,
+        availableOAuth2Providers.length,
+        isOpen,
+        selectedProviderType,
+    ])
+
     const loadProviders = async () => {
         try {
             const data = await emailAccountService.getProviders()
@@ -217,6 +270,7 @@ export default function EnhancedAddAccountModal({
         setCurrentStep('account')
         setActiveAccountSection('identity')
         setStepData({})
+        autoTriggeredOAuth2Ref.current = false
         setAccountForm({
             email: '',
             authType: 'password',
@@ -325,10 +379,12 @@ export default function EnhancedAddAccountModal({
             if (accountForm.authType === 'password') {
                 payload.password = accountForm.password
             } else if (accountForm.authType === 'oauth2') {
+                payload.oauth2_provider_id = accountForm.oauth2ProviderConfigId
                 payload.custom_settings = {
                     client_id: accountForm.clientId,
                     access_token: accountForm.accessToken,
-                    refresh_token: accountForm.refreshToken
+                    refresh_token: accountForm.refreshToken,
+                    oauth2_provider_config_id: accountForm.oauth2ProviderConfigId ? String(accountForm.oauth2ProviderConfigId) : undefined
                 }
             }
 
@@ -490,6 +546,8 @@ export default function EnhancedAddAccountModal({
                 setSelectedProvider(autoProvider)
             }
 
+            const providerConfigId = Number(result.customSettings?.oauth2_provider_config_id)
+
             // 将OAuth2授权结果回填到表单
             setAccountForm(prev => ({
                 ...prev,
@@ -498,7 +556,9 @@ export default function EnhancedAddAccountModal({
                 accessToken: result.customSettings?.access_token || '',
                 refreshToken: result.customSettings?.refresh_token || '',
                 clientId: result.customSettings?.client_id || '',
-                oauth2ProviderConfigId: result.customSettings?.oauth2_provider_config_id
+                oauth2ProviderConfigId: Number.isFinite(providerConfigId) && providerConfigId > 0
+                    ? providerConfigId
+                    : prev.oauth2ProviderConfigId
             }))
         } catch (error) {
             console.error('Failed to fill OAuth2 data:', error)
@@ -873,10 +933,41 @@ export default function EnhancedAddAccountModal({
 
                                                         {accountForm.authType === 'oauth2' && (
                                                             <div className="space-y-4">
+                                                                {(selectedProviderType === 'gmail' || selectedProviderType === 'outlook') && (
+                                                                    <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/70 p-3 dark:border-blue-900/50 dark:bg-blue-950/20">
+                                                                        <div className="flex items-center justify-between gap-2">
+                                                                            <label className="text-sm font-medium text-blue-950 dark:text-blue-100">OAuth2 配置</label>
+                                                                            <span className="text-xs text-blue-600 dark:text-blue-300">
+                                                                                {availableOAuth2Providers.length > 1 ? `共 ${availableOAuth2Providers.length} 套` : '默认配置'}
+                                                                            </span>
+                                                                        </div>
+                                                                        {availableOAuth2Providers.length > 0 ? (
+                                                                            <select
+                                                                                value={accountForm.oauth2ProviderConfigId || ''}
+                                                                                onChange={(event) => setAccountForm(prev => ({
+                                                                                    ...prev,
+                                                                                    oauth2ProviderConfigId: event.target.value ? Number(event.target.value) : undefined,
+                                                                                }))}
+                                                                                className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-blue-800 dark:bg-gray-900 dark:text-white"
+                                                                            >
+                                                                                {availableOAuth2Providers.map(config => (
+                                                                                    <option key={config.id} value={config.id}>
+                                                                                        {config.name} · {config.client_id ? `${config.client_id.slice(0, 10)}...` : '未填写 Client ID'}
+                                                                                    </option>
+                                                                                ))}
+                                                                            </select>
+                                                                        ) : (
+                                                                            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
+                                                                                暂无可用 OAuth2 配置，请先在 OAuth2 配置页面添加并启用配置。
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                )}
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => setShowOAuth2Popup(true)}
-                                                                    className="w-full rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700"
+                                                                    disabled={(selectedProviderType === 'gmail' || selectedProviderType === 'outlook') && availableOAuth2Providers.length === 0}
+                                                                    className="w-full rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-400"
                                                                 >
                                                                     启动 OAuth2 认证
                                                                 </button>

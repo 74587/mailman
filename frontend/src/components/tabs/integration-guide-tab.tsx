@@ -537,8 +537,8 @@ const TOC_OAUTH = [
     { id: 'step-2', label: '步骤 2：启动授权会话', icon: Zap },
     { id: 'step-3', label: '步骤 3：用户授权', icon: Globe },
     { id: 'step-4', label: '步骤 4：轮询状态', icon: RefreshCw },
-    { id: 'step-5', label: '步骤 5：创建账户', icon: Mail },
-    { id: 'step-6', label: '步骤 6：验证连通性', icon: CheckCircle2 },
+    { id: 'step-5', label: '步骤 5：完整开通账户', icon: Mail },
+    { id: 'step-6', label: '步骤 6：分步验证/排错', icon: CheckCircle2 },
     { id: 'api-reference', label: 'API 接口参考', icon: Database },
     { id: 'alternative', label: '替代方案', icon: ArrowRight },
     { id: 'refresh-token', label: '刷新 Token', icon: RefreshCw },
@@ -853,7 +853,7 @@ export default function IntegrationGuideTab() {
                             </h1>
                             <p className="text-base text-gray-600 dark:text-gray-400 leading-relaxed">
                                 本手册详细介绍如何通过调用 Mailman API 接口，以 OAuth2 授权方式添加 Gmail 邮箱账户。
-                                整个流程涉及 OAuth2 配置、授权会话管理、Token 交换和账户创建等多个步骤。
+                                整个流程涉及 OAuth2 配置、授权会话管理、Token 获取和账户完整开通等多个步骤。
                             </p>
                         </div>
 
@@ -1114,34 +1114,80 @@ done`}
 
                     {/* ===== 步骤 5 ===== */}
                     <section data-section="step-5">
-                        <StepIndicator step={5} title="创建邮箱账户" active />
+                        <StepIndicator step={5} title="完整开通邮箱账户" active />
 
                         <div className="pl-12 space-y-4">
                             <p className="text-sm text-gray-600 dark:text-gray-400">
-                                授权成功后，使用轮询获取的信息创建邮箱账户。
+                                授权成功后，推荐使用一站式开通接口。后端会按顺序完成创建或更新账户、验证连接、首次同步和保存自动同步配置，避免只创建出一个无法稳定取件的半成品账户。
                             </p>
 
                             <div className="flex items-center gap-2 mb-2">
                                 <MethodBadge method="POST" />
-                                <code className="text-sm font-mono text-gray-800 dark:text-gray-200">/api/accounts</code>
+                                <code className="text-sm font-mono text-gray-800 dark:text-gray-200">/api/accounts/oauth2/onboard</code>
                             </div>
 
                             <CollapsibleCode
-                                title="创建邮箱账户"
+                                title="OAuth2 授权后完整开通账户"
                                 defaultOpen={true}
-                                code={`curl -X POST "\${BASE_URL}/api/accounts" \\
+                                code={`curl -X POST "\${BASE_URL}/api/accounts/oauth2/onboard" \\
   -H "Content-Type: application/json" \\
   -H "Authorization: Bearer \${AUTH_TOKEN}" \\
   -d '{
     "emailAddress": "user@gmail.com",
     "authType": "oauth2",
     "oauth2ProviderId": 1,
+    "update_existing": true,
     "customSettings": {
       "access_token": "ya29.xxx...",
       "refresh_token": "1//xxx...",
-      "token_type": "Bearer"
+      "token_type": "Bearer",
+      "oauth2_provider_config_id": "1"
+    },
+    "initial_sync": {
+      "sync_mode": "incremental",
+      "mailboxes": ["INBOX"],
+      "max_emails_per_mailbox": 1000,
+      "include_body": true
+    },
+    "sync_config": {
+      "enable_auto_sync": true,
+      "sync_interval": 300,
+      "sync_folders": ["INBOX"]
     }
   }'`}
+                            />
+
+                            <CollapsibleCode
+                                title="响应示例"
+                                language="json"
+                                code={`{
+  "account": {
+    "id": 10,
+    "emailAddress": "user@gmail.com",
+    "authType": "oauth2",
+    "oauth2ProviderId": 1,
+    "isVerified": true
+  },
+  "created": true,
+  "updated": false,
+  "completed": true,
+  "verification": {
+    "success": true,
+    "message": "Connection verified successfully"
+  },
+  "initial_sync": {
+    "status": "success",
+    "sync_mode": "incremental",
+    "total_emails_processed": 100,
+    "total_new_emails": 20
+  },
+  "sync_config": {
+    "account_id": 10,
+    "enable_auto_sync": true,
+    "sync_interval": 300,
+    "sync_folders": ["INBOX"]
+  }
+}`}
                             />
 
                             <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-200 mb-2">请求字段说明</h4>
@@ -1151,12 +1197,15 @@ done`}
                                 { name: 'oauth2ProviderId', type: 'uint', desc: '关联的 OAuth2 全局配置 ID' },
                                 { name: 'mailProviderId', type: 'uint', desc: '邮件服务提供商 ID' },
                                 { name: 'customSettings', type: 'object', required: true, desc: '包含 tokens 和认证信息' },
+                                { name: 'initial_sync', type: 'object', desc: '首次同步参数，默认增量同步 INBOX，最多 1000 封并包含正文' },
+                                { name: 'sync_config', type: 'object', desc: '自动同步配置，默认开启、300 秒间隔、INBOX' },
+                                { name: 'update_existing', type: 'boolean', desc: '账户已存在时是否更新，默认 true' },
                                 { name: 'forwardedAddresses', type: 'string[]', desc: '转发到此账户的原始收件地址，支持 source@example.com 或 *@example.org' },
                                 { name: 'proxy', type: 'string', desc: '代理设置，如 socks5://user:pass@host:port' },
                             ]} />
 
                             <Callout type="tip">
-                                也可以使用 <code className="font-mono text-xs">POST /api/accounts/upsert</code> 接口——如果账户已存在则自动更新。
+                                <code className="font-mono text-xs">POST /api/accounts</code> 和 <code className="font-mono text-xs">POST /api/accounts/upsert</code> 仍可用于高级分步接入，但它们只负责账户记录本身，不会自动完成验证、首次同步和同步配置。
                             </Callout>
 
                             <CollapsibleCode
@@ -1184,11 +1233,11 @@ curl -X PUT "\${BASE_URL}/api/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
 
                     {/* ===== 步骤 6 ===== */}
                     <section data-section="step-6">
-                        <StepIndicator step={6} title="验证账户连通性（可选）" />
+                        <StepIndicator step={6} title="分步验证与排错" />
 
                         <div className="pl-12 space-y-4">
                             <p className="text-sm text-gray-600 dark:text-gray-400">
-                                创建账户后，可以验证账户是否能正常连接。
+                                如果你选择继续使用低阶账户接口，或者一站式开通返回 <code className="font-mono text-xs">completed: false</code>，可以用下面的接口单独验证账户连接。
                             </p>
 
                             <div className="flex items-center gap-2 mb-2">
@@ -1276,6 +1325,7 @@ curl -X PUT "\${BASE_URL}/api/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
                                 <div className="rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-800 overflow-hidden">
                                     <ApiEndpoint method="POST" path="/api/accounts" description="创建邮箱账户" />
                                     <ApiEndpoint method="POST" path="/api/accounts/upsert" description="创建或更新邮箱账户" />
+                                    <ApiEndpoint method="POST" path="/api/accounts/oauth2/onboard" description="OAuth2 授权后完整开通账户" />
                                     <ApiEndpoint method="POST" path="/api/accounts/verify" description="验证账户连通性" />
                                     <ApiEndpoint method="GET" path="/api/accounts" description="获取所有账户" />
                                     <ApiEndpoint method="GET" path="/api/accounts/{id}" description="获取单个账户" />
@@ -1338,7 +1388,7 @@ curl -X PUT "\${BASE_URL}/api/accounts/\${ACCOUNT_ID}/forwarded-addresses" \\
                             />
 
                             <Callout type="tip">
-                                获取到 tokens 后，直接跳到步骤 5 创建账户即可。
+                                获取到 tokens 后，直接跳到步骤 5 调用 <code className="font-mono text-xs">/api/accounts/oauth2/onboard</code> 完成账户开通即可。
                             </Callout>
                         </div>
                     </section>

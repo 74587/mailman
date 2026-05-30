@@ -59,6 +59,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	apiRouter.HandleFunc("/accounts/{id}/proxy-config", handler.GetAccountProxyConfigHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/{id}/proxy-config", handler.SetAccountProxyConfigHandler).Methods("PUT")
 	apiRouter.HandleFunc("/accounts/{id}/proxy-config", handler.DeleteAccountProxyConfigHandler).Methods("DELETE")
+	apiRouter.HandleFunc("/accounts/oauth2/onboard", handler.CreateOAuth2AccountOnboardingHandler).Methods("POST")
 	apiRouter.HandleFunc("/accounts/{id}", handler.GetAccountHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/{id}", handler.UpdateAccountHandler).Methods("PUT")
 	apiRouter.HandleFunc("/accounts/{id}", handler.DeleteAccountHandler).Methods("DELETE")

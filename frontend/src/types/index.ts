@@ -159,6 +159,7 @@ export interface CreateEmailAccountRequest {
     app_password?: string;
     token?: string;
     mail_provider_id?: number;
+    oauth2_provider_id?: number;
     proxy?: string;
     proxy_mode?: ProxyAccountMode;
     proxy_id?: number;

@@ -765,17 +765,6 @@ func (h *APIHandler) PollEmailHandler(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Debug("[PollEmail] Fetched %d total emails for %s from server", len(emails), account.EmailAddress)
 
-	// Response structure
-	type PollEmailResponse struct {
-		Status       string        `json:"status"`
-		Found        bool          `json:"found"`
-		Email        *models.Email `json:"email,omitempty"`
-		Matches      interface{}   `json:"matches,omitempty"`
-		ProcessedIds []string      `json:"processedIds"`
-		ElapsedTime  float64       `json:"elapsedTime"`
-		Message      string        `json:"message"`
-	}
-
 	// Track new processed IDs for this request
 	var newProcessedIDs []string
 	currentTime := time.Now().UTC()

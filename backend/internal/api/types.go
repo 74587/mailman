@@ -107,7 +107,7 @@ type UpdateAccountRequest struct {
 	ForwardedAddresses   *models.StringSlice        `json:"forwardedAddresses,omitempty"`
 	Note                 *string                    `json:"note,omitempty"`
 	NoteFormat           *models.AccountNoteFormat  `json:"noteFormat,omitempty"`
-	CustomSettings       *models.JSONMap            `json:"customSettings,omitempty"`
+	CustomSettings       *models.JSONMap            `json:"customSettings,omitempty" swaggertype:"object"`
 	LastSyncAt           *time.Time                 `json:"lastSyncAt,omitempty"`
 }
 
@@ -134,7 +134,41 @@ type CreateAccountRequest struct {
 	ForwardedAddresses   models.StringSlice        `json:"forwardedAddresses,omitempty"`
 	Note                 string                    `json:"note,omitempty"`
 	NoteFormat           models.AccountNoteFormat  `json:"noteFormat,omitempty"`
-	CustomSettings       models.JSONMap            `json:"customSettings,omitempty"`
+	CustomSettings       models.JSONMap            `json:"customSettings,omitempty" swaggertype:"object"`
+}
+
+// AccountOnboardSyncConfigRequest represents sync settings created during OAuth2 account onboarding.
+// @Description Sync configuration options for OAuth2 account onboarding
+type AccountOnboardSyncConfigRequest struct {
+	EnableAutoSync *bool    `json:"enable_auto_sync,omitempty" example:"true"`
+	SyncInterval   int      `json:"sync_interval,omitempty" example:"300"`
+	SyncFolders    []string `json:"sync_folders,omitempty" example:"[\"INBOX\"]"`
+}
+
+// CreateOAuth2AccountOnboardingRequest creates or updates an OAuth2 account and completes the standard setup flow.
+// @Description Create/update an OAuth2 email account, verify connectivity, run initial sync, and save auto-sync settings in one request
+type CreateOAuth2AccountOnboardingRequest struct {
+	CreateAccountRequest
+	Verify           *bool                            `json:"verify,omitempty" example:"true"`
+	RunInitialSync   *bool                            `json:"run_initial_sync,omitempty" example:"true"`
+	CreateSyncConfig *bool                            `json:"create_sync_config,omitempty" example:"true"`
+	UpdateExisting   *bool                            `json:"update_existing,omitempty" example:"true"`
+	InitialSync      *FetchAndStoreRequest            `json:"initial_sync,omitempty"`
+	SyncConfig       *AccountOnboardSyncConfigRequest `json:"sync_config,omitempty"`
+}
+
+// CreateOAuth2AccountOnboardingResponse is returned by OAuth2 account onboarding.
+// @Description Result for the one-step OAuth2 account onboarding flow
+type CreateOAuth2AccountOnboardingResponse struct {
+	Account      models.EmailAccount            `json:"account"`
+	Created      bool                           `json:"created"`
+	Updated      bool                           `json:"updated"`
+	Verification *BatchVerifyAccountResult      `json:"verification,omitempty"`
+	InitialSync  *FetchAndStoreResponse         `json:"initial_sync,omitempty"`
+	SyncConfig   *models.EmailAccountSyncConfig `json:"sync_config,omitempty"`
+	Completed    bool                           `json:"completed"`
+	FailedStage  string                         `json:"failed_stage,omitempty"`
+	Message      string                         `json:"message,omitempty"`
 }
 
 // AccountForwardedAddressesRequest represents a full forwarded recipient list update.
@@ -193,8 +227,8 @@ type AccountProxyConfigRequest struct {
 	ProxyFallbackMode    models.ProxyFallbackMode  `json:"proxyFallbackMode,omitempty" example:"interrupt"`
 	ProxyFallbackProxyID *uint                     `json:"proxyFallbackProxyId,omitempty" example:"2"`
 	ProxyFallbackProxy   string                    `json:"proxyFallbackProxy,omitempty" example:"socks5://backup.example.com:1080"`
-	ProxyMatchGroupIDs   models.UintSlice          `json:"proxyMatchGroupIds,omitempty" example:"[1,2]"`
-	ProxyMatchTagIDs     models.UintSlice          `json:"proxyMatchTagIds,omitempty" example:"[3,4]"`
+	ProxyMatchGroupIDs   models.UintSlice          `json:"proxyMatchGroupIds,omitempty" swaggertype:"array,integer" example:"1,2"`
+	ProxyMatchTagIDs     models.UintSlice          `json:"proxyMatchTagIds,omitempty" swaggertype:"array,integer" example:"3,4"`
 	ProxyMatchTagMode    models.ProxyTagFilterMode `json:"proxyMatchTagMode,omitempty" example:"or"`
 }
 
@@ -210,8 +244,8 @@ type AccountProxyConfigResponse struct {
 	ProxyFallbackMode    models.ProxyFallbackMode  `json:"proxyFallbackMode" example:"interrupt"`
 	ProxyFallbackProxyID *uint                     `json:"proxyFallbackProxyId,omitempty" example:"2"`
 	ProxyFallbackProxy   string                    `json:"proxyFallbackProxy,omitempty" example:"socks5://backup.example.com:1080"`
-	ProxyMatchGroupIDs   models.UintSlice          `json:"proxyMatchGroupIds,omitempty" example:"[1,2]"`
-	ProxyMatchTagIDs     models.UintSlice          `json:"proxyMatchTagIds,omitempty" example:"[3,4]"`
+	ProxyMatchGroupIDs   models.UintSlice          `json:"proxyMatchGroupIds,omitempty" swaggertype:"array,integer" example:"1,2"`
+	ProxyMatchTagIDs     models.UintSlice          `json:"proxyMatchTagIds,omitempty" swaggertype:"array,integer" example:"3,4"`
 	ProxyMatchTagMode    models.ProxyTagFilterMode `json:"proxyMatchTagMode" example:"or"`
 	Changed              bool                      `json:"changed" example:"true"`
 }
@@ -629,6 +663,18 @@ type CheckEmailResponse struct {
 	Error string `json:"error,omitempty"`
 	// Resolved account information
 	ResolvedAccount *AccountInfo `json:"resolved_account,omitempty"`
+}
+
+// PollEmailResponse represents the response for polling an email once.
+// @Description Response with polling result, optional matched email, extraction matches, and processed message IDs
+type PollEmailResponse struct {
+	Status       string        `json:"status" example:"success"`
+	Found        bool          `json:"found" example:"true"`
+	Email        *models.Email `json:"email,omitempty"`
+	Matches      interface{}   `json:"matches,omitempty"`
+	ProcessedIds []string      `json:"processedIds" example:"message-id-1,message-id-2"`
+	ElapsedTime  float64       `json:"elapsedTime" example:"1.25"`
+	Message      string        `json:"message" example:"Email found"`
 }
 
 // AccountInfo represents basic account information

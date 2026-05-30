@@ -10,6 +10,7 @@ import {
     ProxyFallbackMode,
     ProxyTagFilterMode
 } from '@/types';
+import type { SyncConfig } from './sync-config.service';
 
 // 同步响应类型
 export interface FetchAndStoreResponse {
@@ -29,6 +30,40 @@ export interface MailboxSyncResult {
     new_emails: number;
     last_sync_time?: string;
     error?: string;
+}
+
+export interface FetchAndStoreRequest {
+    sync_mode?: 'incremental' | 'full';
+    mailboxes?: string[];
+    max_emails_per_mailbox?: number;
+    include_body?: boolean;
+    default_start_date?: string;
+    end_date?: string;
+}
+
+export interface OAuth2AccountOnboardingRequest extends CreateEmailAccountRequest {
+    verify?: boolean;
+    run_initial_sync?: boolean;
+    create_sync_config?: boolean;
+    update_existing?: boolean;
+    initial_sync?: FetchAndStoreRequest;
+    sync_config?: {
+        enable_auto_sync?: boolean;
+        sync_interval?: number;
+        sync_folders?: string[];
+    };
+}
+
+export interface OAuth2AccountOnboardingResponse {
+    account: EmailAccount;
+    created: boolean;
+    updated: boolean;
+    completed: boolean;
+    failed_stage?: string;
+    message?: string;
+    verification?: unknown;
+    initial_sync?: FetchAndStoreResponse;
+    sync_config?: SyncConfig;
 }
 
 export interface AccountForwardedAddressesResponse {
@@ -118,6 +153,7 @@ export class EmailAccountService {
             emailAddress: data.email_address,
             authType: data.auth_type || 'password',
             mailProviderId: data.mail_provider_id,
+            oauth2ProviderId: data.oauth2_provider_id,
             password: data.password,
             token: data.token,
             proxy: data.proxy,
@@ -160,6 +196,7 @@ export class EmailAccountService {
             emailAddress: data.email_address,
             authType: data.auth_type || 'password',
             mailProviderId: data.mail_provider_id,
+            oauth2ProviderId: data.oauth2_provider_id,
             password: data.password,
             token: data.token,
             proxy: data.proxy,
@@ -191,6 +228,52 @@ export class EmailAccountService {
     }
 
     /**
+     * OAuth2 授权完成后，一次性创建/更新账户、验证连接、首次同步并创建同步配置
+     */
+    async onboardOAuth2Account(data: OAuth2AccountOnboardingRequest): Promise<OAuth2AccountOnboardingResponse> {
+        const payload: any = {
+            emailAddress: data.email_address,
+            authType: data.auth_type || 'oauth2',
+            mailProviderId: data.mail_provider_id,
+            oauth2ProviderId: data.oauth2_provider_id,
+            password: data.password,
+            token: data.token,
+            proxy: data.proxy,
+            proxyMode: data.proxy_mode,
+            proxyId: data.proxy_id,
+            proxyFallbackMode: data.proxy_fallback_mode,
+            proxyFallbackProxyId: data.proxy_fallback_proxy_id,
+            proxyFallbackProxy: data.proxy_fallback_proxy,
+            proxyMatchGroupIds: data.proxy_match_group_ids,
+            proxyMatchTagIds: data.proxy_match_tag_ids,
+            proxyMatchTagMode: data.proxy_match_tag_mode,
+            isDomainMail: data.is_domain_mail || false,
+            domain: data.domain,
+            forwardedAddresses: data.forwarded_addresses,
+            note: data.note,
+            noteFormat: data.note_format,
+            customSettings: data.custom_settings,
+            verify: data.verify,
+            run_initial_sync: data.run_initial_sync,
+            create_sync_config: data.create_sync_config,
+            update_existing: data.update_existing,
+            initial_sync: data.initial_sync,
+            sync_config: data.sync_config
+        };
+
+        Object.keys(payload).forEach(key => {
+            if (payload[key] === undefined) {
+                delete payload[key];
+            }
+        });
+
+        return apiClient.post<OAuth2AccountOnboardingResponse>(
+            `${this.basePath}/oauth2/onboard`,
+            payload
+        );
+    }
+
+    /**
      * 更新邮箱账户
      */
     async updateAccount(id: number, data: UpdateEmailAccountRequest): Promise<EmailAccount> {
@@ -199,6 +282,7 @@ export class EmailAccountService {
             emailAddress: data.email_address,
             authType: data.auth_type,
             mailProviderId: data.mail_provider_id,
+            oauth2ProviderId: data.oauth2_provider_id,
             password: data.password,
             token: data.token,
             proxy: data.proxy,
