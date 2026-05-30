@@ -54,7 +54,6 @@ import { cn } from '@/lib/utils'
 import { AccountNoteEditor } from './account-note-editor'
 import {
     AccountNotePreview,
-    getAccountNotePlainText,
     normalizeAccountNoteFormat,
     openAccountNoteStandalonePreview,
 } from './account-note-preview'
@@ -585,7 +584,7 @@ export function AccountsDataTable({
                 id: 'emailAddress',
                 accessorKey: 'emailAddress',
                 header: '邮箱地址',
-                size: 180,
+                size: 165,
                 enableSorting: true,
                 cell: ({ row }) => (
                     <span
@@ -602,7 +601,7 @@ export function AccountsDataTable({
                 id: 'provider',
                 accessorKey: 'mailProvider.name',
                 header: '提供商',
-                size: 100,
+                size: 90,
                 enableSorting: true,
                 cell: ({ row }) => {
                     const providerName = row.original.mailProvider?.name || row.original.mailProvider?.type || ''
@@ -633,7 +632,7 @@ export function AccountsDataTable({
             {
                 id: 'tags',
                 header: '标签',
-                size: 170,
+                size: 145,
                 enableSorting: false,
                 cell: ({ row }) => (
                     <div className="max-w-full overflow-hidden">
@@ -653,7 +652,7 @@ export function AccountsDataTable({
             {
                 id: 'routingConfig',
                 header: '配置',
-                size: 230,
+                size: 180,
                 enableSorting: false,
                 cell: ({ row }) => {
                     const account = row.original
@@ -709,7 +708,7 @@ export function AccountsDataTable({
                     ]
 
                     return (
-                        <div className="flex max-w-[230px] items-center gap-1 overflow-hidden whitespace-nowrap">
+                        <div className="flex max-w-[180px] items-center gap-0.5 overflow-hidden whitespace-nowrap">
                             {items.map((item) => {
                                 const Icon = item.icon
                                 return (
@@ -770,38 +769,26 @@ export function AccountsDataTable({
             {
                 id: 'note',
                 header: '备注',
-                size: 150,
+                size: 88,
                 enableSorting: false,
                 cell: ({ row }) => {
                     const note = row.original.note?.trim()
-                    const noteFormat = normalizeAccountNoteFormat(row.original.noteFormat)
-
-                    if (!note) {
-                        return (
-                            <button
-                                type="button"
-                                onClick={() => openNoteDialog(row.original, 'edit')}
-                                className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-500 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-                                title="添加备注"
-                            >
-                                <StickyNote className="h-3.5 w-3.5" />
-                                添加备注
-                            </button>
-                        )
-                    }
-
-                    const previewText = getAccountNotePlainText(note, noteFormat) || (noteFormat === 'html' ? 'HTML/JS 备注' : 'Markdown 备注')
-                    const FormatIcon = noteFormat === 'html' ? Code2 : FileText
+                    const hasNote = Boolean(note)
 
                     return (
                         <button
                             type="button"
-                            onClick={() => openNoteDialog(row.original)}
-                            className="inline-flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-gray-700 dark:hover:text-white"
-                            title={previewText}
+                            onClick={() => openNoteDialog(row.original, hasNote ? 'preview' : 'edit')}
+                            className={cn(
+                                'inline-flex max-w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-xs transition-colors hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-gray-700 dark:hover:text-white',
+                                hasNote
+                                    ? 'text-gray-700 dark:text-gray-200'
+                                    : 'text-gray-400 dark:text-gray-500'
+                            )}
+                            title={hasNote ? '查看或编辑备注' : '添加备注'}
                         >
-                            <FormatIcon className="h-3.5 w-3.5 shrink-0" />
-                            <span className="truncate">{previewText}</span>
+                            <StickyNote className="h-3.5 w-3.5 shrink-0" />
+                            <span className="truncate">{hasNote ? '有备注' : '无备注'}</span>
                         </button>
                     )
                 },
@@ -812,7 +799,7 @@ export function AccountsDataTable({
                 id: 'isVerified',
                 accessorKey: 'isVerified',
                 header: '验证',
-                size: 70,
+                size: 68,
                 enableSorting: true,
                 cell: ({ row }) => (
                     row.original.isVerified ? (
@@ -837,7 +824,7 @@ export function AccountsDataTable({
                 id: 'errorStatus',
                 accessorKey: 'errorStatus',
                 header: '状态',
-                size: 100,
+                size: 82,
                 enableSorting: true,
                 cell: ({ row }) => {
                     const { icon: Icon, color, bgColor, label } = getErrorStatusDisplay(row.original.errorStatus)
@@ -857,7 +844,7 @@ export function AccountsDataTable({
             {
                 id: 'syncConfig',
                 header: '同步配置',
-                size: 130,
+                size: 105,
                 enableSorting: false,
                 cell: ({ row }) => {
                     const status = syncStatuses?.get(row.original.id)
@@ -905,7 +892,7 @@ export function AccountsDataTable({
                 id: 'createdAt',
                 accessorKey: 'createdAt',
                 header: '创建时间',
-                size: 95,
+                size: 90,
                 enableSorting: true,
                 cell: ({ row }) => (
                     <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums">
@@ -919,7 +906,7 @@ export function AccountsDataTable({
                 id: 'lastSyncAt',
                 accessorKey: 'lastSyncAt',
                 header: '最后同步',
-                size: 105,
+                size: 96,
                 enableSorting: true,
                 cell: ({ row }) => {
                     const syncTime = row.original.lastSyncAt || row.original.lastSync
@@ -942,7 +929,7 @@ export function AccountsDataTable({
             {
                 id: 'actions',
                 header: '操作',
-                size: 160,
+                size: 132,
                 enableSorting: false,
                 enableResizing: true,
                 cell: ({ row }) => {
