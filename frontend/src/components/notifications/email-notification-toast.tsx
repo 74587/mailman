@@ -46,11 +46,12 @@ function NotificationCarousel({
     const canGoOlder = currentIndex < total - 1
 
     return (
-        <div className="pointer-events-auto w-[min(390px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-gray-200/90 bg-white/95 shadow-2xl shadow-gray-900/10 backdrop-blur dark:border-gray-700/80 dark:bg-gray-800/95">
+        <div className="pointer-events-auto w-[min(360px,calc(100vw-7rem))] overflow-hidden rounded-2xl border border-gray-200/90 bg-white/95 shadow-2xl shadow-gray-900/10 backdrop-blur dark:border-gray-700/80 dark:bg-gray-800/95 max-[640px]:w-[calc(100vw-2rem)]">
             <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 dark:border-gray-700/70">
                 <button
                     onClick={onOpenCenter}
-                    className="flex min-w-0 items-center gap-2 text-left"
+                    className="flex min-w-0 items-center gap-2 rounded-xl pr-2 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/30"
+                    title="打开通知中心"
                 >
                     <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300">
                         <Inbox className="h-4 w-4" />
@@ -165,21 +166,6 @@ function NotificationCarousel({
                         点击查看
                     </button>
                 </div>
-            </div>
-
-            <div className="flex items-center justify-between bg-gray-50/80 px-3 py-2 dark:bg-gray-900/30">
-                <button
-                    onClick={onOpenCenter}
-                    className="text-xs font-medium text-gray-500 transition-colors hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-300"
-                >
-                    打开通知中心
-                </button>
-                <button
-                    onClick={onCollapseAll}
-                    className="text-xs text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-200"
-                >
-                    收起全部
-                </button>
             </div>
         </div>
     )
@@ -386,7 +372,7 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
             {renderConnectionStatus()}
 
             {/* 通知容器 */}
-            <div className="pointer-events-none fixed right-4 top-20 z-50">
+            <div className="pointer-events-none fixed right-28 top-14 z-50 max-[640px]:right-4 max-[640px]:top-16">
                 {notifications.length > 0 && (
                     <NotificationCarousel
                         notifications={notifications}
