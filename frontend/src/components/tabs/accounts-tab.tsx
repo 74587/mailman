@@ -17,7 +17,9 @@ import BatchSyncConfigModal from '@/components/modals/batch-sync-config-modal'
 import OutlookTokenModal from '@/components/modals/outlook-token-modal'
 import OutlookThunderbirdModal from '@/components/modals/outlook-thunderbird-modal'
 import BatchAddOutlookModal from '@/components/modals/batch-add-outlook-modal'
-import { GmailIcon, OutlookIcon, ThunderbirdIcon, MailConfigIcon, TokenKeyIcon } from '@/components/ui/brand-icons'
+import { OutlookIcon, ThunderbirdIcon, MailConfigIcon, TokenKeyIcon } from '@/components/ui/brand-icons'
+import { ProviderLogo } from '@/components/ui/provider-logo'
+import { getProviderDisplayName, getProviderMetadata } from '@/lib/provider-metadata'
 import { TagFilter, TagManager, TagBadgeList, InlineTagSelector } from '@/components/tags'
 import { TagWithGroup } from '@/types'
 import { AccountsDataTable, type AccountsDataTableHandle } from '@/components/accounts/accounts-data-table'
@@ -157,7 +159,7 @@ export default function AccountsTab() {
 
     // 下拉菜单状态
     // const [showAddDropdown, setShowAddDropdown] = useState(false) // Replaced by DropdownMenu
-    const [gmailOAuth2Available, setGmailOAuth2Available] = useState(false)
+    const [availableOAuth2ProviderTypes, setAvailableOAuth2ProviderTypes] = useState<string[]>([])
     const [showOutlookTokenModal, setShowOutlookTokenModal] = useState(false)
     const [showOutlookThunderbirdModal, setShowOutlookThunderbirdModal] = useState(false)
     const [showOutlookBatchModal, setShowOutlookBatchModal] = useState(false)
@@ -168,6 +170,7 @@ export default function AccountsTab() {
         provider?: string
         authType?: string
         autoTriggerOAuth2?: boolean
+        autoTriggerOAuth2Mode?: 'popup' | 'manual'
         presetBatchMode?: boolean
     }>({})
 
@@ -259,15 +262,20 @@ export default function AccountsTab() {
     // 检测OAuth2配置可用性
     const checkOAuth2Availability = async () => {
         try {
-            // 使用isProviderConfigured方法检查完整的配置
-            const gmailAvailable = await oauth2Service.isProviderConfigured('gmail')
-            const outlookAvailable = await oauth2Service.isProviderConfigured('outlook')
+            const configs = await oauth2Service.getGlobalConfigs()
+            const availableProviders = oauth2Service.getSupportedProviders().filter(provider =>
+                configs.some(config =>
+                    config.provider_type === provider &&
+                    oauth2Service.isConfigComplete(config)
+                )
+            )
+            const outlookAvailable = availableProviders.includes('outlook')
 
-            setGmailOAuth2Available(gmailAvailable)
+            setAvailableOAuth2ProviderTypes(availableProviders)
             setOutlookOAuth2Available(outlookAvailable)
         } catch (error) {
             console.error('Failed to check OAuth2 availability:', error)
-            setGmailOAuth2Available(false)
+            setAvailableOAuth2ProviderTypes([])
             setOutlookOAuth2Available(false)
         }
     }
@@ -510,24 +518,19 @@ export default function AccountsTab() {
         }
     }
 
-    // 处理Gmail OAuth2快捷创建（使用增强模态框）
-    const handleGmailOAuth2QuickCreate = () => {
+    const handleOAuth2QuickCreate = (provider: string, mode: 'popup' | 'manual' = 'popup') => {
         setModalPresets({
-            provider: 'gmail',
+            provider,
             authType: 'oauth2',
-            autoTriggerOAuth2: true
+            autoTriggerOAuth2: true,
+            autoTriggerOAuth2Mode: mode,
         })
         setShowEnhancedAddModal(true)
     }
 
     // 处理Outlook OAuth2快捷创建（使用增强模态框）
     const handleOutlookOAuth2QuickCreate = () => {
-        setModalPresets({
-            provider: 'outlook',
-            authType: 'oauth2',
-            autoTriggerOAuth2: true
-        })
-        setShowEnhancedAddModal(true)
+        handleOAuth2QuickCreate('outlook')
     }
 
     const handleRegularAddAccount = () => {
@@ -615,16 +618,7 @@ export default function AccountsTab() {
 
 
     const getProviderColor = (provider: string | undefined) => {
-        switch (provider?.toLowerCase()) {
-            case 'gmail':
-                return 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400'
-            case 'outlook':
-                return 'bg-blue-100 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400'
-            case 'yahoo':
-                return 'bg-purple-100 text-purple-700 dark:bg-purple-900/20 dark:text-purple-400'
-            default:
-                return 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
-        }
+        return getProviderMetadata(provider).badgeClass
     }
 
     if (loading) {
@@ -865,17 +859,47 @@ export default function AccountsTab() {
                                     </div>
                                 </DropdownMenuItem>
 
-                                {gmailOAuth2Available && (
-                                    <DropdownMenuItem onClick={handleGmailOAuth2QuickCreate} className="cursor-pointer py-3">
-                                        <GmailIcon className="mr-3 flex-shrink-0" size={20} />
-                                        <div className="flex flex-col">
-                                            <span className="font-medium">快速添加 Gmail</span>
-                                            <span className="text-xs text-gray-500 dark:text-gray-400">使用 OAuth2 一键授权</span>
-                                        </div>
-                                    </DropdownMenuItem>
-                                )}
+                                {availableOAuth2ProviderTypes
+                                    .filter(provider => provider !== 'outlook')
+                                    .map(provider => (
+                                        oauth2Service.supportsManualCodeAuth(provider) ? (
+                                            <DropdownMenuSub key={provider}>
+                                                <DropdownMenuSubTrigger className="cursor-pointer py-3">
+                                                    <ProviderLogo provider={provider} className="mr-3 flex-shrink-0" size="md" />
+                                                    <div className="flex flex-col">
+                                                        <span className="font-medium">{getProviderDisplayName(provider)}</span>
+                                                        <span className="text-xs text-gray-500 dark:text-gray-400">选择添加方式</span>
+                                                    </div>
+                                                </DropdownMenuSubTrigger>
+                                                <DropdownMenuSubContent className="w-72">
+                                                    <DropdownMenuItem onClick={() => handleOAuth2QuickCreate(provider)} className="cursor-pointer py-3">
+                                                        <ProviderLogo provider={provider} className="mr-3 flex-shrink-0" size="md" />
+                                                        <div className="flex flex-col">
+                                                            <span className="font-medium">快速添加 {getProviderDisplayName(provider)}</span>
+                                                            <span className="text-xs text-gray-500 dark:text-gray-400">使用 OAuth2 一键授权</span>
+                                                        </div>
+                                                    </DropdownMenuItem>
+                                                    <DropdownMenuItem onClick={() => handleOAuth2QuickCreate(provider, 'manual')} className="cursor-pointer py-3">
+                                                        <ProviderLogo provider={provider} className="mr-3 flex-shrink-0" size="md" />
+                                                        <div className="flex flex-col">
+                                                            <span className="font-medium">手动添加 {getProviderDisplayName(provider)}</span>
+                                                            <span className="text-xs text-gray-500 dark:text-gray-400">授权后复制回调 URL 或 code</span>
+                                                        </div>
+                                                    </DropdownMenuItem>
+                                                </DropdownMenuSubContent>
+                                            </DropdownMenuSub>
+                                        ) : (
+                                            <DropdownMenuItem key={provider} onClick={() => handleOAuth2QuickCreate(provider)} className="cursor-pointer py-3">
+                                                <ProviderLogo provider={provider} className="mr-3 flex-shrink-0" size="md" />
+                                                <div className="flex flex-col">
+                                                    <span className="font-medium">快速添加 {getProviderDisplayName(provider)}</span>
+                                                    <span className="text-xs text-gray-500 dark:text-gray-400">使用 OAuth2 一键授权</span>
+                                                </div>
+                                            </DropdownMenuItem>
+                                        )
+                                    ))}
 
-                                <DropdownMenuSeparator />
+                                    {availableOAuth2ProviderTypes.length > 0 && <DropdownMenuSeparator />}
 
                                 <DropdownMenuSub>
                                     <DropdownMenuSubTrigger className="cursor-pointer py-3">
@@ -886,10 +910,10 @@ export default function AccountsTab() {
                                         </div>
                                     </DropdownMenuSubTrigger>
                                     <DropdownMenuSubContent className="w-72">
-                                        {outlookOAuth2Available && (
-                                            <DropdownMenuItem onClick={handleOutlookOAuth2QuickCreate} className="cursor-pointer py-3">
-                                                <OutlookIcon className="mr-3 flex-shrink-0" size={20} />
-                                                <div className="flex flex-col">
+	                                        {outlookOAuth2Available && (
+	                                            <DropdownMenuItem onClick={handleOutlookOAuth2QuickCreate} className="cursor-pointer py-3">
+	                                                <ProviderLogo provider="outlook" className="mr-3 flex-shrink-0" size="md" />
+	                                                <div className="flex flex-col">
                                                     <span className="font-medium">快速添加 Outlook</span>
                                                     <span className="text-xs text-gray-500 dark:text-gray-400">使用 OAuth2 一键授权</span>
                                                 </div>
@@ -972,12 +996,13 @@ export default function AccountsTab() {
                                             </div>
 
                                             <div className="mb-4 flex items-center justify-between">
-                                                <span className={cn(
-                                                    "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-                                                    getProviderColor(account.mailProvider?.name || account.mailProvider?.type)
-                                                )}>
-                                                    {account.mailProvider?.name || account.mailProvider?.type || 'Unknown'}
-                                                </span>
+	                                                <span className={cn(
+	                                                    "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium",
+	                                                    getProviderColor(account.mailProvider?.type || account.mailProvider?.name)
+	                                                )}>
+                                                        <ProviderLogo provider={account.mailProvider?.type} size="sm" />
+	                                                    {account.mailProvider?.name || account.mailProvider?.type || 'Unknown'}
+	                                                </span>
                                                 <div className="flex items-center space-x-2">
                                                     {account.isVerified && (
                                                         <div className="flex items-center space-x-1" title={account.verifiedAt ? `验证时间: ${new Date(account.verifiedAt).toLocaleString('zh-CN')}` : '已验证'}>
@@ -1142,12 +1167,13 @@ export default function AccountsTab() {
                                                         {account.emailAddress}
                                                     </h3>
                                                     <div className="mt-1 flex items-center space-x-3 text-sm text-gray-500 dark:text-gray-400">
-                                                        <span className={cn(
-                                                            "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
-                                                            getProviderColor(account.mailProvider?.name || account.mailProvider?.type)
-                                                        )}>
-                                                            {account.mailProvider?.name || account.mailProvider?.type || 'Unknown'}
-                                                        </span>
+	                                                        <span className={cn(
+	                                                            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+	                                                            getProviderColor(account.mailProvider?.type || account.mailProvider?.name)
+	                                                        )}>
+                                                                <ProviderLogo provider={account.mailProvider?.type} size="sm" />
+	                                                            {account.mailProvider?.name || account.mailProvider?.type || 'Unknown'}
+	                                                        </span>
                                                         {account.isVerified && (
                                                             <div className="flex items-center space-x-1" title={account.verifiedAt ? `验证时间: ${new Date(account.verifiedAt).toLocaleString('zh-CN')}` : '已验证'}>
                                                                 <ShieldCheck className="h-3.5 w-3.5 text-green-500" />
@@ -1296,12 +1322,13 @@ export default function AccountsTab() {
                                                         </div>
                                                     </td>
                                                     <td className="whitespace-nowrap px-6 py-4">
-                                                        <span className={cn(
-                                                            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium",
-                                                            getProviderColor(account.mailProvider?.name || account.mailProvider?.type)
-                                                        )}>
-                                                            {account.mailProvider?.name || account.mailProvider?.type || 'Unknown'}
-                                                        </span>
+	                                                        <span className={cn(
+	                                                            "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium",
+	                                                            getProviderColor(account.mailProvider?.type || account.mailProvider?.name)
+	                                                        )}>
+                                                                <ProviderLogo provider={account.mailProvider?.type} size="sm" />
+	                                                            {account.mailProvider?.name || account.mailProvider?.type || 'Unknown'}
+	                                                        </span>
                                                     </td>
                                                     <td className="whitespace-nowrap px-6 py-4">
                                                         {account.isVerified ? (
@@ -1493,6 +1520,7 @@ export default function AccountsTab() {
                 presetProvider={modalPresets.provider}
                 presetAuthType={modalPresets.authType}
                 autoTriggerOAuth2={modalPresets.autoTriggerOAuth2}
+                autoTriggerOAuth2Mode={modalPresets.autoTriggerOAuth2Mode}
             />
 
             {/* 编辑账户模态框 */}

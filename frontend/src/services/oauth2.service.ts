@@ -10,6 +10,29 @@ import {
     OAuth2RefreshTokenRequest,
     OAuth2ProviderType
 } from '@/types';
+import {
+    getProviderDisplayName,
+    getProviderMetadata,
+    isProviderClientSecretRequired,
+    OAUTH2_PROVIDER_TYPES,
+    supportsProviderManualCodeAuth,
+} from '@/lib/provider-metadata';
+
+export interface ManualOAuth2SessionStartResponse {
+    sessionId: number
+    state: string
+    authUrl: string
+    expiresAt: number
+    redirectUri: string
+}
+
+export interface ManualOAuth2ExchangeResponse {
+    status: string
+    expiresAt: number
+    emailAddress?: string
+    customSettings?: any
+    errorMsg?: string
+}
 
 export class OAuth2Service {
     private basePath = '/oauth2';
@@ -168,12 +191,7 @@ export class OAuth2Service {
             const configs = await this.getGlobalConfigsByProvider(provider);
 
             // 检查是否有任何一个配置是完整且启用的
-            return configs.some(config =>
-                config.is_enabled &&
-                !!config.client_id &&
-                !!config.client_secret &&
-                !!config.redirect_uri
-            );
+            return configs.some(config => this.isConfigComplete(config));
         } catch (error) {
             return false;
         }
@@ -185,65 +203,58 @@ export class OAuth2Service {
     async isProviderConfiguredLegacy(provider: OAuth2ProviderType): Promise<boolean> {
         try {
             const config = await this.getGlobalConfigByProvider(provider);
-            return config.is_enabled && !!config.client_id && !!config.client_secret;
+            return this.isConfigComplete(config);
         } catch (error) {
             return false;
         }
+    }
+
+    isClientSecretRequired(provider: OAuth2ProviderType): boolean {
+        return isProviderClientSecretRequired(provider);
+    }
+
+    isConfigComplete(config: OAuth2GlobalConfig): boolean {
+        return Boolean(
+            config.is_enabled &&
+            config.client_id &&
+            config.redirect_uri &&
+            (!this.isClientSecretRequired(config.provider_type) || config.client_secret)
+        );
     }
 
     /**
      * 获取支持的OAuth2提供商列表
      */
     getSupportedProviders(): OAuth2ProviderType[] {
-        return ['gmail', 'outlook'];
+        return OAUTH2_PROVIDER_TYPES;
     }
 
     /**
      * 获取提供商的显示名称
      */
     getProviderDisplayName(provider: OAuth2ProviderType): string {
-        const displayNames = {
-            gmail: 'Gmail',
-            outlook: 'Outlook'
-        };
-        return displayNames[provider] || provider;
+        return getProviderDisplayName(provider);
     }
 
     /**
      * 获取提供商的默认作用域
      */
     getDefaultScopes(provider: OAuth2ProviderType): string[] {
-        const defaultScopes = {
-            gmail: [
-                'https://mail.google.com/',
-                'https://www.googleapis.com/auth/userinfo.email',
-                'https://www.googleapis.com/auth/userinfo.profile'
-            ],
-            outlook: [
-                'https://outlook.office.com/IMAP.AccessAsUser.All',
-                'https://outlook.office.com/SMTP.Send',
-                'offline_access'
-            ]
-        };
-        return defaultScopes[provider] || [];
+        return getProviderMetadata(provider).defaultScopes || [];
     }
 
     /**
      * 获取Gmail的固定作用域（受保护，不可编辑）
      */
     getGmailProtectedScopes(): string[] {
-        return [
-            'https://mail.google.com/',
-            'https://www.googleapis.com/auth/userinfo.email',
-            'https://www.googleapis.com/auth/userinfo.profile'
-        ];
+        return this.getDefaultScopes('gmail');
     }
 
     /**
      * 检查提供商是否具有受保护的作用域
      */
     hasProtectedScopes(provider: OAuth2ProviderType): boolean {
-        return provider === 'gmail';
+        return !!getProviderMetadata(provider).protectedScopes;
     }
 
     /**
@@ -297,6 +308,54 @@ export class OAuth2Service {
         await apiClient.post(`${this.basePath}/session/cancel/${state}`);
     }
 
+    supportsManualCodeAuth(provider: OAuth2ProviderType): boolean {
+        return supportsProviderManualCodeAuth(provider);
+    }
+
+    async startManualAuthSession(provider: OAuth2ProviderType, configId?: number): Promise<ManualOAuth2SessionStartResponse> {
+        const url = configId
+            ? `${this.basePath}/session/manual/start/${provider}?config_id=${configId}`
+            : `${this.basePath}/session/manual/start/${provider}`;
+
+        const response = await apiClient.post<{
+            session_id: number
+            state: string
+            auth_url: string
+            expires_at: number
+            redirect_uri: string
+        }>(url);
+
+        return {
+            sessionId: response.session_id,
+            state: response.state,
+            authUrl: response.auth_url,
+            expiresAt: response.expires_at,
+            redirectUri: response.redirect_uri,
+        };
+    }
+
+    async exchangeManualAuthCode(state: string, request: { code?: string; callbackUrl?: string; redirectUri?: string }): Promise<ManualOAuth2ExchangeResponse> {
+        const response = await apiClient.post<{
+            status: string
+            expires_at: number
+            emailAddress?: string
+            customSettings?: any
+            error_msg?: string
+        }>(`${this.basePath}/session/manual/exchange/${state}`, {
+            code: request.code,
+            callback_url: request.callbackUrl,
+            redirect_uri: request.redirectUri,
+        });
+
+        return {
+            status: response.status,
+            expiresAt: response.expires_at,
+            emailAddress: response.emailAddress,
+            customSettings: response.customSettings,
+            errorMsg: response.error_msg,
+        };
+    }
+
     /**
      * 验证OAuth2配置
      */
@@ -317,7 +376,7 @@ export class OAuth2Service {
             errors.push('客户端ID是必需的');
         }
 
-        if (!config.client_secret?.trim()) {
+        if (this.isClientSecretRequired(config.provider_type) && !config.client_secret?.trim()) {
             errors.push('客户端密钥是必需的');
         }
 

@@ -321,6 +321,8 @@ func NewRouterWithAuth(
 
 	// OAuth2 授权会话管理端点 (system_config resource)
 	sysConfigRouter.HandleFunc("/oauth2/session/start/{provider}", oauth2Handler.StartOAuth2Session).Methods("POST")
+	sysConfigRouter.HandleFunc("/oauth2/session/manual/start/{provider}", oauth2Handler.StartManualOAuth2Session).Methods("POST")
+	sysConfigRouter.HandleFunc("/oauth2/session/manual/exchange/{state}", oauth2Handler.ExchangeManualOAuth2Code).Methods("POST")
 	sysConfigRouter.HandleFunc("/oauth2/session/poll/{state}", oauth2Handler.PollOAuth2SessionStatus).Methods("GET")
 	sysConfigRouter.HandleFunc("/oauth2/session/cancel/{state}", oauth2Handler.CancelOAuth2Session).Methods("POST")
 

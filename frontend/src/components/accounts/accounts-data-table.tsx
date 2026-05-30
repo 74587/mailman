@@ -45,7 +45,8 @@ import {
 } from '@/components/ui/modal'
 import { AdaptiveActions, ActionItem } from '@/components/ui/adaptive-actions'
 import { InlineTagSelector } from '@/components/tags/tag-selector'
-import { GmailIcon, OutlookIcon } from '@/components/ui/brand-icons'
+import { ProviderLogo } from '@/components/ui/provider-logo'
+import { getProviderMetadata } from '@/lib/provider-metadata'
 import { AccountNoteFormat, EmailAccount } from '@/types'
 import { AccountSyncStatus } from '@/services/sync-config.service'
 import { AccountProxyConfigRequest, emailAccountService } from '@/services/email-account.service'
@@ -88,17 +89,7 @@ export interface AccountsDataTableHandle {
 
 // 提供商颜色映射
 const getProviderColor = (provider?: string) => {
-    switch (provider?.toLowerCase()) {
-        case 'gmail':
-            return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-        case 'outlook':
-        case 'hotmail':
-            return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-        case 'yahoo':
-            return 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
-        default:
-            return 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
-    }
+    return getProviderMetadata(provider).badgeClass
 }
 
 // 错误状态颜色和图标
@@ -613,23 +604,16 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                 enableSorting: true,
                 cell: ({ row }) => {
                     const providerName = row.original.mailProvider?.name || row.original.mailProvider?.type || ''
-                    const providerLower = providerName.toLowerCase()
-
-                    // 根据提供商名称选择图标
-                    const ProviderIcon = providerLower.includes('gmail') || providerLower.includes('google')
-                        ? GmailIcon
-                        : providerLower.includes('outlook') || providerLower.includes('hotmail') || providerLower.includes('microsoft')
-                            ? OutlookIcon
-                            : null
+                    const providerType = row.original.mailProvider?.type || providerName
 
                     return (
                         <span
                             className={cn(
                                 'inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium',
-                                getProviderColor(providerName)
+                                getProviderColor(providerType)
                             )}
                         >
-                            {ProviderIcon && <ProviderIcon size={14} />}
+                            <ProviderLogo provider={providerType} size="sm" />
                             {providerName || 'Unknown'}
                         </span>
                     )

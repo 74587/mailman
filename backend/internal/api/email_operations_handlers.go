@@ -46,9 +46,9 @@ func (h *APIHandler) TriggerEmailHandler(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": fmt.Sprintf("Email %d trigger processing completed", id),
-		"email_id":     email.ID,
+		"success":       true,
+		"message":       fmt.Sprintf("Email %d trigger processing completed", id),
+		"email_id":      email.ID,
 		"email_subject": email.Subject,
 	})
 }
@@ -129,6 +129,9 @@ func (h *APIHandler) CreateProviderHandler(w http.ResponseWriter, r *http.Reques
 	if provider.Name == "" {
 		http.Error(w, "Provider name is required", http.StatusBadRequest)
 		return
+	}
+	if provider.Type == "" {
+		provider.Type = models.ProviderTypeCustom
 	}
 
 	if err := h.MailProviderRepo.Create(&provider); err != nil {

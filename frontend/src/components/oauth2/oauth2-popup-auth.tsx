@@ -178,13 +178,13 @@ export default function OAuth2PopupAuth({ provider, configId, onSuccess, onCance
                         logger.debug('OAuth2PopupAuth: 检测到success状态', result)
                         setStatus('success')
                         stopPolling()
-                        if (result.emailAddress && result.customSettings) {
+                        if (result.customSettings) {
                             logger.debug('OAuth2PopupAuth: 准备调用onSuccess回调', {
                                 emailAddress: result.emailAddress,
                                 customSettings: result.customSettings
                             })
                             onSuccess({
-                                emailAddress: result.emailAddress,
+                                emailAddress: result.emailAddress || '',
                                 customSettings: result.customSettings
                             })
                         } else {

@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { ProviderLogo } from '@/components/ui/provider-logo'
 
 interface EditAccountModalProps {
     isOpen: boolean
@@ -92,6 +93,7 @@ export default function EditAccountModal({
     const [fullAccount, setFullAccount] = useState<EmailAccount | null>(null)
     const [showPassword, setShowPassword] = useState(false)
     const [gmailOAuth2Available, setGmailOAuth2Available] = useState(false)
+    const [oauth2AvailableForProvider, setOAuth2AvailableForProvider] = useState(false)
     const [activeSection, setActiveSection] = useState<EditAccountSection>('identity')
     const bodyRef = useRef<HTMLDivElement>(null)
     const panelRef = useRef<HTMLDivElement>(null)
@@ -122,8 +124,11 @@ export default function EditAccountModal({
             try {
                 const isGmailConfigured = await oauth2Service.isProviderConfigured('gmail')
                 setGmailOAuth2Available(isGmailConfigured)
+                const providerType = data.mailProvider?.type
+                setOAuth2AvailableForProvider(providerType ? await oauth2Service.isProviderConfigured(providerType) : false)
             } catch (error) {
                 setGmailOAuth2Available(false)
+                setOAuth2AvailableForProvider(false)
             }
 
             let proxyUrl = data.proxy || ''
@@ -275,13 +280,14 @@ export default function EditAccountModal({
         setFullAccount(null)
         setShowPassword(false)
         setActiveSection('identity')
+        setOAuth2AvailableForProvider(false)
         onClose()
     }
 
     const isOAuth2Provider = () => {
         if (fullAccount?.mailProvider?.type === 'outlook') return true
         if (fullAccount?.mailProvider?.type === 'gmail') return gmailOAuth2Available
-        return false
+        return oauth2AvailableForProvider || form.authType === 'oauth2'
     }
 
     const sections: EditSectionItem[] = [
@@ -407,11 +413,10 @@ export default function EditAccountModal({
                                             <div className="grid gap-4 xl:grid-cols-2">
                                                 <div className="space-y-2">
                                                     <Label>邮件提供商</Label>
-                                                    <Input
-                                                        value={fullAccount?.mailProvider?.name || '未知'}
-                                                        disabled
-                                                        className="bg-gray-50 dark:bg-gray-700"
-                                                    />
+                                                    <div className="flex items-center gap-2 rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-700">
+                                                        <ProviderLogo provider={fullAccount?.mailProvider?.type} size="sm" />
+                                                        <span>{fullAccount?.mailProvider?.name || '未知'}</span>
+                                                    </div>
                                                 </div>
                                                 <div className="space-y-2">
                                                     <Label>邮箱地址</Label>

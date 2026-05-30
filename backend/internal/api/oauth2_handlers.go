@@ -3,13 +3,16 @@ package api
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"mailman/internal/models"
@@ -55,6 +58,112 @@ func generateRandomString(length int) (string, error) {
 	return string(result), nil
 }
 
+func parseOAuth2ProviderType(providerType string) (models.MailProviderType, error) {
+	normalized := models.NormalizeMailProviderType(models.MailProviderType(providerType))
+	if _, ok := models.GetOAuth2ProviderDefinition(normalized); !ok {
+		return "", fmt.Errorf("unsupported provider type: %s", providerType)
+	}
+	return normalized, nil
+}
+
+func manualOAuth2RedirectURI(providerType models.MailProviderType) (string, bool) {
+	switch providerType {
+	case models.ProviderTypeGmail:
+		return "http://localhost", true
+	case models.ProviderTypeYahoo, models.ProviderTypeAOL:
+		return "https://127.0.0.1", true
+	default:
+		return "", false
+	}
+}
+
+func extractOAuth2CodeAndState(input string) (code string, state string) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", ""
+	}
+
+	if parsedURL, err := url.Parse(input); err == nil && parsedURL.RawQuery != "" {
+		values := parsedURL.Query()
+		return strings.TrimSpace(values.Get("code")), strings.TrimSpace(values.Get("state"))
+	}
+
+	queryText := input
+	if idx := strings.Index(queryText, "?"); idx >= 0 {
+		queryText = queryText[idx+1:]
+	}
+	if idx := strings.Index(queryText, "#"); idx >= 0 {
+		queryText = queryText[:idx]
+	}
+	if strings.Contains(queryText, "code=") {
+		if values, err := url.ParseQuery(queryText); err == nil {
+			return strings.TrimSpace(values.Get("code")), strings.TrimSpace(values.Get("state"))
+		}
+	}
+
+	return input, ""
+}
+
+func generatePKCEPair() (string, string, error) {
+	verifierBytes := make([]byte, 48)
+	if _, err := rand.Read(verifierBytes); err != nil {
+		return "", "", err
+	}
+	verifier := base64.RawURLEncoding.EncodeToString(verifierBytes)
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	return verifier, challenge, nil
+}
+
+func (h *OAuth2Handler) fetchOAuth2UserInfo(providerType models.MailProviderType, accessToken string) (string, models.JSONMap, error) {
+	endpoint := ""
+	switch providerType {
+	case models.ProviderTypeGmail:
+		endpoint = "https://www.googleapis.com/oauth2/v2/userinfo"
+	case models.ProviderTypeOutlook:
+		endpoint = "https://graph.microsoft.com/v1.0/me"
+	default:
+		return "", nil, nil
+	}
+
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", nil, fmt.Errorf("user info API status %d", resp.StatusCode)
+	}
+
+	var responseData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&responseData); err != nil {
+		return "", nil, err
+	}
+
+	userInfo := make(models.JSONMap)
+	for k, v := range responseData {
+		if v != nil {
+			userInfo[k] = fmt.Sprintf("%v", v)
+		}
+	}
+
+	for _, key := range []string{"email", "mail", "userPrincipalName", "preferred_username"} {
+		if value := strings.TrimSpace(userInfo[key]); value != "" {
+			return value, userInfo, nil
+		}
+	}
+
+	return "", userInfo, nil
+}
+
 // CreateOrUpdateGlobalConfig creates or updates OAuth2 global configuration
 func (h *OAuth2Handler) CreateOrUpdateGlobalConfig(w http.ResponseWriter, r *http.Request) {
 	var config models.OAuth2GlobalConfig
@@ -94,14 +203,9 @@ func (h *OAuth2Handler) GetGlobalConfigByProvider(w http.ResponseWriter, r *http
 	vars := mux.Vars(r)
 	providerType := vars["provider"]
 
-	var mailProviderType models.MailProviderType
-	switch providerType {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+	mailProviderType, err := parseOAuth2ProviderType(providerType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -120,14 +224,9 @@ func (h *OAuth2Handler) GetGlobalConfigsByProvider(w http.ResponseWriter, r *htt
 	vars := mux.Vars(r)
 	providerType := vars["provider"]
 
-	var mailProviderType models.MailProviderType
-	switch providerType {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+	mailProviderType, err := parseOAuth2ProviderType(providerType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -167,14 +266,9 @@ func (h *OAuth2Handler) EnableProvider(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	providerType := vars["provider"]
 
-	var mailProviderType models.MailProviderType
-	switch providerType {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+	mailProviderType, err := parseOAuth2ProviderType(providerType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -192,14 +286,9 @@ func (h *OAuth2Handler) DisableProvider(w http.ResponseWriter, r *http.Request) 
 	vars := mux.Vars(r)
 	providerType := vars["provider"]
 
-	var mailProviderType models.MailProviderType
-	switch providerType {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+	mailProviderType, err := parseOAuth2ProviderType(providerType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -256,14 +345,9 @@ func (h *OAuth2Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	providerType := vars["provider"]
 
-	var mailProviderType models.MailProviderType
-	switch providerType {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+	mailProviderType, err := parseOAuth2ProviderType(providerType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -271,7 +355,6 @@ func (h *OAuth2Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
 	configIDParam := r.URL.Query().Get("config_id")
 
 	var config *models.OAuth2GlobalConfig
-	var err error
 
 	// Priority 1: Use specific config ID if provided (new multi-config support)
 	if configIDParam != "" {
@@ -308,7 +391,19 @@ func (h *OAuth2Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := h.authSessionService.CreateSession(uint(config.ID), state, 10)
+	codeVerifier := ""
+	codeChallenge := ""
+	codeChallengeMethod := ""
+	if provider, ok := models.GetOAuth2ProviderDefinition(config.ProviderType); ok && provider.UsePKCE {
+		codeVerifier, codeChallenge, err = generatePKCEPair()
+		if err != nil {
+			http.Error(w, "failed to generate PKCE verifier", http.StatusInternalServerError)
+			return
+		}
+		codeChallengeMethod = "S256"
+	}
+
+	session, err := h.authSessionService.CreateSessionWithPKCE(uint(config.ID), state, 10, codeVerifier, codeChallengeMethod)
 	if err != nil {
 		log.Printf("[OAuth2] auth-url session creation failed provider=%s config_id=%d state_hash=%s error=%v",
 			providerType, config.ID, hashOAuth2State(state), err)
@@ -319,7 +414,7 @@ func (h *OAuth2Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[OAuth2] auth-url session created provider=%s config_id=%d session_id=%d state_hash=%s redirect_uri=%s",
 		providerType, config.ID, session.ID, hashOAuth2State(state), config.RedirectURI)
 
-	authURL, err := h.oauth2Service.GenerateAuthURL(providerType, config.ClientID, config.RedirectURI, state)
+	authURL, err := h.oauth2Service.GenerateAuthURLForConfig(*config, state, codeChallenge)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -378,16 +473,11 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var mailProviderType models.MailProviderType
-	switch providerType {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
+	mailProviderType, err := parseOAuth2ProviderType(providerType)
+	if err != nil {
 		log.Printf("[OAuth2] callback unsupported provider provider=%s state_hash=%s", providerType, stateHash)
 		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "unsupported provider type")
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -411,13 +501,7 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 交换授权码获取令牌
-	accessToken, refreshToken, err := h.oauth2Service.ExchangeCodeForTokens(
-		providerType,
-		config.ClientID,
-		config.ClientSecret,
-		code,
-		config.RedirectURI,
-	)
+	accessToken, refreshToken, err := h.oauth2Service.ExchangeCodeForTokensForConfig(*config, code, config.RedirectURI, session.CodeVerifier)
 	if err != nil {
 		log.Printf("[OAuth2] callback token exchange failed provider=%s session_id=%d state_hash=%s error=%v",
 			providerType, session.ID, stateHash, err)
@@ -430,44 +514,10 @@ func (h *OAuth2Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	var userEmail string
 	var userInfo models.JSONMap
 
-	if providerType == "gmail" {
-
-		userInfoResp, err := http.Get("https://www.googleapis.com/oauth2/v2/userinfo?access_token=" + accessToken)
-		if err != nil {
-			log.Printf("[OAuth2] Failed to get Gmail user info: %v", err)
-			h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "failed to get user info")
-			http.Error(w, "failed to get user info", http.StatusInternalServerError)
-			return
-		}
-		defer userInfoResp.Body.Close()
-
-		if userInfoResp.StatusCode == 200 {
-			var responseData map[string]interface{}
-			if err := json.NewDecoder(userInfoResp.Body).Decode(&responseData); err != nil {
-
-				h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "failed to parse user info")
-				http.Error(w, "failed to parse user info", http.StatusInternalServerError)
-				return
-			}
-
-			// 提取邮箱
-			if email, ok := responseData["email"]; ok && email != nil {
-				userEmail = email.(string)
-			}
-
-			// 保存完整用户信息，转换为JSONMap格式
-			userInfo = make(models.JSONMap)
-			for k, v := range responseData {
-				if v != nil {
-					userInfo[k] = fmt.Sprintf("%v", v)
-				}
-			}
-		} else {
-			h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "user info API error")
-			http.Error(w, "user info API error", http.StatusInternalServerError)
-			return
-		}
-
+	userEmail, userInfo, err = h.fetchOAuth2UserInfo(mailProviderType, accessToken)
+	if err != nil {
+		log.Printf("[OAuth2] user info lookup skipped provider=%s session_id=%d state_hash=%s error=%v",
+			providerType, session.ID, stateHash, err)
 	}
 
 	// 更新会话状态为成功，并保存认证数据
@@ -508,20 +558,14 @@ func (h *OAuth2Handler) StartOAuth2Session(w http.ResponseWriter, r *http.Reques
 	vars := mux.Vars(r)
 	providerType := vars["provider"]
 
-	var mailProviderType models.MailProviderType
-	switch providerType {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+	mailProviderType, err := parseOAuth2ProviderType(providerType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// 检查是否指定了特定的配置ID
 	var config *models.OAuth2GlobalConfig
-	var err error
 
 	configIDStr := r.URL.Query().Get("config_id")
 	if configIDStr != "" {
@@ -559,8 +603,20 @@ func (h *OAuth2Handler) StartOAuth2Session(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	codeVerifier := ""
+	codeChallenge := ""
+	codeChallengeMethod := ""
+	if provider, ok := models.GetOAuth2ProviderDefinition(config.ProviderType); ok && provider.UsePKCE {
+		codeVerifier, codeChallenge, err = generatePKCEPair()
+		if err != nil {
+			http.Error(w, "failed to generate PKCE verifier", http.StatusInternalServerError)
+			return
+		}
+		codeChallengeMethod = "S256"
+	}
+
 	// 创建授权会话
-	session, err := h.authSessionService.CreateSession(uint(config.ID), state, 10) // 10分钟过期
+	session, err := h.authSessionService.CreateSessionWithPKCE(uint(config.ID), state, 10, codeVerifier, codeChallengeMethod) // 10分钟过期
 	if err != nil {
 		log.Printf("[OAuth2] session start failed provider=%s config_id=%d state_hash=%s error=%v",
 			providerType, config.ID, hashOAuth2State(state), err)
@@ -572,7 +628,7 @@ func (h *OAuth2Handler) StartOAuth2Session(w http.ResponseWriter, r *http.Reques
 		providerType, config.ID, session.ID, hashOAuth2State(state), config.RedirectURI)
 
 	// 生成授权URL
-	authURL, err := h.oauth2Service.GenerateAuthURL(providerType, config.ClientID, config.RedirectURI, state)
+	authURL, err := h.oauth2Service.GenerateAuthURLForConfig(*config, state, codeChallenge)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -584,6 +640,209 @@ func (h *OAuth2Handler) StartOAuth2Session(w http.ResponseWriter, r *http.Reques
 		"state":      state,
 		"auth_url":   authURL,
 		"expires_at": session.ExpiresAt.Unix(),
+	})
+}
+
+// StartManualOAuth2Session creates an OAuth2 session for manual code entry flows.
+func (h *OAuth2Handler) StartManualOAuth2Session(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	providerType := vars["provider"]
+
+	mailProviderType, err := parseOAuth2ProviderType(providerType)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	redirectURI, ok := manualOAuth2RedirectURI(mailProviderType)
+	if !ok {
+		http.Error(w, "manual code flow is not supported for this provider", http.StatusBadRequest)
+		return
+	}
+
+	var config *models.OAuth2GlobalConfig
+	configIDStr := r.URL.Query().Get("config_id")
+	if configIDStr != "" {
+		configID, parseErr := strconv.ParseUint(configIDStr, 10, 32)
+		if parseErr != nil {
+			http.Error(w, "invalid config_id format", http.StatusBadRequest)
+			return
+		}
+
+		config, err = h.configService.GetConfigByID(uint(configID))
+		if err != nil {
+			http.Error(w, fmt.Sprintf("OAuth2 config not found: %v", err), http.StatusNotFound)
+			return
+		}
+		if config.ProviderType != mailProviderType {
+			http.Error(w, fmt.Sprintf("config provider type mismatch: expected %s, got %s", mailProviderType, config.ProviderType), http.StatusBadRequest)
+			return
+		}
+	} else {
+		config, err = h.configService.GetProviderConfig(mailProviderType)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if !config.IsEnabled {
+		http.Error(w, "OAuth2 config is disabled", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(config.ClientID) == "" {
+		http.Error(w, "client ID is required", http.StatusBadRequest)
+		return
+	}
+
+	state, err := generateRandomString(32)
+	if err != nil {
+		http.Error(w, "failed to generate state", http.StatusInternalServerError)
+		return
+	}
+
+	codeVerifier := ""
+	codeChallenge := ""
+	codeChallengeMethod := ""
+	if provider, ok := models.GetOAuth2ProviderDefinition(config.ProviderType); ok && provider.UsePKCE {
+		codeVerifier, codeChallenge, err = generatePKCEPair()
+		if err != nil {
+			http.Error(w, "failed to generate PKCE verifier", http.StatusInternalServerError)
+			return
+		}
+		codeChallengeMethod = "S256"
+	}
+
+	session, err := h.authSessionService.CreateSessionWithPKCE(uint(config.ID), state, 15, codeVerifier, codeChallengeMethod)
+	if err != nil {
+		log.Printf("[OAuth2] manual session start failed provider=%s config_id=%d state_hash=%s error=%v",
+			providerType, config.ID, hashOAuth2State(state), err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	authURL, err := h.oauth2Service.GenerateAuthURLForConfigWithRedirectURI(*config, state, codeChallenge, redirectURI)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[OAuth2] manual session started provider=%s config_id=%d session_id=%d state_hash=%s redirect_uri=%s",
+		providerType, config.ID, session.ID, hashOAuth2State(state), redirectURI)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"session_id":    session.ID,
+		"state":         state,
+		"auth_url":      authURL,
+		"expires_at":    session.ExpiresAt.Unix(),
+		"redirect_uri":  redirectURI,
+		"provider_type": config.ProviderType,
+	})
+}
+
+// ExchangeManualOAuth2Code exchanges a pasted OAuth2 callback URL/code for tokens.
+func (h *OAuth2Handler) ExchangeManualOAuth2Code(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	state := vars["state"]
+	if state == "" {
+		http.Error(w, "state parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	var request struct {
+		Code        string `json:"code"`
+		CallbackURL string `json:"callback_url"`
+		RedirectURI string `json:"redirect_uri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	code := strings.TrimSpace(request.Code)
+	callbackState := ""
+	if code == "" && strings.TrimSpace(request.CallbackURL) != "" {
+		code, callbackState = extractOAuth2CodeAndState(request.CallbackURL)
+	}
+	if code == "" {
+		http.Error(w, "authorization code is required", http.StatusBadRequest)
+		return
+	}
+	if callbackState != "" && callbackState != state {
+		http.Error(w, "state mismatch", http.StatusBadRequest)
+		return
+	}
+
+	session, err := h.authSessionService.GetSessionByState(state)
+	if err != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if session.IsExpired() {
+		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusExpired, "session expired")
+		http.Error(w, "session expired", http.StatusGone)
+		return
+	}
+	if session.Status != models.OAuth2AuthSessionStatusPending {
+		http.Error(w, "session already processed", http.StatusConflict)
+		return
+	}
+
+	config, err := h.configService.GetConfigByID(session.ProviderID)
+	if err != nil {
+		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "provider config not found")
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	redirectURI, ok := manualOAuth2RedirectURI(config.ProviderType)
+	if !ok {
+		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, "manual code flow is not supported")
+		http.Error(w, "manual code flow is not supported for this provider", http.StatusBadRequest)
+		return
+	}
+	if request.RedirectURI != "" {
+		if request.RedirectURI != redirectURI {
+			http.Error(w, "redirect URI mismatch", http.StatusBadRequest)
+			return
+		}
+		redirectURI = request.RedirectURI
+	}
+
+	accessToken, refreshToken, err := h.oauth2Service.ExchangeCodeForTokensForConfig(*config, code, redirectURI, session.CodeVerifier)
+	if err != nil {
+		log.Printf("[OAuth2] manual token exchange failed provider=%s session_id=%d state_hash=%s error=%v",
+			config.ProviderType, session.ID, hashOAuth2State(state), err)
+		h.authSessionService.UpdateStatus(state, models.OAuth2AuthSessionStatusFailed, fmt.Sprintf("token exchange failed: %v", err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	userEmail, userInfo, err := h.fetchOAuth2UserInfo(config.ProviderType, accessToken)
+	if err != nil {
+		log.Printf("[OAuth2] manual user info lookup skipped provider=%s session_id=%d state_hash=%s error=%v",
+			config.ProviderType, session.ID, hashOAuth2State(state), err)
+	}
+
+	expiresAt := time.Now().Add(time.Hour).Unix()
+	if err := h.authSessionService.CompleteAuthFlow(state, userEmail, accessToken, refreshToken, "Bearer", expiresAt, userInfo); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	completedSession, err := h.authSessionService.GetSessionByState(state)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":         string(completedSession.Status),
+		"emailAddress":   completedSession.EmailAddress,
+		"customSettings": completedSession.GetCustomSettings(),
+		"expires_at":     completedSession.ExpiresAt.Unix(),
 	})
 }
 
@@ -660,10 +919,11 @@ func (h *OAuth2Handler) CancelOAuth2Session(w http.ResponseWriter, r *http.Reque
 // ExchangeToken manually exchanges authorization code for tokens
 func (h *OAuth2Handler) ExchangeToken(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Provider    string `json:"provider"`
-		Code        string `json:"code"`
-		RedirectURI string `json:"redirect_uri"`
-		ConfigID    *uint  `json:"config_id,omitempty"` // Optional: specific OAuth2 config to use
+		Provider     string `json:"provider"`
+		Code         string `json:"code"`
+		RedirectURI  string `json:"redirect_uri"`
+		ConfigID     *uint  `json:"config_id,omitempty"` // Optional: specific OAuth2 config to use
+		CodeVerifier string `json:"code_verifier,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -676,19 +936,13 @@ func (h *OAuth2Handler) ExchangeToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var mailProviderType models.MailProviderType
-	switch request.Provider {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+	mailProviderType, err := parseOAuth2ProviderType(request.Provider)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	var config *models.OAuth2GlobalConfig
-	var err error
 
 	// Priority 1: Use specific config ID if provided (new multi-config support)
 	if request.ConfigID != nil && *request.ConfigID > 0 {
@@ -717,13 +971,7 @@ func (h *OAuth2Handler) ExchangeToken(w http.ResponseWriter, r *http.Request) {
 		redirectURI = config.RedirectURI
 	}
 
-	accessToken, refreshToken, err := h.oauth2Service.ExchangeCodeForTokens(
-		request.Provider,
-		config.ClientID,
-		config.ClientSecret,
-		request.Code,
-		redirectURI,
-	)
+	accessToken, refreshToken, err := h.oauth2Service.ExchangeCodeForTokensForConfig(*config, request.Code, redirectURI, request.CodeVerifier)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -807,19 +1055,13 @@ func (h *OAuth2Handler) RefreshTokenHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var mailProviderType models.MailProviderType
-	switch request.Provider {
-	case "gmail":
-		mailProviderType = models.ProviderTypeGmail
-	case "outlook":
-		mailProviderType = models.ProviderTypeOutlook
-	default:
-		http.Error(w, "unsupported provider type", http.StatusBadRequest)
+	mailProviderType, err := parseOAuth2ProviderType(request.Provider)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	var config *models.OAuth2GlobalConfig
-	var err error
 
 	// Priority 1: Use specific config ID if provided (new multi-config support)
 	if request.ConfigID != nil && *request.ConfigID > 0 {

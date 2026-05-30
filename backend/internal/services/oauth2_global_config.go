@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"mailman/internal/models"
 	"mailman/internal/repository"
+	"strings"
 )
 
 // OAuth2GlobalConfigService handles OAuth2 global configuration business logic
@@ -27,24 +28,19 @@ func (s *OAuth2GlobalConfigService) CreateOrUpdateConfig(config *models.OAuth2Gl
 	if config.ProviderType == "" {
 		return fmt.Errorf("provider type is required")
 	}
-	if config.ClientID == "" {
+	if strings.TrimSpace(config.ClientID) == "" {
 		return fmt.Errorf("client ID is required")
 	}
-	if config.ClientSecret == "" {
+	if models.OAuth2ClientSecretRequired(config.ProviderType) && strings.TrimSpace(config.ClientSecret) == "" {
 		return fmt.Errorf("client secret is required")
 	}
-	if config.RedirectURI == "" {
+	if strings.TrimSpace(config.RedirectURI) == "" {
 		return fmt.Errorf("redirect URI is required")
 	}
 
 	// Set default scopes if not provided
 	if len(config.Scopes) == 0 {
-		switch config.ProviderType {
-		case models.ProviderTypeGmail:
-			config.Scopes = models.StringSlice{"https://mail.google.com/", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"}
-		case models.ProviderTypeOutlook:
-			config.Scopes = models.StringSlice{"https://outlook.office.com/IMAP.AccessAsUser.All", "offline_access"}
-		}
+		config.Scopes = models.DefaultOAuth2Scopes(config.ProviderType)
 	}
 
 	// 如果ID存在且大于0，执行更新操作
@@ -85,13 +81,13 @@ func (s *OAuth2GlobalConfigService) UpdateConfig(config *models.OAuth2GlobalConf
 	if config.ProviderType == "" {
 		return fmt.Errorf("provider type is required")
 	}
-	if config.ClientID == "" {
+	if strings.TrimSpace(config.ClientID) == "" {
 		return fmt.Errorf("client ID is required")
 	}
-	if config.ClientSecret == "" {
+	if models.OAuth2ClientSecretRequired(config.ProviderType) && strings.TrimSpace(config.ClientSecret) == "" {
 		return fmt.Errorf("client secret is required")
 	}
-	if config.RedirectURI == "" {
+	if strings.TrimSpace(config.RedirectURI) == "" {
 		return fmt.Errorf("redirect URI is required")
 	}
 

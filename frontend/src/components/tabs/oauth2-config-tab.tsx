@@ -36,6 +36,8 @@ import { emailAccountService } from '@/services/email-account.service'
 import { CreateOAuth2ConfigRequest, EmailAccount, OAuth2GlobalConfig, OAuth2ProviderType } from '@/types'
 import OAuth2ConfigModal from '@/components/modals/oauth2-config-modal'
 import OAuth2HelpModal from '@/components/modals/oauth2-help-modal'
+import { getProviderMetadata } from '@/lib/provider-metadata'
+import { ProviderLogo } from '@/components/ui/provider-logo'
 
 type ProviderFilter = 'all' | OAuth2ProviderType
 type StatusFilter = 'all' | 'enabled' | 'disabled' | 'default' | 'incomplete'
@@ -49,21 +51,19 @@ const statusOptions: Array<{ value: StatusFilter; label: string }> = [
 ]
 
 function getProviderStyle(provider: OAuth2ProviderType) {
-    if (provider === 'gmail') {
-        return {
-            iconClass: 'bg-red-50 text-red-600 ring-red-100 dark:bg-red-950/40 dark:text-red-300 dark:ring-red-900/50',
-            badgeClass: 'bg-red-50 text-red-700 border-red-100 dark:bg-red-950/30 dark:text-red-300 dark:border-red-900/50',
-        }
-    }
-
+    const metadata = getProviderMetadata(provider)
     return {
-        iconClass: 'bg-blue-50 text-blue-600 ring-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:ring-blue-900/50',
-        badgeClass: 'bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-950/30 dark:text-blue-300 dark:border-blue-900/50',
+        iconClass: metadata.colorClass,
+        badgeClass: metadata.badgeClass,
     }
 }
 
 function isCompleteConfig(config: OAuth2GlobalConfig) {
-    return Boolean(config.client_id && config.client_secret && config.redirect_uri)
+    return Boolean(
+        config.client_id &&
+        config.redirect_uri &&
+        (!getProviderMetadata(config.provider_type).clientSecretRequired || config.client_secret)
+    )
 }
 
 function truncateMiddle(value: string, start = 18, end = 10) {
@@ -450,7 +450,7 @@ export default function OAuth2ConfigTab() {
                                     <div className="flex flex-col gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-800/60 sm:flex-row sm:items-center sm:justify-between">
                                         <div className="flex items-center gap-3">
                                             <div className={cn('flex h-9 w-9 items-center justify-center rounded-lg ring-1', providerStyle.iconClass)}>
-                                                <Mail className="h-5 w-5" />
+                                                <ProviderLogo provider={group.provider} size="lg" />
                                             </div>
                                             <div>
                                                 <div className="flex flex-wrap items-center gap-2">

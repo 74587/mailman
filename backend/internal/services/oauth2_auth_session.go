@@ -22,6 +22,11 @@ func NewOAuth2AuthSessionService(repo repository.OAuth2AuthSessionRepository) *O
 
 // CreateSession 创建新的OAuth2授权会话
 func (s *OAuth2AuthSessionService) CreateSession(providerID uint, state string, expiryMinutes int) (*models.OAuth2AuthSession, error) {
+	return s.CreateSessionWithPKCE(providerID, state, expiryMinutes, "", "")
+}
+
+// CreateSessionWithPKCE 创建新的OAuth2授权会话，并保存可选的PKCE verifier
+func (s *OAuth2AuthSessionService) CreateSessionWithPKCE(providerID uint, state string, expiryMinutes int, codeVerifier string, codeChallengeMethod string) (*models.OAuth2AuthSession, error) {
 	if state == "" {
 		return nil, fmt.Errorf("state parameter cannot be empty")
 	}
@@ -31,10 +36,12 @@ func (s *OAuth2AuthSessionService) CreateSession(providerID uint, state string, 
 	}
 
 	session := &models.OAuth2AuthSession{
-		State:      state,
-		ProviderID: providerID,
-		Status:     models.OAuth2AuthSessionStatusPending,
-		ExpiresAt:  time.Now().Add(time.Duration(expiryMinutes) * time.Minute),
+		State:               state,
+		ProviderID:          providerID,
+		Status:              models.OAuth2AuthSessionStatusPending,
+		ExpiresAt:           time.Now().Add(time.Duration(expiryMinutes) * time.Minute),
+		CodeVerifier:        codeVerifier,
+		CodeChallengeMethod: codeChallengeMethod,
 	}
 
 	err := s.repo.Create(session)

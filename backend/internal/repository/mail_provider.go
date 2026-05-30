@@ -74,45 +74,27 @@ func (r *MailProviderRepository) Delete(id uint) error {
 
 // SeedDefaultProviders seeds the database with default mail providers
 func (r *MailProviderRepository) SeedDefaultProviders() error {
-	defaultProviders := []models.MailProvider{
-		{
-			Name:       "Gmail",
-			Type:       models.ProviderTypeGmail,
-			IMAPServer: "imap.gmail.com",
-			IMAPPort:   993,
-			SMTPServer: "smtp.gmail.com",
-			SMTPPort:   587,
-		},
-		{
-			Name:       "Outlook",
-			Type:       models.ProviderTypeOutlook,
-			IMAPServer: "outlook.office365.com",
-			IMAPPort:   993,
-			SMTPServer: "smtp.office365.com",
-			SMTPPort:   587,
-		},
-		{
-			Name:       "Yahoo",
-			Type:       models.ProviderTypeCustom,
-			IMAPServer: "imap.mail.yahoo.com",
-			IMAPPort:   993,
-			SMTPServer: "smtp.mail.yahoo.com",
-			SMTPPort:   587,
-		},
-		{
-			Name:       "iCloud",
-			Type:       models.ProviderTypeCustom,
-			IMAPServer: "imap.mail.me.com",
-			IMAPPort:   993,
-			SMTPServer: "smtp.mail.me.com",
-			SMTPPort:   587,
-		},
-	}
+	for _, definition := range models.DefaultMailProviderDefinitions() {
+		provider := models.MailProvider{
+			Name:       definition.Name,
+			Type:       definition.Type,
+			IMAPServer: definition.IMAPServer,
+			IMAPPort:   definition.IMAPPort,
+			SMTPServer: definition.SMTPServer,
+			SMTPPort:   definition.SMTPPort,
+		}
 
-	for _, provider := range defaultProviders {
 		// Check if provider already exists
 		existing, err := r.GetByName(provider.Name)
 		if err == nil && existing != nil {
+			existing.Type = provider.Type
+			existing.IMAPServer = provider.IMAPServer
+			existing.IMAPPort = provider.IMAPPort
+			existing.SMTPServer = provider.SMTPServer
+			existing.SMTPPort = provider.SMTPPort
+			if err := r.Update(existing); err != nil {
+				return err
+			}
 			continue
 		}
 

@@ -349,12 +349,14 @@ func (s *EmailSenderService) sendWithOAuth2(account *models.EmailAccount, provid
 	clientSecret = account.CustomSettings["client_secret"]
 
 	// Priority 2: If not in CustomSettings, try OAuth2GlobalConfig via OAuth2ProviderID
-	if clientSecret == "" {
+	if clientID == "" || clientSecret == "" {
 		if account.OAuth2Provider != nil {
 			if clientID == "" {
 				clientID = account.OAuth2Provider.ClientID
 			}
-			clientSecret = account.OAuth2Provider.ClientSecret
+			if clientSecret == "" {
+				clientSecret = account.OAuth2Provider.ClientSecret
+			}
 		} else if account.OAuth2ProviderID != nil && *account.OAuth2ProviderID > 0 {
 			// Try to load OAuth2Provider if not preloaded
 			var oauth2Config models.OAuth2GlobalConfig
@@ -362,24 +364,28 @@ func (s *EmailSenderService) sendWithOAuth2(account *models.EmailAccount, provid
 				if clientID == "" {
 					clientID = oauth2Config.ClientID
 				}
-				clientSecret = oauth2Config.ClientSecret
+				if clientSecret == "" {
+					clientSecret = oauth2Config.ClientSecret
+				}
 			}
 		}
 	}
 
 	// Priority 3: Try global config by provider type as last resort
-	if clientSecret == "" {
+	if clientID == "" || clientSecret == "" {
 		var configs []models.OAuth2GlobalConfig
 		if err := s.db.Where("provider_type = ? AND is_enabled = ?", providerType, true).Find(&configs).Error; err == nil && len(configs) > 0 {
 			if clientID == "" {
 				clientID = configs[0].ClientID
 			}
-			clientSecret = configs[0].ClientSecret
+			if clientSecret == "" {
+				clientSecret = configs[0].ClientSecret
+			}
 		}
 	}
 
-	if clientSecret == "" {
-		return fmt.Errorf("无法获取 OAuth2 客户端密钥，请检查账户的 OAuth2 配置")
+	if clientID == "" {
+		return fmt.Errorf("无法获取 OAuth2 客户端 ID，请检查账户的 OAuth2 配置")
 	}
 
 	// Get fresh access token

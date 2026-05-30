@@ -66,16 +66,19 @@ func (r *OAuth2GlobalConfigRepository) GetByProviderType(providerType models.Mai
 	return &config, nil
 }
 
-// GetCompleteConfigByProviderType retrieves a complete OAuth2 global config by provider type
-// 优先返回配置完整的记录（有client_id、client_secret和redirect_uri）
+// GetCompleteConfigByProviderType retrieves a complete OAuth2 global config by provider type.
+// Public OAuth2 clients such as Yahoo/Thunderbird-style clients may not have client_secret.
 func (r *OAuth2GlobalConfigRepository) GetCompleteConfigByProviderType(providerType models.MailProviderType) (*models.OAuth2GlobalConfig, error) {
 	var config models.OAuth2GlobalConfig
 
 	// 首先尝试获取配置完整的记录
-	err := r.db.Where("provider_type = ? AND is_enabled = ? AND client_id != '' AND client_secret != '' AND redirect_uri != ''",
-		providerType, true).
-		Order("is_default DESC, id ASC").
-		First(&config).Error
+	query := r.db.Where("provider_type = ? AND is_enabled = ? AND client_id != '' AND redirect_uri != ''",
+		providerType, true)
+	if models.OAuth2ClientSecretRequired(providerType) {
+		query = query.Where("client_secret != ''")
+	}
+
+	err := query.Order("is_default DESC, id ASC").First(&config).Error
 
 	if err == nil {
 		return &config, nil
@@ -268,7 +271,7 @@ func (r *OAuth2GlobalConfigRepository) SeedDefaultConfigs() error {
 			ClientID:     "",
 			ClientSecret: "",
 			RedirectURI:  "",
-			Scopes:       models.StringSlice{"https://mail.google.com/", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"},
+			Scopes:       models.DefaultOAuth2Scopes(models.ProviderTypeGmail),
 			IsEnabled:    false,
 			IsDefault:    true,
 		}
@@ -290,7 +293,7 @@ func (r *OAuth2GlobalConfigRepository) SeedDefaultConfigs() error {
 			ClientID:     "",
 			ClientSecret: "",
 			RedirectURI:  "",
-			Scopes:       models.StringSlice{"https://outlook.office.com/IMAP.AccessAsUser.All", "https://outlook.office.com/SMTP.Send", "offline_access"},
+			Scopes:       models.DefaultOAuth2Scopes(models.ProviderTypeOutlook),
 			IsEnabled:    false,
 			IsDefault:    true,
 		}

@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { motion, AnimatePresence } from 'framer-motion'
 import { AccountNoteFormat, EmailAccount, OAuth2GlobalConfig, ProxyAccountMode, ProxyFallbackMode, ProxyTagFilterMode, ProxyType } from '@/types'
 import OAuth2PopupAuth from '@/components/oauth2/oauth2-popup-auth'
+import OAuth2ManualCodeAuth from '@/components/oauth2/oauth2-manual-code-auth'
 import { AccountNoteEditor } from '@/components/accounts/account-note-editor'
 import { ProxyConfigSection, defaultProxyConfigValue } from '@/components/proxy/proxy-config-section'
 import {
@@ -22,6 +23,9 @@ import {
     ModalDescription
 } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
+import { ProviderLogo } from '@/components/ui/provider-logo'
+import { inferProviderTypeFromEmail } from '@/lib/provider-metadata'
 
 interface EnhancedAddAccountModalProps {
     isOpen: boolean
@@ -31,6 +35,7 @@ interface EnhancedAddAccountModalProps {
     presetProvider?: string
     presetAuthType?: string
     autoTriggerOAuth2?: boolean
+    autoTriggerOAuth2Mode?: 'popup' | 'manual'
 }
 
 interface MailProvider {
@@ -105,7 +110,8 @@ export default function EnhancedAddAccountModal({
     onError,
     presetProvider,
     presetAuthType,
-    autoTriggerOAuth2
+    autoTriggerOAuth2,
+    autoTriggerOAuth2Mode = 'popup'
 }: EnhancedAddAccountModalProps) {
     const [currentStep, setCurrentStep] = useState<WorkflowStep>('account')
     const [activeAccountSection, setActiveAccountSection] = useState<AddAccountSection>('identity')
@@ -143,6 +149,7 @@ export default function EnhancedAddAccountModal({
     const [syncInterval, setSyncInterval] = useState(300) // 5 minutes
 
     const [showOAuth2Popup, setShowOAuth2Popup] = useState(false)
+    const [showOAuth2ManualCode, setShowOAuth2ManualCode] = useState(false)
     const [oauth2Providers, setOAuth2Providers] = useState<OAuth2GlobalConfig[]>([])
     const autoTriggeredOAuth2Ref = useRef(false)
 
@@ -232,20 +239,24 @@ export default function EnhancedAddAccountModal({
         if (accountForm.authType !== 'oauth2' || !selectedProviderType) {
             return
         }
-        if (selectedProviderType !== 'gmail' && selectedProviderType !== 'outlook') {
-            return
-        }
         if (availableOAuth2Providers.length === 0 || !accountForm.oauth2ProviderConfigId) {
             return
         }
 
         autoTriggeredOAuth2Ref.current = true
-        const timer = window.setTimeout(() => setShowOAuth2Popup(true), 200)
+        const timer = window.setTimeout(() => {
+            if (autoTriggerOAuth2Mode === 'manual' && selectedProviderType && oauth2Service.supportsManualCodeAuth(selectedProviderType)) {
+                setShowOAuth2ManualCode(true)
+            } else {
+                setShowOAuth2Popup(true)
+            }
+        }, 200)
         return () => window.clearTimeout(timer)
     }, [
         accountForm.authType,
         accountForm.oauth2ProviderConfigId,
         autoTriggerOAuth2,
+        autoTriggerOAuth2Mode,
         availableOAuth2Providers.length,
         isOpen,
         selectedProviderType,
@@ -295,6 +306,7 @@ export default function EnhancedAddAccountModal({
         setEnableAutoSync(true)
         setSyncInterval(300)
         setShowOAuth2Popup(false)
+        setShowOAuth2ManualCode(false)
         setIsCustomProvider(false)
         setSelectedProvider(null)
         setCustomImapServer('')
@@ -534,15 +546,19 @@ export default function EnhancedAddAccountModal({
     const handleOAuth2Success = async (result: { emailAddress: string; customSettings: any }) => {
         try {
             setShowOAuth2Popup(false)
+            setShowOAuth2ManualCode(false)
+            const resolvedEmail = result.emailAddress || accountForm.email
 
             // 自动选择Gmail提供商
-            const emailDomain = result.emailAddress.split('@')[1].toLowerCase()
+            const emailDomain = resolvedEmail.split('@')[1]?.toLowerCase()
             let autoProvider = null
 
-            if (emailDomain === 'gmail.com') {
-                autoProvider = providers.find(p => p.type.toLowerCase() === 'gmail')
-            } else if (emailDomain === 'outlook.com' || emailDomain === 'hotmail.com' || emailDomain === 'live.com') {
-                autoProvider = providers.find(p => p.type.toLowerCase() === 'outlook')
+            const inferredProviderType = inferProviderTypeFromEmail(resolvedEmail)
+            if (inferredProviderType) {
+                autoProvider = providers.find(p => p.type.toLowerCase() === inferredProviderType)
+            }
+            if (!autoProvider && emailDomain) {
+                autoProvider = providers.find(p => p.type.toLowerCase() === selectedProviderType)
             }
 
             if (autoProvider) {
@@ -554,7 +570,7 @@ export default function EnhancedAddAccountModal({
             // 将OAuth2授权结果回填到表单
             setAccountForm(prev => ({
                 ...prev,
-                email: result.emailAddress,
+                email: resolvedEmail,
                 authType: 'oauth2',
                 accessToken: result.customSettings?.access_token || '',
                 refreshToken: result.customSettings?.refresh_token || '',
@@ -572,11 +588,13 @@ export default function EnhancedAddAccountModal({
     // OAuth2授权取消回调
     const handleOAuth2Cancel = () => {
         setShowOAuth2Popup(false)
+        setShowOAuth2ManualCode(false)
     }
 
     // OAuth2授权失败回调
     const handleOAuth2Error = (error: string) => {
         setShowOAuth2Popup(false)
+        setShowOAuth2ManualCode(false)
         onError?.(error)
     }
 
@@ -593,6 +611,9 @@ export default function EnhancedAddAccountModal({
         : Boolean(accountForm.accessToken)
     const canContinueAccount = Boolean(accountForm.email) && hasProvider && hasCredential
     const canCreateAccount = canContinueAccount && (!accountForm.isDomainMail || Boolean(accountForm.domain.trim()))
+    const supportsManualOAuth2 = selectedProviderType
+        ? oauth2Service.supportsManualCodeAuth(selectedProviderType)
+        : false
     const addSections: AddSectionItem[] = [
         {
             key: 'identity',
@@ -804,7 +825,18 @@ export default function EnhancedAddAccountModal({
                                                                 <input
                                                                     type="email"
                                                                     value={accountForm.email}
-                                                                    onChange={(e) => setAccountForm(prev => ({ ...prev, email: e.target.value }))}
+                                                                    onChange={(e) => {
+                                                                        const nextEmail = e.target.value
+                                                                        const inferredType = inferProviderTypeFromEmail(nextEmail)
+                                                                        if (inferredType && !selectedProvider) {
+                                                                            const inferredProvider = providers.find(p => p.type.toLowerCase() === inferredType)
+                                                                            if (inferredProvider) {
+                                                                                setSelectedProvider(inferredProvider)
+                                                                                setIsCustomProvider(false)
+                                                                            }
+                                                                        }
+                                                                        setAccountForm(prev => ({ ...prev, email: nextEmail }))
+                                                                    }}
                                                                     className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
                                                                     placeholder="your.email@example.com"
                                                                 />
@@ -812,29 +844,53 @@ export default function EnhancedAddAccountModal({
 
                                                             <div className="space-y-2">
                                                                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">邮件提供商</label>
-                                                                <select
-                                                                    value={isCustomProvider ? 'custom' : (selectedProvider?.id || '')}
-                                                                    onChange={(e) => {
-                                                                        const value = e.target.value
+                                                                <Select
+                                                                    value={isCustomProvider ? 'custom' : (selectedProvider ? String(selectedProvider.id) : '')}
+                                                                    onValueChange={(value) => {
                                                                         if (value === 'custom') {
                                                                             setIsCustomProvider(true)
                                                                             setSelectedProvider(null)
                                                                         } else {
                                                                             setIsCustomProvider(false)
-                                                                            const provider = providers.find(p => p.id === parseInt(value))
+                                                                            const provider = providers.find(p => p.id === Number(value))
                                                                             setSelectedProvider(provider || null)
                                                                         }
                                                                     }}
-                                                                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
                                                                 >
-                                                                    <option value="">请选择邮件提供商</option>
-                                                                    {providers.map(provider => (
-                                                                        <option key={provider.id} value={provider.id}>
-                                                                            {provider.name}
-                                                                        </option>
-                                                                    ))}
-                                                                    <option value="custom">自定义 IMAP 服务器</option>
-                                                                </select>
+                                                                    <SelectTrigger className="h-11 rounded-lg border-gray-300 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white">
+                                                                        <span className="flex min-w-0 items-center gap-2">
+                                                                            {!isCustomProvider && selectedProvider ? (
+                                                                                <>
+                                                                                    <ProviderLogo provider={selectedProvider.type} size="sm" />
+                                                                                    <span className="truncate">{selectedProvider.name}</span>
+                                                                                </>
+                                                                            ) : isCustomProvider ? (
+                                                                                <>
+                                                                                    <Mail className="h-4 w-4 shrink-0 text-gray-500" />
+                                                                                    <span className="truncate">自定义 IMAP 服务器</span>
+                                                                                </>
+                                                                            ) : (
+                                                                                <span className="text-gray-500">请选择邮件提供商</span>
+                                                                            )}
+                                                                        </span>
+                                                                    </SelectTrigger>
+                                                                    <SelectContent className="max-h-72">
+                                                                        {providers.map(provider => (
+                                                                            <SelectItem key={provider.id} value={String(provider.id)}>
+                                                                                <span className="flex min-w-0 items-center gap-2">
+                                                                                    <ProviderLogo provider={provider.type} size="sm" />
+                                                                                    <span className="truncate">{provider.name}</span>
+                                                                                </span>
+                                                                            </SelectItem>
+                                                                        ))}
+                                                                        <SelectItem value="custom">
+                                                                            <span className="flex min-w-0 items-center gap-2">
+                                                                                <Mail className="h-4 w-4 shrink-0 text-gray-500" />
+                                                                                <span className="truncate">自定义 IMAP 服务器</span>
+                                                                            </span>
+                                                                        </SelectItem>
+                                                                    </SelectContent>
+                                                                </Select>
                                                             </div>
                                                         </div>
 
@@ -936,7 +992,7 @@ export default function EnhancedAddAccountModal({
 
                                                         {accountForm.authType === 'oauth2' && (
                                                             <div className="space-y-4">
-                                                                {(selectedProviderType === 'gmail' || selectedProviderType === 'outlook') && (
+                                                                {selectedProviderType && (
                                                                     <div className="space-y-2 rounded-xl border border-blue-100 bg-blue-50/70 p-3 dark:border-blue-900/50 dark:bg-blue-950/20">
                                                                         <div className="flex items-center justify-between gap-2">
                                                                             <label className="text-sm font-medium text-blue-950 dark:text-blue-100">OAuth2 配置</label>
@@ -966,14 +1022,26 @@ export default function EnhancedAddAccountModal({
                                                                         )}
                                                                     </div>
                                                                 )}
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => setShowOAuth2Popup(true)}
-                                                                    disabled={(selectedProviderType === 'gmail' || selectedProviderType === 'outlook') && availableOAuth2Providers.length === 0}
-                                                                    className="w-full rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-400"
-                                                                >
-                                                                    启动 OAuth2 认证
-                                                                </button>
+                                                                <div className={cn('grid gap-2', supportsManualOAuth2 && 'sm:grid-cols-2')}>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setShowOAuth2Popup(true)}
+                                                                        disabled={!selectedProviderType || availableOAuth2Providers.length === 0}
+                                                                        className="w-full rounded-lg bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-400"
+                                                                    >
+                                                                        启动 OAuth2 认证
+                                                                    </button>
+                                                                    {supportsManualOAuth2 && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setShowOAuth2ManualCode(true)}
+                                                                            disabled={!selectedProviderType || availableOAuth2Providers.length === 0}
+                                                                            className="w-full rounded-lg border border-blue-200 bg-white px-4 py-2 text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 dark:border-blue-900/60 dark:bg-gray-900 dark:text-blue-200 dark:hover:bg-blue-950/20 dark:disabled:border-gray-700 dark:disabled:bg-gray-800 dark:disabled:text-gray-500"
+                                                                        >
+                                                                            手动回填 Code
+                                                                        </button>
+                                                                    )}
+                                                                </div>
                                                                 {accountForm.accessToken && (
                                                                     <div className="rounded-lg border border-green-200 bg-green-50 p-3">
                                                                         <div className="flex items-center">
@@ -1424,6 +1492,16 @@ export default function EnhancedAddAccountModal({
             {/* OAuth2 Popup 授权组件 */}
             {showOAuth2Popup && selectedProvider && (
                 <OAuth2PopupAuth
+                    provider={getSelectedProvider()?.type.toLowerCase() as any}
+                    configId={accountForm.oauth2ProviderConfigId}
+                    onSuccess={handleOAuth2Success}
+                    onCancel={handleOAuth2Cancel}
+                    onError={handleOAuth2Error}
+                />
+            )}
+
+            {showOAuth2ManualCode && selectedProvider && (
+                <OAuth2ManualCodeAuth
                     provider={getSelectedProvider()?.type.toLowerCase() as any}
                     configId={accountForm.oauth2ProviderConfigId}
                     onSuccess={handleOAuth2Success}

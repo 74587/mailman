@@ -316,18 +316,12 @@ func (s *OAuth2Service) RefreshAccessToken(clientID, refreshToken string) (strin
 
 // RefreshAccessTokenForProvider refreshes the access token for a specific provider
 func (s *OAuth2Service) RefreshAccessTokenForProvider(providerType string, clientID, clientSecret, refreshToken string) (string, error) {
-	var tokenURL, scope string
-
-	switch providerType {
-	case "gmail":
-		tokenURL = "https://oauth2.googleapis.com/token"
-		scope = "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
-	case "outlook":
-		tokenURL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-		scope = "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/POP.AccessAsUser.All https://outlook.office.com/SMTP.Send"
-	default:
+	provider, ok := models.GetOAuth2ProviderDefinition(models.MailProviderType(providerType))
+	if !ok {
 		return "", fmt.Errorf("unsupported provider type: %s", providerType)
 	}
+	tokenURL := provider.TokenURL
+	scope := strings.Join(provider.Scopes, " ")
 
 	// Log the request for debugging (hide sensitive data)
 	debugPrintf("OAuth2: Refreshing token for provider: %s, client_id: %s\n", providerType, clientID)
@@ -337,7 +331,9 @@ func (s *OAuth2Service) RefreshAccessTokenForProvider(providerType string, clien
 	data.Set("client_id", clientID)
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
-	data.Set("scope", scope)
+	if scope != "" {
+		data.Set("scope", scope)
+	}
 
 	// Only include client_secret for confidential clients (not public clients)
 	// For Microsoft public clients, client_secret should be empty or not included
@@ -415,18 +411,12 @@ func (s *OAuth2Service) RefreshAccessTokenForProvider(providerType string, clien
 // RefreshAccessTokenForProviderWithProxy refreshes the access token for a specific provider with proxy support
 // Returns new access token and new refresh token (if provided by the provider)
 func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType string, clientID, clientSecret, refreshToken, proxy string) (accessToken string, newRefreshToken string, err error) {
-	var tokenURL, scope string
-
-	switch providerType {
-	case "gmail":
-		tokenURL = "https://oauth2.googleapis.com/token"
-		scope = "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
-	case "outlook":
-		tokenURL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-		scope = "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/POP.AccessAsUser.All https://outlook.office.com/SMTP.Send"
-	default:
+	provider, ok := models.GetOAuth2ProviderDefinition(models.MailProviderType(providerType))
+	if !ok {
 		return "", "", fmt.Errorf("unsupported provider type: %s", providerType)
 	}
+	tokenURL := provider.TokenURL
+	scope := strings.Join(provider.Scopes, " ")
 
 	// Log the request for debugging (hide sensitive data)
 	debugPrintf("OAuth2: Refreshing token for provider: %s, client_id: %s with proxy: %s\n", providerType, clientID, proxy)
@@ -436,7 +426,9 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	data.Set("client_id", clientID)
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
-	data.Set("scope", scope)
+	if scope != "" {
+		data.Set("scope", scope)
+	}
 
 	// Only include client_secret for confidential clients (not public clients)
 	// For Microsoft public clients, client_secret should be empty or not included
@@ -503,7 +495,7 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 		return "", "", fmt.Errorf("%s", errInfo)
 	}
 
-	accessToken, ok := result["access_token"].(string)
+	accessToken, ok = result["access_token"].(string)
 	if !ok {
 		// Log the entire response for debugging
 		debugPrintf("OAuth2: No access_token in response. Full response: %+v\n", result)
@@ -528,44 +520,77 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 
 // GenerateAuthURL generates OAuth2 authorization URL for a provider
 func (s *OAuth2Service) GenerateAuthURL(providerType string, clientID, redirectURI, state string) (string, error) {
-	var authURL, scope string
-
-	switch providerType {
-	case "gmail":
-		authURL = "https://accounts.google.com/o/oauth2/auth"
-		scope = "https://mail.google.com/ https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
-	case "outlook":
-		authURL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-		scope = "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/POP.AccessAsUser.All https://outlook.office.com/SMTP.Send"
-	default:
+	provider, ok := models.GetOAuth2ProviderDefinition(models.MailProviderType(providerType))
+	if !ok {
 		return "", fmt.Errorf("unsupported provider type: %s", providerType)
 	}
+	return s.generateAuthURL(provider.AuthURL, providerType, clientID, redirectURI, state, strings.Join(provider.Scopes, " "), "")
+}
 
+// GenerateAuthURLForConfig generates an OAuth2 authorization URL using the stored config scopes.
+func (s *OAuth2Service) GenerateAuthURLForConfig(config models.OAuth2GlobalConfig, state string, codeChallenge string) (string, error) {
+	return s.GenerateAuthURLForConfigWithRedirectURI(config, state, codeChallenge, config.RedirectURI)
+}
+
+// GenerateAuthURLForConfigWithRedirectURI generates an OAuth2 authorization URL with a redirect URI override.
+func (s *OAuth2Service) GenerateAuthURLForConfigWithRedirectURI(config models.OAuth2GlobalConfig, state string, codeChallenge string, redirectURI string) (string, error) {
+	provider, ok := models.GetOAuth2ProviderDefinition(config.ProviderType)
+	if !ok {
+		return "", fmt.Errorf("unsupported provider type: %s", config.ProviderType)
+	}
+	scopes := strings.Join([]string(config.Scopes), " ")
+	if scopes == "" {
+		scopes = strings.Join(provider.Scopes, " ")
+	}
+	if redirectURI == "" {
+		redirectURI = config.RedirectURI
+	}
+	return s.generateAuthURL(provider.AuthURL, string(config.ProviderType), config.ClientID, redirectURI, state, scopes, codeChallenge)
+}
+
+func (s *OAuth2Service) generateAuthURL(authURL, providerType, clientID, redirectURI, state, scope, codeChallenge string) (string, error) {
 	params := url.Values{}
 	params.Set("client_id", clientID)
 	params.Set("redirect_uri", redirectURI)
 	params.Set("response_type", "code")
-	params.Set("scope", scope)
+	if scope != "" {
+		params.Set("scope", scope)
+	}
 	params.Set("state", state)
-	params.Set("access_type", "offline")
-	params.Set("prompt", "consent")
+	if codeChallenge != "" {
+		params.Set("code_challenge", codeChallenge)
+		params.Set("code_challenge_method", "S256")
+	}
+	switch providerType {
+	case string(models.ProviderTypeGmail):
+		params.Set("access_type", "offline")
+		params.Set("prompt", "consent")
+	case string(models.ProviderTypeOutlook):
+		params.Set("prompt", "consent")
+	}
 
 	return fmt.Sprintf("%s?%s", authURL, params.Encode()), nil
 }
 
 // ExchangeCodeForTokens exchanges authorization code for tokens
 func (s *OAuth2Service) ExchangeCodeForTokens(providerType, clientID, clientSecret, code, redirectURI string) (accessToken, refreshToken string, err error) {
-	var tokenURL string
-
-	switch providerType {
-	case "gmail":
-		tokenURL = "https://oauth2.googleapis.com/token"
-	case "outlook":
-		tokenURL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-	default:
+	provider, ok := models.GetOAuth2ProviderDefinition(models.MailProviderType(providerType))
+	if !ok {
 		return "", "", fmt.Errorf("unsupported provider type: %s", providerType)
 	}
+	return s.exchangeCodeForTokens(provider.TokenURL, clientID, clientSecret, code, redirectURI, "")
+}
 
+// ExchangeCodeForTokensForConfig exchanges authorization code using provider metadata and optional PKCE.
+func (s *OAuth2Service) ExchangeCodeForTokensForConfig(config models.OAuth2GlobalConfig, code, redirectURI, codeVerifier string) (accessToken, refreshToken string, err error) {
+	provider, ok := models.GetOAuth2ProviderDefinition(config.ProviderType)
+	if !ok {
+		return "", "", fmt.Errorf("unsupported provider type: %s", config.ProviderType)
+	}
+	return s.exchangeCodeForTokens(provider.TokenURL, config.ClientID, config.ClientSecret, code, redirectURI, codeVerifier)
+}
+
+func (s *OAuth2Service) exchangeCodeForTokens(tokenURL, clientID, clientSecret, code, redirectURI, codeVerifier string) (accessToken, refreshToken string, err error) {
 	data := url.Values{}
 	data.Set("client_id", clientID)
 	// Only include client_secret for confidential clients (not public clients)
@@ -575,6 +600,9 @@ func (s *OAuth2Service) ExchangeCodeForTokens(providerType, clientID, clientSecr
 	data.Set("code", code)
 	data.Set("grant_type", "authorization_code")
 	data.Set("redirect_uri", redirectURI)
+	if codeVerifier != "" {
+		data.Set("code_verifier", codeVerifier)
+	}
 
 	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {

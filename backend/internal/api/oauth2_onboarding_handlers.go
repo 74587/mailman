@@ -269,18 +269,11 @@ func (h *APIHandler) fillOAuth2MailProviderID(request *CreateOAuth2AccountOnboar
 }
 
 func inferOAuth2ProviderTypeFromEmail(email string) models.MailProviderType {
-	parts := strings.Split(strings.ToLower(strings.TrimSpace(email)), "@")
-	if len(parts) != 2 {
-		return ""
+	providerType := models.InferMailProviderTypeFromEmail(email)
+	if _, ok := models.GetOAuth2ProviderDefinition(providerType); ok {
+		return providerType
 	}
-	switch parts[1] {
-	case "gmail.com", "googlemail.com":
-		return models.ProviderTypeGmail
-	case "outlook.com", "hotmail.com", "live.com", "msn.com":
-		return models.ProviderTypeOutlook
-	default:
-		return ""
-	}
+	return ""
 }
 
 func buildOAuth2OnboardingAccount(request CreateOAuth2AccountOnboardingRequest, orgID uint) models.EmailAccount {

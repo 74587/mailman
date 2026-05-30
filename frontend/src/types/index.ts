@@ -619,7 +619,7 @@ export interface TriggerStatistics {
 }
 
 // OAuth2 Types
-export type OAuth2ProviderType = 'gmail' | 'outlook'
+export type OAuth2ProviderType = string
 
 export interface OAuth2GlobalConfig {
     id: number

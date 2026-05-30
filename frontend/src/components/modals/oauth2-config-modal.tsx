@@ -13,6 +13,8 @@ import { oauth2Service } from '@/services/oauth2.service'
 import { OAuth2GlobalConfig, OAuth2ProviderType, CreateOAuth2ConfigRequest } from '@/types'
 import OAuth2HelpModal from './oauth2-help-modal'
 import { toast } from 'sonner'
+import { getProviderMetadata } from '@/lib/provider-metadata'
+import { ProviderLogo } from '@/components/ui/provider-logo'
 import {
     Modal,
     ModalContent,
@@ -31,6 +33,8 @@ const getCorrectRedirectUri = (provider: OAuth2ProviderType): string => {
 const ConfigGuideTooltip = ({ provider, isVisible, onClose }: { provider: OAuth2ProviderType, isVisible: boolean, onClose: () => void }) => {
     const getConfigGuide = (provider: OAuth2ProviderType) => {
         const redirectUri = getCorrectRedirectUri(provider)
+
+        const providerName = oauth2Service.getProviderDisplayName(provider)
 
         if (provider === 'gmail') {
             return {
@@ -60,7 +64,18 @@ const ConfigGuideTooltip = ({ provider, isVisible, onClose }: { provider: OAuth2
                 docsUrl: 'https://docs.microsoft.com/en-us/graph/auth-v2-user'
             }
         }
-        return null
+        return {
+            title: `${providerName} OAuth2 配置指导`,
+            steps: [
+                `1. 在 ${providerName} 的开发者控制台创建 OAuth2 应用`,
+                '2. 复制 Client ID 和 Client Secret',
+                '3. 在回调/Redirect URI 中添加：',
+                redirectUri,
+                '4. 确认启用了 IMAP/SMTP 相关权限范围',
+            ],
+            redirectUri,
+            docsUrl: ''
+        }
     }
 
     const copyToClipboard = async (text: string) => {
@@ -102,9 +117,13 @@ const ConfigGuideTooltip = ({ provider, isVisible, onClose }: { provider: OAuth2
                 ))}
             </div>
             <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-                <a href={guide.docsUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800">
-                    查看官方文档 <ExternalLink className="h-3 w-3" />
-                </a>
+                {guide.docsUrl ? (
+                    <a href={guide.docsUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800">
+                        查看官方文档 <ExternalLink className="h-3 w-3" />
+                    </a>
+                ) : (
+                    <span className="text-sm text-gray-500">请以服务商开发者后台的 OAuth2 文档为准。</span>
+                )}
             </div>
         </div>
     )
@@ -136,6 +155,7 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, 
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
     const [validationErrors, setValidationErrors] = useState<string[]>([])
+    const clientSecretRequired = oauth2Service.isClientSecretRequired(provider)
 
     const copyToClipboard = async (text: string) => {
         try {
@@ -216,8 +236,8 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, 
     }, [provider, config])
 
     useEffect(() => {
-        if (provider === 'gmail') {
-            setScopes(oauth2Service.getGmailProtectedScopes())
+        if (oauth2Service.hasProtectedScopes(provider)) {
+            setScopes(oauth2Service.getDefaultScopes(provider))
         }
     }, [provider])
 
@@ -232,7 +252,7 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, 
     }
 
     const addCustomScope = () => {
-        if (provider === 'gmail') return
+        if (oauth2Service.hasProtectedScopes(provider)) return
         if (customScope.trim() && !scopes.includes(customScope.trim())) {
             setScopes([...scopes, customScope.trim()])
             setCustomScope('')
@@ -240,7 +260,7 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, 
     }
 
     const removeScope = (index: number) => {
-        if (provider === 'gmail') return
+        if (oauth2Service.hasProtectedScopes(provider)) return
         setScopes(scopes.filter((_, i) => i !== index))
     }
 
@@ -319,7 +339,12 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, 
                                 <SelectTrigger><SelectValue /></SelectTrigger>
                                 <SelectContent>
                                     {oauth2Service.getSupportedProviders().map((p) => (
-                                        <SelectItem key={p} value={p}>{oauth2Service.getProviderDisplayName(p)}</SelectItem>
+                                        <SelectItem key={p} value={p}>
+                                            <span className="inline-flex items-center gap-2">
+                                                <ProviderLogo provider={p} size="sm" />
+                                                {oauth2Service.getProviderDisplayName(p)}
+                                            </span>
+                                        </SelectItem>
                                     ))}
                                 </SelectContent>
                             </Select>
@@ -353,8 +378,8 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, 
                         </div>
 
                         <div className="space-y-2">
-                            <Label>客户端密钥 *</Label>
-                            <Input value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder="输入客户端密钥" />
+                            <Label>客户端密钥 {clientSecretRequired ? '*' : '(可选)'}</Label>
+                            <Input value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder={clientSecretRequired ? '输入客户端密钥' : '服务商要求时填写'} />
                         </div>
 
                         <div className="space-y-2">
@@ -380,15 +405,17 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, 
                         <div className="space-y-2">
                             <div className="flex items-center justify-between">
                                 <Label>权限范围</Label>
-                                {provider === 'gmail' && (
-                                    <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700">Gmail受保护</Badge>
+                                {oauth2Service.hasProtectedScopes(provider) && (
+                                    <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700">
+                                        {getProviderMetadata(provider).displayName} 受保护
+                                    </Badge>
                                 )}
                             </div>
                             <div className="flex flex-wrap gap-2">
                                 {scopes.map((scope, index) => (
                                     <Badge key={index} variant="secondary" className="flex items-center gap-1">
                                         {scope}
-                                        {provider !== 'gmail' && (
+                                        {!oauth2Service.hasProtectedScopes(provider) && (
                                             <button type="button" onClick={() => removeScope(index)} className="ml-1 p-0.5 hover:bg-gray-200 rounded-full">
                                                 <X className="h-3 w-3" />
                                             </button>
@@ -396,7 +423,7 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, 
                                     </Badge>
                                 ))}
                             </div>
-                            {provider !== 'gmail' && (
+                            {!oauth2Service.hasProtectedScopes(provider) && (
                                 <div className="flex gap-2">
                                     <Input value={customScope} onChange={(e) => setCustomScope(e.target.value)} placeholder="添加自定义权限范围" onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addCustomScope())} />
                                     <Button type="button" variant="outline" onClick={addCustomScope} disabled={!customScope.trim()}>

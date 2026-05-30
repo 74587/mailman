@@ -18,13 +18,15 @@ const (
 
 // OAuth2AuthSession 存储OAuth2授权会话信息
 type OAuth2AuthSession struct {
-	ID         uint                    `gorm:"primaryKey" json:"id"`
-	State      string                  `gorm:"unique;not null;index" json:"state"`    // OAuth2 state参数
-	ProviderID uint                    `gorm:"not null" json:"providerId"`            // OAuth2提供商ID
-	Provider   OAuth2GlobalConfig      `gorm:"foreignKey:ProviderID" json:"provider"` // 关联的OAuth2提供商配置
-	Status     OAuth2AuthSessionStatus `gorm:"default:'pending'" json:"status"`       // 授权状态
-	ErrorMsg   string                  `json:"errorMsg,omitempty"`                    // 错误信息
-	ExpiresAt  time.Time               `gorm:"not null" json:"expiresAt"`             // 会话过期时间
+	ID                  uint                    `gorm:"primaryKey" json:"id"`
+	State               string                  `gorm:"unique;not null;index" json:"state"`    // OAuth2 state参数
+	ProviderID          uint                    `gorm:"not null" json:"providerId"`            // OAuth2提供商ID
+	Provider            OAuth2GlobalConfig      `gorm:"foreignKey:ProviderID" json:"provider"` // 关联的OAuth2提供商配置
+	Status              OAuth2AuthSessionStatus `gorm:"default:'pending'" json:"status"`       // 授权状态
+	ErrorMsg            string                  `json:"errorMsg,omitempty"`                    // 错误信息
+	ExpiresAt           time.Time               `gorm:"not null" json:"expiresAt"`             // 会话过期时间
+	CodeVerifier        string                  `json:"-"`                                     // PKCE code_verifier
+	CodeChallengeMethod string                  `json:"codeChallengeMethod,omitempty"`         // PKCE method, usually S256
 
 	// 授权成功后获取的账户信息
 	EmailAddress   string `json:"emailAddress,omitempty"`   // 邮箱地址
