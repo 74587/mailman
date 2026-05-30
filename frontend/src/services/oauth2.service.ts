@@ -17,7 +17,7 @@ export class OAuth2Service {
     /**
      * 创建或更新OAuth2全局配置
      */
-    async createOrUpdateGlobalConfig(config: CreateOAuth2ConfigRequest): Promise<OAuth2GlobalConfig> {
+    async createOrUpdateGlobalConfig(config: CreateOAuth2ConfigRequest | UpdateOAuth2ConfigRequest): Promise<OAuth2GlobalConfig> {
         const response = await apiClient.post<OAuth2GlobalConfig>(
             `${this.basePath}/global-config`,
             config
@@ -75,6 +75,16 @@ export class OAuth2Service {
      */
     async deleteGlobalConfig(id: number): Promise<void> {
         await apiClient.delete(`${this.basePath}/global-config/${id}`);
+    }
+
+    /**
+     * 设置OAuth2配置为对应提供商的默认凭证
+     */
+    async setDefaultGlobalConfig(id: number): Promise<OAuth2GlobalConfig> {
+        const response = await apiClient.post<OAuth2GlobalConfig>(
+            `${this.basePath}/global-config/${id}/default`
+        );
+        return response;
     }
 
     /**

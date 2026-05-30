@@ -1,478 +1,298 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Settings, Plus, Edit, Trash2, Power, Check, X, AlertCircle, Link, Search, MoreVertical, HelpCircle, Users } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+    AlertCircle,
+    Check,
+    Edit,
+    HelpCircle,
+    Link,
+    Mail,
+    Plus,
+    RefreshCw,
+    Search,
+    ShieldCheck,
+    Star,
+    Trash2,
+    Users,
+    X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
+import {
+    Table,
+    TableBody,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from '@/components/ui/table'
 import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 import { oauth2Service } from '@/services/oauth2.service'
 import { emailAccountService } from '@/services/email-account.service'
-import { OAuth2GlobalConfig, OAuth2ProviderType, EmailAccount } from '@/types'
+import { CreateOAuth2ConfigRequest, EmailAccount, OAuth2GlobalConfig, OAuth2ProviderType } from '@/types'
 import OAuth2ConfigModal from '@/components/modals/oauth2-config-modal'
 import OAuth2HelpModal from '@/components/modals/oauth2-help-modal'
 
-// OAuth2配置卡片组件
-function OAuth2ConfigCard({
-    config,
-    onEdit,
-    onDelete,
-    onToggleEnabled,
-    onTestConnection
-}: {
-    config: OAuth2GlobalConfig
-    onEdit: (config: OAuth2GlobalConfig) => void
-    onDelete: (config: OAuth2GlobalConfig) => void
-    onToggleEnabled: (config: OAuth2GlobalConfig) => void
-    onTestConnection: (config: OAuth2GlobalConfig) => void
-}) {
-    const [isToggling, setIsToggling] = useState(false)
-    const [isTesting, setIsTesting] = useState(false)
-    const [accountCount, setAccountCount] = useState<number>(0)
-    const [loadingAccounts, setLoadingAccounts] = useState(false)
+type ProviderFilter = 'all' | OAuth2ProviderType
+type StatusFilter = 'all' | 'enabled' | 'disabled' | 'default' | 'incomplete'
 
-    // 加载关联的账户数量
-    const loadAccountCount = async () => {
-        try {
-            setLoadingAccounts(true)
-            const accounts = await emailAccountService.getAccounts()
+const statusOptions: Array<{ value: StatusFilter; label: string }> = [
+    { value: 'all', label: '全部状态' },
+    { value: 'enabled', label: '已启用' },
+    { value: 'disabled', label: '已停用' },
+    { value: 'default', label: '默认凭证' },
+    { value: 'incomplete', label: '配置不完整' },
+]
 
-            // 根据provider_type筛选相关账户
-            const relatedAccounts = (accounts || []).filter(account => {
-                // 检查账户是否使用OAuth2认证且provider类型匹配
-                return account && account.authType === 'oauth2' &&
-                    account.mailProvider?.type === config.provider_type
-            })
-
-            setAccountCount(relatedAccounts.length)
-        } catch (error) {
-            console.error('Failed to load account count:', error)
-            setAccountCount(0)
-        } finally {
-            setLoadingAccounts(false)
+function getProviderStyle(provider: OAuth2ProviderType) {
+    if (provider === 'gmail') {
+        return {
+            iconClass: 'bg-red-50 text-red-600 ring-red-100 dark:bg-red-950/40 dark:text-red-300 dark:ring-red-900/50',
+            badgeClass: 'bg-red-50 text-red-700 border-red-100 dark:bg-red-950/30 dark:text-red-300 dark:border-red-900/50',
         }
     }
 
-    // 跳转到邮箱账户管理页面并筛选
-    const handleViewAccounts = () => {
-        // 触发自定义事件，通知Tab管理器切换到邮箱账户管理页面
-        const event = new CustomEvent('switchToAccountsTab', {
-            detail: {
-                filterByProvider: config.provider_type
-            }
-        })
-        window.dispatchEvent(event)
+    return {
+        iconClass: 'bg-blue-50 text-blue-600 ring-blue-100 dark:bg-blue-950/40 dark:text-blue-300 dark:ring-blue-900/50',
+        badgeClass: 'bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-950/30 dark:text-blue-300 dark:border-blue-900/50',
     }
-
-    // 组件加载时获取账户数量
-    useEffect(() => {
-        if (config?.id) {
-            loadAccountCount()
-        }
-    }, [config?.id])
-
-    // 添加安全检查，确保config对象完整
-    if (!config || !config.provider_type) {
-        console.warn('Invalid config object:', config)
-        return (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-6 dark:border-red-800 dark:bg-red-900/20">
-                <p className="text-red-600 dark:text-red-400">配置数据无效</p>
-            </div>
-        )
-    }
-
-    // 检查配置是否完整
-    const isConfigComplete = config.client_id && config.client_secret && config.redirect_uri
-    const handleToggleEnabled = async () => {
-        setIsToggling(true)
-        try {
-            if (config.is_enabled) {
-                await oauth2Service.disableProvider(config.provider_type)
-            } else {
-                await oauth2Service.enableProvider(config.provider_type)
-            }
-            onToggleEnabled(config)
-        } catch (error) {
-            console.error('Failed to toggle provider:', error)
-        } finally {
-            setIsToggling(false)
-        }
-    }
-
-    const handleTestConnection = async () => {
-        setIsTesting(true)
-        try {
-            await onTestConnection(config)
-        } finally {
-            setIsTesting(false)
-        }
-    }
-
-    const getProviderIcon = (provider: OAuth2ProviderType) => {
-        switch (provider) {
-            case 'gmail':
-                return '📧'
-            case 'outlook':
-                return '📮'
-            default:
-                return '🔗'
-        }
-    }
-
-    const getProviderColor = (provider: OAuth2ProviderType) => {
-        switch (provider) {
-            case 'gmail':
-                return 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
-            case 'outlook':
-                return 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400'
-            default:
-                return 'bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400'
-        }
-    }
-
-    return (
-        <div className="rounded-lg border border-gray-200 bg-white p-6 transition-shadow hover:shadow-md dark:border-gray-700 dark:bg-gray-800">
-            {/* 第一行：标题和开关 */}
-            <div className="flex items-center justify-between mb-4">
-                {/* 左侧：图标 + 标题 + Badge */}
-                <div className="flex items-center space-x-3">
-                    <div className="text-2xl">
-                        {getProviderIcon(config.provider_type)}
-                    </div>
-                    <div className="flex items-center space-x-2">
-                        <h3 className="font-semibold text-gray-900 dark:text-white">
-                            {oauth2Service.getProviderDisplayName(config.provider_type)}
-                        </h3>
-                        <Badge className={cn(getProviderColor(config.provider_type))}>
-                            {config.provider_type.toUpperCase()}
-                        </Badge>
-                    </div>
-                </div>
-
-                {/* 右侧：开关 */}
-                <div className="flex items-center space-x-2">
-                    <Switch
-                        checked={config.is_enabled}
-                        onCheckedChange={handleToggleEnabled}
-                        disabled={isToggling}
-                    />
-                    <span className="text-sm text-gray-600 dark:text-gray-400">
-                        {config.is_enabled ? '已启用' : '已禁用'}
-                    </span>
-                </div>
-            </div>
-
-            {/* 创建时间 */}
-            <div className="mb-4">
-                <span className="text-sm text-gray-500 dark:text-gray-400">
-                    创建于 {new Date(config.created_at).toLocaleDateString()}
-                </span>
-            </div>
-
-            {/* 第二行：操作按钮 */}
-            <div className="mb-4">
-                <div className="flex items-center space-x-2">
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleTestConnection}
-                        disabled={isTesting || !config.is_enabled}
-                        className="flex-1"
-                    >
-                        {isTesting ? (
-                            <>
-                                <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
-                                测试中...
-                            </>
-                        ) : (
-                            <>
-                                <Link className="mr-2 h-4 w-4" />
-                                测试连接
-                            </>
-                        )}
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => onEdit(config)}
-                        className="flex-1"
-                    >
-                        <Edit className="mr-2 h-4 w-4" />
-                        编辑
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => onDelete(config)}
-                        className="text-red-600 hover:text-red-700 hover:border-red-300 flex-1"
-                    >
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        删除
-                    </Button>
-                </div>
-
-                {/* 账户数量显示 */}
-                <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-                    <button
-                        onClick={handleViewAccounts}
-                        disabled={loadingAccounts}
-                        className="w-full flex items-center justify-start p-2 text-sm text-gray-600 hover:text-primary-600 hover:bg-gray-50 rounded-lg transition-colors dark:text-gray-400 dark:hover:text-primary-400 dark:hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {loadingAccounts ? (
-                            <>
-                                <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600" />
-                                <span>加载中...</span>
-                            </>
-                        ) : (
-                            <>
-                                <Users className="mr-2 h-4 w-4" />
-                                <span>关联账户: </span>
-                                <span className="font-semibold text-primary-600 underline decoration-dotted underline-offset-2 hover:decoration-solid dark:text-primary-400 mx-1">
-                                    {accountCount}
-                                </span>
-                                <span>个</span>
-                            </>
-                        )}
-                    </button>
-                </div>
-            </div>
-
-            {/* 配置完整性状态提示 */}
-            {!isConfigComplete && (
-                <div className="mb-4 rounded-lg border border-yellow-200 bg-yellow-50 p-4 dark:border-yellow-800 dark:bg-yellow-900/20">
-                    <div className="flex items-center">
-                        <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 mr-2" />
-                        <p className="text-sm text-yellow-800 dark:text-yellow-200">
-                            配置不完整，请点击编辑按钮完善配置信息
-                        </p>
-                    </div>
-                </div>
-            )}
-
-            {/* 配置信息区域 */}
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        客户端 ID
-                    </label>
-                    <div
-                        className={cn(
-                            "rounded-md px-3 py-2 text-sm cursor-pointer group",
-                            config.client_id
-                                ? "bg-gray-50 dark:bg-gray-700"
-                                : "bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800"
-                        )}
-                        title={config.client_id || "未配置"}
-                    >
-                        <span className={cn(
-                            "block truncate group-hover:text-primary-600",
-                            !config.client_id && "text-red-600 dark:text-red-400 italic"
-                        )}>
-                            {config.client_id
-                                ? (config.client_id.length > 30 ? `${config.client_id.substring(0, 30)}...` : config.client_id)
-                                : "未配置"
-                            }
-                        </span>
-                    </div>
-                </div>
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        客户端密钥
-                    </label>
-                    <div
-                        className={cn(
-                            "rounded-md px-3 py-2 text-sm cursor-pointer group",
-                            config.client_secret
-                                ? "bg-gray-50 dark:bg-gray-700"
-                                : "bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800"
-                        )}
-                        title={config.client_secret ? "已配置" : "未配置"}
-                    >
-                        <span className={cn(
-                            "block truncate group-hover:text-primary-600",
-                            !config.client_secret && "text-red-600 dark:text-red-400 italic"
-                        )}>
-                            {config.client_secret
-                                ? (config.client_secret.length > 10 ? `${"*".repeat(10)}...` : "*".repeat(config.client_secret.length))
-                                : "未配置"
-                            }
-                        </span>
-                    </div>
-                </div>
-                <div className="sm:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                        重定向 URI
-                    </label>
-                    <div
-                        className={cn(
-                            "rounded-md px-3 py-2 text-sm cursor-pointer group",
-                            config.redirect_uri
-                                ? "bg-gray-50 dark:bg-gray-700"
-                                : "bg-red-50 border border-red-200 dark:bg-red-900/20 dark:border-red-800"
-                        )}
-                        title={config.redirect_uri || "未配置"}
-                    >
-                        <span className={cn(
-                            "block truncate group-hover:text-primary-600",
-                            !config.redirect_uri && "text-red-600 dark:text-red-400 italic"
-                        )}>
-                            {config.redirect_uri || "未配置"}
-                        </span>
-                    </div>
-                </div>
-                <div className="sm:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                        权限范围
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                        {(config.scopes || []).map((scope, index) => (
-                            <Badge
-                                key={index}
-                                variant="secondary"
-                                className="text-xs"
-                            >
-                                {scope}
-                            </Badge>
-                        ))}
-                    </div>
-                </div>
-            </div>
-        </div>
-    )
 }
 
-// 主组件
+function isCompleteConfig(config: OAuth2GlobalConfig) {
+    return Boolean(config.client_id && config.client_secret && config.redirect_uri)
+}
+
+function truncateMiddle(value: string, start = 18, end = 10) {
+    if (!value) return '未配置'
+    if (value.length <= start + end + 3) return value
+    return `${value.slice(0, start)}...${value.slice(-end)}`
+}
+
+function formatDate(value?: string) {
+    if (!value) return '-'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return '-'
+    return date.toLocaleString()
+}
+
+function normalizeConfig(config: OAuth2GlobalConfig): OAuth2GlobalConfig {
+    return {
+        ...config,
+        scopes: Array.isArray(config.scopes) ? config.scopes : [],
+        is_default: !!config.is_default,
+    }
+}
+
 export default function OAuth2ConfigTab() {
     const { confirm } = useConfirmDialog()
     const [configs, setConfigs] = useState<OAuth2GlobalConfig[]>([])
+    const [accounts, setAccounts] = useState<EmailAccount[]>([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
     const [showModal, setShowModal] = useState(false)
     const [editingConfig, setEditingConfig] = useState<OAuth2GlobalConfig | null>(null)
+    const [defaultProviderForModal, setDefaultProviderForModal] = useState<OAuth2ProviderType>('gmail')
     const [searchQuery, setSearchQuery] = useState('')
+    const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all')
+    const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
     const [showHelpModal, setShowHelpModal] = useState(false)
+    const [busyConfigId, setBusyConfigId] = useState<number | null>(null)
+    const [testingConfigId, setTestingConfigId] = useState<number | null>(null)
 
-    // 加载配置
-    const loadConfigs = async () => {
+    const supportedProviders = useMemo(() => oauth2Service.getSupportedProviders(), [])
+
+    const loadConfigs = useCallback(async () => {
         try {
             setLoading(true)
             setError(null)
-            const configsData = await oauth2Service.getGlobalConfigs()
-            // 确保返回的数据是数组，并且每个config都有必需的属性
-            const safeConfigsData = Array.isArray(configsData)
-                ? configsData.map(config => ({
-                    ...config,
-                    scopes: Array.isArray(config.scopes) ? config.scopes : []
-                }))
-                : []
-            setConfigs(safeConfigsData)
+            const [configsData, accountsData] = await Promise.all([
+                oauth2Service.getGlobalConfigs(),
+                emailAccountService.getAccounts().catch(() => [] as EmailAccount[]),
+            ])
+
+            setConfigs(Array.isArray(configsData) ? configsData.map(normalizeConfig) : [])
+            setAccounts(Array.isArray(accountsData) ? accountsData : [])
         } catch (err) {
-            setError('加载OAuth2配置失败')
-            setConfigs([]) // 确保在错误时configs为空数组而不是null
+            setError('加载 OAuth2 配置失败')
+            setConfigs([])
             console.error('Failed to load OAuth2 configs:', err)
         } finally {
             setLoading(false)
         }
-    }
+    }, [])
 
     useEffect(() => {
         loadConfigs()
-    }, [])
+    }, [loadConfigs])
 
-    // 处理编辑
-    const handleEdit = (config: OAuth2GlobalConfig) => {
-        setEditingConfig(config)
+    const accountCountByConfig = useMemo(() => {
+        const counts = new Map<number, number>()
+        for (const account of accounts) {
+            if (account.authType === 'oauth2' && account.oauth2ProviderId) {
+                counts.set(account.oauth2ProviderId, (counts.get(account.oauth2ProviderId) || 0) + 1)
+            }
+        }
+        return counts
+    }, [accounts])
+
+    const filteredConfigs = useMemo(() => {
+        const searchLower = searchQuery.trim().toLowerCase()
+
+        return configs
+            .filter(config => providerFilter === 'all' || config.provider_type === providerFilter)
+            .filter(config => {
+                if (statusFilter === 'enabled') return config.is_enabled
+                if (statusFilter === 'disabled') return !config.is_enabled
+                if (statusFilter === 'default') return config.is_default
+                if (statusFilter === 'incomplete') return !isCompleteConfig(config)
+                return true
+            })
+            .filter(config => {
+                if (!searchLower) return true
+                const providerName = oauth2Service.getProviderDisplayName(config.provider_type).toLowerCase()
+                return [
+                    config.name,
+                    providerName,
+                    config.provider_type,
+                    config.client_id,
+                    config.redirect_uri,
+                    ...(config.scopes || []),
+                ].some(value => String(value || '').toLowerCase().includes(searchLower))
+            })
+            .sort((a, b) => {
+                const providerDiff = supportedProviders.indexOf(a.provider_type) - supportedProviders.indexOf(b.provider_type)
+                if (providerDiff !== 0) return providerDiff
+                const defaultDiff = Number(!!b.is_default) - Number(!!a.is_default)
+                if (defaultDiff !== 0) return defaultDiff
+                return a.name.localeCompare(b.name)
+            })
+    }, [configs, providerFilter, searchQuery, statusFilter, supportedProviders])
+
+    const groupedConfigs = useMemo(() => {
+        return supportedProviders
+            .map(provider => ({
+                provider,
+                configs: filteredConfigs.filter(config => config.provider_type === provider),
+            }))
+            .filter(group => group.configs.length > 0)
+    }, [filteredConfigs, supportedProviders])
+
+    const providerCounts = useMemo(() => {
+        return supportedProviders.reduce<Record<string, number>>((acc, provider) => {
+            acc[provider] = configs.filter(config => config.provider_type === provider).length
+            return acc
+        }, {})
+    }, [configs, supportedProviders])
+
+    const enabledCount = configs.filter(config => config.is_enabled).length
+    const defaultCount = configs.filter(config => config.is_default).length
+
+    const handleAddConfig = (provider: OAuth2ProviderType = 'gmail') => {
+        setEditingConfig(null)
+        setDefaultProviderForModal(provider)
         setShowModal(true)
     }
 
-    // 处理删除
+    const handleEdit = (config: OAuth2GlobalConfig) => {
+        setEditingConfig(config)
+        setDefaultProviderForModal(config.provider_type)
+        setShowModal(true)
+    }
+
     const handleDelete = async (config: OAuth2GlobalConfig) => {
         const confirmed = await confirm({
             title: '删除 OAuth2 配置',
-            description: `确定要删除 ${oauth2Service.getProviderDisplayName(config.provider_type)} 的配置吗？`,
+            description: `确定要删除「${config.name || oauth2Service.getProviderDisplayName(config.provider_type)}」吗？如果它是默认凭证，系统会为该客户端自动选择新的默认项。`,
             confirmText: '删除',
             cancelText: '取消',
-            variant: 'destructive'
+            variant: 'destructive',
         })
         if (!confirmed) return
 
         try {
+            setBusyConfigId(config.id)
             await oauth2Service.deleteGlobalConfig(config.id)
-            setConfigs(configs.filter(c => c.id !== config.id))
+            await loadConfigs()
             toast.success('OAuth2 配置已删除')
         } catch (err) {
             console.error('Failed to delete config:', err)
             toast.error('删除配置失败')
+        } finally {
+            setBusyConfigId(null)
         }
     }
 
-    // 处理启用/禁用切换
-    const handleToggleEnabled = (config: OAuth2GlobalConfig) => {
-        setConfigs((configs || []).map(c =>
-            c.id === config.id ? { ...c, is_enabled: !c.is_enabled } : c
-        ))
+    const handleToggleEnabled = async (config: OAuth2GlobalConfig) => {
+        const payload: CreateOAuth2ConfigRequest & { id: number } = {
+            ...config,
+            id: config.id,
+            is_enabled: !config.is_enabled,
+            is_default: config.is_default,
+            scopes: config.scopes || [],
+        }
+
+        try {
+            setBusyConfigId(config.id)
+            const saved = await oauth2Service.createOrUpdateGlobalConfig(payload)
+            setConfigs(prev => prev.map(item => item.id === config.id ? normalizeConfig(saved) : item))
+            toast.success(saved.is_enabled ? 'OAuth2 配置已启用' : 'OAuth2 配置已停用')
+        } catch (err) {
+            console.error('Failed to toggle config:', err)
+            toast.error('更新配置状态失败')
+        } finally {
+            setBusyConfigId(null)
+        }
     }
 
-    // 处理测试连接
+    const handleSetDefault = async (config: OAuth2GlobalConfig) => {
+        if (config.is_default) return
+
+        try {
+            setBusyConfigId(config.id)
+            await oauth2Service.setDefaultGlobalConfig(config.id)
+            setConfigs(prev => prev.map(item => item.provider_type === config.provider_type
+                ? { ...item, is_default: item.id === config.id }
+                : item
+            ))
+            toast.success(`${config.name} 已设为默认凭证`)
+        } catch (err) {
+            console.error('Failed to set default config:', err)
+            toast.error('设置默认凭证失败')
+        } finally {
+            setBusyConfigId(null)
+        }
+    }
+
     const handleTestConnection = async (config: OAuth2GlobalConfig) => {
         try {
+            setTestingConfigId(config.id)
             const authUrl = await oauth2Service.getAuthUrl(config.provider_type, config.id)
             window.open(authUrl.auth_url, '_blank', 'width=600,height=700')
         } catch (err) {
             console.error('Failed to test connection:', err)
             toast.error('测试连接失败')
+        } finally {
+            setTestingConfigId(null)
         }
     }
 
-    // 处理添加新配置
-    const handleAddConfig = () => {
-        setEditingConfig(null)
-        setShowModal(true)
+    const handleViewAccounts = (config: OAuth2GlobalConfig) => {
+        window.dispatchEvent(new CustomEvent('switchToAccountsTab', {
+            detail: {
+                filterByProvider: config.provider_type,
+            },
+        }))
     }
-
-    // 获取未配置的提供商
-    const getUnconfiguredProviders = () => {
-        try {
-            if (!configs || !Array.isArray(configs)) {
-                return oauth2Service.getSupportedProviders() || []
-            }
-            const configuredProviders = configs.map(c => c?.provider_type).filter(Boolean)
-            const supportedProviders = oauth2Service.getSupportedProviders()
-            if (!supportedProviders || !Array.isArray(supportedProviders)) {
-                return []
-            }
-            return supportedProviders.filter(p => !configuredProviders.includes(p))
-        } catch (error) {
-            console.error('Error in getUnconfiguredProviders:', error)
-            return []
-        }
-    }
-
-    // 过滤配置 - 显示所有有效的配置，包括未完成的配置
-    const filteredConfigs = (configs || []).filter(config => {
-        try {
-            if (!config || !config.provider_type) {
-                return false
-            }
-            const displayName = oauth2Service.getProviderDisplayName(config.provider_type).toLowerCase()
-            const clientId = (config.client_id || '').toLowerCase()
-            const searchLower = searchQuery.toLowerCase()
-
-            return displayName.includes(searchLower) || clientId.includes(searchLower)
-        } catch (error) {
-            console.error('Error filtering config:', error, config)
-            return false
-        }
-    })
 
     if (loading) {
         return (
             <div className="flex items-center justify-center py-20">
                 <div className="text-center">
-                    <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-primary-600 border-t-transparent"></div>
+                    <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-primary-600 border-t-transparent" />
                     <p className="text-gray-500 dark:text-gray-400">加载中...</p>
                 </div>
             </div>
@@ -484,17 +304,9 @@ export default function OAuth2ConfigTab() {
             <div className="flex items-center justify-center py-20">
                 <div className="text-center">
                     <AlertCircle className="mx-auto h-12 w-12 text-red-500" />
-                    <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-white">
-                        加载失败
-                    </h3>
+                    <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-white">加载失败</h3>
                     <p className="mt-1 text-sm text-gray-500">{error}</p>
-                    <Button
-                        onClick={loadConfigs}
-                        className="mt-4"
-                        variant="outline"
-                    >
-                        重试
-                    </Button>
+                    <Button onClick={loadConfigs} className="mt-4" variant="outline">重试</Button>
                 </div>
             </div>
         )
@@ -502,107 +314,309 @@ export default function OAuth2ConfigTab() {
 
     return (
         <>
-            <div className="space-y-6">
-                {/* 页面标题和帮助按钮 */}
-                <div className="flex items-center justify-between">
+            <div className="space-y-5">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
                     <div>
                         <h1 className="text-2xl font-semibold text-gray-900 dark:text-white">OAuth2 配置</h1>
                         <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                            管理邮件提供商的 OAuth2 认证配置
+                            按邮件客户端维护多套 OAuth2 凭证，并指定每个客户端的默认授权配置。
                         </p>
                     </div>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setShowHelpModal(true)}
-                        className="flex items-center space-x-2"
-                    >
-                        <HelpCircle className="h-4 w-4" />
-                        <span>配置指南</span>
-                    </Button>
-                </div>
-
-                {/* 搜索和操作栏 */}
-                <div className="flex items-center justify-between">
-                    <div className="relative w-96">
-                        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                        <input
-                            type="text"
-                            placeholder="搜索OAuth2配置..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-10 pr-4 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-700"
-                        />
-                    </div>
-                    <div className="flex items-center space-x-3">
-                        <button
-                            onClick={handleAddConfig}
-                            className="flex items-center space-x-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary-700"
-                        >
-                            <Plus className="h-4 w-4" />
-                            <span>添加配置</span>
-                        </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => setShowHelpModal(true)}>
+                            <HelpCircle className="mr-2 h-4 w-4" />
+                            配置指南
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={loadConfigs}>
+                            <RefreshCw className="mr-2 h-4 w-4" />
+                            刷新
+                        </Button>
+                        <Button size="sm" onClick={() => handleAddConfig()}>
+                            <Plus className="mr-2 h-4 w-4" />
+                            添加配置
+                        </Button>
                     </div>
                 </div>
 
-                {/* 配置列表 */}
-                {filteredConfigs.length === 0 ? (
-                    <div className="rounded-lg border border-gray-200 bg-white p-12 text-center dark:border-gray-700 dark:bg-gray-800">
-                        <Settings className="mx-auto h-12 w-12 text-gray-400" />
-                        <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-white">
-                            {searchQuery ? '没有找到匹配的配置' : '暂无OAuth2配置'}
-                        </h3>
-                        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                            {searchQuery ? '尝试使用不同的搜索词' : '开始添加第一个OAuth2提供商配置'}
-                        </p>
-                        {!searchQuery && (
-                            <button
-                                onClick={handleAddConfig}
-                                className="mt-4 text-primary-600 hover:text-primary-700"
+                <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+                        <div className="text-xs text-gray-500">配置总数</div>
+                        <div className="mt-2 flex items-end justify-between">
+                            <span className="text-2xl font-semibold text-gray-900 dark:text-white">{configs.length}</span>
+                            <SettingsSummaryIcon />
+                        </div>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+                        <div className="text-xs text-gray-500">已启用</div>
+                        <div className="mt-2 flex items-end justify-between">
+                            <span className="text-2xl font-semibold text-green-600">{enabledCount}</span>
+                            <ShieldCheck className="h-5 w-5 text-green-500" />
+                        </div>
+                    </div>
+                    <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+                        <div className="text-xs text-gray-500">默认凭证组</div>
+                        <div className="mt-2 flex items-end justify-between">
+                            <span className="text-2xl font-semibold text-amber-600">{defaultCount}</span>
+                            <Star className="h-5 w-5 text-amber-500" />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                        <div className="relative min-w-0 flex-1">
+                            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                            <input
+                                type="text"
+                                placeholder="搜索配置名称、客户端 ID、回调地址或权限范围..."
+                                value={searchQuery}
+                                onChange={(event) => setSearchQuery(event.target.value)}
+                                className="w-full rounded-lg border border-gray-300 bg-white py-2 pl-10 pr-4 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800"
+                            />
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex rounded-lg bg-gray-100 p-1 dark:bg-gray-800">
+                                <button
+                                    type="button"
+                                    onClick={() => setProviderFilter('all')}
+                                    className={cn(
+                                        'rounded-md px-3 py-1.5 text-sm transition-colors',
+                                        providerFilter === 'all'
+                                            ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
+                                            : 'text-gray-600 hover:text-gray-900 dark:text-gray-300'
+                                    )}
+                                >
+                                    全部
+                                </button>
+                                {supportedProviders.map(provider => (
+                                    <button
+                                        type="button"
+                                        key={provider}
+                                        onClick={() => setProviderFilter(provider)}
+                                        className={cn(
+                                            'rounded-md px-3 py-1.5 text-sm transition-colors',
+                                            providerFilter === provider
+                                                ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
+                                                : 'text-gray-600 hover:text-gray-900 dark:text-gray-300'
+                                        )}
+                                    >
+                                        {oauth2Service.getProviderDisplayName(provider)}
+                                        <span className="ml-1 text-xs text-gray-400">{providerCounts[provider] || 0}</span>
+                                    </button>
+                                ))}
+                            </div>
+                            <select
+                                value={statusFilter}
+                                onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+                                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-gray-600 dark:bg-gray-800"
                             >
-                                添加第一个配置
-                            </button>
+                                {statusOptions.map(option => (
+                                    <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                {filteredConfigs.length === 0 ? (
+                    <div className="rounded-lg border border-gray-200 bg-white p-12 text-center dark:border-gray-700 dark:bg-gray-900">
+                        <Mail className="mx-auto h-12 w-12 text-gray-400" />
+                        <h3 className="mt-3 text-sm font-medium text-gray-900 dark:text-white">
+                            {searchQuery || providerFilter !== 'all' || statusFilter !== 'all' ? '没有找到匹配的配置' : '暂无 OAuth2 配置'}
+                        </h3>
+                        <p className="mt-1 text-sm text-gray-500">
+                            {searchQuery || providerFilter !== 'all' || statusFilter !== 'all'
+                                ? '可以放宽筛选条件后再试一次。'
+                                : '添加第一套凭证后，邮箱账户创建流程会自动优先选择默认配置。'}
+                        </p>
+                        {!searchQuery && providerFilter === 'all' && statusFilter === 'all' && (
+                            <Button className="mt-4" onClick={() => handleAddConfig()}>
+                                <Plus className="mr-2 h-4 w-4" />
+                                添加配置
+                            </Button>
                         )}
                     </div>
                 ) : (
-                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                        {filteredConfigs.map((config) => (
-                            <OAuth2ConfigCard
-                                key={config.id}
-                                config={config}
-                                onEdit={handleEdit}
-                                onDelete={handleDelete}
-                                onToggleEnabled={handleToggleEnabled}
-                                onTestConnection={handleTestConnection}
-                            />
-                        ))}
-                    </div>
-                )}
+                    <div className="space-y-4">
+                        {groupedConfigs.map(group => {
+                            const providerStyle = getProviderStyle(group.provider)
+                            const defaultConfig = group.configs.find(config => config.is_default)
 
-                {/* 可用提供商提示 */}
-                {getUnconfiguredProviders()?.length > 0 && (
-                    <div className="rounded-lg border border-gray-200 bg-white p-6 dark:border-gray-700 dark:bg-gray-800">
-                        <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
-                            可添加的提供商
-                        </h3>
-                        <div className="flex flex-wrap gap-2">
-                            {getUnconfiguredProviders()?.map((provider) => (
-                                <Badge
-                                    key={provider}
-                                    variant="outline"
-                                    className="text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700"
-                                    onClick={handleAddConfig}
+                            return (
+                                <section
+                                    key={group.provider}
+                                    className="overflow-hidden rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900"
                                 >
-                                    <Plus className="mr-1 h-3 w-3" />
-                                    {oauth2Service.getProviderDisplayName(provider)}
-                                </Badge>
-                            ))}
-                        </div>
+                                    <div className="flex flex-col gap-3 border-b border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-800/60 sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="flex items-center gap-3">
+                                            <div className={cn('flex h-9 w-9 items-center justify-center rounded-lg ring-1', providerStyle.iconClass)}>
+                                                <Mail className="h-5 w-5" />
+                                            </div>
+                                            <div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <h2 className="font-semibold text-gray-900 dark:text-white">
+                                                        {oauth2Service.getProviderDisplayName(group.provider)}
+                                                    </h2>
+                                                    <Badge variant="outline" className={providerStyle.badgeClass}>
+                                                        {group.configs.length} 套配置
+                                                    </Badge>
+                                                </div>
+                                                <p className="mt-1 text-xs text-gray-500">
+                                                    默认：{defaultConfig?.name || '暂无默认凭证'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <Button size="sm" variant="outline" onClick={() => handleAddConfig(group.provider)}>
+                                            <Plus className="mr-2 h-4 w-4" />
+                                            新增 {oauth2Service.getProviderDisplayName(group.provider)}
+                                        </Button>
+                                    </div>
+
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead className="w-[240px] px-4">配置名称</TableHead>
+                                                <TableHead>Client ID</TableHead>
+                                                <TableHead>回调地址</TableHead>
+                                                <TableHead className="w-[110px]">权限</TableHead>
+                                                <TableHead className="w-[110px]">关联账户</TableHead>
+                                                <TableHead className="w-[120px]">状态</TableHead>
+                                                <TableHead className="w-[110px]">默认</TableHead>
+                                                <TableHead className="w-[150px]">更新时间</TableHead>
+                                                <TableHead className="w-[180px] text-right pr-4">操作</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                            {group.configs.map(config => {
+                                                const complete = isCompleteConfig(config)
+                                                const accountCount = accountCountByConfig.get(config.id) || 0
+                                                const rowBusy = busyConfigId === config.id
+                                                const rowTesting = testingConfigId === config.id
+
+                                                return (
+                                                    <TableRow key={config.id}>
+                                                        <TableCell className="px-4">
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="truncate font-medium text-gray-900 dark:text-white" title={config.name}>
+                                                                        {config.name || '未命名配置'}
+                                                                    </span>
+                                                                    {config.is_default && (
+                                                                        <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                                                                            默认
+                                                                        </Badge>
+                                                                    )}
+                                                                </div>
+                                                                {!complete && (
+                                                                    <div className="mt-1 flex items-center gap-1 text-xs text-amber-600">
+                                                                        <AlertCircle className="h-3 w-3" />
+                                                                        配置不完整
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <span className="font-mono text-xs text-gray-700 dark:text-gray-300" title={config.client_id || '未配置'}>
+                                                                {truncateMiddle(config.client_id)}
+                                                            </span>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <span className="block max-w-[280px] truncate text-xs text-gray-600 dark:text-gray-400" title={config.redirect_uri || '未配置'}>
+                                                                {config.redirect_uri || '未配置'}
+                                                            </span>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <Badge variant="secondary" className="whitespace-nowrap">
+                                                                {config.scopes?.length || 0} 项
+                                                            </Badge>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleViewAccounts(config)}
+                                                                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm text-gray-600 transition-colors hover:bg-gray-100 hover:text-primary-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                                                            >
+                                                                <Users className="h-4 w-4" />
+                                                                {accountCount}
+                                                            </button>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <div className="flex items-center gap-2">
+                                                                <Switch
+                                                                    checked={config.is_enabled}
+                                                                    onCheckedChange={() => handleToggleEnabled(config)}
+                                                                    disabled={rowBusy}
+                                                                />
+                                                                <span className={cn(
+                                                                    'text-xs font-medium',
+                                                                    config.is_enabled ? 'text-green-600' : 'text-gray-500'
+                                                                )}>
+                                                                    {config.is_enabled ? '启用' : '停用'}
+                                                                </span>
+                                                            </div>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleSetDefault(config)}
+                                                                disabled={config.is_default || rowBusy}
+                                                                className={cn(
+                                                                    'inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm transition-colors',
+                                                                    config.is_default
+                                                                        ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
+                                                                        : 'text-gray-500 hover:bg-gray-100 hover:text-amber-600 dark:hover:bg-gray-800',
+                                                                    rowBusy && 'opacity-60'
+                                                                )}
+                                                            >
+                                                                <Star className={cn('h-4 w-4', config.is_default && 'fill-current')} />
+                                                                {config.is_default ? '默认' : '设为默认'}
+                                                            </button>
+                                                        </TableCell>
+                                                        <TableCell>
+                                                            <span className="text-xs text-gray-500">{formatDate(config.updated_at || config.created_at)}</span>
+                                                        </TableCell>
+                                                        <TableCell className="pr-4 text-right">
+                                                            <div className="inline-flex items-center gap-1">
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    onClick={() => handleTestConnection(config)}
+                                                                    disabled={rowTesting || !config.is_enabled || !complete}
+                                                                    title="测试连接"
+                                                                >
+                                                                    {rowTesting ? (
+                                                                        <RefreshCw className="h-4 w-4 animate-spin" />
+                                                                    ) : (
+                                                                        <Link className="h-4 w-4" />
+                                                                    )}
+                                                                </Button>
+                                                                <Button variant="ghost" size="sm" onClick={() => handleEdit(config)} title="编辑">
+                                                                    <Edit className="h-4 w-4" />
+                                                                </Button>
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    onClick={() => handleDelete(config)}
+                                                                    disabled={rowBusy}
+                                                                    className="text-red-600 hover:text-red-700"
+                                                                    title="删除"
+                                                                >
+                                                                    <Trash2 className="h-4 w-4" />
+                                                                </Button>
+                                                            </div>
+                                                        </TableCell>
+                                                    </TableRow>
+                                                )
+                                            })}
+                                        </TableBody>
+                                    </Table>
+                                </section>
+                            )
+                        })}
                     </div>
                 )}
             </div>
 
-            {/* OAuth2配置模态框 */}
             <OAuth2ConfigModal
                 isOpen={showModal}
                 onClose={() => {
@@ -615,13 +629,22 @@ export default function OAuth2ConfigTab() {
                     loadConfigs()
                 }}
                 config={editingConfig}
+                defaultProvider={defaultProviderForModal}
             />
 
-            {/* OAuth2帮助模态框 */}
             <OAuth2HelpModal
                 isOpen={showHelpModal}
                 onClose={() => setShowHelpModal(false)}
             />
         </>
+    )
+}
+
+function SettingsSummaryIcon() {
+    return (
+        <div className="relative h-5 w-5 text-primary-500">
+            <Check className="absolute left-0 top-0 h-4 w-4" />
+            <X className="absolute bottom-0 right-0 h-3 w-3 text-gray-300" />
+        </div>
     )
 }

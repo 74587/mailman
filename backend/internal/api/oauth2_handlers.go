@@ -231,6 +231,26 @@ func (h *OAuth2Handler) DeleteGlobalConfig(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(map[string]string{"message": "configuration deleted successfully"})
 }
 
+// SetGlobalConfigDefault marks an OAuth2 configuration as the default for its provider.
+func (h *OAuth2Handler) SetGlobalConfigDefault(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	config, err := h.configService.SetDefaultConfig(uint(id))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(config)
+}
+
 // GetAuthURL generates OAuth2 authorization URL
 func (h *OAuth2Handler) GetAuthURL(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)

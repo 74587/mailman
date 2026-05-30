@@ -152,7 +152,10 @@ func migrateOAuth2GlobalConfig() error {
 	// 检查表是否存在
 	if !DB.Migrator().HasTable(&models.OAuth2GlobalConfig{}) {
 		// 表不存在，直接创建
-		return DB.AutoMigrate(&models.OAuth2GlobalConfig{})
+		if err := DB.AutoMigrate(&models.OAuth2GlobalConfig{}); err != nil {
+			return err
+		}
+		return normalizeOAuth2DefaultConfigs()
 	}
 
 	// 处理旧表结构迁移（移除provider_type唯一约束）
@@ -180,7 +183,51 @@ func migrateOAuth2GlobalConfig() error {
 	}
 
 	// 检查是否需要更新其他字段
-	return DB.AutoMigrate(&models.OAuth2GlobalConfig{})
+	if err := DB.AutoMigrate(&models.OAuth2GlobalConfig{}); err != nil {
+		return err
+	}
+
+	return normalizeOAuth2DefaultConfigs()
+}
+
+// normalizeOAuth2DefaultConfigs ensures each provider group has exactly one default config.
+func normalizeOAuth2DefaultConfigs() error {
+	var providers []models.MailProviderType
+	if err := DB.Model(&models.OAuth2GlobalConfig{}).Distinct("provider_type").Pluck("provider_type", &providers).Error; err != nil {
+		return err
+	}
+
+	for _, provider := range providers {
+		var defaults []models.OAuth2GlobalConfig
+		if err := DB.Where("provider_type = ? AND is_default = ?", provider, true).Order("id ASC").Find(&defaults).Error; err != nil {
+			return err
+		}
+
+		if len(defaults) > 1 {
+			for _, config := range defaults[1:] {
+				if err := DB.Model(&models.OAuth2GlobalConfig{}).Where("id = ?", config.ID).Update("is_default", false).Error; err != nil {
+					return err
+				}
+			}
+			continue
+		}
+
+		if len(defaults) == 0 {
+			var fallback models.OAuth2GlobalConfig
+			err := DB.Where("provider_type = ?", provider).Order("is_enabled DESC, id ASC").First(&fallback).Error
+			if err != nil {
+				if err == gorm.ErrRecordNotFound {
+					continue
+				}
+				return err
+			}
+			if err := DB.Model(&models.OAuth2GlobalConfig{}).Where("id = ?", fallback.ID).Update("is_default", true).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // migrateOAuth2ProviderTypeConstraint 处理provider_type字段的约束迁移

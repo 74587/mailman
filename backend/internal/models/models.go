@@ -599,6 +599,7 @@ type OAuth2GlobalConfig struct {
 	RedirectURI  string           `gorm:"not null" json:"redirect_uri"`
 	Scopes       StringSlice      `gorm:"type:json" json:"scopes"`
 	IsEnabled    bool             `gorm:"default:true" json:"is_enabled"`
+	IsDefault    bool             `gorm:"default:false;index" json:"is_default"`
 	CreatedAt    time.Time        `json:"created_at"`
 	UpdatedAt    time.Time        `json:"updated_at"`
 	DeletedAt    DeletedAt        `gorm:"index" json:"deleted_at,omitempty"`

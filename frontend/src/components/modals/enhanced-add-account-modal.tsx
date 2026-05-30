@@ -198,7 +198,9 @@ export default function EnhancedAddAccountModal({
 
     const selectedProviderType = selectedProvider?.type?.toLowerCase()
     const availableOAuth2Providers = useMemo(
-        () => oauth2Providers.filter(config => config.provider_type === selectedProviderType && config.is_enabled),
+        () => oauth2Providers
+            .filter(config => config.provider_type === selectedProviderType && config.is_enabled)
+            .sort((a, b) => Number(!!b.is_default) - Number(!!a.is_default) || a.name.localeCompare(b.name)),
         [oauth2Providers, selectedProviderType]
     )
 
@@ -209,9 +211,10 @@ export default function EnhancedAddAccountModal({
 
         const currentConfigStillAvailable = availableOAuth2Providers.some(config => config.id === accountForm.oauth2ProviderConfigId)
         if (!currentConfigStillAvailable) {
+            const preferredConfig = availableOAuth2Providers.find(config => config.is_default) || availableOAuth2Providers[0]
             setAccountForm(prev => ({
                 ...prev,
-                oauth2ProviderConfigId: availableOAuth2Providers[0].id,
+                oauth2ProviderConfigId: preferredConfig.id,
             }))
         }
     }, [accountForm.authType, accountForm.oauth2ProviderConfigId, availableOAuth2Providers])
@@ -950,11 +953,11 @@ export default function EnhancedAddAccountModal({
                                                                                 }))}
                                                                                 className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-blue-800 dark:bg-gray-900 dark:text-white"
                                                                             >
-                                                                                {availableOAuth2Providers.map(config => (
-                                                                                    <option key={config.id} value={config.id}>
-                                                                                        {config.name} · {config.client_id ? `${config.client_id.slice(0, 10)}...` : '未填写 Client ID'}
-                                                                                    </option>
-                                                                                ))}
+	                                                                                {availableOAuth2Providers.map(config => (
+	                                                                                    <option key={config.id} value={config.id}>
+	                                                                                        {config.is_default ? '默认 · ' : ''}{config.name} · {config.client_id ? `${config.client_id.slice(0, 10)}...` : '未填写 Client ID'}
+	                                                                                    </option>
+	                                                                                ))}
                                                                             </select>
                                                                         ) : (
                                                                             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">

@@ -111,6 +111,8 @@ export interface EmailAccount {
     proxyMatchGroupIds?: number[];
     proxyMatchTagIds?: number[];
     proxyMatchTagMode?: ProxyTagFilterMode;
+    oauth2ProviderId?: number;
+    oauth2Provider?: OAuth2GlobalConfig;
     isDomainMail: boolean;
     domain?: string;
     forwardedAddresses?: string[];
@@ -628,6 +630,7 @@ export interface OAuth2GlobalConfig {
     redirect_uri: string
     scopes: string[]
     is_enabled: boolean
+    is_default: boolean
     created_at: string
     updated_at: string
 }
@@ -640,6 +643,7 @@ export interface CreateOAuth2ConfigRequest {
     redirect_uri: string
     scopes: string[]
     is_enabled: boolean
+    is_default?: boolean
 }
 
 export interface UpdateOAuth2ConfigRequest extends Partial<CreateOAuth2ConfigRequest> {

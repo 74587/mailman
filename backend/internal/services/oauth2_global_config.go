@@ -135,6 +135,11 @@ func (s *OAuth2GlobalConfigService) DeleteConfig(id uint) error {
 	return s.repo.Delete(id)
 }
 
+// SetDefaultConfig sets one OAuth2 configuration as the default for its provider group.
+func (s *OAuth2GlobalConfigService) SetDefaultConfig(id uint) (*models.OAuth2GlobalConfig, error) {
+	return s.repo.SetDefault(id)
+}
+
 // IsProviderEnabled checks if OAuth2 is enabled for a provider
 func (s *OAuth2GlobalConfigService) IsProviderEnabled(providerType models.MailProviderType) bool {
 	config, err := s.repo.GetByProviderType(providerType)

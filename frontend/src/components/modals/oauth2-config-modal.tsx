@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useCallback, useState, useEffect } from 'react'
 import { X, Plus, AlertCircle, CheckCircle, HelpCircle, Copy, ExternalLink, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,12 +23,12 @@ import {
     ModalDescription
 } from '@/components/ui/modal'
 
-const ConfigGuideTooltip = ({ provider, isVisible, onClose }: { provider: OAuth2ProviderType, isVisible: boolean, onClose: () => void }) => {
-    const getCorrectRedirectUri = (provider: OAuth2ProviderType): string => {
-        const backendUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080'
-        return `${backendUrl}/api/oauth2/callback/${provider}`
-    }
+const getCorrectRedirectUri = (provider: OAuth2ProviderType): string => {
+    const backendUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080'
+    return `${backendUrl}/api/oauth2/callback/${provider}`
+}
 
+const ConfigGuideTooltip = ({ provider, isVisible, onClose }: { provider: OAuth2ProviderType, isVisible: boolean, onClose: () => void }) => {
     const getConfigGuide = (provider: OAuth2ProviderType) => {
         const redirectUri = getCorrectRedirectUri(provider)
 
@@ -115,9 +115,10 @@ interface OAuth2ConfigModalProps {
     onClose: () => void
     onSuccess: () => void
     config?: OAuth2GlobalConfig | null
+    defaultProvider?: OAuth2ProviderType
 }
 
-export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config }: OAuth2ConfigModalProps) {
+export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config, defaultProvider = 'gmail' }: OAuth2ConfigModalProps) {
     const [name, setName] = useState('')
     const [provider, setProvider] = useState<OAuth2ProviderType>('gmail')
     const [clientId, setClientId] = useState('')
@@ -126,6 +127,7 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config }
     const [scopes, setScopes] = useState<string[]>([])
     const [customScope, setCustomScope] = useState('')
     const [enabled, setEnabled] = useState(true)
+    const [isDefault, setIsDefault] = useState(false)
     const [jsonConfig, setJsonConfig] = useState('')
     const [showJsonInput, setShowJsonInput] = useState(false)
     const [showConfigGuideTooltip, setShowConfigGuideTooltip] = useState(false)
@@ -134,11 +136,6 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config }
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState('')
     const [validationErrors, setValidationErrors] = useState<string[]>([])
-
-    const getCorrectRedirectUri = (provider: OAuth2ProviderType): string => {
-        const backendUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080'
-        return `${backendUrl}/api/oauth2/callback/${provider}`
-    }
 
     const copyToClipboard = async (text: string) => {
         try {
@@ -149,21 +146,22 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config }
         }
     }
 
-    const resetForm = () => {
+    const resetForm = useCallback((nextProvider: OAuth2ProviderType = defaultProvider) => {
         setName('')
-        setProvider('gmail')
+        setProvider(nextProvider)
         setClientId('')
         setClientSecret('')
-        setRedirectUri('')
-        setScopes([])
+        setRedirectUri(getCorrectRedirectUri(nextProvider))
+        setScopes(oauth2Service.getDefaultScopes(nextProvider))
         setCustomScope('')
         setEnabled(true)
+        setIsDefault(false)
         setJsonConfig('')
         setShowJsonInput(false)
         setShowConfigGuideTooltip(false)
         setError('')
         setValidationErrors([])
-    }
+    }, [defaultProvider])
 
     const parseGmailJson = (jsonText: string) => {
         try {
@@ -203,13 +201,12 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config }
                 setRedirectUri(config.redirect_uri)
                 setScopes(config.scopes)
                 setEnabled(config.is_enabled)
+                setIsDefault(!!config.is_default)
             } else {
-                resetForm()
-                setRedirectUri(getCorrectRedirectUri(provider))
-                setScopes(oauth2Service.getDefaultScopes(provider))
+                resetForm(defaultProvider)
             }
         }
-    }, [isOpen, config])
+    }, [isOpen, config, defaultProvider, resetForm])
 
     useEffect(() => {
         if (!config) {
@@ -227,7 +224,7 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config }
     const validateForm = () => {
         const configData: CreateOAuth2ConfigRequest = {
             name, provider_type: provider, client_id: clientId, client_secret: clientSecret,
-            redirect_uri: redirectUri, scopes, is_enabled: enabled
+            redirect_uri: redirectUri, scopes, is_enabled: enabled, is_default: isDefault
         }
         const validation = oauth2Service.validateConfig(configData)
         setValidationErrors(validation.errors)
@@ -256,7 +253,7 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config }
         try {
             const configData: CreateOAuth2ConfigRequest = {
                 name, provider_type: provider, client_id: clientId, client_secret: clientSecret,
-                redirect_uri: redirectUri, scopes, is_enabled: enabled
+                redirect_uri: redirectUri, scopes, is_enabled: enabled, is_default: isDefault
             }
             if (config?.id) (configData as any).id = config.id
             await oauth2Service.createOrUpdateGlobalConfig(configData)
@@ -409,9 +406,21 @@ export default function OAuth2ConfigModal({ isOpen, onClose, onSuccess, config }
                             )}
                         </div>
 
-                        <div className="flex items-center space-x-2">
-                            <Switch id="enabled" checked={enabled} onCheckedChange={setEnabled} />
-                            <Label htmlFor="enabled">启用此配置</Label>
+                        <div className="grid gap-3 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <Label htmlFor="enabled">启用此配置</Label>
+                                    <p className="mt-1 text-xs text-gray-500">关闭后创建邮箱账户时不会被自动选择。</p>
+                                </div>
+                                <Switch id="enabled" checked={enabled} onCheckedChange={setEnabled} />
+                            </div>
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <Label htmlFor="default">设为默认凭证</Label>
+                                    <p className="mt-1 text-xs text-gray-500">同一邮箱提供商只保留一套默认 OAuth2 凭证。</p>
+                                </div>
+                                <Switch id="default" checked={isDefault} onCheckedChange={setIsDefault} />
+                            </div>
                         </div>
                     </ModalBody>
 

@@ -291,13 +291,15 @@ export default function AddAccountModal({
         try {
             setLoadingOAuth2Configs(true)
             const configs = await oauth2Service.getGlobalConfigsByProvider(providerType as any)
-            setOauth2Configs(configs)
+            const sortedConfigs = configs.sort((a, b) => Number(!!b.is_default) - Number(!!a.is_default) || a.name.localeCompare(b.name))
+            setOauth2Configs(sortedConfigs)
 
-            // 如果有配置，默认选择第一个
-            if (configs.length > 0) {
+            // 如果有配置，默认选择该提供商的默认凭证
+            if (sortedConfigs.length > 0) {
+                const preferredConfig = sortedConfigs.find(config => config.is_default) || sortedConfigs[0]
                 setSingleForm(prev => ({
                     ...prev,
-                    oauth2ProviderConfigId: configs[0].id
+                    oauth2ProviderConfigId: preferredConfig.id
                 }))
             }
         } catch (error) {
@@ -964,11 +966,11 @@ export default function AddAccountModal({
                                                                             required
                                                                         >
                                                                             <option value="">请选择OAuth2配置</option>
-                                                                            {oauth2Configs.map(config => (
-                                                                                <option key={config.id} value={config.id}>
-                                                                                    {config.name} ({config.client_id ? `${config.client_id.substring(0, 8)}...` : 'N/A'})
-                                                                                </option>
-                                                                            ))}
+	                                                                            {oauth2Configs.map(config => (
+	                                                                                <option key={config.id} value={config.id}>
+	                                                                                    {config.is_default ? '默认 · ' : ''}{config.name} ({config.client_id ? `${config.client_id.substring(0, 8)}...` : 'N/A'})
+	                                                                                </option>
+	                                                                            ))}
                                                                         </select>
                                                                     )}
                                                                     {oauth2Configs.length === 0 && !loadingOAuth2Configs && (

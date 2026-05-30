@@ -311,6 +311,7 @@ func NewRouterWithAuth(
 	sysConfigRouter.HandleFunc("/oauth2/global-config/{provider}", oauth2Handler.GetGlobalConfigByProvider).Methods("GET")
 	sysConfigRouter.HandleFunc("/oauth2/global-configs/{provider}", oauth2Handler.GetGlobalConfigsByProvider).Methods("GET")
 	sysConfigRouter.HandleFunc("/oauth2/global-config/by-id/{id}", oauth2Handler.GetGlobalConfigByID).Methods("GET")
+	sysConfigRouter.HandleFunc("/oauth2/global-config/{id}/default", oauth2Handler.SetGlobalConfigDefault).Methods("POST")
 	sysConfigRouter.HandleFunc("/oauth2/global-config/{id}", oauth2Handler.DeleteGlobalConfig).Methods("DELETE")
 	sysConfigRouter.HandleFunc("/oauth2/auth-url/{provider}", oauth2Handler.GetAuthURL).Methods("GET")
 	sysConfigRouter.HandleFunc("/oauth2/exchange-token", oauth2Handler.ExchangeToken).Methods("POST")
