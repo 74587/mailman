@@ -2,7 +2,7 @@
 import { logger } from '@/lib/logger';
 
 import React, { useState, useEffect, useRef } from 'react'
-import { X, Mail, Inbox, ChevronRight } from 'lucide-react'
+import { X, Mail, Inbox, ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { addNotification, isProcessed, markAsRead } from '@/lib/notification-store'
 
@@ -22,160 +22,163 @@ interface ToastNotification extends EmailNotification {
     storeId?: string
 }
 
-// 通知项组件属性
-interface NotificationItemProps {
-    notification: ToastNotification
-    onDismiss: () => void
-    onClick: () => void
-    ttl?: number
-}
-
-// 单个通知项组件
-function NotificationItem({ notification, onDismiss, onClick, ttl = 10000 }: NotificationItemProps) {
-    const [isVisible, setIsVisible] = useState(false)
-    const [isExiting, setIsExiting] = useState(false)
-
-    useEffect(() => {
-        // 进场动画
-        const timer = setTimeout(() => setIsVisible(true), 100)
-        return () => clearTimeout(timer)
-    }, [])
-
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            handleDismiss()
-        }, ttl)
-        return () => clearTimeout(timer)
-    }, [ttl])
-
-    const handleDismiss = () => {
-        if (isExiting) return
-        setIsExiting(true)
-        setTimeout(onDismiss, 300) // 等待退场动画完成
-    }
-
-    const handleClick = () => {
-        onClick()
-        handleDismiss()
-    }
-
-    return (
-        <div
-            className={cn(
-                "transform transition-all duration-300 ease-in-out",
-                "bg-white/95 dark:bg-gray-800/95 rounded-xl shadow-xl shadow-gray-900/10 border border-gray-200/90 dark:border-gray-700/90 backdrop-blur",
-                "pointer-events-auto w-[min(360px,calc(100vw-2rem))] cursor-pointer p-3 hover:-translate-y-0.5 hover:shadow-2xl",
-                isVisible && !isExiting ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
-            )}
-            onClick={handleClick}
-        >
-            <div className="flex items-start justify-between">
-                <div className="flex min-w-0 items-start space-x-3">
-                    <div className="flex-shrink-0">
-                        <div className="w-8 h-8 bg-blue-100 dark:bg-blue-900/40 rounded-full flex items-center justify-center">
-                            <Mail className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                        </div>
-                    </div>
-
-                    <div className="flex-1 min-w-0">
-                        <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
-                            {notification.account_email}
-                        </div>
-                        <div className="line-clamp-2 text-sm text-gray-600 dark:text-gray-400">
-                            {notification.from ? (
-                                <>收到来自 <span className="font-medium">{notification.from}</span> 的邮件</>
-                            ) : (
-                                <>收到 {notification.email_count} 封新邮件</>
-                            )}
-                        </div>
-                        {notification.subject && (
-                            <div className="text-xs text-gray-500 dark:text-gray-400 truncate mt-1 font-medium">
-                                {notification.subject}
-                            </div>
-                        )}
-                        <div className="text-xs text-gray-400 mt-1">
-                            {new Date(notification.timestamp).toLocaleTimeString()}
-                        </div>
-                    </div>
-                </div>
-
-                <button
-                    onClick={(e) => {
-                        e.stopPropagation()
-                        handleDismiss()
-                    }}
-                    className="ml-3 flex-shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
-                >
-                    <X className="w-4 h-4" />
-                </button>
-            </div>
-
-            <div className="mt-2 flex justify-end gap-2">
-                <button
-                    className="rounded-md bg-gray-100 px-3 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600"
-                    onClick={(e) => {
-                        e.stopPropagation()
-                        handleDismiss()
-                    }}
-                >
-                    忽略
-                </button>
-                <button
-                    className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white transition-colors hover:bg-blue-700"
-                    onClick={(e) => {
-                        e.stopPropagation()
-                        handleClick()
-                    }}
-                >
-                    点击查看
-                </button>
-            </div>
-        </div>
-    )
-}
-
-function NotificationSummary({
-    hiddenCount,
-    totalCount,
+function NotificationCarousel({
+    notifications,
+    currentIndex,
+    onIndexChange,
+    onDismiss,
+    onClick,
     onOpenCenter,
     onCollapseAll,
 }: {
-    hiddenCount: number
-    totalCount: number
+    notifications: ToastNotification[]
+    currentIndex: number
+    onIndexChange: (index: number) => void
+    onDismiss: (notification: ToastNotification) => void
+    onClick: (notification: ToastNotification) => void
     onOpenCenter: () => void
     onCollapseAll: () => void
 }) {
+    const total = notifications.length
+    if (total === 0) return null
+
+    const canGoNewer = currentIndex > 0
+    const canGoOlder = currentIndex < total - 1
+
     return (
-        <div className="w-[min(360px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-blue-200/80 bg-blue-50/95 shadow-xl shadow-gray-900/10 backdrop-blur dark:border-blue-900/60 dark:bg-blue-950/80">
-            <button
-                onClick={onOpenCenter}
-                className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-blue-100/70 dark:hover:bg-blue-900/50"
-            >
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-white">
-                    <Inbox className="h-4 w-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold text-blue-900 dark:text-blue-100">
-                        还有 {hiddenCount} 条新邮件通知
-                    </div>
-                    <div className="text-xs text-blue-600/80 dark:text-blue-300/80">
-                        已收纳到通知中心，共 {totalCount} 条待处理
-                    </div>
-                </div>
-                <ChevronRight className="h-4 w-4 flex-shrink-0 text-blue-500" />
-            </button>
-            <div className="flex items-center justify-between border-t border-blue-100 px-3 py-2 dark:border-blue-900/70">
+        <div className="pointer-events-auto w-[min(390px,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-gray-200/90 bg-white/95 shadow-2xl shadow-gray-900/10 backdrop-blur dark:border-gray-700/80 dark:bg-gray-800/95">
+            <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 dark:border-gray-700/70">
                 <button
                     onClick={onOpenCenter}
-                    className="text-xs font-medium text-blue-700 hover:text-blue-800 dark:text-blue-300 dark:hover:text-blue-200"
+                    className="flex min-w-0 items-center gap-2 text-left"
+                >
+                    <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300">
+                        <Inbox className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                        <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">新邮件消息盒子</div>
+                        <div className="text-xs text-gray-400">
+                            {currentIndex + 1}/{total} · 默认展示最新
+                        </div>
+                    </div>
+                </button>
+                <button
+                    onClick={onCollapseAll}
+                    className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                    title="收起消息盒子"
+                >
+                    <X className="h-4 w-4" />
+                </button>
+            </div>
+
+            <div className="relative overflow-hidden">
+                <div
+                    className="flex transition-transform duration-300 ease-out"
+                    style={{ transform: `translateX(-${currentIndex * 100}%)` }}
+                >
+                    {notifications.map((notification) => (
+                        <div key={`${notification.timestamp}-${notification.account_id}-${notification.email_id || notification.subject || ''}`} className="w-full flex-shrink-0 p-3">
+                            <button
+                                onClick={() => onClick(notification)}
+                                className="flex w-full items-start gap-3 rounded-xl px-1 py-1 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/30"
+                            >
+                                <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/40">
+                                    <Mail className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+                                        {notification.account_email}
+                                    </div>
+                                    <div className="line-clamp-2 text-sm text-gray-600 dark:text-gray-400">
+                                        {notification.from ? (
+                                            <>收到来自 <span className="font-medium">{notification.from}</span> 的邮件</>
+                                        ) : (
+                                            <>收到 {notification.email_count} 封新邮件</>
+                                        )}
+                                    </div>
+                                    {notification.subject && (
+                                        <div className="mt-1 truncate text-xs font-medium text-gray-500 dark:text-gray-400">
+                                            {notification.subject}
+                                        </div>
+                                    )}
+                                    <div className="mt-1 text-xs text-gray-400">
+                                        {new Date(notification.timestamp).toLocaleTimeString()}
+                                    </div>
+                                </div>
+                            </button>
+                        </div>
+                    ))}
+                </div>
+
+                {total > 1 && (
+                    <>
+                        <button
+                            onClick={() => onIndexChange(Math.max(0, currentIndex - 1))}
+                            disabled={!canGoNewer}
+                            className={cn(
+                                'absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-white/40 bg-white/35 text-gray-700 opacity-70 shadow-sm backdrop-blur transition hover:bg-white/85 hover:opacity-100 disabled:pointer-events-none disabled:opacity-20 dark:border-gray-700/50 dark:bg-gray-950/25 dark:text-gray-100 dark:hover:bg-gray-800/90'
+                            )}
+                            title="查看更新通知"
+                        >
+                            <ChevronLeft className="h-4 w-4" />
+                        </button>
+                        <button
+                            onClick={() => onIndexChange(Math.min(total - 1, currentIndex + 1))}
+                            disabled={!canGoOlder}
+                            className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-white/40 bg-white/35 text-gray-700 opacity-70 shadow-sm backdrop-blur transition hover:bg-white/85 hover:opacity-100 disabled:pointer-events-none disabled:opacity-20 dark:border-gray-700/50 dark:bg-gray-950/25 dark:text-gray-100 dark:hover:bg-gray-800/90"
+                            title="查看更早通知"
+                        >
+                            <ChevronRight className="h-4 w-4" />
+                        </button>
+                    </>
+                )}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-gray-100 px-3 py-2 dark:border-gray-700/70">
+                <div className="flex min-w-0 items-center gap-1.5">
+                    {notifications.slice(0, 8).map((notification, index) => (
+                        <button
+                            key={`${notification.timestamp}-${notification.account_id}-${index}`}
+                            onClick={() => onIndexChange(index)}
+                            className={cn(
+                                'h-1.5 rounded-full transition-all',
+                                index === currentIndex
+                                    ? 'w-5 bg-blue-500'
+                                    : 'w-1.5 bg-gray-300 hover:bg-gray-400 dark:bg-gray-600 dark:hover:bg-gray-500'
+                            )}
+                            title={`第 ${index + 1} 条通知`}
+                        />
+                    ))}
+                    {total > 8 && <span className="text-[10px] text-gray-400">+{total - 8}</span>}
+                </div>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => onDismiss(notifications[currentIndex])}
+                        className="rounded-md px-2 py-1 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-700"
+                    >
+                        忽略
+                    </button>
+                    <button
+                        onClick={() => onClick(notifications[currentIndex])}
+                        className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white transition-colors hover:bg-blue-700"
+                    >
+                        点击查看
+                    </button>
+                </div>
+            </div>
+
+            <div className="flex items-center justify-between bg-gray-50/80 px-3 py-2 dark:bg-gray-900/30">
+                <button
+                    onClick={onOpenCenter}
+                    className="text-xs font-medium text-gray-500 transition-colors hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-300"
                 >
                     打开通知中心
                 </button>
                 <button
                     onClick={onCollapseAll}
-                    className="rounded-md px-2 py-1 text-xs text-blue-600 transition-colors hover:bg-blue-100 dark:text-blue-300 dark:hover:bg-blue-900/60"
+                    className="text-xs text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-200"
                 >
-                    全部收起
+                    收起全部
                 </button>
             </div>
         </div>
@@ -190,11 +193,10 @@ interface EmailNotificationToastProps {
 // 主通知容器组件
 export default function EmailNotificationToast({ onNotificationClick }: EmailNotificationToastProps) {
     const [notifications, setNotifications] = useState<ToastNotification[]>([])
+    const [currentIndex, setCurrentIndex] = useState(0)
     const wsRef = useRef<WebSocket | null>(null)
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
     const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
-    const visibleNotifications = notifications.slice(0, 2)
-    const hiddenCount = Math.max(0, notifications.length - visibleNotifications.length)
 
     // WebSocket连接管理
     const connectWebSocket = () => {
@@ -252,6 +254,7 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
                                 const newNotifications = [{ ...notification, storeId: stored.id }, ...prev.slice(0, 9)]
                                 return newNotifications
                             })
+                            setCurrentIndex(0)
                         }
                     }
                 } catch (error) {
@@ -353,6 +356,10 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
         }
     }, [])
 
+    useEffect(() => {
+        setCurrentIndex(prev => Math.min(prev, Math.max(0, notifications.length - 1)))
+    }, [notifications.length])
+
     // 连接状态指示器
     const renderConnectionStatus = () => {
         switch (connectionStatus) {
@@ -379,34 +386,17 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
             {renderConnectionStatus()}
 
             {/* 通知容器 */}
-            <div className="pointer-events-none fixed right-4 top-20 z-50 flex flex-col items-end gap-2">
-                {notifications.length > 1 && (
-                    <button
-                        onClick={() => setNotifications([])}
-                        className="pointer-events-auto rounded-full border border-gray-200 bg-white/90 px-3 py-1 text-xs font-medium text-gray-500 shadow-sm backdrop-blur transition-colors hover:bg-gray-50 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-800/90 dark:text-gray-300 dark:hover:bg-gray-700"
-                    >
-                        收起全部
-                    </button>
-                )}
-
-                {visibleNotifications.map((notification) => (
-                    <NotificationItem
-                        key={`${notification.timestamp}-${notification.account_id}-${notification.email_id || notification.subject || ''}`}
-                        notification={notification}
-                        onDismiss={() => handleDismissNotification(notification.timestamp)}
-                        onClick={() => handleNotificationClick(notification)}
+            <div className="pointer-events-none fixed right-4 top-20 z-50">
+                {notifications.length > 0 && (
+                    <NotificationCarousel
+                        notifications={notifications}
+                        currentIndex={currentIndex}
+                        onIndexChange={setCurrentIndex}
+                        onDismiss={(notification) => handleDismissNotification(notification.timestamp)}
+                        onClick={handleNotificationClick}
+                        onOpenCenter={handleOpenNotificationCenter}
+                        onCollapseAll={() => setNotifications([])}
                     />
-                ))}
-
-                {hiddenCount > 0 && (
-                    <div className="pointer-events-auto">
-                        <NotificationSummary
-                            hiddenCount={hiddenCount}
-                            totalCount={notifications.length}
-                            onOpenCenter={handleOpenNotificationCenter}
-                            onCollapseAll={() => setNotifications([])}
-                        />
-                    </div>
                 )}
             </div>
         </>
