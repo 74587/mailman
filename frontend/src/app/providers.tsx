@@ -38,6 +38,8 @@ function ThemedSonnerToaster() {
 export function Providers({ children }: { children: React.ReactNode }) {
     const pathname = usePathname()
     const isOAuth2StandalonePage = pathname.startsWith('/oauth2/')
+    const isLegalPage = pathname === '/privacy-policy' || pathname === '/terms-of-service'
+    const isStandalonePublicPage = isOAuth2StandalonePage || isLegalPage
     const [queryClient] = useState(
         () =>
             new QueryClient({
@@ -55,7 +57,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     return (
         <QueryClientProvider client={queryClient}>
             <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-                {isOAuth2StandalonePage ? (
+                {isStandalonePublicPage ? (
                     <>
                         {children}
                         <ThemedSonnerToaster />
@@ -75,7 +77,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
                         <ThemedSonnerToaster />
                     </AuthProvider>
                 )}
-                {!isOAuth2StandalonePage && <EmailNotificationToast />}
+                {!isStandalonePublicPage && <EmailNotificationToast />}
             </ThemeProvider>
             <ReactQueryDevtools initialIsOpen={false} />
         </QueryClientProvider>
