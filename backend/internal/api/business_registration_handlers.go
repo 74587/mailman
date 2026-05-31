@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -413,11 +414,19 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 				"claimedBy":         businessAccount.ClaimedBy,
 			})
 
-			if err := tx.Create(&businessAccount).Error; err != nil {
-				if isBusinessUniqueConstraintError(err) {
-					continue
-				}
-				return err
+			insert := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "org_id"},
+					{Name: "module_id"},
+					{Name: "registration_email"},
+				},
+				DoNothing: true,
+			}).Create(&businessAccount)
+			if insert.Error != nil {
+				return insert.Error
+			}
+			if insert.RowsAffected == 0 {
+				continue
 			}
 			if err := tx.Preload("EmailAccount").Preload("Module").First(&businessAccount, businessAccount.ID).Error; err != nil {
 				return err
@@ -1086,12 +1095,4 @@ func stringInSlice(value string, values []string) bool {
 		}
 	}
 	return false
-}
-
-func isBusinessUniqueConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "unique") || strings.Contains(text, "duplicate") || strings.Contains(text, "constraint")
 }

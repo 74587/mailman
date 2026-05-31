@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"mailman/internal/models"
 	"mailman/internal/repository"
@@ -129,6 +130,95 @@ func TestClaimBusinessModuleEmailAccountSupportsDomainAlias(t *testing.T) {
 	}
 	if response.Recipient.EmailAddress != "github-a1b2@example.com" || response.Recipient.Kind != "domain_alias" {
 		t.Fatalf("unexpected recipient: %+v", response.Recipient)
+	}
+}
+
+func TestClaimBusinessModuleEmailAccountContinuesAfterInsertConflict(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{OrgID: 1, Name: "GitHub"}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{
+			OrgID:        1,
+			EmailAddress: "a@example.com",
+			AuthType:     models.AuthTypePassword,
+			IsVerified:   true,
+			ErrorStatus:  string(models.ErrorStatusNormal),
+		},
+		{
+			OrgID:        1,
+			EmailAddress: "b@example.com",
+			AuthType:     models.AuthTypePassword,
+			IsVerified:   true,
+			ErrorStatus:  string(models.ErrorStatusNormal),
+		},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create email accounts: %v", err)
+	}
+
+	stolen := false
+	callbackName := "test:steal_first_business_registration_claim"
+	if err := db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		account, ok := tx.Statement.Dest.(*models.BusinessAccount)
+		if !ok || stolen || account.ClaimedBy != "race-worker" || account.RegistrationEmail == nil || *account.RegistrationEmail != "a@example.com" {
+			return
+		}
+		stolen = true
+		var emailAccountID interface{}
+		if account.EmailAccountID != nil {
+			emailAccountID = *account.EmailAccountID
+		}
+		var moduleID interface{}
+		if account.ModuleID != nil {
+			moduleID = *account.ModuleID
+		}
+		var expiresAt interface{}
+		if account.ClaimExpiresAt != nil {
+			expiresAt = *account.ClaimExpiresAt
+		}
+		now := time.Now().UTC()
+		if err := tx.Exec(
+			`INSERT INTO business_accounts (org_id, email_account_id, module_id, module_name, display_name, registration_email, claim_token, claim_expires_at, claimed_by, status, note_format, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			account.OrgID,
+			emailAccountID,
+			moduleID,
+			account.ModuleName,
+			"stolen claim",
+			*account.RegistrationEmail,
+			"claim_stolen",
+			expiresAt,
+			"other-worker",
+			models.BusinessAccountStatusPending,
+			models.AccountNoteFormatMarkdown,
+			now,
+			now,
+		).Error; err != nil {
+			tx.AddError(err)
+		}
+	}); err != nil {
+		t.Fatalf("failed to register callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Create().Remove(callbackName)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"emailMode":"primary","claimedBy":"race-worker"}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response BusinessEmailClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.Recipient.EmailAddress != "b@example.com" {
+		t.Fatalf("expected claim to continue to second account after conflict, got %+v", response.Recipient)
 	}
 }
 
