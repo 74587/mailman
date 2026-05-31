@@ -116,7 +116,7 @@ const pluginNavigation: MenuItem[] = [
 // 开发者模式菜单组
 const developerNavigation: MenuItem[] = [
     { name: 'API 文档', id: 'api-docs', icon: BookOpen, description: 'Swagger 接口文档' },
-    { name: '接入手册', id: 'integration-guide', icon: FileText, description: 'OAuth · 邮件 API · 部署指南' },
+    { name: '接入手册', id: 'integration-guide', icon: FileText, description: 'HTML 文档库 · 场景指南' },
     { name: '表达式调试器', id: 'expression-debugger', icon: Bug, description: '调试条件表达式' },
     { name: '动作调试器', id: 'action-debugger', icon: PlayCircle, description: '调试动作插件' },
     { name: '过滤动作触发器', id: 'filter-action-trigger', icon: Zap, description: '完整触发器调试' },

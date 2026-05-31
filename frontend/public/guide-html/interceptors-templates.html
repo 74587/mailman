@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>拦截器与模板复用 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Interceptors & Templates</span>
+          <h1>把通用逻辑从单个触发器中抽出来</h1>
+          <p>拦截器用于统一处理动作执行前后逻辑，过滤器模板和动作模板用于复用常见条件与动作配置。它们适合把审计、跳过策略、统一通知、错误处理、常见筛选条件沉淀为可管理资产。</p>
+          <div class="badge-row">
+            <span class="badge">before / after</span>
+            <span class="badge green">错误策略</span>
+            <span class="badge violet">过滤模板</span>
+            <span class="badge amber">动作模板</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="28" y="34" width="304" height="172" rx="20" fill="#111827" stroke="#334155"/>
+            <rect x="50" y="62" width="260" height="32" rx="10" fill="#172554" stroke="#2563eb"/>
+            <rect x="50" y="116" width="260" height="32" rx="10" fill="#042f2e" stroke="#0f766e"/>
+            <rect x="50" y="170" width="260" height="22" rx="9" fill="#451a03" stroke="#d97706"/>
+            <text x="180" y="83" fill="#dbeafe" text-anchor="middle" font-size="12" font-weight="800">Before Interceptor</text>
+            <text x="180" y="137" fill="#ccfbf1" text-anchor="middle" font-size="12" font-weight="800">Action Pipeline</text>
+            <text x="180" y="186" fill="#fef3c7" text-anchor="middle" font-size="11" font-weight="800">After / Log</text>
+            <path d="M180 94V116M180 148V170" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#zero">0 到 1</a>
+        <a href="#interceptor">拦截器</a>
+        <a href="#payload">创建示例</a>
+        <a href="#policies">策略</a>
+        <a href="#templates">模板</a>
+        <a href="#logs">日志</a>
+        <a href="#api">接口</a>
+      </nav>
+      <a href="/main?tab=interceptors" target="_top">打开拦截器</a>
+    </div>
+
+    <section id="zero" class="section">
+      <h2>从 0 到 1 使用拦截器和模板</h2>
+      <p class="lead">触发器动作链解决“某封邮件命中后做什么”，拦截器解决“所有动作执行前后都要遵守什么规则”。模板则把稳定的表达式和动作配置沉淀下来，避免每个触发器重复配置。</p>
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>先沉淀模板</strong><br><span class="muted">把常用条件保存为过滤器模板，把常用动作链保存为动作模板。模板字段来自 <code>FilterTemplate</code> 和 <code>ActionTemplate</code>。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>再配置触发器</strong><br><span class="muted">触发器可以引用这些模板创建条件和动作，减少手工复制。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>加全局拦截器</strong><br><span class="muted">用 <code>scope=global</code> 对所有动作做审计、日志、统一变量检查或跳过策略。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>必要时加局部拦截器</strong><br><span class="muted">用 <code>scope=local</code> 并设置 <code>trigger_id</code> 或 <code>extractor_id</code>，只影响某条触发器或模板。</span></div></div>
+      </div>
+      <div class="callout success">
+        推荐顺序：先用模板复用业务规则，再用拦截器做平台级治理。模板负责“少配错”，拦截器负责“统一兜底”。
+      </div>
+    </section>
+
+    <section id="interceptor" class="section">
+      <h2>拦截器如何工作</h2>
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>选择作用域</strong><br><span class="muted"><code>global</code> 表示全局拦截器，<code>local</code> 表示绑定特定触发器或提取器。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>选择阶段</strong><br><span class="muted"><code>before</code> 在动作前执行，可跳过或改写；<code>after</code> 在动作后执行，可审计或补充通知。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>设置过滤</strong><br><span class="muted">按动作类型 include/exclude，或使用高级表达式过滤。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>记录日志</strong><br><span class="muted">每次拦截执行会写入拦截器日志，用于回溯和排错。</span></div></div>
+      </div>
+      <p class="muted small">模型依据：<code>backend/internal/models/interceptor.go</code>。</p>
+    </section>
+
+    <section id="payload" class="section">
+      <h2>创建一个全局审计拦截器</h2>
+      <p class="lead">下面示例使用内置 <code>logging_interceptor</code>。可用插件和默认配置以 <code>GET /api/interceptors/plugins</code> 返回为准，配置 schema 来自插件的 <code>ConfigSchema</code>。</p>
+      <pre><code>curl "$BASE_URL/api/interceptors/plugins" \
+  -H "Authorization: Bearer $TOKEN"
+
+curl -X POST "$BASE_URL/api/interceptors" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "全局动作审计",
+    "description": "记录 Webhook、转发、AI 等动作执行输入输出和耗时",
+    "plugin_id": "logging_interceptor",
+    "plugin_config": {
+      "log_level": "info",
+      "log_input": true,
+      "log_output": true,
+      "log_action_config": false,
+      "log_duration": true,
+      "log_variables": false,
+      "max_data_length": 10000,
+      "retention_days": 30
+    },
+    "scope": "global",
+    "enabled": true,
+    "order": 10,
+    "phases": { "before": true, "after": true },
+    "filter": {
+      "mode": "include",
+      "action_types": ["webhook_action", "ai_process_action", "email_forward_action"]
+    },
+    "error_handling": {
+      "before_error_policy": "continue",
+      "after_error_policy": "continue",
+      "max_retries": 1,
+      "retry_delay_seconds": 2
+    },
+    "skip_config": {
+      "skip_behavior": "continue",
+      "execute_after_on_skip": true,
+      "log_skipped": true
+    },
+    "execution": {
+      "after_mode": "async",
+      "async_config": {
+        "queue_name": "interceptor-audit",
+        "timeout_seconds": 30,
+        "max_concurrency": 10,
+        "retry_on_error": true,
+        "max_retries": 2
+      }
+    }
+  }'</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>何时必填</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>plugin_id</code></td><td>创建时必填</td><td>拦截器插件 ID，例如 <code>logging_interceptor</code>。</td></tr>
+            <tr><td><code>scope</code></td><td>创建时必填</td><td><code>global</code> 影响所有动作；<code>local</code> 必须绑定触发器或提取器。</td></tr>
+            <tr><td><code>trigger_id</code> / <code>extractor_id</code></td><td>局部拦截器</td><td>二选一，用于限定作用域。</td></tr>
+            <tr><td><code>order</code></td><td>可选</td><td>数字越小越早执行；可通过 <code>PUT /api/interceptors/order</code> 批量调整。</td></tr>
+            <tr><td><code>phases</code></td><td>必填</td><td>至少启用 <code>before</code> 或 <code>after</code> 之一。</td></tr>
+            <tr><td><code>filter</code></td><td>可选</td><td>按动作插件类型 include/exclude，或启用高级表达式。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="policies" class="section">
+      <h2>策略字段</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>可选值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>phases.before / phases.after</code></td><td><code>true</code> / <code>false</code></td><td>控制前置和后置阶段是否启用。</td></tr>
+            <tr><td><code>filter.mode</code></td><td><code>all</code>、<code>include</code>、<code>exclude</code></td><td>控制拦截器命中的动作范围。</td></tr>
+            <tr><td><code>before_error_policy</code></td><td><code>abort</code>、<code>continue</code>、<code>skip_action</code></td><td>前置阶段出错后的处理方式。</td></tr>
+            <tr><td><code>after_error_policy</code></td><td><code>abort</code>、<code>continue</code>、<code>skip_action</code></td><td>后置阶段出错后的处理方式。</td></tr>
+            <tr><td><code>skip_behavior</code></td><td><code>continue</code>、<code>abort</code></td><td>跳过当前动作后是继续还是中断动作链。</td></tr>
+            <tr><td><code>after_mode</code></td><td><code>sync</code>、<code>async</code></td><td>后置阶段同步执行或异步执行。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="策略选择">
+          <button role="tab" aria-selected="true" aria-controls="policy-audit">审计型</button>
+          <button role="tab" aria-selected="false" aria-controls="policy-guard">风控型</button>
+          <button role="tab" aria-selected="false" aria-controls="policy-async">异步型</button>
+        </div>
+        <div id="policy-audit" class="tab-panel active" role="tabpanel">
+          <p>日志和统计类拦截器建议 <code>before_error_policy=continue</code>、<code>after_error_policy=continue</code>，避免审计失败影响业务动作。</p>
+        </div>
+        <div id="policy-guard" class="tab-panel" role="tabpanel">
+          <p>风控、限流、黑名单类拦截器建议放在 <code>before</code>，需要阻断时返回 <code>skip_action</code> 或 <code>abort</code>，并将 <code>log_skipped</code> 打开。</p>
+        </div>
+        <div id="policy-async" class="tab-panel" role="tabpanel">
+          <p>后置通知、指标上报、外部审计建议 <code>after_mode=async</code>，并配置 <code>queue_name</code>、<code>timeout_seconds</code>、<code>max_concurrency</code>。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="templates" class="section">
+      <h2>过滤器模板与动作模板</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>过滤器模板</h3>
+          <p class="muted">用于复用常见筛选条件，例如“来自 GitHub 且主题包含 code”、“最近 10 分钟内的登录邮件”。</p>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/filter-templates</code><span>列表</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/filter-templates</code><span>创建</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/filter-templates/categories</code><span>分类</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/filter-templates/{id}/increment-usage</code><span>使用计数</span></div>
+        </div>
+        <div class="card">
+          <h3>动作模板</h3>
+          <p class="muted">用于复用动作配置，例如“Webhook 推送到业务系统”、“Telegram 通知管理员”、“AI 摘要后打标签”。</p>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/action-templates</code><span>列表</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/action-templates</code><span>创建</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/action-templates/categories</code><span>分类</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/action-templates/{id}/increment-usage</code><span>使用计数</span></div>
+        </div>
+      </div>
+      <div class="callout success">
+        推荐把“业务稳定规则”沉淀成模板，把“系统统一行为”沉淀成拦截器。模板解决复用，拦截器解决治理。
+      </div>
+      <h3>过滤器模板 JSON</h3>
+      <pre><code>curl -X POST "$BASE_URL/api/filter-templates" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "GitHub 登录邮件",
+    "description": "来自 GitHub 且主题包含 code",
+    "category": "验证码",
+    "tags": ["github", "login"],
+    "expressions": {
+      "type": "group",
+      "operator": "and",
+      "conditions": [
+        { "type": "condition", "field": "from", "operator": "contains", "value": "github.com" },
+        { "type": "condition", "field": "subject", "operator": "contains", "value": "code" }
+      ]
+    }
+  }'</code></pre>
+      <h3>动作模板 JSON</h3>
+      <pre><code>curl -X POST "$BASE_URL/api/action-templates" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Webhook 推送验证码",
+    "description": "把提取值推送给业务系统",
+    "category": "Webhook",
+    "tags": ["webhook", "code"],
+    "actions": [
+      {
+        "id": "send-code",
+        "pluginId": "webhook_action",
+        "pluginName": "Webhook 调用",
+        "enabled": true,
+        "executionOrder": 1,
+        "config": {
+          "url": "https://api.example.com/mailman/code",
+          "method": "POST",
+          "headers": { "Content-Type": "application/json" },
+          "body": "{\"email_id\":\"{{email.id}}\",\"subject\":\"{{email.subject}}\"}"
+        }
+      }
+    ]
+  }'</code></pre>
+    </section>
+
+    <section id="logs" class="section">
+      <h2>日志与回溯</h2>
+      <p class="lead">拦截器日志记录每次动作被拦截时的阶段、动作插件、执行结果、错误和决策。它是排查“为什么动作被跳过或中断”的第一入口。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>查看日志列表</h3>
+          <pre><code>curl "$BASE_URL/api/interceptors/logs?interceptor_id=1&amp;limit=50" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+        </div>
+        <div class="card">
+          <h3>查看日志统计</h3>
+          <pre><code>curl "$BASE_URL/api/interceptors/logs/stats?interceptor_id=1" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>现象</th><th>优先查看</th><th>下一步</th></tr></thead>
+          <tbody>
+            <tr><td>动作被跳过</td><td><code>decision_made</code>、<code>phase</code></td><td>检查前置拦截器返回和 <code>skip_config</code>。</td></tr>
+            <tr><td>动作链中断</td><td><code>error_message</code>、<code>before_error_policy</code></td><td>如果是治理策略故意中断，补充提示；如果是插件异常，调低策略为 <code>continue</code> 后再排查。</td></tr>
+            <tr><td>日志太多</td><td><code>filter.mode</code>、<code>action_types</code></td><td>用 include 只记录关键动作，或关闭 <code>log_input</code>、<code>log_output</code>。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="api" class="section">
+      <h2>拦截器接口</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>管理</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/interceptors</code><span>列表</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/interceptors</code><span>创建</span></div>
+          <div class="endpoint"><span class="method put">PUT</span><code>/api/interceptors/order</code><span>排序</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/interceptors/{id}/enable</code><span>启用</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/interceptors/{id}/disable</code><span>禁用</span></div>
+        </div>
+        <div class="card">
+          <h3>插件与日志</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/interceptors/plugins</code><span>可用拦截插件</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/interceptors/logs</code><span>日志列表</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/interceptors/logs/stats</code><span>日志统计</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/interceptors/logs/{id}</code><span>日志详情</span></div>
+        </div>
+      </div>
+      <p class="muted small">路由依据：<code>backend/internal/api/interceptor_handlers.go</code> 的 <code>RegisterRoutes</code>。</p>
+    </section>
+
+    <p class="footer">下一篇建议阅读：<a href="./ai-business-proxy.html">AI、业务资料、标签与代理池</a></p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

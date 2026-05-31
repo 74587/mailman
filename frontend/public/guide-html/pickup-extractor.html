@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>取件与取件模板 V2 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Pickup & Extractor V2</span>
+          <h1>等待一封邮件，并把需要的数据提取出来</h1>
+          <p>取件是 Mailman 面向验证码、登录确认、一次性通知的核心能力。新版 <code>/api/pickup/poll</code> 会把临时同步、邮件搜索、模板匹配、动作链提取组合成一次请求。</p>
+          <div class="badge-row">
+            <span class="badge">验证码</span>
+            <span class="badge green">临时同步</span>
+            <span class="badge violet">模板动作链</span>
+            <span class="badge amber">结构化输出</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="28" y="32" width="304" height="176" rx="22" fill="#111827" stroke="#334155"/>
+            <rect x="52" y="64" width="92" height="52" rx="12" fill="#172554" stroke="#2563eb"/>
+            <rect x="134" y="142" width="92" height="52" rx="12" fill="#312e81" stroke="#7c3aed"/>
+            <rect x="216" y="64" width="92" height="52" rx="12" fill="#042f2e" stroke="#0f766e"/>
+            <path d="M144 90H216M180 116V142" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/>
+            <text x="98" y="94" fill="#dbeafe" text-anchor="middle" font-size="12" font-weight="800">Poll</text>
+            <text x="262" y="94" fill="#ccfbf1" text-anchor="middle" font-size="12" font-weight="800">Sync</text>
+            <text x="180" y="172" fill="#ede9fe" text-anchor="middle" font-size="12" font-weight="800">Extract</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#zero">0 到 1</a>
+        <a href="#poll">统一取件</a>
+        <a href="#modes">三种模式</a>
+        <a href="#template">模板结构</a>
+        <a href="#actions">动作链</a>
+        <a href="#output">输出格式</a>
+        <a href="#debug">调试</a>
+        <a href="#api">接口</a>
+      </nav>
+      <a href="/main?tab=mail-pickup-v2" target="_top">打开取件</a>
+    </div>
+
+    <section id="zero" class="section">
+      <h2>从 0 到 1 接入取件</h2>
+      <p class="lead">取件不是单纯搜索邮件，而是一条完整链路：账户能收信、同步能拉取、搜索条件能定位、提取规则能输出目标值。上线前建议按下面顺序逐步确认。</p>
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>确认落件账户</strong><br><span class="muted">先完成 OAuth2 或 IMAP 账户接入，并在邮件管理中能看到最新邮件。转发型业务要把原始收件地址维护到账户的 <code>forwardedAddresses</code>。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>确认同步能力</strong><br><span class="muted">手动调用 <code>POST /api/accounts/{id}/sync-now</code>，再用 <code>GET /api/emails/search</code> 验证邮件能被搜索到。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>选择提取模式</strong><br><span class="muted">长期复用选 <code>template_id</code>；业务方希望一次请求内声明规则选 <code>inline_actions</code>；只提一个验证码选 <code>simple_extract</code>。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>业务侧轮询取件</strong><br><span class="muted">调用 <code>POST /api/pickup/poll</code>，让 Mailman 在 <code>keep_alive_seconds</code> 时间窗口内启用临时同步并返回提取结果。</span></div></div>
+      </div>
+      <div class="callout">
+        取件服务的请求结构来自 <code>backend/internal/services/pickup_service.go</code> 的 <code>PickupPollRequest</code>。搜索条件目前支持 <code>account_id</code>、<code>to_query</code>、<code>since</code> 和 <code>limit</code>；主题、发件人、正文等更细条件应放在模板 <code>expressions</code> 里。
+      </div>
+    </section>
+
+    <section id="poll" class="section">
+      <h2>统一取件接口</h2>
+      <p class="lead"><code>POST /api/pickup/poll</code> 适合“我现在要等一封邮件”的场景。它会根据请求参数选择账户、设置临时同步、轮询邮件、执行取件模板，并返回最终提取结果。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>类型</th><th>说明</th><th>建议</th></tr></thead>
+          <tbody>
+            <tr><td><code>account_id</code></td><td>number</td><td>目标邮箱账户 ID。可选但推荐传；如果 <code>to_query</code> 能解析到账户，后端会记录解析来源。</td><td>生产调用固定传入，避免多账户模糊匹配。</td></tr>
+            <tr><td><code>keep_alive_seconds</code></td><td>number</td><td>临时同步覆盖有效期，默认 30 秒。</td><td>验证码场景常用 60-120 秒。</td></tr>
+            <tr><td><code>sync_interval</code></td><td>number</td><td>取件期间后端拉取邮件间隔，默认 5 秒。</td><td>不要长期设太低；只在取件窗口内加速。</td></tr>
+            <tr><td><code>since</code></td><td>string</td><td>RFC3339 起始时间，只搜索该时间之后的邮件。</td><td>业务侧在发起登录请求前记录当前时间。</td></tr>
+            <tr><td><code>to_query</code></td><td>string</td><td>收件人模糊匹配，适合原始收件地址或别名。</td><td>转发落件场景必须传原始业务邮箱。</td></tr>
+            <tr><td><code>limit</code></td><td>number</td><td>候选邮件数量，默认 10。</td><td>通常 5-20 即可。</td></tr>
+            <tr><td><code>template_id</code></td><td>number</td><td>引用已有取件模板 V2。</td><td>适合稳定业务。</td></tr>
+            <tr><td><code>inline_actions</code></td><td>object</td><td>请求内声明表达式、动作链和 <code>output_config</code>。</td><td>适合外部系统动态生成规则。</td></tr>
+            <tr><td><code>simple_extract</code></td><td>object</td><td>V1 风格的简单提取配置。</td><td>适合从正文或主题取一个值。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pre><code>curl -X POST "$BASE_URL/api/pickup/poll" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "account_id": 12,
+    "to_query": "login@example.com",
+    "since": "2026-05-31T10:00:00Z",
+    "keep_alive_seconds": 90,
+    "sync_interval": 5,
+    "limit": 10,
+    "template_id": 3
+  }'</code></pre>
+      <div class="callout">
+        如果邮件是先转发到落件账户，再由业务侧按原始收件地址取件，请优先维护账户的 <code>forwardedAddresses</code>，并在取件时传入原始地址作为 <code>to_query</code>。
+      </div>
+    </section>
+
+    <section id="modes" class="section">
+      <h2>三种取件模式怎么选</h2>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="取件模式">
+          <button role="tab" aria-selected="true" aria-controls="mode-template">引用模板</button>
+          <button role="tab" aria-selected="false" aria-controls="mode-inline">内联动作链</button>
+          <button role="tab" aria-selected="false" aria-controls="mode-simple">简单提取</button>
+        </div>
+        <div id="mode-template" class="tab-panel active" role="tabpanel">
+          <p>先在 Mailman 中创建取件模板 V2，业务侧只传 <code>template_id</code>。模板可以复用表达式系统、动作插件、日志和统计，是最推荐的生产方式。</p>
+          <pre><code>{
+  "account_id": 12,
+  "to_query": "login@example.com",
+  "since": "2026-05-31T10:00:00Z",
+  "keep_alive_seconds": 90,
+  "sync_interval": 5,
+  "template_id": 3
+}</code></pre>
+        </div>
+        <div id="mode-inline" class="tab-panel" role="tabpanel">
+          <p>请求中直接带 <code>expressions</code>、<code>actions</code> 和 <code>output_config</code>。注意这里的字段名是 <code>output_config</code>，它来自 <code>InlineActionsConfig</code>；模板管理接口里则是 <code>outputConfig</code>。</p>
+          <pre><code>{
+  "account_id": 12,
+  "to_query": "login@example.com",
+  "keep_alive_seconds": 60,
+  "inline_actions": {
+    "expressions": {
+      "type": "group",
+      "operator": "and",
+      "conditions": [
+        { "type": "condition", "field": "subject", "operator": "contains", "value": "code" }
+      ]
+    },
+    "actions": [
+      {
+        "id": "extract-code",
+        "pluginId": "variable_extract_action",
+        "pluginName": "变量提取",
+        "enabled": true,
+        "executionOrder": 1,
+        "config": {
+          "source": "email",
+          "source_field": "text_body",
+          "expression_type": "regex",
+          "expression": "\\d{6}",
+          "return_type": "string"
+        }
+      }
+    ],
+    "output_config": { "format": "text", "field": "extract-code" }
+  }
+}</code></pre>
+        </div>
+        <div id="mode-simple" class="tab-panel" role="tabpanel">
+          <p>只需要一个正则或简单脚本时使用 <code>simple_extract</code>，字段由 <code>SimpleExtractConfig</code> 定义：<code>field</code>、<code>type</code>、<code>pattern</code>、<code>match_mode</code>、<code>match_index</code>。</p>
+          <pre><code>{
+  "account_id": 12,
+  "to_query": "login@example.com",
+  "keep_alive_seconds": 60,
+  "simple_extract": {
+    "field": "body",
+    "type": "regex",
+    "pattern": "\\b\\d{6}\\b",
+    "match_mode": "first"
+  }
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="template" class="section">
+      <h2>取件模板 V2 的结构</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>过滤条件</h3>
+          <p class="muted">字段 <code>expressions</code> 复用触发器表达式系统，用来判断当前邮件是否匹配模板。</p>
+          <pre><code>{
+  "type": "group",
+  "operator": "and",
+  "conditions": [
+    { "type": "condition", "field": "subject", "value": "code" },
+    { "type": "plugin", "pluginId": "email_time_range", "fields": { "range": "10m" } }
+  ]
+}</code></pre>
+        </div>
+        <div class="card">
+          <h3>提取动作链</h3>
+          <p class="muted">字段 <code>actions</code> 按 <code>executionOrder</code> 执行，常用变量提取、AI 处理、数据转换 V2 和中断流程。</p>
+          <pre><code>[
+  {
+    "id": "extract-code",
+    "pluginId": "variable_extract_action",
+    "pluginName": "变量提取",
+    "enabled": true,
+    "executionOrder": 1,
+    "config": {
+      "source": "email",
+      "source_field": "text_body",
+      "expression_type": "regex",
+      "expression": "\\d{6}",
+      "return_type": "string"
+    }
+  }
+]</code></pre>
+        </div>
+      </div>
+      <h3>创建一个可复用验证码模板</h3>
+      <pre><code>curl -X POST "$BASE_URL/api/v2/extractor-templates" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "GitHub 登录验证码",
+    "description": "匹配 GitHub 登录验证邮件并返回 6 位验证码",
+    "enabled": true,
+    "category": "验证码",
+    "tags": ["github", "login"],
+    "expressions": {
+      "type": "group",
+      "operator": "and",
+      "conditions": [
+        { "type": "condition", "field": "from", "operator": "contains", "value": "github.com" },
+        { "type": "condition", "field": "subject", "operator": "contains", "value": "code" }
+      ]
+    },
+    "actions": [
+      {
+        "id": "extract-code",
+        "pluginId": "variable_extract_action",
+        "pluginName": "变量提取",
+        "enabled": true,
+        "executionOrder": 1,
+        "config": {
+          "source": "email",
+          "source_field": "text_body",
+          "expression_type": "regex",
+          "expression": "\\b\\d{6}\\b",
+          "return_type": "string"
+        }
+      }
+    ],
+    "outputConfig": {
+      "format": "text",
+      "field": "extract-code",
+      "description": "返回验证码字符串"
+    }
+  }'</code></pre>
+      <p class="muted small">模型依据：<code>backend/internal/models/extractor_template_v2.go</code> 中的 <code>ExtractorTemplateV2</code>、<code>ExtractionLogV2</code>、<code>ExtractionResult</code>。</p>
+    </section>
+
+    <section id="actions" class="section">
+      <h2>取件常用动作链</h2>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="取件动作场景">
+          <button role="tab" aria-selected="true" aria-controls="act-code">验证码提取</button>
+          <button role="tab" aria-selected="false" aria-controls="act-json">结构化 JSON</button>
+          <button role="tab" aria-selected="false" aria-controls="act-ai">AI 辅助提取</button>
+        </div>
+        <div id="act-code" class="tab-panel active" role="tabpanel">
+          <ol>
+            <li>过滤发件域名、主题关键字、收件地址和时间范围。</li>
+            <li>使用 <code>variable_extract_action</code> 从 <code>text_body</code> 或 <code>subject</code> 通过正则提取 <code>\\d{6}</code>。</li>
+            <li>输出配置选择 <code>text</code>，直接返回验证码字符串。</li>
+          </ol>
+        </div>
+        <div id="act-json" class="tab-panel" role="tabpanel">
+          <ol>
+            <li>先用 <code>email_transform_action_v2</code> 清洗正文、去掉多余链接或签名。</li>
+            <li>用多条 <code>variable_extract_action</code> 提取 code、source、expire_at。</li>
+            <li>输出配置选择 <code>json</code> 或 <code>object</code>。</li>
+          </ol>
+        </div>
+        <div id="act-ai" class="tab-panel" role="tabpanel">
+          <ol>
+            <li>通过 <code>ai_process_action</code> 要求模型从邮件中提取目标字段。</li>
+            <li>再用 <code>variable_extract_action</code> 从变量池读取 AI 输出并做 JSONPath 提取。</li>
+            <li>适合格式经常变化、正则难维护的邮件。</li>
+          </ol>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>插件</th><th>用途</th><th>源码</th></tr></thead>
+          <tbody>
+            <tr><td><code>variable_extract_action</code></td><td>从邮件、变量或表达式中提取最终值</td><td><code>variable_extract_action.go</code></td></tr>
+            <tr><td><code>email_transform_action_v2</code></td><td>多规则转换，支持模板、JavaScript、正则、前后缀和替换</td><td><code>email_transform_action_v2.go</code></td></tr>
+            <tr><td><code>conditional_branch_action</code></td><td>根据条件走不同动作分支</td><td><code>conditional_branch_action.go</code></td></tr>
+            <tr><td><code>parallel_actions</code></td><td>并行执行多个动作</td><td><code>parallel_actions.go</code></td></tr>
+            <tr><td><code>return_action</code></td><td>中断后续流程并返回值</td><td><code>return_action.go</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="output" class="section">
+      <h2>输出格式</h2>
+      <div class="grid four">
+        <div class="card"><h3><code>text</code></h3><p class="muted">返回纯文本，适合验证码、链接、单个 ID。</p></div>
+        <div class="card"><h3><code>json</code></h3><p class="muted">返回 JSON 字符串，适合 API 调用方直接解析。</p></div>
+        <div class="card"><h3><code>array</code></h3><p class="muted">返回数组，适合提取多个链接、多个订单号。</p></div>
+        <div class="card"><h3><code>object</code></h3><p class="muted">返回结构化对象，适合业务系统消费。</p></div>
+      </div>
+      <h3>取件响应怎么读</h3>
+      <pre><code>{
+  "success": true,
+  "account_id": 12,
+  "requested_account_id": 12,
+  "resolved_by": "account_id",
+  "new_count": 1,
+  "sync_active": true,
+  "sync_expires_at": "2026-05-31T10:01:30Z",
+  "emails": [{ "id": 8891, "subject": "Your login code" }],
+  "extractions": [
+    {
+      "email_id": 8891,
+      "success": true,
+      "status": "success",
+      "extracted_value": "123456"
+    }
+  ]
+}</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>响应字段</th><th>含义</th><th>接入方处理建议</th></tr></thead>
+          <tbody>
+            <tr><td><code>success</code></td><td>取件请求是否成功处理。</td><td>false 时读取顶层错误或提取项 <code>error</code>。</td></tr>
+            <tr><td><code>new_count</code></td><td>候选邮件数量。</td><td>为 0 通常是同步未拉到或搜索条件过窄。</td></tr>
+            <tr><td><code>sync_active</code></td><td>临时同步是否仍在有效窗口内。</td><td>业务侧可在窗口内继续请求，避免重复创建覆盖。</td></tr>
+            <tr><td><code>extractions[].status</code></td><td><code>success</code>、<code>failed</code>、<code>no_match</code>、<code>skipped</code>。</td><td><code>no_match</code> 优先检查表达式；<code>failed</code> 查看模板日志。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="debug" class="section">
+      <h2>调试一封样例邮件</h2>
+      <p class="lead">在真正接入业务系统之前，先用模板调试接口确认表达式命中、动作链输出和最终格式。调试请求可以使用现有邮件 ID，也可以传 <code>customEmail</code> 构造一封样例邮件。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>测试已有邮件</h3>
+          <pre><code>curl -X POST "$BASE_URL/api/v2/extractor-templates/3/execute" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "emailId": 8891 }'</code></pre>
+        </div>
+        <div class="card">
+          <h3>逐步调试配置</h3>
+          <pre><code>curl -X POST "$BASE_URL/api/v2/extractor-templates/debug" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "emailId": 8891,
+    "stepByStep": true,
+    "expressions": { "type": "group", "operator": "and", "conditions": [] },
+    "actions": [],
+    "outputConfig": { "format": "text" }
+  }'</code></pre>
+        </div>
+      </div>
+      <div class="callout warning">
+        如果 <code>/api/pickup/poll</code> 超时，先不要改正则。按顺序检查：账户同步状态、<code>to_query</code> 是否能命中、<code>since</code> 是否晚于邮件时间、模板表达式是否过窄、动作链是否返回了目标变量。
+      </div>
+    </section>
+
+    <section id="api" class="section">
+      <h2>取件模板 API</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>模板管理</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/v2/extractor-templates</code><span>列表</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/extractor-templates</code><span>创建</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/v2/extractor-templates/paginated</code><span>分页</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/v2/extractor-templates/categories</code><span>分类</span></div>
+          <div class="endpoint"><span class="method put">PUT</span><code>/api/v2/extractor-templates/{id}</code><span>更新</span></div>
+          <div class="endpoint"><span class="method delete">DELETE</span><code>/api/v2/extractor-templates/{id}</code><span>删除</span></div>
+        </div>
+        <div class="card">
+          <h3>执行与调试</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/extractor-templates/test</code><span>测试</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/extractor-templates/debug</code><span>调试</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/v2/extractor-templates/match</code><span>匹配邮件</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/extractor-templates/{id}/execute</code><span>执行</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/v2/extractor-templates/{id}/logs</code><span>日志</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/v2/extractor-templates/{id}/stats</code><span>统计</span></div>
+        </div>
+      </div>
+      <p class="muted small">路由依据：<code>backend/internal/api/extractor_template_v2_handlers.go</code> 的 <code>RegisterExtractorTemplateV2Routes</code>。</p>
+    </section>
+
+    <p class="footer">下一篇建议阅读：<a href="./triggers-actions.html">触发器、表达式与动作插件</a></p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

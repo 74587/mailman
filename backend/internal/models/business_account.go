@@ -33,34 +33,38 @@ type BusinessModule struct {
 }
 
 type BusinessAccount struct {
-	ID              uint                  `gorm:"primaryKey" json:"id"`
-	OrgID           uint                  `gorm:"not null;index;default:1" json:"orgId"`
-	EmailAccountID  *uint                 `gorm:"index" json:"emailAccountId,omitempty"`
-	EmailAccount    *EmailAccount         `gorm:"foreignKey:EmailAccountID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"emailAccount,omitempty"`
-	ModuleID        *uint                 `gorm:"index" json:"moduleId,omitempty"`
-	Module          *BusinessModule       `gorm:"foreignKey:ModuleID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"module,omitempty"`
-	ModuleName      string                `gorm:"type:varchar(255);index" json:"moduleName,omitempty"`
-	DisplayName     string                `gorm:"type:varchar(255);index" json:"displayName,omitempty"`
-	Website         string                `gorm:"type:varchar(512)" json:"website,omitempty"`
-	LoginURL        string                `gorm:"type:varchar(512)" json:"loginUrl,omitempty"`
-	Username        string                `gorm:"type:varchar(255);index" json:"username,omitempty"`
-	Password        string                `gorm:"type:text" json:"password,omitempty"`
-	TOTPSecret      string                `gorm:"type:text" json:"totpSecret,omitempty"`
-	PhoneNumber     string                `gorm:"type:varchar(64)" json:"phoneNumber,omitempty"`
-	RecoveryEmail   string                `gorm:"type:varchar(255)" json:"recoveryEmail,omitempty"`
-	RecoveryCodes   StringSlice           `gorm:"type:json" json:"recoveryCodes,omitempty"`
-	Status          BusinessAccountStatus `gorm:"type:varchar(64);not null;default:'active';index" json:"status"`
-	Description     string                `gorm:"type:text" json:"description,omitempty"`
-	Note            string                `gorm:"type:text" json:"note,omitempty"`
-	NoteFormat      AccountNoteFormat     `gorm:"type:varchar(16);not null;default:'markdown'" json:"noteFormat"`
-	Tags            StringSlice           `gorm:"type:json" json:"tags,omitempty"`
-	CustomFields    JSONMapInterface      `gorm:"type:json" json:"customFields,omitempty"`
-	ExtraData       JSONMapInterface      `gorm:"type:json" json:"extraData,omitempty"`
-	RemoteCreatedAt *time.Time            `json:"remoteCreatedAt,omitempty"`
-	LastLoginAt     *time.Time            `json:"lastLoginAt,omitempty"`
-	CreatedAt       time.Time             `json:"createdAt"`
-	UpdatedAt       time.Time             `json:"updatedAt"`
-	DeletedAt       DeletedAt             `gorm:"index" json:"deletedAt,omitempty"`
+	ID                uint                  `gorm:"primaryKey" json:"id"`
+	OrgID             uint                  `gorm:"not null;index;default:1;uniqueIndex:idx_business_registration_email" json:"orgId"`
+	EmailAccountID    *uint                 `gorm:"index" json:"emailAccountId,omitempty"`
+	EmailAccount      *EmailAccount         `gorm:"foreignKey:EmailAccountID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"emailAccount,omitempty"`
+	ModuleID          *uint                 `gorm:"index;uniqueIndex:idx_business_registration_email" json:"moduleId,omitempty"`
+	Module            *BusinessModule       `gorm:"foreignKey:ModuleID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"module,omitempty"`
+	ModuleName        string                `gorm:"type:varchar(255);index" json:"moduleName,omitempty"`
+	DisplayName       string                `gorm:"type:varchar(255);index" json:"displayName,omitempty"`
+	RegistrationEmail *string               `gorm:"type:varchar(255);uniqueIndex:idx_business_registration_email" json:"registrationEmail,omitempty"`
+	ClaimToken        string                `gorm:"type:varchar(255);index" json:"-"`
+	ClaimExpiresAt    *time.Time            `json:"claimExpiresAt,omitempty"`
+	ClaimedBy         string                `gorm:"type:varchar(255)" json:"claimedBy,omitempty"`
+	Website           string                `gorm:"type:varchar(512)" json:"website,omitempty"`
+	LoginURL          string                `gorm:"type:varchar(512)" json:"loginUrl,omitempty"`
+	Username          string                `gorm:"type:varchar(255);index" json:"username,omitempty"`
+	Password          string                `gorm:"type:text" json:"password,omitempty"`
+	TOTPSecret        string                `gorm:"type:text" json:"totpSecret,omitempty"`
+	PhoneNumber       string                `gorm:"type:varchar(64)" json:"phoneNumber,omitempty"`
+	RecoveryEmail     string                `gorm:"type:varchar(255)" json:"recoveryEmail,omitempty"`
+	RecoveryCodes     StringSlice           `gorm:"type:json" json:"recoveryCodes,omitempty"`
+	Status            BusinessAccountStatus `gorm:"type:varchar(64);not null;default:'active';index" json:"status"`
+	Description       string                `gorm:"type:text" json:"description,omitempty"`
+	Note              string                `gorm:"type:text" json:"note,omitempty"`
+	NoteFormat        AccountNoteFormat     `gorm:"type:varchar(16);not null;default:'markdown'" json:"noteFormat"`
+	Tags              StringSlice           `gorm:"type:json" json:"tags,omitempty"`
+	CustomFields      JSONMapInterface      `gorm:"type:json" json:"customFields,omitempty"`
+	ExtraData         JSONMapInterface      `gorm:"type:json" json:"extraData,omitempty"`
+	RemoteCreatedAt   *time.Time            `json:"remoteCreatedAt,omitempty"`
+	LastLoginAt       *time.Time            `json:"lastLoginAt,omitempty"`
+	CreatedAt         time.Time             `json:"createdAt"`
+	UpdatedAt         time.Time             `json:"updatedAt"`
+	DeletedAt         DeletedAt             `gorm:"index" json:"deletedAt,omitempty"`
 }
 
 func (BusinessModule) TableName() string {

@@ -1,0 +1,904 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>基于业务账户的自动化教程 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Business Account Automation</span>
+          <h1>从领取邮箱到回写业务账户的注册自动化</h1>
+          <p>本教程把邮箱账户、业务模块、取件、验证码提取和业务资料回写串成一条可生产使用的链路。你会看到如何原子领取邮箱，如何选择主邮箱、域名邮箱、别名邮箱或转发地址，以及如何在注册成功后把外部平台账号写回 Mailman。</p>
+          <div class="badge-row">
+            <span class="badge">邮箱领取</span>
+            <span class="badge green">验证码取件</span>
+            <span class="badge violet">业务账户回写</span>
+            <span class="badge amber">Node.js / Go / Python</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="24" y="28" width="312" height="184" rx="20" fill="#111827" stroke="#334155"/>
+            <rect x="44" y="58" width="78" height="46" rx="12" fill="#172554" stroke="#2563eb"/>
+            <rect x="144" y="58" width="78" height="46" rx="12" fill="#042f2e" stroke="#0f766e"/>
+            <rect x="244" y="58" width="78" height="46" rx="12" fill="#451a03" stroke="#d97706"/>
+            <rect x="94" y="142" width="78" height="46" rx="12" fill="#312e81" stroke="#7c3aed"/>
+            <rect x="194" y="142" width="78" height="46" rx="12" fill="#052e16" stroke="#16a34a"/>
+            <path d="M122 82H144M222 82H244M283 104V126H233V142M183 104V126H133V142" stroke="#93c5fd" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <text x="83" y="86" fill="#dbeafe" text-anchor="middle" font-size="12" font-weight="800">Claim</text>
+            <text x="183" y="86" fill="#ccfbf1" text-anchor="middle" font-size="12" font-weight="800">Register</text>
+            <text x="283" y="86" fill="#fef3c7" text-anchor="middle" font-size="12" font-weight="800">Pickup</text>
+            <text x="133" y="170" fill="#ede9fe" text-anchor="middle" font-size="12" font-weight="800">Verify</text>
+            <text x="233" y="170" fill="#dcfce7" text-anchor="middle" font-size="12" font-weight="800">Complete</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#goal">目标流程</a>
+        <a href="#prerequisites">准备工作</a>
+        <a href="#claim">领取邮箱</a>
+        <a href="#modes">选址模式</a>
+        <a href="#pickup">取验证码</a>
+        <a href="#lifecycle">完成与释放</a>
+        <a href="#examples">代码示例</a>
+        <a href="#ops">上线检查</a>
+      </nav>
+      <a href="/main?tab=integration-guide" target="_top">打开接入手册</a>
+    </div>
+
+    <section id="goal" class="section">
+      <h2>目标流程</h2>
+      <p class="lead">这条流程适合外部注册机器人、账号开通任务、批量 onboarding、站点账号资产沉淀等场景。Mailman 负责邮箱资源的分配、验证码邮件取件和业务资料持久化；外部系统负责真正访问目标站点并提交注册表单。</p>
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>领取一个可注册邮箱</strong><br><span class="muted">调用 <code>POST /api/business-modules/{id}/email-accounts/claim</code>，Mailman 会创建一个 <code>pending</code> 业务账户作为锁，返回 <code>emailAccount.id</code>、实际注册邮箱、<code>businessAccountId</code> 和 <code>claimToken</code>。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>预热取件窗口</strong><br><span class="muted">记录 <code>since</code> 时间，并调用一次 <code>POST /api/pickup/poll</code>。它会为目标邮箱注册临时同步覆盖，后续几分钟内以更高频率拉取新邮件。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>触发目标站点注册</strong><br><span class="muted">外部系统把 <code>recipient.emailAddress</code> 填到目标站点注册表单里，目标站点发出验证码邮件。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>轮询验证码</strong><br><span class="muted">用 claim 返回的 <code>pickup.account_id</code> 和 <code>pickup.to_query</code> 反复调用 <code>/api/pickup/poll</code>，配合 <code>simple_extract</code> 或 <code>template_id</code> 提取验证码。</span></div></div>
+        <div class="flow-step"><span class="step-no">5</span><div><strong>完成注册并回写</strong><br><span class="muted">外部系统提交验证码成功后，调用 <code>POST /api/business-accounts/{id}/complete-registration</code>，写入 username、password、2FA、恢复码、外部用户 ID 等资料。</span></div></div>
+        <div class="flow-step"><span class="step-no">6</span><div><strong>失败时释放</strong><br><span class="muted">如果注册失败、验证码超时或任务取消，调用 <code>release-registration-claim</code> 释放占用；如果流程很长，调用 <code>renew-registration-claim</code> 延长锁。</span></div></div>
+      </div>
+      <div class="svg-frame">
+        <svg viewBox="0 0 960 260" role="img" aria-label="业务账户自动化状态图">
+          <rect width="960" height="260" fill="#ffffff"/>
+          <g font-family="Inter, system-ui, sans-serif" font-size="14">
+            <rect x="32" y="46" width="148" height="70" rx="8" fill="#eff6ff" stroke="#93c5fd"/>
+            <text x="106" y="76" text-anchor="middle" font-weight="800" fill="#1d4ed8">Claim</text>
+            <text x="106" y="98" text-anchor="middle" fill="#475569">创建 pending 锁</text>
+            <rect x="236" y="46" width="148" height="70" rx="8" fill="#ecfdf3" stroke="#86efac"/>
+            <text x="310" y="76" text-anchor="middle" font-weight="800" fill="#15803d">Pickup Window</text>
+            <text x="310" y="98" text-anchor="middle" fill="#475569">临时同步覆盖</text>
+            <rect x="440" y="46" width="148" height="70" rx="8" fill="#fffbeb" stroke="#fbbf24"/>
+            <text x="514" y="76" text-anchor="middle" font-weight="800" fill="#b45309">Remote Site</text>
+            <text x="514" y="98" text-anchor="middle" fill="#475569">触发验证码</text>
+            <rect x="644" y="46" width="148" height="70" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+            <text x="718" y="76" text-anchor="middle" font-weight="800" fill="#6d28d9">Extract Code</text>
+            <text x="718" y="98" text-anchor="middle" fill="#475569">提取验证码</text>
+            <rect x="780" y="164" width="148" height="70" rx="8" fill="#ecfdf3" stroke="#86efac"/>
+            <text x="854" y="194" text-anchor="middle" font-weight="800" fill="#15803d">Complete</text>
+            <text x="854" y="216" text-anchor="middle" fill="#475569">业务账户 active</text>
+            <rect x="236" y="164" width="148" height="70" rx="8" fill="#fff1f2" stroke="#fda4af"/>
+            <text x="310" y="194" text-anchor="middle" font-weight="800" fill="#be123c">Release</text>
+            <text x="310" y="216" text-anchor="middle" fill="#475569">释放邮箱占用</text>
+            <path d="M180 81H236M384 81H440M588 81H644M718 116V148H854V164" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+            <path d="M514 116V140H310V164" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#64748b"/>
+              </marker>
+            </defs>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <section id="prerequisites" class="section">
+      <h2>准备工作</h2>
+      <p class="lead">先确认 Mailman 里已经有业务模块和可收信邮箱。claim 接口只会选择已验证、错误状态正常、属于当前组织的邮箱账户。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>1. 创建业务模块</h3>
+          <p class="muted">业务模块代表目标平台，例如 GitHub、Shopify、Stripe。claim 接口路径里的 <code>{id}</code> 就是业务模块 ID。</p>
+          <pre><code>curl -X POST "$BASE_URL/api/business-modules" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "GitHub",
+    "website": "https://github.com",
+    "loginUrl": "https://github.com/login",
+    "description": "GitHub 账号注册自动化",
+    "statusOptions": {
+      "pending": "注册中",
+      "active": "可用",
+      "disabled": "停用",
+      "archived": "归档"
+    }
+  }'</code></pre>
+        </div>
+        <div class="card">
+          <h3>2. 准备邮箱池</h3>
+          <p class="muted">邮箱账户必须 <code>isVerified=true</code> 且 <code>errorStatus</code> 为空或 <code>normal</code>。域名邮箱需要维护 <code>isDomainMail</code> 和 <code>domain</code>；转发场景需要维护 <code>forwardedAddresses</code>。</p>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/oauth2/onboard</code><span>OAuth2 开通账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts</code><span>密码或 token 账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/verify</code><span>验证账户可用性</span></div>
+          <div class="endpoint"><span class="method put">PUT</span><code>/api/accounts/{id}/forwarded-addresses</code><span>维护转发地址</span></div>
+        </div>
+      </div>
+      <div class="callout">
+        业务自动化接口使用 Bearer Token，与其他受保护 API 一样走当前组织上下文。生产任务建议每个 worker 使用独立 <code>claimedBy</code>，便于审计和排查。
+      </div>
+    </section>
+
+    <section id="claim" class="section">
+      <h2>第一步：领取并锁定邮箱</h2>
+      <p class="lead"><code>POST /api/business-modules/{id}/email-accounts/claim</code> 会在事务里选择一个邮箱账户，并创建一个 <code>pending</code> 业务账户作为注册锁。锁的唯一性是 <code>orgId + moduleId + registrationEmail</code>，因此同一个业务模块里同一个注册邮箱不会被两个任务同时领取。</p>
+      <div class="endpoint"><span class="method post">POST</span><code>/api/business-modules/{id}/email-accounts/claim</code><span class="muted">领取邮箱</span></div>
+      <h3>最小请求</h3>
+      <pre><code>{
+  "ttlSeconds": 600,
+  "claimedBy": "register-worker-01"
+}</code></pre>
+      <h3>请求字段</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>类型</th><th>说明</th><th>建议</th></tr></thead>
+          <tbody>
+            <tr><td><code>ttlSeconds</code></td><td>number</td><td>领取有效期。默认 600 秒，最小 60 秒，最大 3600 秒。</td><td>验证码注册常用 600-900；长流程用 renew 续期。</td></tr>
+            <tr><td><code>claimedBy</code></td><td>string</td><td>占用者标识，会写入 pending 业务账户。</td><td>填写 worker 名、任务 ID 或批次号。</td></tr>
+            <tr><td><code>accountId</code></td><td>number</td><td>指定物理邮箱账户 ID。</td><td>精确调度时使用。</td></tr>
+            <tr><td><code>emailAddress</code></td><td>string</td><td>指定注册邮箱。可以是主邮箱、Gmail plus 地址、域名别名或转发地址；后端会解析到对应邮箱账户。</td><td>重试固定邮箱时使用。</td></tr>
+            <tr><td><code>emailMode</code></td><td>string</td><td><code>auto</code>、<code>primary</code>、<code>domain</code>、<code>alias</code>、<code>forwarded</code>。</td><td>不传默认为 auto。</td></tr>
+            <tr><td><code>useDomainMail</code></td><td>boolean</td><td>是否要求域名邮箱。</td><td>域名注册池传 true。</td></tr>
+            <tr><td><code>domain</code></td><td>string</td><td>限定域名，例如 <code>example.com</code>。</td><td>和 <code>emailMode=domain</code> 或 <code>aliasType=domain_local_part</code> 一起用。</td></tr>
+            <tr><td><code>useAlias</code></td><td>boolean</td><td>auto 模式下优先使用别名。</td><td>Gmail plus 或域名 catch-all 推荐 true。</td></tr>
+            <tr><td><code>aliasType</code></td><td>string</td><td><code>gmail_plus</code>、<code>domain_local_part</code>、<code>forwarded</code>。</td><td>精确声明别名生成方式。</td></tr>
+            <tr><td><code>aliasLocalPart</code></td><td>string</td><td>别名前缀。后端会清理非法字符并限制长度。</td><td>可用外部任务 ID，便于追踪。</td></tr>
+            <tr><td><code>tagIds</code></td><td>number[]</td><td>只从带有这些标签的邮箱账户中选择。</td><td>按地区、用途、风险分池。</td></tr>
+            <tr><td><code>tagFilterMode</code></td><td>string</td><td><code>or</code> 或 <code>and</code>。默认 <code>or</code>。</td><td>严格分池用 and。</td></tr>
+            <tr><td><code>providerId</code></td><td>number</td><td>限定邮箱 provider。</td><td>只使用 Gmail 或自建 IMAP 时传。</td></tr>
+            <tr><td><code>authTypes</code></td><td>string[]</td><td>限定认证方式，如 <code>oauth2</code>、<code>password</code>、<code>token</code>。</td><td>避免选择不适合自动同步的账户。</td></tr>
+            <tr><td><code>proxyMode</code></td><td>string</td><td>限定邮箱账户代理模式。</td><td>需要和目标站点地区一致时传。</td></tr>
+            <tr><td><code>businessAccount</code></td><td>object</td><td>创建 pending 业务账户时预填资料。</td><td>可写入 displayName、username、description、note、tags、customFields、extraData。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>典型响应</h3>
+      <pre><code>{
+  "businessAccountId": 1842,
+  "claimToken": "claim_3c6d9a9f1d0b6f8c2a7e4d10b0cc64a9f2d3",
+  "claimExpiresAt": "2026-05-31T08:40:00Z",
+  "ttlSeconds": 600,
+  "module": { "id": 7, "name": "GitHub" },
+  "emailAccount": {
+    "id": 12,
+    "emailAddress": "catchall@example.com",
+    "authType": "password",
+    "isDomainMail": true,
+    "domain": "example.com",
+    "mailProviderId": 2,
+    "proxyMode": "none",
+    "isVerified": true,
+    "errorStatus": "normal"
+  },
+  "recipient": {
+    "emailAddress": "github-a1b2@example.com",
+    "kind": "domain_alias",
+    "toQuery": "github-a1b2@example.com",
+    "resolvedBy": "domain",
+    "domain": "example.com",
+    "localPart": "github-a1b2"
+  },
+  "pickup": {
+    "account_id": 12,
+    "to_query": "github-a1b2@example.com"
+  },
+  "businessAccount": {
+    "id": 1842,
+    "status": "pending",
+    "emailAccountId": 12,
+    "moduleId": 7,
+    "registrationEmail": "github-a1b2@example.com"
+  }
+}</code></pre>
+      <div class="callout warning">
+        <code>claimToken</code> 只在 claim 响应中返回，业务账户详情不会暴露它。外部任务必须妥善保存这个 token，后续 complete、release、renew 都要带上它。
+      </div>
+    </section>
+
+    <section id="modes" class="section">
+      <h2>邮箱选择模式</h2>
+      <p class="lead">claim 可以自动从邮箱池里找，也可以精确指定一个邮箱。下面几个 tab 覆盖最常见的注册策略。</p>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="邮箱选择模式">
+          <button role="tab" aria-selected="true" aria-controls="mode-primary">主邮箱</button>
+          <button role="tab" aria-selected="false" aria-controls="mode-domain">域名邮箱</button>
+          <button role="tab" aria-selected="false" aria-controls="mode-gmail">Gmail Plus</button>
+          <button role="tab" aria-selected="false" aria-controls="mode-forwarded">转发别名</button>
+          <button role="tab" aria-selected="false" aria-controls="mode-specific">指定邮箱</button>
+        </div>
+        <div id="mode-primary" class="tab-panel active" role="tabpanel">
+          <p>使用邮箱账户自己的 <code>emailAddress</code> 注册。适合“一邮箱一平台账号”的简单模式。</p>
+          <pre><code>{
+  "emailMode": "primary",
+  "ttlSeconds": 600,
+  "tagIds": [3, 8],
+  "tagFilterMode": "and",
+  "businessAccount": {
+    "displayName": "GitHub registration",
+    "customFields": { "batch": "2026-05-31-us" }
+  }
+}</code></pre>
+        </div>
+        <div id="mode-domain" class="tab-panel" role="tabpanel">
+          <p>从域名邮箱或 catch-all 账户生成 <code>localPart@domain</code>。后端要求邮箱账户 <code>isDomainMail=true</code> 且 <code>domain</code> 匹配。</p>
+          <pre><code>{
+  "emailMode": "domain",
+  "domain": "example.com",
+  "aliasLocalPart": "github-task-3921",
+  "claimedBy": "register-worker-01"
+}</code></pre>
+        </div>
+        <div id="mode-gmail" class="tab-panel" role="tabpanel">
+          <p>对 Gmail 或 Googlemail 主邮箱生成 plus 地址，例如 <code>user+github3921@gmail.com</code>。后端会限定 <code>@gmail.com</code> 或 <code>@googlemail.com</code>。</p>
+          <pre><code>{
+  "emailMode": "alias",
+  "aliasType": "gmail_plus",
+  "aliasLocalPart": "github3921",
+  "authTypes": ["oauth2"]
+}</code></pre>
+        </div>
+        <div id="mode-forwarded" class="tab-panel" role="tabpanel">
+          <p>使用邮箱账户维护的 <code>forwardedAddresses</code>。如果地址里有 <code>*@domain</code>，后端会基于 <code>aliasLocalPart</code> 生成具体收件地址。</p>
+          <pre><code>{
+  "emailMode": "forwarded",
+  "domain": "inbound.example.net",
+  "aliasLocalPart": "shopify-20260531-0001"
+}</code></pre>
+        </div>
+        <div id="mode-specific" class="tab-panel" role="tabpanel">
+          <p>指定 <code>accountId</code> 或 <code>emailAddress</code>。传 <code>emailAddress</code> 时，后端会通过主邮箱、别名或转发地址解析到物理邮箱账户。</p>
+          <pre><code>{
+  "accountId": 12,
+  "emailAddress": "github-a1b2@example.com",
+  "ttlSeconds": 300
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="pickup" class="section">
+      <h2>第二步：启动监听并获取验证码</h2>
+      <p class="lead"><code>/api/pickup/poll</code> 是取件接口。它不会一直阻塞到验证码出现，而是注册临时同步覆盖、立即同步一次、搜索邮件并执行提取。业务侧应在 claim 后记录 <code>since</code>，先调用一次预热，然后触发外部注册，再每 3-5 秒轮询直到取到验证码或超时。</p>
+      <div class="endpoint"><span class="method post">POST</span><code>/api/pickup/poll</code><span class="muted">取件轮询</span></div>
+      <pre><code>{
+  "account_id": 12,
+  "to_query": "github-a1b2@example.com",
+  "since": "2026-05-31T08:30:00Z",
+  "keep_alive_seconds": 120,
+  "sync_interval": 5,
+  "limit": 10,
+  "simple_extract": {
+    "field": "body",
+    "type": "regex",
+    "pattern": "\\b\\d{6}\\b",
+    "match_mode": "first"
+  }
+}</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>来源</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>account_id</code></td><td><code>claim.pickup.account_id</code></td><td>物理邮箱账户 ID。推荐直接使用 claim 响应值。</td></tr>
+            <tr><td><code>to_query</code></td><td><code>claim.pickup.to_query</code></td><td>实际收件地址。对转发和别名场景尤其关键。</td></tr>
+            <tr><td><code>since</code></td><td>业务侧生成</td><td>触发注册前记录当前时间，避免提取旧邮件里的验证码。</td></tr>
+            <tr><td><code>keep_alive_seconds</code></td><td>业务侧配置</td><td>临时同步覆盖有效期。轮询期间可以持续传同一个值。</td></tr>
+            <tr><td><code>sync_interval</code></td><td>业务侧配置</td><td>取件期间拉信间隔，默认 5 秒。</td></tr>
+            <tr><td><code>template_id</code></td><td>取件模板</td><td>生产推荐。适合不同平台维护不同模板。</td></tr>
+            <tr><td><code>simple_extract</code></td><td>请求内声明</td><td>只提验证码时足够简单。</td></tr>
+            <tr><td><code>inline_actions</code></td><td>请求内声明</td><td>需要表达式、动作链、输出配置但不想预建模板时使用。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>成功响应怎么看</h3>
+      <pre><code>{
+  "success": true,
+  "account_id": 12,
+  "requested_account_id": 12,
+  "resolved_by": "to_query",
+  "new_count": 1,
+  "extractions": [
+    {
+      "email_id": 9901,
+      "success": true,
+      "status": "success",
+      "extracted_value": "123456"
+    }
+  ],
+  "sync_active": true,
+  "sync_expires_at": "2026-05-31T08:32:00Z"
+}</code></pre>
+      <div class="callout">
+        如果 <code>extractions</code> 为空，通常表示还没收到邮件；如果 <code>status=no_match</code>，表示邮件到了但模板或正则没有匹配。先用简单正则打通，再沉淀为取件模板，是最稳的落地方式。
+      </div>
+    </section>
+
+    <section id="lifecycle" class="section">
+      <h2>第三步：完成、续期与释放</h2>
+      <p class="lead">claim 创建的 pending 业务账户有三种后续动作：注册成功后 complete，流程延长时 renew，失败或取消时 release。三个接口都要求 <code>claimToken</code>，防止其他任务误操作。</p>
+      <div class="grid three">
+        <div class="card">
+          <h3>完成注册</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-accounts/{id}/complete-registration</code><span>回写资料</span></div>
+          <p class="muted">默认把状态置为 <code>active</code>，清空 <code>claimExpiresAt</code>，保留 <code>registrationEmail</code>，并把 <code>extraData.registrationState</code> 置为 <code>completed</code>。</p>
+        </div>
+        <div class="card">
+          <h3>续期占用</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-accounts/{id}/renew-registration-claim</code><span>延长 TTL</span></div>
+          <p class="muted">只允许 pending 且未过期的 claim 续期。TTL 规则同 claim：默认 600，最小 60，最大 3600 秒。</p>
+        </div>
+        <div class="card">
+          <h3>释放占用</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-accounts/{id}/release-registration-claim</code><span>释放邮箱</span></div>
+          <p class="muted">不能释放已完成的 active 账户。默认归档 pending 账户并清空 registrationEmail；也可设置 <code>deletePendingAccount=true</code> 删除草稿。</p>
+        </div>
+      </div>
+      <h3>complete 请求</h3>
+      <pre><code>{
+  "claimToken": "claim_3c6d9a9f1d0b6f8c2a7e4d10b0cc64a9f2d3",
+  "username": "octo-login",
+  "password": "generated-password",
+  "totpSecret": "BASE32TOTPSECRET",
+  "recoveryEmail": "recovery@example.com",
+  "recoveryCodes": ["code-1", "code-2"],
+  "status": "active",
+  "customFields": {
+    "externalUserId": "ghu_123456",
+    "plan": "free"
+  },
+  "extraData": {
+    "registrationJobId": "job-20260531-0001"
+  },
+  "remoteCreatedAt": "2026-05-31T08:35:12Z"
+}</code></pre>
+      <h3>renew 与 release 请求</h3>
+      <div class="grid two">
+        <pre><code>{
+  "claimToken": "claim_3c6d9a9f1d0b6f8c2a7e4d10b0cc64a9f2d3",
+  "ttlSeconds": 900,
+  "message": "remote site is still processing"
+}</code></pre>
+        <pre><code>{
+  "claimToken": "claim_3c6d9a9f1d0b6f8c2a7e4d10b0cc64a9f2d3",
+  "reason": "captcha_timeout",
+  "message": "no verification email after 180 seconds",
+  "deletePendingAccount": false
+}</code></pre>
+      </div>
+      <div class="callout warning">
+        如果 worker 崩溃没有 release，claim 会在过期后被下一次 claim 自动清理并释放注册邮箱。仍然建议业务侧在失败路径主动 release，因为这样可以留下明确的失败原因。
+      </div>
+    </section>
+
+    <section id="examples" class="section">
+      <h2>完整代码示例</h2>
+      <p class="lead">下面三段示例都遵循同一条链路：claim、预热 pickup、触发外部注册、轮询验证码、提交验证码、complete；任何异常都会 release。</p>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="语言示例">
+          <button role="tab" aria-selected="true" aria-controls="example-node">Node.js</button>
+          <button role="tab" aria-selected="false" aria-controls="example-go">Go</button>
+          <button role="tab" aria-selected="false" aria-controls="example-python">Python</button>
+        </div>
+        <div id="example-node" class="tab-panel active" role="tabpanel">
+          <pre><code>const API_BASE = process.env.MAILMAN_API_BASE || 'http://127.0.0.1:3001/api'
+const TOKEN = process.env.MAILMAN_TOKEN
+const MODULE_ID = process.env.MAILMAN_MODULE_ID || '7'
+
+const sleep = ms =&gt; new Promise(resolve =&gt; setTimeout(resolve, ms))
+
+async function api(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: options.method || 'GET',
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  const text = await response.text()
+  const data = text ? JSON.parse(text) : null
+  if (!response.ok) {
+    throw new Error(`${response.status} ${path}: ${text}`)
+  }
+  return data
+}
+
+async function triggerRemoteRegistration(email) {
+  // 在这里调用目标站点注册接口或浏览器自动化脚本，把 email 填入注册表单。
+  return { username: email.split('@')[0], password: crypto.randomUUID() }
+}
+
+async function submitRemoteCode(code) {
+  // 在这里把 Mailman 提取到的验证码提交给目标站点。
+  return { externalUserId: `remote-${code}`, plan: 'free' }
+}
+
+async function pickupCode(claim, since) {
+  for (let attempt = 0; attempt &lt; 36; attempt += 1) {
+    const result = await api('/pickup/poll', {
+      method: 'POST',
+      body: {
+        account_id: claim.pickup.account_id,
+        to_query: claim.pickup.to_query,
+        since,
+        keep_alive_seconds: 180,
+        sync_interval: 5,
+        limit: 10,
+        simple_extract: {
+          field: 'body',
+          type: 'regex',
+          pattern: '\\\\b\\\\d{6}\\\\b',
+          match_mode: 'first'
+        }
+      }
+    })
+    const item = (result.extractions || []).find(x =&gt; x.success &amp;&amp; x.extracted_value)
+    if (item) return String(item.extracted_value)
+    await sleep(5000)
+  }
+  throw new Error('verification code timeout')
+}
+
+async function main() {
+  const claim = await api(`/business-modules/${MODULE_ID}/email-accounts/claim`, {
+    method: 'POST',
+    body: {
+      ttlSeconds: 900,
+      claimedBy: 'node-register-worker-01',
+      emailMode: 'domain',
+      domain: 'example.com',
+      aliasLocalPart: `github-${Date.now()}`,
+      businessAccount: {
+        displayName: 'GitHub registration',
+        customFields: { source: 'nodejs-demo' }
+      }
+    }
+  })
+
+  try {
+    const since = new Date().toISOString()
+
+    await api('/pickup/poll', {
+      method: 'POST',
+      body: {
+        account_id: claim.pickup.account_id,
+        to_query: claim.pickup.to_query,
+        since,
+        keep_alive_seconds: 180,
+        sync_interval: 5,
+        limit: 1
+      }
+    })
+
+    const remoteDraft = await triggerRemoteRegistration(claim.recipient.emailAddress)
+    const code = await pickupCode(claim, since)
+    const remoteAccount = await submitRemoteCode(code)
+
+    const completed = await api(`/business-accounts/${claim.businessAccountId}/complete-registration`, {
+      method: 'POST',
+      body: {
+        claimToken: claim.claimToken,
+        username: remoteDraft.username,
+        password: remoteDraft.password,
+        status: 'active',
+        customFields: {
+          externalUserId: remoteAccount.externalUserId,
+          plan: remoteAccount.plan,
+          registrationEmail: claim.recipient.emailAddress
+        },
+        extraData: { automation: 'nodejs-demo' },
+        remoteCreatedAt: new Date().toISOString()
+      }
+    })
+    console.log('completed business account', completed.id)
+  } catch (error) {
+    await api(`/business-accounts/${claim.businessAccountId}/release-registration-claim`, {
+      method: 'POST',
+      body: {
+        claimToken: claim.claimToken,
+        reason: 'automation_failed',
+        message: String(error.message || error)
+      }
+    }).catch(() =&gt; {})
+    throw error
+  }
+}
+
+main().catch(error =&gt; {
+  console.error(error)
+  process.exitCode = 1
+})</code></pre>
+        </div>
+        <div id="example-go" class="tab-panel" role="tabpanel">
+          <pre><code>package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"time"
+)
+
+var apiBase = getenv("MAILMAN_API_BASE", "http://127.0.0.1:3001/api")
+var token = os.Getenv("MAILMAN_TOKEN")
+var moduleID = getenv("MAILMAN_MODULE_ID", "7")
+
+func getenv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func api(method, path string, body any, out any) error {
+	var payload *bytes.Reader
+	if body == nil {
+		payload = bytes.NewReader(nil)
+	} else {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		payload = bytes.NewReader(raw)
+	}
+
+	req, err := http.NewRequest(method, apiBase+path, payload)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode &lt; 200 || resp.StatusCode &gt;= 300 {
+		return fmt.Errorf("%s %s returned %s", method, path, resp.Status)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+type Claim struct {
+	BusinessAccountID uint   `json:"businessAccountId"`
+	ClaimToken        string `json:"claimToken"`
+	Recipient         struct {
+		EmailAddress string `json:"emailAddress"`
+	} `json:"recipient"`
+	Pickup struct {
+		AccountID uint   `json:"account_id"`
+		ToQuery   string `json:"to_query"`
+	} `json:"pickup"`
+}
+
+type PickupResult struct {
+	Extractions []struct {
+		Success        bool        `json:"success"`
+		ExtractedValue interface{} `json:"extracted_value"`
+	} `json:"extractions"`
+}
+
+func triggerRemoteRegistration(email string) (string, string, error) {
+	// 在这里访问目标站点注册接口或浏览器自动化脚本。
+	return "user-" + fmt.Sprint(time.Now().Unix()), "generated-password", nil
+}
+
+func submitRemoteCode(code string) (string, error) {
+	// 在这里把验证码提交给目标站点。
+	return "remote-" + code, nil
+}
+
+func pickupCode(claim Claim, since string) (string, error) {
+	for attempt := 0; attempt &lt; 36; attempt++ {
+		var result PickupResult
+		err := api("POST", "/pickup/poll", map[string]any{
+			"account_id":         claim.Pickup.AccountID,
+			"to_query":           claim.Pickup.ToQuery,
+			"since":              since,
+			"keep_alive_seconds": 180,
+			"sync_interval":      5,
+			"limit":              10,
+			"simple_extract": map[string]any{
+				"field":      "body",
+				"type":       "regex",
+				"pattern":    "\\b\\d{6}\\b",
+				"match_mode": "first",
+			},
+		}, &amp;result)
+		if err != nil {
+			return "", err
+		}
+		for _, item := range result.Extractions {
+			if item.Success &amp;&amp; item.ExtractedValue != nil {
+				return fmt.Sprint(item.ExtractedValue), nil
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return "", fmt.Errorf("verification code timeout")
+}
+
+func main() {
+	var claim Claim
+	err := api("POST", "/business-modules/"+moduleID+"/email-accounts/claim", map[string]any{
+		"ttlSeconds":     900,
+		"claimedBy":      "go-register-worker-01",
+		"emailMode":      "alias",
+		"aliasType":      "gmail_plus",
+		"aliasLocalPart": fmt.Sprintf("github-%d", time.Now().Unix()),
+		"businessAccount": map[string]any{
+			"displayName": "GitHub registration",
+			"customFields": map[string]any{"source": "go-demo"},
+		},
+	}, &amp;claim)
+	if err != nil {
+		panic(err)
+	}
+
+	release := func(reason string) {
+		_ = api("POST", fmt.Sprintf("/business-accounts/%d/release-registration-claim", claim.BusinessAccountID), map[string]any{
+			"claimToken": claim.ClaimToken,
+			"reason":     reason,
+		}, nil)
+	}
+
+	since := time.Now().UTC().Format(time.RFC3339)
+	_ = api("POST", "/pickup/poll", map[string]any{
+		"account_id":         claim.Pickup.AccountID,
+		"to_query":           claim.Pickup.ToQuery,
+		"since":              since,
+		"keep_alive_seconds": 180,
+		"sync_interval":      5,
+		"limit":              1,
+	}, nil)
+
+	username, password, err := triggerRemoteRegistration(claim.Recipient.EmailAddress)
+	if err != nil {
+		release("remote_registration_failed")
+		panic(err)
+	}
+	code, err := pickupCode(claim, since)
+	if err != nil {
+		release("captcha_timeout")
+		panic(err)
+	}
+	externalUserID, err := submitRemoteCode(code)
+	if err != nil {
+		release("remote_code_submit_failed")
+		panic(err)
+	}
+
+	var completed map[string]any
+	err = api("POST", fmt.Sprintf("/business-accounts/%d/complete-registration", claim.BusinessAccountID), map[string]any{
+		"claimToken": claim.ClaimToken,
+		"username":   username,
+		"password":   password,
+		"status":     "active",
+		"customFields": map[string]any{
+			"externalUserId": externalUserID,
+			"registrationEmail": claim.Recipient.EmailAddress,
+		},
+		"remoteCreatedAt": time.Now().UTC().Format(time.RFC3339),
+	}, &amp;completed)
+	if err != nil {
+		release("complete_registration_failed")
+		panic(err)
+	}
+	fmt.Println("completed business account", completed["id"])
+}</code></pre>
+        </div>
+        <div id="example-python" class="tab-panel" role="tabpanel">
+          <pre><code>import os
+import time
+import uuid
+from datetime import datetime, timezone
+
+import requests
+
+API_BASE = os.getenv("MAILMAN_API_BASE", "http://127.0.0.1:3001/api")
+TOKEN = os.environ["MAILMAN_TOKEN"]
+MODULE_ID = os.getenv("MAILMAN_MODULE_ID", "7")
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def api(method, path, json_body=None):
+    response = requests.request(
+        method,
+        API_BASE + path,
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Content-Type": "application/json",
+        },
+        json=json_body,
+        timeout=30,
+    )
+    if not response.ok:
+        raise RuntimeError(f"{response.status_code} {path}: {response.text}")
+    return response.json() if response.text else None
+
+
+def trigger_remote_registration(email):
+    # 在这里调用目标站点注册接口或浏览器自动化脚本。
+    return {
+        "username": email.split("@")[0],
+        "password": str(uuid.uuid4()),
+    }
+
+
+def submit_remote_code(code):
+    # 在这里把验证码提交给目标站点。
+    return {"externalUserId": f"remote-{code}", "plan": "free"}
+
+
+def pickup_code(claim, since):
+    for _ in range(36):
+        result = api("POST", "/pickup/poll", {
+            "account_id": claim["pickup"]["account_id"],
+            "to_query": claim["pickup"]["to_query"],
+            "since": since,
+            "keep_alive_seconds": 180,
+            "sync_interval": 5,
+            "limit": 10,
+            "simple_extract": {
+                "field": "body",
+                "type": "regex",
+                "pattern": r"\b\d{6}\b",
+                "match_mode": "first",
+            },
+        })
+        for item in result.get("extractions", []):
+            if item.get("success") and item.get("extracted_value"):
+                return str(item["extracted_value"])
+        time.sleep(5)
+    raise TimeoutError("verification code timeout")
+
+
+def release_claim(claim, reason, message=""):
+    try:
+        api("POST", f"/business-accounts/{claim['businessAccountId']}/release-registration-claim", {
+            "claimToken": claim["claimToken"],
+            "reason": reason,
+            "message": message,
+        })
+    except Exception:
+        pass
+
+
+def main():
+    claim = api("POST", f"/business-modules/{MODULE_ID}/email-accounts/claim", {
+        "ttlSeconds": 900,
+        "claimedBy": "python-register-worker-01",
+        "emailMode": "forwarded",
+        "domain": "inbound.example.net",
+        "aliasLocalPart": f"github-{int(time.time())}",
+        "businessAccount": {
+            "displayName": "GitHub registration",
+            "customFields": {"source": "python-demo"},
+        },
+    })
+
+    try:
+        since = now_iso()
+        api("POST", "/pickup/poll", {
+            "account_id": claim["pickup"]["account_id"],
+            "to_query": claim["pickup"]["to_query"],
+            "since": since,
+            "keep_alive_seconds": 180,
+            "sync_interval": 5,
+            "limit": 1,
+        })
+
+        remote_draft = trigger_remote_registration(claim["recipient"]["emailAddress"])
+        code = pickup_code(claim, since)
+        remote_account = submit_remote_code(code)
+
+        completed = api("POST", f"/business-accounts/{claim['businessAccountId']}/complete-registration", {
+            "claimToken": claim["claimToken"],
+            "username": remote_draft["username"],
+            "password": remote_draft["password"],
+            "status": "active",
+            "customFields": {
+                "externalUserId": remote_account["externalUserId"],
+                "plan": remote_account["plan"],
+                "registrationEmail": claim["recipient"]["emailAddress"],
+            },
+            "extraData": {"automation": "python-demo"},
+            "remoteCreatedAt": now_iso(),
+        })
+        print("completed business account", completed["id"])
+    except Exception as exc:
+        release_claim(claim, "automation_failed", str(exc))
+        raise
+
+
+if __name__ == "__main__":
+    main()</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="ops" class="section">
+      <h2>上线检查与常见错误</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>状态码</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>状态</th><th>常见原因</th><th>处理方式</th></tr></thead>
+              <tbody>
+                <tr><td><code>201</code></td><td>claim 成功</td><td>保存 <code>businessAccountId</code> 和 <code>claimToken</code>。</td></tr>
+                <tr><td><code>404</code></td><td>没有可用邮箱，或全部候选地址已被当前模块占用</td><td>检查标签、域名、认证方式、错误状态，或等待 claim 过期。</td></tr>
+                <tr><td><code>403</code></td><td><code>claimToken</code> 错误</td><td>不要混用不同任务的 token；不要从业务账户详情里取 token。</td></tr>
+                <tr><td><code>409</code></td><td>claim 已过期、已完成、不可续期或不可释放</td><td>按当前状态决定重新 claim、跳过或人工检查。</td></tr>
+                <tr><td><code>400</code></td><td>请求体错误、since 时间格式错误</td><td><code>since</code> 必须是 RFC3339，例如 <code>2026-05-31T08:30:00Z</code>。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h3>生产建议</h3>
+          <ul>
+            <li>每个注册任务都记录 <code>businessAccountId</code>、<code>claimToken</code>、<code>recipient.emailAddress</code> 和外部任务 ID。</li>
+            <li>用 <code>since</code> 排除旧验证码，且在触发目标站点注册前生成。</li>
+            <li>长流程在 TTL 剩余一半时调用 renew，不要等到最后几秒。</li>
+            <li>失败路径务必 release，并写入明确 <code>reason</code>。</li>
+            <li>不同站点维护独立取件模板，减少正则误匹配。</li>
+            <li>把域名、标签和 provider 作为邮箱池治理维度，避免所有任务抢同一批邮箱。</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout success">
+        最小可用闭环是：<code>claim</code> 返回邮箱和业务账户 ID，<code>pickup/poll</code> 取到验证码，目标站点注册成功，<code>complete-registration</code> 把结果写回 Mailman。做到这四点，就已经完成了从邮箱资源到业务资产的自动化沉淀。
+      </div>
+    </section>
+
+    <section id="sources" class="section">
+      <h2>源码依据</h2>
+      <p class="lead">本页接口和字段对齐当前代码实现，主要依据如下文件。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>范围</th><th>源码</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>领取/续期/释放/完成</td><td><code>backend/internal/api/business_registration_handlers.go</code></td><td>请求结构、响应结构、TTL、claimToken 校验和状态转换。</td></tr>
+            <tr><td>业务账户模型</td><td><code>backend/internal/models/business_account.go</code></td><td><code>registrationEmail</code>、<code>claimExpiresAt</code>、<code>claimedBy</code> 和唯一索引。</td></tr>
+            <tr><td>路由注册</td><td><code>backend/internal/api/router_auth.go</code> / <code>router.go</code></td><td>受保护路由和普通 API 路由。</td></tr>
+            <tr><td>取件接口</td><td><code>backend/internal/services/pickup_service.go</code></td><td><code>PickupPollRequest</code>、临时同步覆盖、搜索和提取响应。</td></tr>
+            <tr><td>回归测试</td><td><code>backend/internal/api/business_registration_handlers_test.go</code></td><td>claim、域名别名、renew、complete、release 生命周期用例。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="footer">Mailman HTML Guide · Business Account Automation</p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

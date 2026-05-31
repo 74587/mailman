@@ -368,6 +368,10 @@ func (h *APIHandler) UpdateBusinessAccountHandler(w http.ResponseWriter, r *http
 	}
 	account.ID = existing.ID
 	account.CreatedAt = existing.CreatedAt
+	account.RegistrationEmail = existing.RegistrationEmail
+	account.ClaimToken = existing.ClaimToken
+	account.ClaimExpiresAt = existing.ClaimExpiresAt
+	account.ClaimedBy = existing.ClaimedBy
 	if err := h.EmailAccountRepo.GetDB().Save(&account).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -390,7 +394,18 @@ func (h *APIHandler) DeleteBusinessAccountHandler(w http.ResponseWriter, r *http
 	if !ok {
 		return
 	}
-	if err := h.EmailAccountRepo.GetDB().Delete(account).Error; err != nil {
+	db := h.EmailAccountRepo.GetDB()
+	if account.RegistrationEmail != nil || account.ClaimExpiresAt != nil || account.ClaimedBy != "" {
+		if err := db.Model(account).Updates(map[string]interface{}{
+			"registration_email": nil,
+			"claim_expires_at":   nil,
+			"claimed_by":         "",
+		}).Error; err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := db.Delete(account).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

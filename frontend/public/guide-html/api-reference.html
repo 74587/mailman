@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API 接入总览 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">API Reference</span>
+          <h1>按业务域理解 Mailman API</h1>
+          <p>本页不是替代 Swagger，而是给接入方一张可读的 API 地图。所有路径来自后端路由注册，并与前端 service 调用保持一致。</p>
+          <div class="badge-row">
+            <span class="badge">Bearer Token</span>
+            <span class="badge green">分页查询</span>
+            <span class="badge violet">WebSocket</span>
+            <span class="badge amber">权限资源</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="30" y="34" width="300" height="172" rx="20" fill="#111827" stroke="#334155"/>
+            <rect x="58" y="64" width="244" height="24" rx="8" fill="#172554"/>
+            <rect x="58" y="106" width="244" height="24" rx="8" fill="#042f2e"/>
+            <rect x="58" y="148" width="244" height="24" rx="8" fill="#312e81"/>
+            <text x="76" y="80" fill="#dbeafe" font-size="12" font-weight="800">GET /api/accounts</text>
+            <text x="76" y="122" fill="#ccfbf1" font-size="12" font-weight="800">POST /api/pickup/poll</text>
+            <text x="76" y="164" fill="#ede9fe" font-size="12" font-weight="800">POST /api/triggers</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#auth">认证</a>
+        <a href="#conventions">约定</a>
+        <a href="#domains">领域接口</a>
+        <a href="#matrix">接口矩阵</a>
+        <a href="#websocket">WebSocket</a>
+        <a href="#permissions">权限</a>
+      </nav>
+      <a href="/swagger/index.html" target="_blank" rel="noreferrer">Swagger</a>
+    </div>
+
+    <section id="auth" class="section">
+      <h2>认证与请求约定</h2>
+      <pre><code>curl -X POST "$BASE_URL/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"your-password"}'
+
+curl "$BASE_URL/api/accounts/paginated?page=1&amp;limit=20" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+      <div class="grid three">
+        <div class="card"><h3>Token 存放</h3><p class="muted">前端优先使用 <code>localStorage.auth_token</code>。</p></div>
+        <div class="card"><h3>API Base</h3><p class="muted">前端 service 默认请求 <code>/api</code>，开发环境可通过 <code>NEXT_PUBLIC_API_URL</code> 指定后端地址。</p></div>
+        <div class="card"><h3>错误处理</h3><p class="muted">401 会触发前端登出；403 表示权限不足；后端通常返回 <code>message</code> 或 <code>error</code>。</p></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>接口</th><th>是否需要 Token</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>POST /api/auth/login</code></td><td>否</td><td>登录并获取 Bearer Token，登录入口有速率限制。</td></tr>
+            <tr><td><code>POST /api/auth/logout</code></td><td>是</td><td>退出当前会话。</td></tr>
+            <tr><td><code>GET /api/auth/me</code></td><td>是</td><td>获取当前用户、组织和权限上下文。</td></tr>
+            <tr><td><code>PUT /api/auth/update</code></td><td>是</td><td>更新当前用户资料。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="conventions" class="section">
+      <h2>请求与响应约定</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>请求头</h3>
+          <pre><code>Authorization: Bearer $TOKEN
+Content-Type: application/json</code></pre>
+          <p class="muted">上传、OAuth2 回调、WebSocket 握手等特殊接口除外；常规 JSON 写操作都使用上面两项。</p>
+        </div>
+        <div class="card">
+          <h3>分页</h3>
+          <pre><code>?page=1&amp;limit=20
+?limit=50&amp;offset=0</code></pre>
+          <p class="muted">账户列表常用 <code>page/limit</code>；邮件高级搜索常用 <code>limit/offset</code>。具体以专题页和 Swagger 为准。</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>HTTP 状态</th><th>含义</th><th>接入方处理</th></tr></thead>
+          <tbody>
+            <tr><td><code>200</code> / <code>201</code></td><td>读取、更新或创建成功。</td><td>按接口响应结构处理。</td></tr>
+            <tr><td><code>204</code></td><td>删除成功且无响应体。</td><td>前端直接从列表移除。</td></tr>
+            <tr><td><code>400</code></td><td>请求体或查询参数无效。</td><td>展示后端文本错误并修正字段。</td></tr>
+            <tr><td><code>401</code></td><td>未登录或 Token 失效。</td><td>清理本地 Token，跳转登录。</td></tr>
+            <tr><td><code>403</code></td><td>组织或权限校验失败。</td><td>检查角色权限、资源所属组织或账户归属。</td></tr>
+            <tr><td><code>404</code></td><td>资源不存在。</td><td>确认 ID、组织上下文和是否已删除。</td></tr>
+            <tr><td><code>409</code></td><td>唯一约束冲突。</td><td>常见于标签组、代理组、模板名等重复。</td></tr>
+            <tr><td><code>500</code></td><td>服务端或第三方依赖异常。</td><td>收集请求 ID、资源 ID、后端日志时间段。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout">
+        字段命名同时存在 snake_case 和 camelCase：后端 Go 模型决定 JSON 字段。例如同步使用 <code>sync_interval</code>，业务账户使用 <code>emailAccountId</code>，取件模板管理使用 <code>outputConfig</code>，取件内联模式使用 <code>output_config</code>。
+      </div>
+    </section>
+
+    <section id="domains" class="section">
+      <h2>领域接口地图</h2>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="API 领域">
+          <button role="tab" aria-selected="true" aria-controls="api-account">账户</button>
+          <button role="tab" aria-selected="false" aria-controls="api-mail">邮件</button>
+          <button role="tab" aria-selected="false" aria-controls="api-template">模板</button>
+          <button role="tab" aria-selected="false" aria-controls="api-trigger">自动化</button>
+          <button role="tab" aria-selected="false" aria-controls="api-business-auto">业务自动化</button>
+          <button role="tab" aria-selected="false" aria-controls="api-admin">系统</button>
+        </div>
+        <div id="api-account" class="tab-panel active" role="tabpanel">
+          <div class="endpoint"><span class="method get">GET</span><code>/api/accounts/paginated</code><span>分页账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/upsert</code><span>创建或更新</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/oauth2/onboard</code><span>OAuth2 开通</span></div>
+          <div class="endpoint"><span class="method put">PUT</span><code>/api/accounts/{id}/proxy-config</code><span>账户代理</span></div>
+        </div>
+        <div id="api-mail" class="tab-panel" role="tabpanel">
+          <div class="endpoint"><span class="method post">POST</span><code>/api/account-emails/fetch/{id}</code><span>抓取邮件</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/emails/search</code><span>搜索邮件</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/emails/send</code><span>发送邮件</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/pickup/poll</code><span>统一取件</span></div>
+        </div>
+        <div id="api-template" class="tab-panel" role="tabpanel">
+          <div class="endpoint"><span class="method get">GET</span><code>/api/v2/extractor-templates</code><span>取件模板 V2</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/filter-templates</code><span>过滤器模板</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/action-templates</code><span>动作模板</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/extractor-templates/debug</code><span>取件模板调试</span></div>
+        </div>
+        <div id="api-trigger" class="tab-panel" role="tabpanel">
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers</code><span>触发器</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/test-complete</code><span>完整测试</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/interceptors</code><span>拦截器</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/plugins/ui/schemas</code><span>插件 UI Schema</span></div>
+        </div>
+        <div id="api-business-auto" class="tab-panel" role="tabpanel">
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-modules/{id}/email-accounts/claim</code><span>为业务模块领取注册邮箱</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/pickup/poll</code><span>预热同步并提取验证码</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-accounts/{id}/complete-registration</code><span>完成注册并回写业务账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-accounts/{id}/renew-registration-claim</code><span>延长邮箱占用</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-accounts/{id}/release-registration-claim</code><span>释放注册占用</span></div>
+        </div>
+        <div id="api-admin" class="tab-panel" role="tabpanel">
+          <div class="endpoint"><span class="method get">GET</span><code>/api/system-configs</code><span>系统配置</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/organizations</code><span>组织</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/roles</code><span>角色</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/admin/users</code><span>用户管理，超级管理员</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="matrix" class="section">
+      <h2>接口矩阵</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>领域</th><th>关键路径</th><th>常见接入任务</th><th>详见</th></tr></thead>
+          <tbody>
+            <tr><td>账户</td><td><code>/api/accounts</code>、<code>/api/accounts/paginated</code>、<code>/api/accounts/upsert</code></td><td>导入、查询、验证、批量管理邮箱账户。</td><td><a href="./accounts-oauth.html">账户与 OAuth2</a></td></tr>
+            <tr><td>OAuth2</td><td><code>/api/accounts/oauth2/onboard</code>、<code>/api/oauth2/callback/{provider}</code></td><td>Gmail/Outlook 授权接入、回调、刷新 token。</td><td><a href="./accounts-oauth.html">账户与 OAuth2</a></td></tr>
+            <tr><td>同步</td><td><code>/api/sync/global-config</code>、<code>/api/accounts/{id}/sync-config</code>、<code>/api/accounts/{id}/sync-now</code></td><td>配置自动同步、临时同步、同步统计。</td><td><a href="./sync-mailbox.html">同步与搜索</a></td></tr>
+            <tr><td>邮件</td><td><code>/api/emails/search</code>、<code>/api/emails/{id}</code>、<code>/api/emails/send</code></td><td>搜索邮件、读取详情、发送邮件、同步附件。</td><td><a href="./sync-mailbox.html">同步与搜索</a></td></tr>
+            <tr><td>取件</td><td><code>/api/pickup/poll</code>、<code>/api/v2/extractor-templates</code></td><td>等待验证码、提取字段、调试模板。</td><td><a href="./pickup-extractor.html">取件与模板 V2</a></td></tr>
+            <tr><td>触发器</td><td><code>/api/triggers</code>、<code>/api/v2/triggers/test-complete</code>、<code>/api/triggers/logs</code></td><td>邮件到达后自动执行动作、测试条件和动作。</td><td><a href="./triggers-actions.html">触发器与动作</a></td></tr>
+            <tr><td>拦截器</td><td><code>/api/interceptors</code>、<code>/api/interceptors/plugins</code>、<code>/api/interceptors/logs</code></td><td>统一审计、跳过策略、前后置治理。</td><td><a href="./interceptors-templates.html">拦截器与模板</a></td></tr>
+            <tr><td>AI</td><td><code>/api/openai/configs</code>、<code>/api/openai/call</code>、<code>/api/openai/prompt-templates</code></td><td>配置模型、调用 AI、生成取件模板。</td><td><a href="./ai-business-proxy.html">AI 与业务资产</a></td></tr>
+            <tr><td>业务资产</td><td><code>/api/business-modules</code>、<code>/api/business-accounts</code></td><td>维护平台账号、2FA、恢复码和邮箱关联。</td><td><a href="./ai-business-proxy.html">AI 与业务资产</a></td></tr>
+            <tr><td>业务自动化</td><td><code>/api/business-modules/{id}/email-accounts/claim</code>、<code>/api/business-accounts/{id}/complete-registration</code></td><td>领取邮箱、取验证码、完成注册并回写业务资料。</td><td><a href="./business-account-automation.html">业务账户自动化</a></td></tr>
+            <tr><td>标签与代理</td><td><code>/api/tag-groups</code>、<code>/api/tags</code>、<code>/api/proxy-pool</code></td><td>账户分层、代理分组、批量测试代理。</td><td><a href="./ai-business-proxy.html">AI 与业务资产</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="websocket" class="section">
+      <h2>WebSocket 与实时能力</h2>
+      <div class="grid three">
+        <div class="card"><h3>等待邮件</h3><code>GET /api/ws/wait-email</code><p class="muted">用于等待邮件到达。</p></div>
+        <div class="card"><h3>订阅监控</h3><code>GET /api/ws/subscriptions</code><p class="muted">用于订阅式邮件监控。</p></div>
+        <div class="card"><h3>通知</h3><code>GET /api/ws/notifications</code><p class="muted">用于前端通知推送。</p></div>
+      </div>
+      <p class="muted small">如果 WebSocket 不适合当前运行环境，可使用 <code>/api/poll-email</code> 或 <code>/api/pickup/poll</code> 作为 HTTP 轮询方案。</p>
+    </section>
+
+    <section id="permissions" class="section">
+      <h2>权限资源</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>资源</th><th>主要保护接口</th><th>菜单</th></tr></thead>
+          <tbody>
+            <tr><td><code>email_account</code></td><td>账户、业务账户、代理池</td><td>邮箱账户管理、业务资料、代理池</td></tr>
+            <tr><td><code>email</code></td><td>邮件列表、搜索、发送、订阅</td><td>邮件管理、发送邮件</td></tr>
+            <tr><td><code>template</code></td><td>取件模板、过滤器模板、动作模板</td><td>取件模板、过滤器模板、动作模板</td></tr>
+            <tr><td><code>trigger</code></td><td>触发器、触发器日志、拦截器</td><td>触发器管理、拦截器管理</td></tr>
+            <tr><td><code>system_config</code></td><td>系统配置、OAuth2 配置</td><td>系统配置、OAuth2 配置</td></tr>
+            <tr><td><code>ai_config</code></td><td>AI 配置和 Prompt 模板</td><td>AI 配置</td></tr>
+            <tr><td><code>organization</code></td><td>组织更新、角色权限管理</td><td>团队管理</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">权限常量来自 <code>backend/internal/models/organization.go</code>，权限中间件在 <code>backend/internal/api/router_auth.go</code> 注册。</p>
+    </section>
+
+    <p class="footer">详细字段请结合 Swagger 与对应专题文档阅读。</p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

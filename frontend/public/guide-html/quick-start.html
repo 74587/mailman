@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>从 0 到 1 快速上手 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Getting Started</span>
+          <h1>从 0 到 1 快速上手 Mailman</h1>
+          <p>本页面帮助新用户理解 Mailman 的整体工作方式：先启动系统和登录，再配置 OAuth2/AI，随后接入邮箱账户，最后进入同步、取件、触发器和业务资料管理。</p>
+          <div class="badge-row">
+            <span class="badge">首次登录</span>
+            <span class="badge green">主流程</span>
+            <span class="badge violet">菜单导览</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="24" y="34" width="312" height="172" rx="20" fill="#111827" stroke="#334155"/>
+            <circle cx="66" cy="74" r="20" fill="#2563eb"/>
+            <circle cx="142" cy="74" r="20" fill="#0f766e"/>
+            <circle cx="218" cy="74" r="20" fill="#7c3aed"/>
+            <circle cx="294" cy="74" r="20" fill="#d97706"/>
+            <path d="M86 74H122M162 74H198M238 74H274" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/>
+            <text x="66" y="78" fill="white" text-anchor="middle" font-size="14" font-weight="800">1</text>
+            <text x="142" y="78" fill="white" text-anchor="middle" font-size="14" font-weight="800">2</text>
+            <text x="218" y="78" fill="white" text-anchor="middle" font-size="14" font-weight="800">3</text>
+            <text x="294" y="78" fill="white" text-anchor="middle" font-size="14" font-weight="800">4</text>
+            <rect x="54" y="124" width="252" height="14" rx="7" fill="#1f2937"/>
+            <rect x="54" y="154" width="190" height="14" rx="7" fill="#1f2937"/>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#preflight">准备清单</a>
+        <a href="#first-login">首次登录</a>
+        <a href="#workflow">主流程</a>
+        <a href="#first-run">第一次闭环</a>
+        <a href="#menus">菜单地图</a>
+        <a href="./index.html#coverage">45 项能力</a>
+        <a href="#next">下一步</a>
+      </nav>
+      <a href="/main?tab=integration-guide" target="_top">回到接入手册</a>
+    </div>
+
+    <section id="preflight" class="section">
+      <h2>开始前准备清单</h2>
+      <p class="lead">如果你第一次使用 Mailman，先按这个清单准备。后续接入文档默认你已经有可登录系统、可用邮箱账户和 Bearer Token。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>准备项</th><th>为什么需要</th><th>最小要求</th><th>验证方式</th></tr></thead>
+          <tbody>
+            <tr><td>运行环境</td><td>Mailman 前端、后端和数据目录需要稳定运行。</td><td>Docker、Compose 或已有部署。</td><td>访问 Web 首页，后端 <code>/api/health</code> 正常。</td></tr>
+            <tr><td>管理员账号</td><td>首次进入系统需要创建或登录管理员。</td><td>记住初始化用户名和密码。</td><td><code>POST /api/auth/login</code> 返回 token。</td></tr>
+            <tr><td>邮箱凭据</td><td>读取邮件、同步、取件、触发器都依赖邮箱账户。</td><td>OAuth2 client 或应用专用密码。</td><td><code>/api/accounts/verify</code> 成功。</td></tr>
+            <tr><td>同步策略</td><td>Mailman 读取数据库中的邮件，触发器也基于已同步邮件。</td><td>至少同步 <code>INBOX</code>。</td><td>经典邮件管理器能看到最新邮件。</td></tr>
+            <tr><td>外部回调地址</td><td>Webhook、Telegram、业务系统接入需要外部地址。</td><td>可访问的 HTTPS 或内网地址。</td><td>用动作测试接口验证返回。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="first-login" class="section">
+      <h2>首次启动与登录</h2>
+      <p class="lead">Mailman 的前端和后端在一体化镜像中由同一个后端进程提供服务。第一次访问时，登录接口会根据系统状态创建初始管理员账户。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>最快体验</h3>
+          <pre><code>docker run -d \
+  --name mailman \
+  -p 8080:8080 \
+  -v mailman_data:/app/data \
+  --restart unless-stopped \
+  ghcr.io/seongminhwan/mailman-all:latest</code></pre>
+          <p class="muted small">访问 <code>http://localhost:8080</code>，使用首次输入的用户名和密码创建管理员。</p>
+        </div>
+        <div class="card">
+          <h3>登录接口</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/auth/login</code><span>登录并获取 Token</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/auth/me</code><span>读取当前用户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/auth/logout</code><span>退出登录</span></div>
+          <pre><code>curl -X POST "$BASE_URL/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "your-password"
+  }'</code></pre>
+          <p class="muted small">源码依据：<code>backend/internal/api/router_auth.go</code>、<code>frontend/src/context/auth-context.tsx</code>。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="workflow" class="section">
+      <h2>推荐主流程</h2>
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>系统配置</strong><br><span class="muted">先确认系统配置、登录主题、菜单可见性、访问令牌等基础设置。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>OAuth2 配置</strong><br><span class="muted">Gmail/Outlook 推荐使用 OAuth2。配置入口对应 <code>/api/oauth2/global-config</code>、<code>/api/oauth2/session/start/{provider}</code>。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>添加邮箱账户</strong><br><span class="muted">通过 UI 或 API 添加账户，调用 <code>/api/accounts/verify</code> 检查连通性。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>配置同步</strong><br><span class="muted">全局同步配置影响默认行为，账户同步配置覆盖单个账户行为。</span></div></div>
+        <div class="flow-step"><span class="step-no">5</span><div><strong>使用取件和触发器</strong><br><span class="muted">取件适合“等待一封邮件”，触发器适合“每次收到邮件后自动处理”。</span></div></div>
+        <div class="flow-step"><span class="step-no">6</span><div><strong>沉淀业务资料</strong><br><span class="muted">把邮箱账户、业务平台账号、2FA、恢复码、标签和代理配置统一管理。</span></div></div>
+      </div>
+    </section>
+
+    <section id="first-run" class="section">
+      <h2>第一次完整闭环</h2>
+      <p class="lead">下面这条路线可以验证 Mailman 的核心链路是否跑通：账户接入 → 同步邮件 → 搜索邮件 → 创建触发器 → 测试动作 → 查看日志。</p>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="首次闭环">
+          <button role="tab" aria-selected="true" aria-controls="run-ui">用 UI 完成</button>
+          <button role="tab" aria-selected="false" aria-controls="run-api">用 API 完成</button>
+          <button role="tab" aria-selected="false" aria-controls="run-check">验收标准</button>
+        </div>
+        <div id="run-ui" class="tab-panel active" role="tabpanel">
+          <div class="flow">
+            <div class="flow-step"><span class="step-no">1</span><div><strong>OAuth2 配置</strong><br><span class="muted">进入 OAuth2 配置，新增 Gmail 或 Outlook 凭据，设为启用和默认。</span></div></div>
+            <div class="flow-step"><span class="step-no">2</span><div><strong>添加账户</strong><br><span class="muted">进入邮箱账户管理，选择 provider，完成授权，保存账户后立即验证。</span></div></div>
+            <div class="flow-step"><span class="step-no">3</span><div><strong>同步邮件</strong><br><span class="muted">进入同步配置或账户详情，先手动同步 <code>INBOX</code>，确认邮件列表出现新邮件。</span></div></div>
+            <div class="flow-step"><span class="step-no">4</span><div><strong>建立触发器</strong><br><span class="muted">进入触发器管理，创建一条主题包含关键词的规则，动作先选择打标签或 Webhook。</span></div></div>
+            <div class="flow-step"><span class="step-no">5</span><div><strong>测试并启用</strong><br><span class="muted">用测试数据确认条件为 true，动作返回 success，再启用触发器。</span></div></div>
+          </div>
+        </div>
+        <div id="run-api" class="tab-panel" role="tabpanel">
+          <pre><code># 1. 登录
+TOKEN=$(curl -s -X POST "$BASE_URL/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"your-password"}' | jq -r '.token')
+
+# 2. 查看账户
+curl "$BASE_URL/api/accounts/paginated?page=1&amp;limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3. 验证账户
+curl -X POST "$BASE_URL/api/accounts/verify" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"account_id":1}'
+
+# 4. 查看邮件
+curl "$BASE_URL/api/account-emails/list/all?limit=20&amp;offset=0" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 5. 查看触发器日志
+curl "$BASE_URL/api/triggers/logs?limit=20" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+        </div>
+        <div id="run-check" class="tab-panel" role="tabpanel">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>检查点</th><th>通过标准</th><th>失败时下一步</th></tr></thead>
+              <tbody>
+                <tr><td>登录</td><td>拿到 Bearer Token，<code>/api/auth/me</code> 返回当前用户。</td><td>检查用户名密码、初始化状态、登录限流。</td></tr>
+                <tr><td>账户</td><td><code>isVerified</code> 为 true，<code>errorStatus</code> 为 normal。</td><td>看 OAuth2 配置、应用密码、代理。</td></tr>
+                <tr><td>同步</td><td>邮件列表能看到最近邮件，文件夹包含 <code>INBOX</code>。</td><td>检查同步配置、provider 权限、后端日志。</td></tr>
+                <tr><td>触发器</td><td>测试条件返回 <code>result: true</code>，动作测试成功。</td><td>检查字段名、插件 ID、动作 config。</td></tr>
+                <tr><td>日志</td><td><code>/api/triggers/logs</code> 能看到执行记录。</td><td>确认触发器启用、邮件确实进入同步和处理流程。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="menus" class="section">
+      <h2>菜单地图</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>菜单组</th><th>菜单项</th><th>对应能力</th><th>权限资源</th></tr></thead>
+          <tbody>
+            <tr><td>邮箱运营</td><td>邮箱账户管理</td><td>账户 CRUD、验证、转发地址、域名邮箱、账户代理</td><td><code>email_account:read</code></td></tr>
+            <tr><td>邮箱运营</td><td>经典邮件管理器</td><td>邮件列表、详情、搜索、附件、文件夹</td><td><code>email:read</code></td></tr>
+            <tr><td>邮箱运营</td><td>取件 / 取件模板</td><td>验证码等待、模板过滤、动作链提取</td><td><code>trigger:read</code>、<code>template:read</code></td></tr>
+            <tr><td>自动化</td><td>触发器管理</td><td>条件表达式、动作插件、测试、日志、统计</td><td><code>trigger:read</code></td></tr>
+            <tr><td>自动化</td><td>拦截器管理</td><td>before/after、跳过策略、错误策略、日志</td><td><code>trigger:read</code></td></tr>
+            <tr><td>系统与权限</td><td>团队管理 / 用户管理</td><td>组织、成员、角色、权限、超级管理员</td><td><code>organization:read</code> 或超级管理员</td></tr>
+            <tr><td>文档与开发</td><td>API 文档 / 接入手册</td><td>Swagger、HTML 指南、表达式与动作调试器</td><td>认证用户可读</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">菜单定义来自 <code>frontend/src/lib/menu-config.ts</code> 与 <code>frontend/src/components/layout/sidebar.tsx</code>。</p>
+    </section>
+
+    <section id="next" class="section">
+      <h2>下一步</h2>
+      <div class="grid three">
+        <a class="doc-card" href="./accounts-oauth.html"><span class="badge">推荐</span><h3>先接入邮箱账户</h3><p class="muted">完成 Gmail/Outlook OAuth2 和 IMAP/SMTP 账户验证。</p></a>
+        <a class="doc-card" href="./sync-mailbox.html"><span class="badge green">基础</span><h3>配置同步和阅读邮件</h3><p class="muted">理解同步间隔、文件夹、搜索参数和附件。</p></a>
+        <a class="doc-card" href="./pickup-extractor.html"><span class="badge violet">高频</span><h3>配置验证码取件</h3><p class="muted">用统一取件接口和模板动作链稳定提取验证码。</p></a>
+      </div>
+    </section>
+
+    <p class="footer">源码校验：router_auth.go、menu-config.ts、sidebar.tsx、main/page.tsx</p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

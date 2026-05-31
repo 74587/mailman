@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>邮箱账户与 OAuth2 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Accounts & OAuth2</span>
+          <h1>把邮箱账户稳定接入 Mailman</h1>
+          <p>本页从准备 provider 凭据开始，完整走一遍 OAuth2 授权、账户入库、验证、初始同步、自动同步和错误恢复。密码、Token、IMAP/SMTP、自定义 provider、代理和转发落件地址也一并说明。</p>
+          <div class="badge-row">
+            <span class="badge">OAuth2</span>
+            <span class="badge green">验证</span>
+            <span class="badge violet">初始同步</span>
+            <span class="badge amber">代理与错误恢复</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="28" y="28" width="304" height="184" rx="18" fill="#111827" stroke="#334155"/>
+            <rect x="54" y="58" width="104" height="48" rx="10" fill="#172554" stroke="#2563eb"/>
+            <rect x="202" y="58" width="104" height="48" rx="10" fill="#042f2e" stroke="#0f766e"/>
+            <rect x="128" y="140" width="104" height="48" rx="10" fill="#312e81" stroke="#7c3aed"/>
+            <path d="M158 82h44M106 106l52 34M254 106l-52 34" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/>
+            <text x="106" y="87" fill="#dbeafe" text-anchor="middle" font-size="12" font-weight="800">Provider</text>
+            <text x="254" y="87" fill="#ccfbf1" text-anchor="middle" font-size="12" font-weight="800">Account</text>
+            <text x="180" y="169" fill="#ede9fe" text-anchor="middle" font-size="12" font-weight="800">Verify</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#zero-to-one">0 到 1</a>
+        <a href="#models">模型</a>
+        <a href="#oauth-flow">OAuth2</a>
+        <a href="#password-imap">密码/Token</a>
+        <a href="#account-fields">字段</a>
+        <a href="#errors">错误</a>
+        <a href="#api">接口</a>
+      </nav>
+      <a href="/main?tab=oauth2-config" target="_top">打开 OAuth2 配置</a>
+    </div>
+
+    <section id="zero-to-one" class="section">
+      <h2>0 到 1 接入 Gmail 或 Outlook</h2>
+      <p class="lead">最推荐的生产路径是：先创建 OAuth2 全局配置，再启动授权会话，授权成功后调用一站式入库接口。这个接口可以在一次请求里完成账户创建、验证、初始同步和自动同步配置。</p>
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>在 provider 控制台创建 OAuth 应用</strong><br><span class="muted">Gmail 需要 Gmail API 和用户信息 scope；Outlook 需要 IMAP/POP/SMTP 相关 scope 和 <code>offline_access</code>。回调地址要和 Mailman 的 <code>redirect_uri</code> 完全一致。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>在 Mailman 添加 OAuth2 全局配置</strong><br><span class="muted">菜单：系统配置 → OAuth2 配置。保存 <code>provider_type</code>、<code>client_id</code>、<code>client_secret</code>、<code>redirect_uri</code>、<code>scopes</code>。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>启动授权会话</strong><br><span class="muted">调用 <code>POST /api/oauth2/session/start/{provider}?config_id=1</code>，拿到 <code>authUrl</code> 和 <code>state</code>。用户打开授权链接完成授权。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>轮询授权结果</strong><br><span class="muted">调用 <code>GET /api/oauth2/session/poll/{state}</code>。成功时会返回邮箱地址、token 数据和 provider 配置 ID。</span></div></div>
+        <div class="flow-step"><span class="step-no">5</span><div><strong>账户入库并验证</strong><br><span class="muted">调用 <code>POST /api/accounts/oauth2/onboard</code>。建议开启 <code>verify</code>、<code>run_initial_sync</code>、<code>create_sync_config</code>。</span></div></div>
+        <div class="flow-step"><span class="step-no">6</span><div><strong>确认可读、可同步、可触发</strong><br><span class="muted">看账户 <code>isVerified</code>、同步时间、错误状态和邮件列表。只有同步到数据库的邮件才能被搜索、取件和触发器处理。</span></div></div>
+      </div>
+    </section>
+
+    <section id="models" class="section">
+      <h2>账户模型关系</h2>
+      <p class="lead">邮件账户由 <code>EmailAccount</code> 表示，OAuth2 provider 凭据由 <code>OAuth2GlobalConfig</code> 表示。账户还可以关联邮件服务商、代理池、业务账户、标签和同步配置。</p>
+      <div class="svg-frame">
+        <svg viewBox="0 0 980 300" role="img" aria-label="账户关系图">
+          <rect width="980" height="300" fill="#ffffff"/>
+          <g font-family="Inter, sans-serif" font-size="14">
+            <rect x="30" y="80" width="190" height="120" rx="8" fill="#eff6ff" stroke="#93c5fd"/>
+            <text x="125" y="112" text-anchor="middle" font-weight="800" fill="#1d4ed8">EmailAccount</text>
+            <text x="50" y="142" fill="#475569">authType / emailAddress</text>
+            <text x="50" y="166" fill="#475569">proxy / forwardedAddresses</text>
+            <text x="50" y="190" fill="#475569">errorStatus / tags</text>
+            <rect x="290" y="36" width="190" height="88" rx="8" fill="#ecfdf3" stroke="#86efac"/>
+            <text x="385" y="70" text-anchor="middle" font-weight="800" fill="#15803d">OAuth2GlobalConfig</text>
+            <text x="312" y="98" fill="#475569">clientId / clientSecret</text>
+            <rect x="290" y="176" width="190" height="88" rx="8" fill="#f5f3ff" stroke="#c4b5fd"/>
+            <text x="385" y="210" text-anchor="middle" font-weight="800" fill="#6d28d9">SyncConfig</text>
+            <text x="312" y="238" fill="#475569">folders / interval</text>
+            <rect x="550" y="36" width="190" height="88" rx="8" fill="#fffbeb" stroke="#fcd34d"/>
+            <text x="645" y="70" text-anchor="middle" font-weight="800" fill="#b45309">ProxyPoolItem</text>
+            <text x="572" y="98" fill="#475569">type / host / status</text>
+            <rect x="550" y="176" width="190" height="88" rx="8" fill="#fff1f2" stroke="#fda4af"/>
+            <text x="645" y="210" text-anchor="middle" font-weight="800" fill="#be123c">BusinessAccount</text>
+            <text x="572" y="238" fill="#475569">username / 2FA / note</text>
+            <rect x="808" y="100" width="140" height="88" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+            <text x="878" y="134" text-anchor="middle" font-weight="800" fill="#334155">Tags</text>
+            <text x="835" y="162" fill="#475569">single / multiple</text>
+            <path d="M220 126 C250 96 258 80 290 80" stroke="#64748b" fill="none" stroke-width="2"/>
+            <path d="M220 158 C250 190 258 220 290 220" stroke="#64748b" fill="none" stroke-width="2"/>
+            <path d="M220 120 C360 10 460 80 550 80" stroke="#64748b" fill="none" stroke-width="2"/>
+            <path d="M220 178 C360 290 460 220 550 220" stroke="#64748b" fill="none" stroke-width="2"/>
+            <path d="M740 144 H808" stroke="#64748b" fill="none" stroke-width="2"/>
+          </g>
+        </svg>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>对象</th><th>关键字段</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>OAuth2GlobalConfig</code></td><td><code>provider_type</code>、<code>client_id</code>、<code>client_secret</code>、<code>redirect_uri</code>、<code>scopes</code>、<code>is_enabled</code>、<code>is_default</code></td><td>一套 provider 凭据。一个 provider 可以有多套配置。</td></tr>
+            <tr><td><code>EmailAccount</code></td><td><code>emailAddress</code>、<code>authType</code>、<code>oauth2ProviderId</code>、<code>customSettings</code>、<code>forwardedAddresses</code>、<code>proxyMode</code></td><td>实际邮箱账户。OAuth2 token 存在 <code>customSettings</code> 中。</td></tr>
+            <tr><td><code>EmailAccountSyncConfig</code></td><td><code>enable_auto_sync</code>、<code>sync_interval</code>、<code>sync_folders</code></td><td>账户级同步配置，可在 OAuth2 入库时一起创建。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="oauth-flow" class="section">
+      <h2>OAuth2 接入方式</h2>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="OAuth2 场景">
+          <button role="tab" aria-selected="true" aria-controls="oauth-config">全局配置</button>
+          <button role="tab" aria-selected="false" aria-controls="oauth-session">授权会话</button>
+          <button role="tab" aria-selected="false" aria-controls="oauth-onboard">账户入库</button>
+          <button role="tab" aria-selected="false" aria-controls="oauth-manual">手动 code</button>
+        </div>
+        <div id="oauth-config" class="tab-panel active" role="tabpanel">
+          <pre><code>curl -X POST "$BASE_URL/api/oauth2/global-config" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Gmail production app",
+    "provider_type": "gmail",
+    "client_id": "xxxxx.apps.googleusercontent.com",
+    "client_secret": "GOCSPX-xxxxx",
+    "redirect_uri": "https://mailman.example.com/api/oauth2/callback/gmail",
+    "scopes": [
+      "https://mail.google.com/",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ],
+    "is_enabled": true,
+    "is_default": true
+  }'</code></pre>
+          <div class="callout">Outlook 常用 scope：<code>https://outlook.office.com/IMAP.AccessAsUser.All</code>、<code>https://outlook.office.com/POP.AccessAsUser.All</code>、<code>https://outlook.office.com/SMTP.Send</code>、<code>offline_access</code>。</div>
+        </div>
+        <div id="oauth-session" class="tab-panel" role="tabpanel">
+          <pre><code>curl -X POST "$BASE_URL/api/oauth2/session/start/gmail?config_id=1" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+          <p class="muted">返回中重点看 <code>authUrl</code>、<code>state</code>、<code>expiresAt</code>。用户授权完成后，provider 回调 <code>/api/oauth2/callback/{provider}</code>，Mailman 会把会话状态更新为 success、failed、expired 或 cancelled。</p>
+          <pre><code>curl "$BASE_URL/api/oauth2/session/poll/$STATE" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+        </div>
+        <div id="oauth-onboard" class="tab-panel" role="tabpanel">
+          <pre><code>curl -X POST "$BASE_URL/api/accounts/oauth2/onboard" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "emailAddress": "user@gmail.com",
+    "authType": "oauth2",
+    "mailProviderId": 1,
+    "oauth2ProviderId": 1,
+    "forwardedAddresses": ["*@example.com", "alerts@example.org"],
+    "customSettings": {
+      "access_token": "ya29...",
+      "refresh_token": "1//...",
+      "expires_at": "2026-05-31T11:00:00Z",
+      "provider": "gmail"
+    },
+    "proxyMode": "manual",
+    "proxy": "socks5://127.0.0.1:1080",
+    "verify": true,
+    "run_initial_sync": true,
+    "create_sync_config": true,
+    "update_existing": true,
+    "initial_sync": {
+      "mailbox": "INBOX",
+      "limit": 50
+    },
+    "sync_config": {
+      "enable_auto_sync": true,
+      "sync_interval": 300,
+      "sync_folders": ["INBOX"]
+    }
+  }'</code></pre>
+          <p class="muted small">后端要求 <code>authType</code> 为空或 <code>oauth2</code>，并要求 <code>customSettings.access_token</code> 存在。若 <code>oauth2ProviderId</code> 为空，会尝试从 <code>customSettings</code> 推断。</p>
+        </div>
+        <div id="oauth-manual" class="tab-panel" role="tabpanel">
+          <p>手动模式适合无法让用户在当前浏览器回跳 Mailman 的场景。Gmail 的手动回调地址为 <code>http://localhost</code>，Yahoo/AOL 为 <code>https://127.0.0.1</code>，具体由 provider metadata 决定。</p>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/session/manual/start/{provider}</code><span>创建手动授权会话</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/session/manual/exchange/{state}</code><span>提交 callback URL 或 code</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/exchange-token</code><span>直接交换授权码</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/refresh-token</code><span>刷新 access token</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="password-imap" class="section">
+      <h2>密码、Token 与自定义 IMAP/SMTP</h2>
+      <p class="lead">不是所有邮箱都走 OAuth2。iCloud、QQ、163、企业自建邮箱通常使用应用专用密码、授权码或 IMAP/SMTP token。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>创建密码账户</h3>
+          <pre><code>curl -X POST "$BASE_URL/api/accounts" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "emailAddress": "robot@example.com",
+    "authType": "password",
+    "password": "app-specific-password",
+    "mailProviderId": 3,
+    "forwardedAddresses": ["*@example.com"],
+    "proxyMode": "manual",
+    "proxy": "",
+    "note": "业务验证码落件账户",
+    "noteFormat": "markdown",
+    "customSettings": {}
+  }'</code></pre>
+        </div>
+        <div class="card">
+          <h3>创建 Token 账户</h3>
+          <pre><code>curl -X POST "$BASE_URL/api/accounts" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "emailAddress": "robot@example.com",
+    "authType": "token",
+    "token": "imap-or-provider-token",
+    "mailProviderId": 3,
+    "isDomainMail": true,
+    "domain": "example.com",
+    "forwardedAddresses": ["robot@example.com", "*@example.com"]
+  }'</code></pre>
+        </div>
+      </div>
+      <div class="callout warning">前端类型中还有 <code>app_password</code> 命名，但后端模型当前认证枚举是 <code>password</code>、<code>token</code>、<code>oauth2</code>。外部 API 接入时以后端枚举为准。</div>
+    </section>
+
+    <section id="account-fields" class="section">
+      <h2>账户关键字段</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>用途</th><th>怎么填</th><th>注意事项</th></tr></thead>
+          <tbody>
+            <tr><td><code>emailAddress</code></td><td>邮箱地址</td><td>完整邮箱，例如 <code>user@gmail.com</code>。</td><td>后端按邮箱唯一索引保存。</td></tr>
+            <tr><td><code>authType</code></td><td>认证方式</td><td><code>password</code>、<code>token</code>、<code>oauth2</code>。</td><td>OAuth2 入库接口会校验必须为 <code>oauth2</code>。</td></tr>
+            <tr><td><code>mailProviderId</code></td><td>邮件服务商</td><td>从 <code>GET /api/providers</code> 获取。</td><td>自定义 provider 可选，但接入同步时建议明确配置。</td></tr>
+            <tr><td><code>oauth2ProviderId</code></td><td>OAuth2 凭据配置</td><td>对应 <code>OAuth2GlobalConfig.id</code>。</td><td>多套 Gmail/Outlook 配置时必须指定。</td></tr>
+            <tr><td><code>customSettings</code></td><td>扩展设置</td><td>OAuth2 token、expires_at、provider 等。</td><td><code>access_token</code> 是 OAuth2 入库必填。</td></tr>
+            <tr><td><code>forwardedAddresses</code></td><td>转发落件地址</td><td>支持精确邮箱和 <code>*@domain.com</code>。</td><td>取件和业务映射常依赖这个字段。</td></tr>
+            <tr><td><code>proxyMode</code></td><td>账户代理模式</td><td><code>manual</code>、<code>selected</code>、<code>auto</code>。</td><td>配合 <code>proxy</code>、<code>proxyId</code>、fallback 字段使用。</td></tr>
+            <tr><td><code>isVerified</code></td><td>验证状态</td><td>由验证接口更新。</td><td>只代表最近一次连接验证结果，不代表后续同步永远成功。</td></tr>
+            <tr><td><code>errorStatus</code></td><td>错误状态</td><td><code>normal</code>、<code>oauth_expired</code>、<code>auth_revoked</code>、<code>api_disabled</code>、<code>network_error</code>、<code>quota_exceeded</code>、<code>server_error</code>。</td><td>同步器会根据错误类型更新。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="errors" class="section">
+      <h2>错误状态与恢复动作</h2>
+      <div class="grid three">
+        <div class="card"><h3><code>oauth_expired</code></h3><p class="muted">access token 过期且 refresh 失败。先调用刷新接口，失败再重新授权。</p></div>
+        <div class="card"><h3><code>auth_revoked</code></h3><p class="muted">用户撤销授权或 refresh token 失效。重新启动授权会话并更新账户。</p></div>
+        <div class="card"><h3><code>api_disabled</code></h3><p class="muted">Gmail API 或 Microsoft API 未启用，或者 scope 不足。回 provider 控制台修正。</p></div>
+        <div class="card"><h3><code>network_error</code></h3><p class="muted">网络或代理失败。检查账户代理、代理池状态、防火墙和服务器出口。</p></div>
+        <div class="card"><h3><code>quota_exceeded</code></h3><p class="muted">provider 配额受限。降低同步频率、减少文件夹或拆分 OAuth2 配置。</p></div>
+        <div class="card"><h3><code>server_error</code></h3><p class="muted">provider 或后端内部错误。结合后端日志和同步记录定位。</p></div>
+      </div>
+      <div class="callout success">验证通过后，OAuth2 入库流程会把账户错误状态重置为 <code>normal</code>，并清空错误消息、错误时间和错误计数。</div>
+    </section>
+
+    <section id="api" class="section">
+      <h2>账户与 OAuth2 API 速查</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>OAuth2 配置与会话</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/global-config</code><span>创建或更新全局配置</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/oauth2/global-configs</code><span>所有配置</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/oauth2/global-config/by-id/{id}</code><span>按 ID 获取</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/global-config/{id}/default</code><span>设为默认</span></div>
+          <div class="endpoint"><span class="method delete">DELETE</span><code>/api/oauth2/global-config/{id}</code><span>删除配置</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/session/start/{provider}</code><span>启动授权会话</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/oauth2/session/poll/{state}</code><span>轮询会话</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/session/cancel/{state}</code><span>取消会话</span></div>
+        </div>
+        <div class="card">
+          <h3>账户 CRUD、验证与扩展配置</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/accounts/paginated</code><span>分页查询账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts</code><span>创建账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/upsert</code><span>创建或更新账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/oauth2/onboard</code><span>OAuth2 一站式入库</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/verify</code><span>验证账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/batch-verify</code><span>批量验证</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/accounts/{id}/forwarded-addresses</code><span>读取转发地址</span></div>
+          <div class="endpoint"><span class="method put">PUT</span><code>/api/accounts/{id}/proxy-config</code><span>设置账户代理</span></div>
+        </div>
+      </div>
+      <div class="callout">
+        源码依据：<code>backend/internal/models/models.go</code> 中的 <code>EmailAccount</code>、<code>OAuth2GlobalConfig</code>、<code>AccountErrorStatus</code>；路由来自 <code>backend/internal/api/router_auth.go</code>；OAuth2 入库来自 <code>backend/internal/api/oauth2_onboarding_handlers.go</code>。
+      </div>
+    </section>
+
+    <p class="footer">下一篇建议阅读：<a href="./sync-mailbox.html">同步、邮件管理与搜索</a></p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

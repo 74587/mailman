@@ -306,7 +306,7 @@ export default function MainPage() {
                         break
                     // 接入手册
                     case 'integration-guide':
-                        const IntegrationGuideTab = require('@/components/tabs/integration-guide-tab').default
+                        const IntegrationGuideTab = require('@/components/tabs/html-integration-guide-tab').default
                         content = <IntegrationGuideTab key={tabId} />
                         break
                     case 'team-management':

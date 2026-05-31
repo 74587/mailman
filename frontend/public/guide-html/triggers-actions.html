@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>触发器、表达式与动作插件 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Trigger Automation</span>
+          <h1>从一封邮件开始，搭出自动化处理链</h1>
+          <p>本页按“新建触发器、配置条件、测试命中、编排动作、上线观察”的顺序讲解。文中的字段、插件 ID 和接口路径均按当前代码中的 <code>EmailTriggerV2</code>、<code>TriggerExpression</code>、<code>TriggerAction</code> 和路由实现整理。</p>
+          <div class="badge-row">
+            <span class="badge">0 到 1</span>
+            <span class="badge green">条件树</span>
+            <span class="badge violet">动作流水线</span>
+            <span class="badge amber">可测试</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="26" y="30" width="308" height="180" rx="18" fill="#111827" stroke="#334155"/>
+            <rect x="54" y="58" width="252" height="34" rx="9" fill="#172554" stroke="#2563eb"/>
+            <rect x="54" y="116" width="112" height="42" rx="10" fill="#042f2e" stroke="#0f766e"/>
+            <rect x="194" y="116" width="112" height="42" rx="10" fill="#312e81" stroke="#7c3aed"/>
+            <rect x="124" y="178" width="112" height="22" rx="8" fill="#451a03" stroke="#d97706"/>
+            <path d="M180 92V116M166 137H194M250 158L180 178M110 158L180 178" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/>
+            <text x="180" y="80" fill="#dbeafe" text-anchor="middle" font-size="12" font-weight="800">Expression</text>
+            <text x="110" y="142" fill="#ccfbf1" text-anchor="middle" font-size="12" font-weight="800">Action A</text>
+            <text x="250" y="142" fill="#ede9fe" text-anchor="middle" font-size="12" font-weight="800">Action B</text>
+            <text x="180" y="194" fill="#fef3c7" text-anchor="middle" font-size="11" font-weight="800">Execution Log</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#zero-to-one">0 到 1</a>
+        <a href="#model">模型</a>
+        <a href="#expressions">表达式</a>
+        <a href="#plugins">插件</a>
+        <a href="#pipeline">组合</a>
+        <a href="#api">接口</a>
+        <a href="#debug">排查</a>
+      </nav>
+      <a href="/main?tab=triggers" target="_top">打开触发器管理</a>
+    </div>
+
+    <section id="zero-to-one" class="section">
+      <h2>从 0 到 1 创建第一条规则</h2>
+      <p class="lead">目标：当 GitHub 登录验证码或安全提醒进入邮箱时，自动给邮件加标签，推送 Webhook，并把关键信息转发给运营邮箱。你可以先在 UI 完成，再把同样配置交给外部系统通过 API 创建。</p>
+
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="创建方式">
+          <button role="tab" aria-selected="true" aria-controls="start-ui">在 UI 中创建</button>
+          <button role="tab" aria-selected="false" aria-controls="start-api">用 API 创建</button>
+          <button role="tab" aria-selected="false" aria-controls="start-test">上线前测试</button>
+        </div>
+        <div id="start-ui" class="tab-panel active" role="tabpanel">
+          <div class="flow">
+            <div class="flow-step"><span class="step-no">1</span><div><strong>准备账户</strong><br><span class="muted">先在“邮箱账户与 OAuth2”中接入至少一个邮箱，并完成验证。触发器只会处理已经同步进 Mailman 的邮件。</span></div></div>
+            <div class="flow-step"><span class="step-no">2</span><div><strong>进入触发器管理</strong><br><span class="muted">菜单：自动化 → 触发器管理。点击创建入口后填写名称，例如“GitHub 安全邮件处理”。</span></div></div>
+            <div class="flow-step"><span class="step-no">3</span><div><strong>配置条件</strong><br><span class="muted">先选 <code>group</code> 作为根表达式，<code>operator</code> 选 <code>and</code>。子条件用发件人包含 <code>github.com</code>、主题包含 <code>security</code> 或 <code>verification</code>。</span></div></div>
+            <div class="flow-step"><span class="step-no">4</span><div><strong>测试条件</strong><br><span class="muted">使用测试邮件数据调用 <code>POST /api/v2/triggers/test-condition</code>。返回 <code>result: true</code> 再继续配置动作。</span></div></div>
+            <div class="flow-step"><span class="step-no">5</span><div><strong>编排动作</strong><br><span class="muted">推荐顺序：变量提取 → 打标签 → Webhook → 转发。每个动作都有 <code>executionOrder</code>，数值越小越先执行。</span></div></div>
+            <div class="flow-step"><span class="step-no">6</span><div><strong>保存并启用</strong><br><span class="muted">保存时 <code>enabled</code> 可以先设为 <code>false</code>，确认测试通过后调用 <code>POST /api/triggers/{id}/enable</code> 或在 UI 中启用。</span></div></div>
+            <div class="flow-step"><span class="step-no">7</span><div><strong>观察日志</strong><br><span class="muted">上线后看 <code>/api/triggers/logs</code>、<code>/api/triggers/{id}/statistics</code>，重点关注失败动作、耗时和最后错误。</span></div></div>
+          </div>
+        </div>
+        <div id="start-api" class="tab-panel" role="tabpanel">
+          <p class="muted">CRUD 推荐走 <code>/api/triggers</code>，测试调试走 <code>/api/v2/triggers/test-*</code>。请求体字段和后端 <code>CreateEmailTriggerV2Request</code> 对齐。</p>
+          <pre><code>curl -X POST "$BASE_URL/api/triggers" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "GitHub 安全邮件处理",
+    "description": "识别 GitHub security/verification 邮件并推送业务系统",
+    "enabled": false,
+    "expressions": [
+      {
+        "id": "root",
+        "type": "group",
+        "operator": "and",
+        "conditions": [
+          { "id": "from-github", "type": "condition", "field": "fromAddress", "operator": "contains", "value": "github.com" },
+          { "id": "subject-security", "type": "condition", "field": "subject", "operator": "contains", "value": "security" }
+        ]
+      }
+    ],
+    "actions": [
+      {
+        "id": "label-security",
+        "pluginId": "email_label_action",
+        "pluginName": "邮件标记动作",
+        "config": {
+          "action_type": "add",
+          "labels": ["github", "security"],
+          "label_color": "blue",
+          "create_if_not_exists": true
+        },
+        "enabled": true,
+        "executionOrder": 1
+      },
+      {
+        "id": "notify-webhook",
+        "pluginId": "webhook_action",
+        "pluginName": "Webhook 通知",
+        "config": {
+          "url": "https://example.com/mailman/events",
+          "method": "POST",
+          "content_type": "json",
+          "headers": [{ "key": "Authorization", "value": "Bearer ${WEBHOOK_TOKEN}" }],
+          "body": "JSON.stringify({ subject: Subject, from: From, email_id: EmailID })",
+          "timeout": 30,
+          "retry_count": 2,
+          "retry_backoff": "exponential",
+          "success_condition": "status_code",
+          "expected_status_codes": [200, 201, 202, 204]
+        },
+        "enabled": true,
+        "executionOrder": 2
+      }
+    ]
+  }'</code></pre>
+        </div>
+        <div id="start-test" class="tab-panel" role="tabpanel">
+          <p class="muted">测试接口不会创建触发器，适合在上线前验证条件和单个动作。<code>testData</code> 会被转换成后端 <code>Email</code> 结构，同时也会放入表达式上下文。</p>
+          <pre><code>curl -X POST "$BASE_URL/api/v2/triggers/test-condition" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "expressions": [
+      {
+        "id": "root",
+        "type": "group",
+        "operator": "and",
+        "conditions": [
+          { "id": "from-github", "type": "condition", "field": "fromAddress", "operator": "contains", "value": "github.com" },
+          { "id": "subject-security", "type": "condition", "field": "subject", "operator": "contains", "value": "security" }
+        ]
+      }
+    ],
+    "testData": {
+      "Subject": "[GitHub] Please verify your device",
+      "FromAddress": "noreply@github.com",
+      "ToAddresses": ["ops@example.com"],
+      "TextBody": "Your GitHub verification code is 123456",
+      "Date": "2026-05-31T10:00:00Z"
+    }
+  }'</code></pre>
+          <div class="callout success">期望返回：<code>{"result": true, "evaluation": {...}}</code>。如果返回 false，先检查字段名、大小写、同步后的邮件内容是否和测试数据一致。</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="model" class="section">
+      <h2>触发器数据模型</h2>
+      <p class="lead">触发器由一个或多个表达式和一个动作数组组成。表达式负责“是否命中”，动作负责“命中后做什么”。动作默认按 <code>executionOrder</code> 顺序执行，禁用的动作不会执行。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3><code>EmailTriggerV2</code></h3>
+          <p class="muted">创建请求字段：<code>name</code>、<code>description</code>、<code>enabled</code>、<code>expressions</code>、<code>actions</code>。响应会额外包含 <code>id</code>、执行计数、最后执行时间和最后错误。</p>
+          <pre><code>{
+  "id": 12,
+  "name": "GitHub 安全邮件处理",
+  "description": "识别安全提醒并通知业务系统",
+  "enabled": true,
+  "expressions": [],
+  "actions": [],
+  "totalExecutions": 128,
+  "successExecutions": 126,
+  "lastExecutedAt": "2026-05-31T10:12:30Z",
+  "lastError": "",
+  "createdAt": "2026-05-30T08:00:00Z",
+  "updatedAt": "2026-05-31T10:12:30Z"
+}</code></pre>
+        </div>
+        <div class="card">
+          <h3><code>TriggerExecutionLogV2</code></h3>
+          <p class="muted">日志用于复盘每次执行：条件是否命中、每个动作是否成功、耗时、错误、输入输出和 trace。排查时先看日志，再看后端运行日志。</p>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers/logs?page=1&amp;limit=20</code><span>执行日志列表</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers/{id}/logs</code><span>某条规则日志</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers/logs/stats</code><span>全局日志统计</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers/{id}/statistics</code><span>单规则统计</span></div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>位置</th><th>说明</th><th>常见错误</th></tr></thead>
+          <tbody>
+            <tr><td><code>id</code></td><td>表达式、动作</td><td>前端和日志定位使用，建议稳定唯一。</td><td>测试动作时缺少 <code>Action ID</code> 会被拒绝。</td></tr>
+            <tr><td><code>operator</code></td><td>表达式</td><td>组合条件可用 <code>and</code>、<code>or</code>、<code>not</code>；普通条件可用 contains、equals 等比较符。</td><td>把组合运算符和字段比较符混用。</td></tr>
+            <tr><td><code>pluginId</code></td><td>表达式、动作</td><td>插件 ID 必须和内置注册表一致，例如 <code>webhook_action</code>。</td><td>把插件显示名写进 <code>pluginId</code>。</td></tr>
+            <tr><td><code>config</code></td><td>动作</td><td>动作插件配置对象，各插件字段不同。</td><td>Webhook 的 <code>headers</code> 写成对象而不是数组时，需确认当前执行器是否兼容。</td></tr>
+            <tr><td><code>enabled</code></td><td>动作、触发器</td><td>触发器和动作都有启用状态。</td><td>触发器启用但动作被禁用，日志中看似命中却没有效果。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">源码依据：<code>backend/internal/models/email_trigger_v2.go</code>、<code>backend/internal/api/email_trigger_v2_handlers.go</code>、<code>frontend/src/types/index.ts</code>。</p>
+    </section>
+
+    <section id="expressions" class="section">
+      <h2>表达式：决定邮件是否命中</h2>
+      <p class="lead">表达式数组会被后端组合成根条件进行计算。最稳妥的写法是只放一个根 <code>group</code>，再把所有子条件放进 <code>conditions</code>。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>类型</th><th>用途</th><th>核心字段</th><th>适合场景</th></tr></thead>
+          <tbody>
+            <tr><td><code>group</code></td><td>组合多个子条件</td><td><code>operator</code>、<code>conditions</code></td><td>同时满足、任一满足、取反。</td></tr>
+            <tr><td><code>condition</code></td><td>直接比较邮件字段</td><td><code>field</code>、<code>operator</code>、<code>value</code>、<code>not</code></td><td>主题、发件人、正文、收件人、附件等简单判断。</td></tr>
+            <tr><td><code>plugin</code></td><td>调用条件插件</td><td><code>pluginId</code>、<code>fields</code></td><td>账户集合、邮箱前后缀、时间范围、大小范围。</td></tr>
+            <tr><td><code>expression</code></td><td>自定义表达式</td><td><code>fields.engine</code>、<code>fields.expression</code></td><td>普通条件表达不了的计算逻辑。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="表达式示例">
+          <button role="tab" aria-selected="true" aria-controls="expr-basic">基础字段</button>
+          <button role="tab" aria-selected="false" aria-controls="expr-plugin">插件条件</button>
+          <button role="tab" aria-selected="false" aria-controls="expr-custom">自定义表达式</button>
+          <button role="tab" aria-selected="false" aria-controls="expr-cookbook">条件配方</button>
+        </div>
+        <div id="expr-basic" class="tab-panel active" role="tabpanel">
+          <pre><code>{
+  "id": "root",
+  "type": "group",
+  "operator": "and",
+  "conditions": [
+    {
+      "id": "subject-code",
+      "type": "condition",
+      "field": "subject",
+      "operator": "contains",
+      "value": "verification"
+    },
+    {
+      "id": "from-github",
+      "type": "condition",
+      "field": "fromAddress",
+      "operator": "contains",
+      "value": "github.com"
+    }
+  ]
+}</code></pre>
+        </div>
+        <div id="expr-plugin" class="tab-panel" role="tabpanel">
+          <pre><code>{
+  "id": "account-set",
+  "type": "plugin",
+  "pluginId": "email_account_set",
+  "fields": {
+    "account_emails": ["ops@example.com", "notice@example.com"],
+    "match_type": "to",
+    "case_sensitive": false,
+    "api_endpoint": "",
+    "api_headers": {}
+  }
+}</code></pre>
+          <p class="muted small">外部账户列表 API 支持返回字符串数组或对象数组，静态列表和 API 返回会合并。</p>
+        </div>
+        <div id="expr-custom" class="tab-panel" role="tabpanel">
+          <pre><code>{
+  "id": "custom-js",
+  "type": "expression",
+  "fields": {
+    "engine": "expr.javascript",
+    "expression": "subject.includes('invoice') &amp;&amp; hasAttachments === true"
+  }
+}</code></pre>
+          <p class="muted small">前端类型中表达式引擎枚举为 <code>expr.javascript</code>、<code>expr.cel</code>、<code>expr.go_template</code>、<code>expr.jsonpath</code>。</p>
+        </div>
+        <div id="expr-cookbook" class="tab-panel" role="tabpanel">
+          <div class="grid two">
+            <div class="card">
+              <h3>验证码邮件</h3>
+              <p class="muted">发件人域名 + 主题关键词 + 最近时间范围。取件场景建议配合 <a href="./pickup-extractor.html">取件模板 V2</a>。</p>
+            </div>
+            <div class="card">
+              <h3>发票附件</h3>
+              <p class="muted">条件：主题包含 invoice，<code>email.has_attachments</code> 为 true，附件类型为 pdf。</p>
+            </div>
+            <div class="card">
+              <h3>账户池分流</h3>
+              <p class="muted">用 <code>email_account_set</code> 匹配特定收件账号，再用标签或 Webhook 分发到业务系统。</p>
+            </div>
+            <div class="card">
+              <h3>时间窗口</h3>
+              <p class="muted">用 <code>email_time_range</code> 约束 <code>date</code>、<code>received_at</code> 或相对时间，避免历史邮件重复命中。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <h3>常用条件插件字段</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>插件 ID</th><th>关键字段</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>always_pass</code></td><td>无</td><td>始终通过，适合临时测试或纯动作调试。</td></tr>
+            <tr><td><code>builtin.email_condition</code></td><td><code>email.from</code>、<code>email.to</code>、<code>email.subject</code>、<code>email.body</code>、<code>email.has_attachments</code>、<code>email.flags</code></td><td>内置 UI 条件插件，支持 equals、contains、starts_with、in 等操作符。</td></tr>
+            <tr><td><code>email_account_set</code></td><td><code>account_emails</code>、<code>match_type</code>、<code>case_sensitive</code>、<code>api_endpoint</code>、<code>api_proxy</code>、<code>api_headers</code></td><td>按发件人、收件人或两者匹配账户集合。</td></tr>
+            <tr><td><code>email_prefix</code></td><td><code>prefixes</code>、<code>match_type</code>、<code>match_mode</code>、<code>case_sensitive</code></td><td>按邮箱前缀过滤。</td></tr>
+            <tr><td><code>email_suffix</code></td><td><code>suffixes</code>、<code>match_type</code>、<code>match_mode</code>、<code>exact_match</code>、<code>case_sensitive</code></td><td>按邮箱后缀或域名过滤。</td></tr>
+            <tr><td><code>email_time_range</code></td><td><code>start_time</code>、<code>end_time</code>、<code>time_field</code>、<code>time_zone</code>、<code>relative_enabled</code></td><td>固定时间、相对时间、工作时间窗口。</td></tr>
+            <tr><td><code>email_size</code></td><td><code>size_type</code>、<code>unit</code>、<code>min_size</code>、<code>max_size</code>、<code>include_attachments</code></td><td>按邮件大小和附件数量过滤。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="plugins" class="section">
+      <h2>动作插件：命中后做什么</h2>
+      <p class="lead">动作是数组，每项都必须有 <code>id</code>、<code>pluginId</code>、<code>pluginName</code>、<code>config</code>、<code>enabled</code> 和 <code>executionOrder</code>。下面只列当前内置插件已注册字段，避免写出代码里不存在的配置。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>插件 ID</th><th>必填字段</th><th>常用字段</th><th>效果</th></tr></thead>
+          <tbody>
+            <tr><td><code>email_forward_action</code></td><td><code>to_address</code></td><td><code>subject_prefix</code>、<code>add_original_headers</code>、<code>forward_attachments</code>、<code>add_forward_note</code>、<code>forward_note</code></td><td>转发邮件。</td></tr>
+            <tr><td><code>email_delete_action</code></td><td>按插件配置</td><td>删除模式、备份、确认策略</td><td>删除或移动邮件。</td></tr>
+            <tr><td><code>email_label_action</code></td><td><code>action_type</code></td><td><code>labels</code>、<code>label_color</code>、<code>create_if_not_exists</code>、<code>cleanup_empty_labels</code></td><td>添加、移除、替换、清空标签。</td></tr>
+            <tr><td><code>webhook_action</code></td><td><code>url</code>、<code>method</code></td><td><code>headers</code>、<code>body</code>、<code>timeout</code>、<code>retry_count</code>、<code>success_condition</code>、代理字段</td><td>发送 HTTP 请求。</td></tr>
+            <tr><td><code>telegram_bot_action</code></td><td><code>bot_token</code>、<code>chat_id</code></td><td><code>message_template</code>、<code>template_engine</code>、<code>parse_mode</code>、<code>auto_escape</code>、代理字段</td><td>发送 Telegram 通知。</td></tr>
+            <tr><td><code>ai_process_action</code></td><td><code>custom_channel_type</code>、<code>custom_model</code>、<code>custom_api_key</code>、<code>user_prompt</code>、<code>output_mode</code>、<code>target_variable</code></td><td><code>custom_base_url</code>、<code>system_prompt</code>、<code>template_engine</code>、<code>max_tokens</code>、<code>temperature</code></td><td>调用 AI 处理邮件并写变量。</td></tr>
+            <tr><td><code>variable_extract_action</code></td><td><code>source</code></td><td><code>source_field</code>、<code>source_variable</code>、<code>expression_type</code>、<code>expression</code>、<code>output_name</code>、<code>return_type</code></td><td>从邮件或变量中提取值。</td></tr>
+            <tr><td><code>conditional_branch_action</code></td><td><code>branches</code></td><td><code>else_actions</code>、<code>return_first_match</code></td><td>按条件执行不同动作。</td></tr>
+            <tr><td><code>parallel_actions</code></td><td><code>actions</code></td><td><code>timeout_seconds</code>、<code>fail_fast</code>、<code>ignore_errors</code></td><td>并发执行多个子动作。</td></tr>
+            <tr><td><code>return_action</code></td><td>按插件配置</td><td>返回值、中断原因</td><td>中断后续动作链。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="动作配置示例">
+          <button role="tab" aria-selected="true" aria-controls="action-webhook">Webhook</button>
+          <button role="tab" aria-selected="false" aria-controls="action-telegram">Telegram</button>
+          <button role="tab" aria-selected="false" aria-controls="action-ai">AI 处理</button>
+          <button role="tab" aria-selected="false" aria-controls="action-extract">变量提取</button>
+        </div>
+        <div id="action-webhook" class="tab-panel active" role="tabpanel">
+          <pre><code>{
+  "id": "notify-crm",
+  "pluginId": "webhook_action",
+  "pluginName": "Webhook 通知",
+  "config": {
+    "url": "https://example.com/api/mail-events",
+    "method": "POST",
+    "content_type": "json",
+    "headers": [
+      { "key": "Authorization", "value": "Bearer ${WEBHOOK_TOKEN}" },
+      { "key": "X-Source", "value": "mailman" }
+    ],
+    "body": "JSON.stringify({ subject: Subject, from: From, body: TextBody })",
+    "timeout": 30,
+    "retry_count": 2,
+    "retry_interval": 1000,
+    "retry_backoff": "exponential",
+    "retry_max_interval": 60000,
+    "success_condition": "status_code",
+    "expected_status_codes": [200, 201, 202, 204],
+    "proxy_enabled": false
+  },
+  "enabled": true,
+  "executionOrder": 20
+}</code></pre>
+        </div>
+        <div id="action-telegram" class="tab-panel" role="tabpanel">
+          <pre><code>{
+  "id": "tg-alert",
+  "pluginId": "telegram_bot_action",
+  "pluginName": "Telegram Bot 通知",
+  "config": {
+    "bot_token": "123456:xxx",
+    "chat_id": "-1001234567890",
+    "thread_id": 0,
+    "template_engine": "javascript",
+    "message_template": "\"新邮件: \" + Subject + \"\\n发件人: \" + From",
+    "parse_mode": "none",
+    "auto_escape": true,
+    "disable_preview": true,
+    "silent": false,
+    "protect_content": false,
+    "timeout": 30,
+    "proxy_enabled": false
+  },
+  "enabled": true,
+  "executionOrder": 30
+}</code></pre>
+        </div>
+        <div id="action-ai" class="tab-panel" role="tabpanel">
+          <pre><code>{
+  "id": "classify-mail",
+  "pluginId": "ai_process_action",
+  "pluginName": "AI 处理",
+  "config": {
+    "custom_channel_type": "openai",
+    "custom_model": "gpt-4o-mini",
+    "custom_base_url": "",
+    "custom_api_key": "${AI_API_KEY}",
+    "system_prompt": "你是邮件分类助手，只返回 JSON。",
+    "user_prompt": "主题: {{.Subject}}\\n正文: {{.TextBody}}\\n请判断 risk_level 和 summary。",
+    "template_engine": "gotemplate",
+    "max_tokens": 1000,
+    "temperature": 0.2,
+    "output_mode": "set_variable",
+    "target_variable": "ai_result",
+    "variable_description": "AI 邮件分类结果"
+  },
+  "enabled": true,
+  "executionOrder": 40
+}</code></pre>
+        </div>
+        <div id="action-extract" class="tab-panel" role="tabpanel">
+          <pre><code>{
+  "id": "extract-code",
+  "pluginId": "variable_extract_action",
+  "pluginName": "变量提取",
+  "config": {
+    "source": "email",
+    "source_field": "text_body",
+    "expression_type": "javascript",
+    "expression": "TextBody.match(/\\b\\d{6}\\b/)?.[0] || ''",
+    "output_name": "verification_code",
+    "return_type": "string"
+  },
+  "enabled": true,
+  "executionOrder": 10
+}</code></pre>
+        </div>
+      </div>
+      <p class="muted small">插件注册入口：<code>backend/internal/triggerv2/plugins/builtin/registry.go</code>；插件字段来自各插件的 <code>GetUISchema</code>、<code>ConfigSchema</code> 与默认配置。</p>
+    </section>
+
+    <section id="pipeline" class="section">
+      <h2>组合不同能力实现复杂效果</h2>
+      <p class="lead">动作链不只是“命中后发通知”。变量、AI、分支、并行和中断组合起来，可以让邮件变成业务流程的一部分。</p>
+      <div class="grid three">
+        <div class="card">
+          <h3>线性处理</h3>
+          <p class="muted">提取验证码 → Webhook 回传 → 打标签。适合验证码取件、工单通知、账单归档。</p>
+        </div>
+        <div class="card">
+          <h3>AI 后分支</h3>
+          <p class="muted">AI 判断风险等级，低风险只打标签，高风险同时发 Telegram 和 Webhook。</p>
+        </div>
+        <div class="card">
+          <h3>并行加速</h3>
+          <p class="muted">Webhook、Telegram、转发同时执行。配合 <code>ignore_errors</code> 可以防止一个通知失败拖垮全部流程。</p>
+        </div>
+      </div>
+
+      <h3>条件分支示例</h3>
+      <pre><code>{
+  "id": "branch-by-risk",
+  "pluginId": "conditional_branch_action",
+  "pluginName": "条件分支",
+  "config": {
+    "branches": [
+      {
+        "name": "高风险",
+        "conditions": [
+          { "id": "risk-high", "type": "expression", "fields": { "engine": "expr.javascript", "expression": "ai_result.risk_level === 'high'" } }
+        ],
+        "actions": [
+          { "name": "通知群", "plugin_id": "telegram_bot_action", "config": { "bot_token": "...", "chat_id": "...", "message_template": "\"高风险邮件: \" + Subject" } },
+          { "name": "回调业务系统", "plugin_id": "webhook_action", "config": { "url": "https://example.com/risk", "method": "POST" } }
+        ]
+      }
+    ],
+    "else_actions": [
+      { "name": "普通标签", "plugin_id": "email_label_action", "config": { "action_type": "add", "labels": ["normal"] } }
+    ],
+    "return_first_match": true
+  },
+  "enabled": true,
+  "executionOrder": 50
+}</code></pre>
+
+      <h3>并行动作示例</h3>
+      <pre><code>{
+  "id": "parallel-notify",
+  "pluginId": "parallel_actions",
+  "pluginName": "并行动作",
+  "config": {
+    "actions": [
+      { "name": "Webhook", "plugin_id": "webhook_action", "config": { "url": "https://example.com/hook", "method": "POST" }, "enabled": true },
+      { "name": "Telegram", "plugin_id": "telegram_bot_action", "config": { "bot_token": "...", "chat_id": "...", "message_template": "\"新邮件: \" + Subject" }, "enabled": true }
+    ],
+    "timeout_seconds": 30,
+    "fail_fast": false,
+    "ignore_errors": true
+  },
+  "enabled": true,
+  "executionOrder": 60
+}</code></pre>
+    </section>
+
+    <section id="api" class="section">
+      <h2>触发器 API 速查</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>管理</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers?page=1&amp;limit=20&amp;search=github</code><span>分页列表</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/triggers</code><span>创建</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers/{id}</code><span>详情</span></div>
+          <div class="endpoint"><span class="method put">PUT</span><code>/api/triggers/{id}</code><span>更新</span></div>
+          <div class="endpoint"><span class="method delete">DELETE</span><code>/api/triggers/{id}</code><span>删除</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/triggers/{id}/enable</code><span>启用</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/triggers/{id}/disable</code><span>禁用</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/batch/enable</code><span>批量启用</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/batch/disable</code><span>批量禁用</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/batch/delete</code><span>批量删除</span></div>
+        </div>
+        <div class="card">
+          <h3>测试与诊断</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/test-condition</code><span>测试条件，body: expressions + testData</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/test-action</code><span>测试单动作，body: action + testData</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/test-complete</code><span>测试完整触发器</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/test-with-db-emails</code><span>用数据库邮件测试条件</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers/{id}/statistics</code><span>单规则统计</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers/logs/export</code><span>导出日志</span></div>
+        </div>
+      </div>
+      <div class="callout warning">注意：当前保护路由中，基础 CRUD 在 <code>/api/triggers</code> 下可用；测试类和批量类接口在 <code>/api/v2/triggers</code> 下注册。写外部系统接入时请按上表区分。</div>
+    </section>
+
+    <section id="debug" class="section">
+      <h2>排查手册</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>条件没有命中</h3>
+          <p class="muted">先用 <code>/api/v2/triggers/test-condition</code> 放入真实邮件字段测试。常见原因是字段名写错、同步后的正文是 <code>TextBody</code> 而不是 <code>Body</code>、发件人字段取的是 <code>FromAddress</code> 而不是展示名。</p>
+        </div>
+        <div class="card">
+          <h3>动作没有执行</h3>
+          <p class="muted">检查触发器 <code>enabled</code> 和动作 <code>enabled</code>，再看 <code>executionOrder</code> 是否符合预期。测试动作时必须带 <code>id</code> 和 <code>pluginId</code>。</p>
+        </div>
+        <div class="card">
+          <h3>Webhook 返回失败</h3>
+          <p class="muted">确认 <code>success_condition</code> 和期望状态码。若目标服务在内网，配置 <code>proxy_enabled</code>、<code>proxy_type</code>、<code>proxy_host</code>、<code>proxy_port</code>。</p>
+        </div>
+        <div class="card">
+          <h3>上线后重复触发</h3>
+          <p class="muted">检查同步策略、时间范围条件和邮件去重字段。验证码或通知类邮件建议加 <code>email_time_range</code> 或取件模板中的等待窗口。</p>
+        </div>
+      </div>
+      <div class="callout">
+        最小排查材料：触发器 ID、邮件 ID、日志 ID、动作 ID、插件 ID、测试请求体、后端日志时间段。把这些信息凑齐，基本就能定位到条件、插件配置或外部服务三类问题之一。
+      </div>
+    </section>
+
+    <p class="footer">下一篇建议阅读：<a href="./interceptors-templates.html">拦截器与模板复用</a></p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

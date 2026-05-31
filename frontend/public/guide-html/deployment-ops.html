@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>部署与生产运维 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Deployment & Ops</span>
+          <h1>从本地体验到生产环境运行</h1>
+          <p>Mailman 支持 All-in-One、Docker Compose、K3s、Helm 和源码开发。本页给出部署方式选择、环境变量、备份升级和运维监控建议。</p>
+          <div class="badge-row">
+            <span class="badge">Docker</span>
+            <span class="badge green">Compose</span>
+            <span class="badge violet">K3s / Helm</span>
+            <span class="badge amber">备份升级</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="30" y="34" width="300" height="172" rx="20" fill="#111827" stroke="#334155"/>
+            <rect x="58" y="64" width="70" height="70" rx="14" fill="#172554" stroke="#2563eb"/>
+            <rect x="145" y="64" width="70" height="70" rx="14" fill="#042f2e" stroke="#0f766e"/>
+            <rect x="232" y="64" width="70" height="70" rx="14" fill="#312e81" stroke="#7c3aed"/>
+            <rect x="86" y="164" width="188" height="24" rx="10" fill="#451a03" stroke="#d97706"/>
+            <text x="93" y="104" fill="#dbeafe" text-anchor="middle" font-size="12" font-weight="800">Docker</text>
+            <text x="180" y="104" fill="#ccfbf1" text-anchor="middle" font-size="12" font-weight="800">DB</text>
+            <text x="267" y="104" fill="#ede9fe" text-anchor="middle" font-size="12" font-weight="800">K8s</text>
+            <text x="180" y="181" fill="#fef3c7" text-anchor="middle" font-size="12" font-weight="800">Backup / Monitor</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#preflight">上线前</a>
+        <a href="#choose">部署选择</a>
+        <a href="#docker">Docker</a>
+        <a href="#compose">Compose</a>
+        <a href="#env">环境变量</a>
+        <a href="#develop">源码开发</a>
+        <a href="#backup">备份升级</a>
+        <a href="#ops">运维</a>
+      </nav>
+      <a href="./index.html">返回首页</a>
+    </div>
+
+    <section id="preflight" class="section">
+      <h2>生产上线前检查</h2>
+      <p class="lead">先把运行环境、域名、数据库、OAuth2 回调、密钥和健康检查固定下来，再开始导入真实账户。这样后续同步、取件和触发器才有稳定基础。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>检查项</th><th>要求</th><th>为什么重要</th></tr></thead>
+          <tbody>
+            <tr><td>外部域名</td><td>生产环境使用 HTTPS 域名访问后端。</td><td>OAuth2 回调、Webhook、浏览器安全策略都依赖稳定域名。</td></tr>
+            <tr><td>数据库</td><td>小规模可 SQLite，生产推荐 PostgreSQL。</td><td>多账户同步、触发器日志、业务资产更适合独立数据库。</td></tr>
+            <tr><td>加密密钥</td><td>固定设置 <code>ENCRYPTION_KEY</code>，升级和迁移不能丢。</td><td>OAuth2 token、AI key 等敏感字段需要可持续解密。</td></tr>
+            <tr><td>OAuth2 回调</td><td>Gmail/Outlook 控制台回调与 <code>/api/oauth2/callback/{provider}</code> 完全一致。</td><td>一个字符不一致都会导致授权失败。</td></tr>
+            <tr><td>备份任务</td><td>至少每天备份数据库和持久化数据。</td><td>邮件索引、模板、触发器、业务账户都在数据库中。</td></tr>
+            <tr><td>健康检查</td><td><code>GET /api/health</code> 接入监控。</td><td>升级和故障时先判断服务本身是否存活。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="choose" class="section">
+      <h2>部署方式选择</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>方式</th><th>适合人群</th><th>特点</th><th>文档/文件</th></tr></thead>
+          <tbody>
+            <tr><td>All-in-One</td><td>快速体验、小规模部署</td><td>一个镜像同时提供后端和前端</td><td><code>Dockerfile.all</code></td></tr>
+            <tr><td>Docker Compose</td><td>生产环境、单机部署</td><td>应用和 PostgreSQL 分离</td><td><code>docker-compose.yml</code></td></tr>
+            <tr><td>Helm / K8s</td><td>集群生产环境</td><td>支持 HPA、Ingress、PVC、NetworkPolicy</td><td><code>helm/mailman</code></td></tr>
+            <tr><td>源码开发</td><td>开发者</td><td>前端 Next.js + 后端 Go 单独启动</td><td><code>backend/</code>、<code>frontend/</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="docker" class="section">
+      <h2>Docker All-in-One</h2>
+      <pre><code>docker run -d \
+  --name mailman \
+  -p 8080:8080 \
+  -v mailman_data:/app/data \
+  -e DB_DRIVER=sqlite \
+  -e DB_NAME=/app/data/mailman.db \
+  --restart unless-stopped \
+  ghcr.io/seongminhwan/mailman-all:latest</code></pre>
+      <div class="callout warning">
+        All-in-One 镜像工作目录为 <code>/app/backend</code>，前端静态文件位于 <code>/app/frontend/out</code>。HTML 接入手册来自前端 public 构建产物，路径为 <code>/guide-html/index.html</code>。
+      </div>
+    </section>
+
+    <section id="compose" class="section">
+      <h2>Docker Compose 生产部署</h2>
+      <pre><code>cat > .env << 'EOF'
+POSTGRES_DB=mailman
+POSTGRES_USER=mailman
+POSTGRES_PASSWORD=change-me
+MAILMAN_PORT=8080
+EOF
+
+docker compose up -d
+docker compose logs -f mailman</code></pre>
+      <p class="muted">当前 <code>docker-compose.yml</code> 使用 PostgreSQL 16 Alpine，并将应用数据挂载到 <code>mailman_data</code>。</p>
+      <div class="callout warning">
+        <code>POSTGRES_PASSWORD</code>、<code>ENCRYPTION_KEY</code>、OAuth2 client secret 和 AI key 不要提交到仓库。建议使用服务器上的 <code>.env</code>、密钥管理服务或部署平台 Secret。
+      </div>
+    </section>
+
+    <section id="env" class="section">
+      <h2>关键环境变量</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>变量</th><th>说明</th><th>默认/示例</th></tr></thead>
+          <tbody>
+            <tr><td><code>SERVER_HOST</code></td><td>后端监听地址</td><td><code>0.0.0.0</code></td></tr>
+            <tr><td><code>SERVER_PORT</code></td><td>后端监听端口</td><td><code>8080</code></td></tr>
+            <tr><td><code>DB_DRIVER</code></td><td>数据库驱动</td><td><code>sqlite</code>、<code>postgres</code>、<code>mysql</code></td></tr>
+            <tr><td><code>DB_HOST</code> / <code>DB_PORT</code></td><td>数据库地址</td><td>PostgreSQL 默认 <code>5432</code></td></tr>
+            <tr><td><code>DB_USER</code> / <code>DB_PASSWORD</code></td><td>数据库认证</td><td>生产环境必须设置强密码</td></tr>
+            <tr><td><code>DB_NAME</code></td><td>数据库名或 SQLite 文件路径</td><td><code>/app/data/mailman.db</code></td></tr>
+            <tr><td><code>ENCRYPTION_KEY</code></td><td>敏感数据加密密钥</td><td>建议生产环境固定设置</td></tr>
+            <tr><td><code>GMAIL_REDIRECT_URI</code></td><td>Gmail OAuth2 回调覆盖值</td><td><code>https://domain/api/oauth2/callback/gmail</code></td></tr>
+            <tr><td><code>OUTLOOK_REDIRECT_URI</code></td><td>Outlook OAuth2 回调覆盖值</td><td><code>https://domain/api/oauth2/callback/outlook</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted small">AI 和 OAuth2 client 凭据主要通过 Web 界面管理，不建议硬编码到镜像或前端代码中。</p>
+    </section>
+
+    <section id="develop" class="section">
+      <h2>源码开发模式</h2>
+      <p class="lead">开发时前后端可以分开启动：后端提供 API，前端 Next.js 通过 <code>NEXT_PUBLIC_API_URL</code> 指向后端。HTML 接入手册位于前端 <code>public/guide-html</code>，修改后浏览器刷新即可看到。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>后端</h3>
+          <pre><code>cd backend
+go run ./cmd/server</code></pre>
+          <p class="muted">启动后先访问 <code>http://127.0.0.1:8080/api/health</code>。</p>
+        </div>
+        <div class="card">
+          <h3>前端</h3>
+          <pre><code>cd frontend
+npm install
+npm run dev</code></pre>
+          <p class="muted">默认访问 <code>http://127.0.0.1:3000</code>，本地端口冲突时 Next.js 会提示新端口。</p>
+        </div>
+      </div>
+      <div class="callout">
+        如果前端页面能打开但 API 全部失败，先检查 <code>NEXT_PUBLIC_API_URL</code>、浏览器 Network 中的实际请求地址，以及后端 CORS/反向代理配置。
+      </div>
+    </section>
+
+    <section id="backup" class="section">
+      <h2>备份、升级与回滚</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>PostgreSQL 备份</h3>
+          <pre><code>docker compose exec postgres pg_dump -U mailman mailman > mailman-$(date +%F).sql</code></pre>
+          <p class="muted">恢复前先停止应用写入，再导入到新库并验证 <code>/api/health</code>。</p>
+        </div>
+        <div class="card">
+          <h3>SQLite 备份</h3>
+          <pre><code>docker cp mailman:/app/data/mailman.db ./mailman-$(date +%F).db</code></pre>
+          <p class="muted">SQLite 适合小规模部署，复制前最好短暂停止容器或使用数据库在线备份能力。</p>
+        </div>
+        <div class="card">
+          <h3>升级流程</h3>
+          <ol>
+            <li>备份数据库、持久化目录和 <code>.env</code>。</li>
+            <li>拉取新镜像或部署新版本。</li>
+            <li>启动后检查 <code>/api/health</code>、登录、账户列表。</li>
+            <li>抽样验证同步、取件、触发器、AI 和代理池。</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>回滚流程</h3>
+          <ol>
+            <li>保留上一版本镜像标签或构建产物。</li>
+            <li>如数据库迁移不可逆，使用升级前备份恢复。</li>
+            <li>恢复后重新测试 OAuth2、同步和触发器。</li>
+            <li>记录失败版本、错误日志和回滚时间。</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <section id="ops" class="section">
+      <h2>生产运维建议</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>备份</h3>
+          <ul>
+            <li>SQLite：备份 <code>/app/data/mailman.db</code> 和附件数据。</li>
+            <li>PostgreSQL：使用 <code>pg_dump</code> 定期备份。</li>
+            <li>升级前先备份数据库和环境变量。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>升级</h3>
+          <ul>
+            <li>拉取新镜像后重启容器。</li>
+            <li>观察 <code>/api/health</code> 和应用日志。</li>
+            <li>验证 OAuth2、同步、取件、触发器核心路径。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>监控</h3>
+          <ul>
+            <li>健康检查：<code>GET /api/health</code>。</li>
+            <li>同步状态：<code>/api/sync/account-status</code>。</li>
+            <li>触发器日志：<code>/api/triggers/logs/stats</code>。</li>
+            <li>活动日志：<code>/api/activities/stats</code>。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>安全</h3>
+          <ul>
+            <li>生产环境使用 HTTPS 和可信域名。</li>
+            <li>OAuth2 redirect URI 必须与云平台配置完全一致。</li>
+            <li>为团队成员配置最小权限角色。</li>
+            <li>定期轮换 OAuth2 client secret 和 AI key。</li>
+          </ul>
+        </div>
+      </div>
+      <h3>升级后冒烟测试</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>验证接口</th><th>通过标准</th></tr></thead>
+          <tbody>
+            <tr><td>服务健康</td><td><code>GET /api/health</code></td><td>返回成功且响应时间稳定。</td></tr>
+            <tr><td>登录认证</td><td><code>POST /api/auth/login</code>、<code>GET /api/auth/me</code></td><td>能获取 Token 并读取当前用户。</td></tr>
+            <tr><td>账户</td><td><code>GET /api/accounts/paginated</code></td><td>分页列表正常，权限过滤正确。</td></tr>
+            <tr><td>同步</td><td><code>POST /api/accounts/{id}/sync-now</code></td><td>同步成功或返回可解释的 provider 错误。</td></tr>
+            <tr><td>取件</td><td><code>POST /api/pickup/poll</code></td><td>候选邮件和提取结果符合预期。</td></tr>
+            <tr><td>触发器</td><td><code>POST /api/v2/triggers/test-complete</code></td><td>条件和动作测试通过。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="footer">已有部署文档可继续参考：根目录 README、docs/deployment.md、docs/deployment-guide.md、helm/mailman/README.md。</p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

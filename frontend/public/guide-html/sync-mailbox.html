@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>同步、邮件管理与搜索 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Sync & Mailbox</span>
+          <h1>把邮箱邮件稳定同步到 Mailman</h1>
+          <p>同步系统负责把 provider 邮件拉取到本地数据库，邮件管理器和搜索接口都读取本地数据。全局配置设默认规则，账户配置覆盖单个账户，临时同步用于取件等短时间高频场景。</p>
+          <div class="badge-row">
+            <span class="badge">全局同步</span>
+            <span class="badge green">账户覆盖</span>
+            <span class="badge amber">临时同步</span>
+            <span class="badge violet">搜索读取</span>
+          </div>
+        </div>
+        <div class="hero-art">
+          <svg viewBox="0 0 360 240" aria-hidden="true">
+            <rect x="28" y="34" width="304" height="172" rx="20" fill="#111827" stroke="#334155"/>
+            <rect x="52" y="58" width="92" height="56" rx="12" fill="#172554" stroke="#2563eb"/>
+            <rect x="216" y="58" width="92" height="56" rx="12" fill="#042f2e" stroke="#0f766e"/>
+            <path d="M144 86 C170 52 194 52 216 86" fill="none" stroke="#60a5fa" stroke-width="4" stroke-linecap="round"/>
+            <path d="M216 94 C190 128 166 128 144 94" fill="none" stroke="#2dd4bf" stroke-width="4" stroke-linecap="round"/>
+            <rect x="86" y="150" width="188" height="30" rx="10" fill="#1f2937"/>
+            <text x="98" y="90" fill="#dbeafe" text-anchor="middle" font-size="12" font-weight="800">Provider</text>
+            <text x="262" y="90" fill="#ccfbf1" text-anchor="middle" font-size="12" font-weight="800">Database</text>
+            <text x="180" y="170" fill="#e5e7eb" text-anchor="middle" font-size="12" font-weight="800">Search / Detail / Attachments</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#zero">0 到 1</a>
+        <a href="#concepts">同步层级</a>
+        <a href="#api">同步接口</a>
+        <a href="#mailbox">邮件读取</a>
+        <a href="#search-fields">搜索字段</a>
+        <a href="#monitor">监控</a>
+        <a href="#practice">实践建议</a>
+        <a href="#runbook">排错路径</a>
+      </nav>
+      <a href="/main?tab=sync-config" target="_top">打开同步配置</a>
+    </div>
+
+    <section id="zero" class="section">
+      <h2>从 0 到 1 配好同步</h2>
+      <p class="lead">同步是邮件管理、取件、触发器的共同地基。一个新环境建议先配置全局默认值，再给关键账户单独覆盖，最后用搜索接口验证数据库中确实存在目标邮件。</p>
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>确认账户可访问</strong><br><span class="muted">完成 OAuth2 或 IMAP 接入后，先读取 <code>GET /api/accounts/{id}/mailboxes</code>，确认 provider 文件夹能正常返回。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>设置全局默认</strong><br><span class="muted">全局配置控制默认是否自动同步、默认间隔、默认文件夹、worker 数和每轮邮件数量。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>给账户覆盖配置</strong><br><span class="muted">关键账户可以更短间隔、更多文件夹；大邮箱账户可以限制为 <code>INBOX</code> 并降低每轮压力。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>手动同步并验证搜索</strong><br><span class="muted">调用 <code>POST /api/accounts/{id}/sync-now</code> 后，使用 <code>GET /api/emails/search</code> 检查目标邮件是否已入库。</span></div></div>
+      </div>
+      <pre><code>curl -X PUT "$BASE_URL/api/sync/global-config" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "default_enable_sync": true,
+    "default_sync_interval": 300,
+    "default_sync_folders": ["INBOX"],
+    "max_sync_workers": 10,
+    "max_emails_per_sync": 100
+  }'</code></pre>
+    </section>
+
+    <section id="concepts" class="section">
+      <h2>同步配置层级</h2>
+      <div class="grid three">
+        <div class="card">
+          <h3>全局同步配置</h3>
+          <p class="muted">由 <code>GlobalSyncConfig</code> 表示，包含默认启用、默认间隔、默认文件夹、最大 worker、每次同步邮件数。</p>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/sync/global-config</code><span>读取</span></div>
+          <div class="endpoint"><span class="method put">PUT</span><code>/api/sync/global-config</code><span>更新</span></div>
+        </div>
+        <div class="card">
+          <h3>账户同步配置</h3>
+          <p class="muted">由 <code>EmailAccountSyncConfig</code> 表示，按账户覆盖全局默认值，并记录同步状态与错误恢复字段。</p>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/accounts/{id}/sync-config</code><span>读取</span></div>
+          <div class="endpoint"><span class="method put">PUT</span><code>/api/accounts/{id}/sync-config</code><span>更新</span></div>
+        </div>
+        <div class="card">
+          <h3>临时同步配置</h3>
+          <p class="muted">由 <code>TemporarySyncConfig</code> 表示，带过期时间，适合取件时短时间高频拉取。</p>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/{id}/sync-config/temporary</code><span>创建</span></div>
+        </div>
+      </div>
+      <h3>账户同步配置示例</h3>
+      <pre><code>curl -X PUT "$BASE_URL/api/accounts/12/sync-config" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enable_auto_sync": true,
+    "sync_interval": 120,
+    "sync_folders": ["INBOX", "Updates"]
+  }'
+
+curl -X POST "$BASE_URL/api/accounts/12/sync-config/temporary" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sync_interval": 5,
+    "sync_folders": ["INBOX"],
+    "duration_minutes": 5
+  }'</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>状态字段</th><th>来源</th><th>含义</th><th>处理建议</th></tr></thead>
+          <tbody>
+            <tr><td><code>sync_status</code></td><td><code>EmailAccountSyncConfig</code></td><td><code>idle</code>、<code>syncing</code>、<code>error</code>。</td><td><code>error</code> 时优先查看 <code>last_sync_error</code> 和账户认证状态。</td></tr>
+            <tr><td><code>last_sync_time</code></td><td>账户配置</td><td>最近一次同步开始时间。</td><td>长时间不更新说明自动同步未调度或账户被禁用。</td></tr>
+            <tr><td><code>last_sync_end_time</code></td><td>账户配置</td><td>最近一次同步结束时间。</td><td>开始时间有、结束时间无，说明可能仍在执行或异常中断。</td></tr>
+            <tr><td><code>last_history_id</code></td><td>Gmail 增量游标</td><td>用于 Gmail 增量同步。</td><td>不要随意清理；重建全量同步前再删除同步记录。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="api" class="section">
+      <h2>同步接口</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>接口</th><th>用途</th><th>典型页面/场景</th></tr></thead>
+          <tbody>
+            <tr><td><code>POST /api/accounts/{id}/sync-now</code></td><td>立即同步某个账户</td><td>账户管理、同步配置、取件前预热</td></tr>
+            <tr><td><code>GET /api/accounts/{id}/sync-statistics</code></td><td>查看账户同步统计</td><td>诊断同步速度和错误</td></tr>
+            <tr><td><code>GET /api/accounts/{id}/mailboxes</code></td><td>读取 provider 文件夹</td><td>配置同步文件夹</td></tr>
+            <tr><td><code>GET /api/sync/configs</code></td><td>查看所有账户同步配置</td><td>同步配置总览</td></tr>
+            <tr><td><code>POST /api/sync/batch-config</code></td><td>批量设置账户同步配置</td><td>批量导入账户后的统一配置</td></tr>
+            <tr><td><code>GET /api/accounts/{id}/sync-records</code></td><td>增量同步记录</td><td>排查漏同步、重复同步</td></tr>
+            <tr><td><code>DELETE /api/accounts/{id}/sync-records</code></td><td>清理增量同步记录</td><td>重新全量同步前使用</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pre><code>curl -X POST "$BASE_URL/api/accounts/12/sync-now" \
+  -H "Authorization: Bearer $TOKEN"
+
+curl "$BASE_URL/api/sync/account-status?include_config=true" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+    </section>
+
+    <section id="mailbox" class="section">
+      <h2>邮件读取与搜索</h2>
+      <p class="lead">Mailman 的搜索接口读取数据库中的邮件，不直接请求 provider。因此“同步”是阅读邮件、触发器和取件的基础。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>账户内读取</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/account-emails/fetch/{id}</code><span>抓取并保存邮件</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/account-emails/list/{id}</code><span>账户邮件列表</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/account-emails/folders</code><span>文件夹汇总</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/account-emails/extract/{id}</code><span>账户内提取</span></div>
+        </div>
+        <div class="card">
+          <h3>全局读取</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/account-emails/list/all</code><span>所有邮件</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/emails/search</code><span>条件搜索</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/emails/{id}</code><span>邮件详情</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/emails/{id}/sync-attachments</code><span>同步附件</span></div>
+        </div>
+      </div>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="搜索场景">
+          <button role="tab" aria-selected="true" aria-controls="search-code">验证码搜索</button>
+          <button role="tab" aria-selected="false" aria-controls="search-domain">按域名搜索</button>
+          <button role="tab" aria-selected="false" aria-controls="search-folder">按文件夹读取</button>
+        </div>
+        <div id="search-code" class="tab-panel active" role="tabpanel">
+          <pre><code>curl "$BASE_URL/api/emails/search?account_id=12&amp;to_query=user@example.com&amp;subject_query=code&amp;limit=20" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+        </div>
+        <div id="search-domain" class="tab-panel" role="tabpanel">
+          <pre><code>curl "$BASE_URL/api/emails/search?from_query=github.com&amp;start_date=2026-01-01T00:00:00Z&amp;limit=50" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+        </div>
+        <div id="search-folder" class="tab-panel" role="tabpanel">
+          <pre><code>curl "$BASE_URL/api/account-emails/list/12?mailbox=INBOX&amp;limit=50&amp;offset=0" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="search-fields" class="section">
+      <h2>邮件搜索字段</h2>
+      <p class="lead"><code>GET /api/emails/search</code> 和 <code>GET /api/account-emails/list/{id}</code> 都使用高级搜索参数。字段来自 <code>backend/internal/api/email_query_handlers.go</code> 的 Swagger 注释和解析逻辑。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>参数</th><th>说明</th><th>示例</th></tr></thead>
+          <tbody>
+            <tr><td><code>account_id</code></td><td>仅全局搜索接口支持，用于限定账户。</td><td><code>account_id=12</code></td></tr>
+            <tr><td><code>limit</code> / <code>offset</code></td><td>分页参数，limit 默认 50，最大 100。</td><td><code>limit=20&amp;offset=0</code></td></tr>
+            <tr><td><code>sort_by</code></td><td>排序：<code>date_desc</code>、<code>date_asc</code>、<code>subject_asc</code>、<code>subject_desc</code>。</td><td><code>sort_by=date_desc</code></td></tr>
+            <tr><td><code>start_date</code> / <code>end_date</code></td><td>RFC3339 时间范围。</td><td><code>start_date=2026-05-31T10:00:00Z</code></td></tr>
+            <tr><td><code>from_query</code> / <code>to_query</code> / <code>cc_query</code></td><td>发件人、收件人、抄送人模糊匹配。</td><td><code>to_query=user@example.com</code></td></tr>
+            <tr><td><code>subject_query</code></td><td>主题模糊匹配。</td><td><code>subject_query=verification</code></td></tr>
+            <tr><td><code>body_query</code> / <code>html_query</code></td><td>纯文本正文或 HTML 正文模糊匹配。</td><td><code>body_query=reset password</code></td></tr>
+            <tr><td><code>keyword</code></td><td>跨文本字段全局搜索。</td><td><code>keyword=invoice</code></td></tr>
+            <tr><td><code>mailbox</code></td><td>按 provider 文件夹过滤。</td><td><code>mailbox=INBOX</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <pre><code>curl "$BASE_URL/api/emails/search?account_id=12&amp;to_query=login@example.com&amp;subject_query=code&amp;start_date=2026-05-31T10:00:00Z&amp;limit=10&amp;sort_by=date_desc" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+    </section>
+
+    <section id="monitor" class="section">
+      <h2>同步监控</h2>
+      <div class="grid three">
+        <div class="card"><h3>队列指标</h3><code>GET /api/sync/queue-metrics</code><p class="muted">查看队列长度、worker 状态和处理速度。</p></div>
+        <div class="card"><h3>账户状态</h3><code>GET /api/sync/account-status</code><p class="muted">按账户查看同步状态、最近错误和配置。</p></div>
+        <div class="card"><h3>管理器统计</h3><code>GET /api/sync/manager-stats</code><p class="muted">查看同步管理器整体运行情况。</p></div>
+      </div>
+      <p class="muted small">模型依据：<code>EmailAccountSyncConfig</code>、<code>SyncCursor</code>、<code>TemporarySyncConfig</code>、<code>SyncStatistics</code>、<code>SyncRun</code>。</p>
+    </section>
+
+    <section id="practice" class="section">
+      <h2>实践建议</h2>
+      <div class="callout success">
+        新账户接入后，先手动同步一次，再开启自动同步。这样能把 OAuth2、provider 权限、代理、文件夹配置问题尽早暴露出来。
+      </div>
+      <div class="grid two">
+        <div class="card"><h3>验证码账户</h3><p class="muted">同步间隔可以稍短，但建议通过 <code>/api/pickup/poll</code> 触发临时同步，而不是长期全局高频同步。</p></div>
+        <div class="card"><h3>大邮箱账户</h3><p class="muted">限制同步文件夹和每次同步数量，保留增量游标，避免频繁清理同步记录。</p></div>
+        <div class="card"><h3>多账户运营</h3><p class="muted">使用批量同步配置、账户标签和代理池分组，把账户按业务、地区、风险分层。</p></div>
+        <div class="card"><h3>排查漏信</h3><p class="muted">检查 provider 文件夹、同步记录、搜索条件、转发落件地址和账户错误状态。</p></div>
+      </div>
+    </section>
+
+    <section id="runbook" class="section">
+      <h2>同步故障排查路径</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>同步接口报错</h3>
+          <ol>
+            <li>调用 <code>GET /api/accounts/{id}</code> 确认账户存在且属于当前组织。</li>
+            <li>调用 <code>GET /api/accounts/{id}/mailboxes</code> 验证 provider 凭据和代理链路。</li>
+            <li>查看 <code>GET /api/accounts/{id}/sync-config</code> 的 <code>last_sync_error</code>。</li>
+            <li>若 OAuth2 过期，回到账户 OAuth2 重连，不要只重试同步。</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>搜索不到邮件</h3>
+          <ol>
+            <li>先放宽搜索，只保留 <code>account_id</code> 和 <code>limit</code>。</li>
+            <li>确认 <code>start_date</code> 没有晚于邮件时间。</li>
+            <li>检查目标邮件实际所在文件夹是否在 <code>sync_folders</code> 中。</li>
+            <li>转发场景同时搜索落件地址和原始地址，避免只看 <code>to_query</code>。</li>
+          </ol>
+        </div>
+      </div>
+      <div class="callout success">
+        最小闭环：<code>mailboxes</code> 能返回、<code>sync-now</code> 能成功、<code>emails/search</code> 能搜到、<code>pickup/poll</code> 能提取。四步都通过后，再配置触发器或业务集成。
+      </div>
+    </section>
+
+    <p class="footer">源码校验：sync_config.go、sync_config_handlers.go、email_query_handlers.go、email.service.ts</p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

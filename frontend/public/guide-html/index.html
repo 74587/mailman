@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mailman 接入手册中心</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Mailman Documentation Hub</span>
+          <h1>从邮箱接入到自动化编排的完整指南</h1>
+          <p>这套 HTML 文档按真实功能边界组织，覆盖账户、OAuth2、同步、取件、触发器、拦截器、AI、业务资料、代理池、权限和运维。每篇文档都标注对应 API 路由与源码依据，方便用户从 0 到 1，也方便开发者做二次接入。</p>
+          <div class="badge-row">
+            <span class="badge">HTML 文档</span>
+            <span class="badge green">SVG 流程图</span>
+            <span class="badge violet">多场景 Tab</span>
+            <span class="badge amber">接口与源码对齐</span>
+          </div>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <svg viewBox="0 0 360 240" role="img">
+            <defs>
+              <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#60a5fa"/>
+                <stop offset="1" stop-color="#2dd4bf"/>
+              </linearGradient>
+            </defs>
+            <rect x="20" y="24" width="320" height="192" rx="24" fill="#111827" stroke="#334155"/>
+            <rect x="48" y="52" width="104" height="64" rx="14" fill="#172554" stroke="#2563eb"/>
+            <rect x="208" y="52" width="104" height="64" rx="14" fill="#042f2e" stroke="#0f766e"/>
+            <rect x="48" y="148" width="104" height="44" rx="14" fill="#312e81" stroke="#7c3aed"/>
+            <rect x="208" y="148" width="104" height="44" rx="14" fill="#451a03" stroke="#d97706"/>
+            <path d="M152 84 H208" stroke="url(#g)" stroke-width="4" stroke-linecap="round"/>
+            <path d="M100 116 V148" stroke="url(#g)" stroke-width="4" stroke-linecap="round"/>
+            <path d="M260 116 V148" stroke="url(#g)" stroke-width="4" stroke-linecap="round"/>
+            <path d="M152 170 H208" stroke="url(#g)" stroke-width="4" stroke-linecap="round"/>
+            <text x="100" y="88" fill="#dbeafe" text-anchor="middle" font-size="13" font-weight="700">Accounts</text>
+            <text x="260" y="88" fill="#ccfbf1" text-anchor="middle" font-size="13" font-weight="700">Sync</text>
+            <text x="100" y="174" fill="#ede9fe" text-anchor="middle" font-size="13" font-weight="700">Trigger</text>
+            <text x="260" y="174" fill="#fef3c7" text-anchor="middle" font-size="13" font-weight="700">AI & API</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="#path">学习路径</a>
+        <a href="#coverage">45 项能力</a>
+        <a href="#docs">文档列表</a>
+        <a href="#routes">接口地图</a>
+        <a href="#sources">源码依据</a>
+      </nav>
+      <a href="/swagger/index.html" target="_blank" rel="noreferrer">打开 Swagger</a>
+    </div>
+
+    <section id="path" class="section">
+      <h2>推荐学习路径</h2>
+      <p class="lead">普通用户先走“邮箱运营”路径，集成方先走“API 接入”路径，自动化用户从触发器和取件模板开始。三条路径最终会汇合到配方文档。</p>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="学习路径">
+          <button role="tab" aria-selected="true" aria-controls="path-user">邮箱运营</button>
+          <button role="tab" aria-selected="false" aria-controls="path-api">API 接入</button>
+          <button role="tab" aria-selected="false" aria-controls="path-automation">自动化编排</button>
+        </div>
+        <div id="path-user" class="tab-panel active" role="tabpanel">
+          <div class="flow">
+            <div class="flow-step"><span class="step-no">1</span><div><strong>首次启动</strong><br><span class="muted">完成登录、系统配置、OAuth2 和 AI 基础配置。</span></div></div>
+            <div class="flow-step"><span class="step-no">2</span><div><strong>接入邮箱账户</strong><br><span class="muted">添加 Gmail、Outlook 或 IMAP/SMTP 账户，完成验证。</span></div></div>
+            <div class="flow-step"><span class="step-no">3</span><div><strong>配置同步与取件</strong><br><span class="muted">设置同步频率、同步文件夹、临时同步和验证码取件。</span></div></div>
+            <div class="flow-step"><span class="step-no">4</span><div><strong>管理业务资料</strong><br><span class="muted">把邮箱账户和业务平台账号、2FA、恢复码、代理配置关联起来。</span></div></div>
+          </div>
+        </div>
+        <div id="path-api" class="tab-panel" role="tabpanel">
+          <div class="flow">
+            <div class="flow-step"><span class="step-no">1</span><div><strong>登录拿 Token</strong><br><span class="muted"><code>POST /api/auth/login</code> 获取 Bearer Token。</span></div></div>
+            <div class="flow-step"><span class="step-no">2</span><div><strong>账户与 OAuth2</strong><br><span class="muted">使用 OAuth2 session 或 <code>/api/accounts/oauth2/onboard</code> 开通账户。</span></div></div>
+            <div class="flow-step"><span class="step-no">3</span><div><strong>同步与读取</strong><br><span class="muted">调用 <code>/api/accounts/{id}/sync-now</code>、<code>/api/emails/search</code>、<code>/api/pickup/poll</code>。</span></div></div>
+            <div class="flow-step"><span class="step-no">4</span><div><strong>自动化接入</strong><br><span class="muted">用触发器、Webhook、AI 处理和变量提取把邮件流转给外部系统。</span></div></div>
+          </div>
+        </div>
+        <div id="path-automation" class="tab-panel" role="tabpanel">
+          <div class="flow">
+            <div class="flow-step"><span class="step-no">1</span><div><strong>写条件</strong><br><span class="muted">从内置条件插件开始，再进阶到表达式条件。</span></div></div>
+            <div class="flow-step"><span class="step-no">2</span><div><strong>排动作链</strong><br><span class="muted">组合变量提取、AI 处理、条件分支、并行动作、Webhook 和中断流程。</span></div></div>
+            <div class="flow-step"><span class="step-no">3</span><div><strong>加拦截器</strong><br><span class="muted">用前置/后置拦截器统一做审计、跳过、改写和错误策略。</span></div></div>
+            <div class="flow-step"><span class="step-no">4</span><div><strong>看日志调优</strong><br><span class="muted">结合触发器日志、取件日志、拦截器日志和同步监控定位问题。</span></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="coverage" class="section">
+      <h2>45 项能力覆盖路线图</h2>
+      <p class="lead">这里把接入手册计划里的能力项显式落到具体页面。用户可以按编号查漏补缺；后续新增功能也会先进入这张表，再扩写到专题页。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>能力项</th><th>所在文档</th><th>关键接口或源码</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>首次启动与部署入口</td><td><a href="./quick-start.html#first-login">快速上手</a></td><td><code>Dockerfile.all</code>、<code>/api/health</code></td></tr>
+            <tr><td>2</td><td>登录、Token 与当前用户</td><td><a href="./quick-start.html#first-login">快速上手</a> / <a href="./api-reference.html#auth">API 总览</a></td><td><code>/api/auth/login</code>、<code>/api/auth/me</code></td></tr>
+            <tr><td>3</td><td>菜单地图和学习路径</td><td><a href="./quick-start.html#menus">快速上手</a></td><td><code>menu-config.ts</code>、<code>sidebar.tsx</code></td></tr>
+            <tr><td>4</td><td>首次完整闭环验收</td><td><a href="./quick-start.html#first-run">快速上手</a></td><td>账户、同步、邮件、触发器日志接口</td></tr>
+            <tr><td>5</td><td>OAuth2 全局配置</td><td><a href="./accounts-oauth.html#oauth-flow">邮箱账户与 OAuth2</a></td><td><code>/api/oauth2/global-config</code></td></tr>
+            <tr><td>6</td><td>OAuth2 授权会话</td><td><a href="./accounts-oauth.html#oauth-flow">邮箱账户与 OAuth2</a></td><td><code>/api/oauth2/session/start/{provider}</code></td></tr>
+            <tr><td>7</td><td>OAuth2 手动 code 模式</td><td><a href="./accounts-oauth.html#oauth-flow">邮箱账户与 OAuth2</a></td><td><code>/api/oauth2/session/manual/*</code></td></tr>
+            <tr><td>8</td><td>OAuth2 账户入库、验证、初始同步</td><td><a href="./accounts-oauth.html#oauth-flow">邮箱账户与 OAuth2</a></td><td><code>/api/accounts/oauth2/onboard</code></td></tr>
+            <tr><td>9</td><td>密码账户接入</td><td><a href="./accounts-oauth.html#password-imap">邮箱账户与 OAuth2</a></td><td><code>authType=password</code></td></tr>
+            <tr><td>10</td><td>Token 账户接入</td><td><a href="./accounts-oauth.html#password-imap">邮箱账户与 OAuth2</a></td><td><code>authType=token</code></td></tr>
+            <tr><td>11</td><td>邮件 provider 与自定义 IMAP/SMTP</td><td><a href="./accounts-oauth.html#account-fields">邮箱账户与 OAuth2</a></td><td><code>/api/providers</code></td></tr>
+            <tr><td>12</td><td>转发落件地址和域名邮箱</td><td><a href="./accounts-oauth.html#account-fields">邮箱账户与 OAuth2</a></td><td><code>/api/accounts/{id}/forwarded-addresses</code></td></tr>
+            <tr><td>13</td><td>账户代理与回退策略</td><td><a href="./accounts-oauth.html#account-fields">邮箱账户与 OAuth2</a> / <a href="./ai-business-proxy.html#proxy">AI 与运营</a></td><td><code>/api/accounts/{id}/proxy-config</code></td></tr>
+            <tr><td>14</td><td>账户错误状态与恢复</td><td><a href="./accounts-oauth.html#errors">邮箱账户与 OAuth2</a></td><td><code>AccountErrorStatus</code></td></tr>
+            <tr><td>15</td><td>全局同步配置</td><td><a href="./sync-mailbox.html#concepts">同步与邮件管理</a></td><td><code>/api/sync/global-config</code></td></tr>
+            <tr><td>16</td><td>账户同步配置</td><td><a href="./sync-mailbox.html#concepts">同步与邮件管理</a></td><td><code>/api/accounts/{id}/sync-config</code></td></tr>
+            <tr><td>17</td><td>临时同步覆盖</td><td><a href="./sync-mailbox.html#concepts">同步与邮件管理</a> / <a href="./pickup-extractor.html#poll">取件</a></td><td><code>/api/accounts/{id}/sync-config/temporary</code></td></tr>
+            <tr><td>18</td><td>立即同步和同步记录</td><td><a href="./sync-mailbox.html#api">同步与邮件管理</a></td><td><code>/api/accounts/{id}/sync-now</code></td></tr>
+            <tr><td>19</td><td>邮件列表、详情与搜索</td><td><a href="./sync-mailbox.html#mailbox">同步与邮件管理</a></td><td><code>/api/emails/search</code>、<code>/api/emails/{id}</code></td></tr>
+            <tr><td>20</td><td>附件同步与文件夹</td><td><a href="./sync-mailbox.html#mailbox">同步与邮件管理</a></td><td><code>/api/emails/{id}/sync-attachments</code></td></tr>
+            <tr><td>21</td><td>邮件发送</td><td><a href="./api-reference.html#domains">API 总览</a></td><td><code>/api/emails/send</code></td></tr>
+            <tr><td>22</td><td>等待邮件和 WebSocket</td><td><a href="./api-reference.html#websocket">API 总览</a></td><td><code>/api/ws/wait-email</code></td></tr>
+            <tr><td>23</td><td>统一取件轮询</td><td><a href="./pickup-extractor.html#poll">取件</a></td><td><code>/api/pickup/poll</code></td></tr>
+            <tr><td>24</td><td>简单提取 simple_extract</td><td><a href="./pickup-extractor.html#poll">取件</a></td><td><code>SimpleExtractConfig</code></td></tr>
+            <tr><td>25</td><td>内联动作 inline_actions</td><td><a href="./pickup-extractor.html#actions">取件</a></td><td><code>InlineActionsConfig</code></td></tr>
+            <tr><td>26</td><td>取件模板 template_id 执行</td><td><a href="./pickup-extractor.html#template">取件</a></td><td><code>ExtractorTemplateV2</code></td></tr>
+            <tr><td>27</td><td>取件模板 CRUD</td><td><a href="./pickup-extractor.html#api">取件</a></td><td><code>/api/v2/extractor-templates</code></td></tr>
+            <tr><td>28</td><td>取件模板测试、调试、日志与统计</td><td><a href="./pickup-extractor.html#api">取件</a></td><td><code>/api/v2/extractor-templates/debug</code></td></tr>
+            <tr><td>29</td><td>触发器 CRUD 与启停</td><td><a href="./triggers-actions.html#api">触发器</a></td><td><code>/api/triggers</code></td></tr>
+            <tr><td>30</td><td>表达式 group/condition/plugin/expression</td><td><a href="./triggers-actions.html#expressions">触发器</a></td><td><code>TriggerExpression</code></td></tr>
+            <tr><td>31</td><td>内置条件插件</td><td><a href="./triggers-actions.html#expressions">触发器</a></td><td><code>email_account_set</code>、<code>email_size</code></td></tr>
+            <tr><td>32</td><td>内置动作插件</td><td><a href="./triggers-actions.html#plugins">触发器</a></td><td><code>TriggerAction</code></td></tr>
+            <tr><td>33</td><td>Webhook、Telegram、转发、标签、AI</td><td><a href="./triggers-actions.html#plugins">触发器</a></td><td><code>webhook_action</code>、<code>ai_process_action</code></td></tr>
+            <tr><td>34</td><td>条件分支、并行动作、中断流程</td><td><a href="./triggers-actions.html#pipeline">触发器</a></td><td><code>conditional_branch_action</code>、<code>parallel_actions</code></td></tr>
+            <tr><td>35</td><td>触发器测试、日志和统计</td><td><a href="./triggers-actions.html#debug">触发器</a></td><td><code>/api/v2/triggers/test-complete</code></td></tr>
+            <tr><td>36</td><td>before/after 拦截器</td><td><a href="./interceptors-templates.html#interceptor">拦截器与模板</a></td><td><code>Interceptor</code></td></tr>
+            <tr><td>37</td><td>拦截器过滤、错误、跳过和异步策略</td><td><a href="./interceptors-templates.html#policies">拦截器与模板</a></td><td><code>InterceptorFilter</code>、<code>InterceptorErrorConfig</code></td></tr>
+            <tr><td>38</td><td>过滤器模板</td><td><a href="./interceptors-templates.html#templates">拦截器与模板</a></td><td><code>/api/filter-templates</code></td></tr>
+            <tr><td>39</td><td>动作模板</td><td><a href="./interceptors-templates.html#templates">拦截器与模板</a></td><td><code>/api/action-templates</code></td></tr>
+            <tr><td>40</td><td>AI 配置和模型调用</td><td><a href="./ai-business-proxy.html#ai">AI 与运营</a></td><td><code>/api/openai/configs</code></td></tr>
+            <tr><td>41</td><td>Prompt 模板和模板生成</td><td><a href="./ai-business-proxy.html#ai">AI 与运营</a></td><td><code>/api/openai/prompt-templates</code></td></tr>
+            <tr><td>42</td><td>业务模块、业务账户与注册自动化</td><td><a href="./ai-business-proxy.html#business">AI 与运营</a> / <a href="./business-account-automation.html">业务账户自动化</a></td><td><code>/api/business-accounts</code>、<code>/api/business-modules/{id}/email-accounts/claim</code></td></tr>
+            <tr><td>43</td><td>标签组、标签和账户批量打标</td><td><a href="./ai-business-proxy.html#tags">AI 与运营</a></td><td><code>/api/tag-groups</code>、<code>/api/tags</code></td></tr>
+            <tr><td>44</td><td>代理池、代理分组和代理标签</td><td><a href="./ai-business-proxy.html#proxy">AI 与运营</a></td><td><code>/api/proxy-pool</code></td></tr>
+            <tr><td>45</td><td>权限、组织、角色、部署和生产运维</td><td><a href="./api-reference.html#permissions">API 总览</a> / <a href="./deployment-ops.html#ops">部署运维</a></td><td><code>/api/organizations</code>、<code>/api/roles</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="docs" class="section">
+      <h2>HTML 文档列表</h2>
+      <p class="lead">以下页面均可在 Mailman 的“接入手册”菜单中阅读，也可以独立打开。</p>
+      <div class="doc-list">
+        <a class="doc-card" href="./quick-start.html"><span class="badge">入门</span><h3>从 0 到 1 快速上手</h3><p class="muted">首次启动、登录、基础配置和主流程概览。</p></a>
+        <a class="doc-card" href="./accounts-oauth.html"><span class="badge">账户</span><h3>邮箱账户与 OAuth2</h3><p class="muted">Gmail、Outlook、IMAP/SMTP、验证和错误状态。</p></a>
+        <a class="doc-card" href="./sync-mailbox.html"><span class="badge green">同步</span><h3>同步、邮件管理与搜索</h3><p class="muted">全局同步、账户同步、搜索、附件、邮件详情。</p></a>
+        <a class="doc-card" href="./pickup-extractor.html"><span class="badge violet">取件</span><h3>取件与取件模板 V2</h3><p class="muted">验证码等待、临时同步、模板动作链和输出。</p></a>
+        <a class="doc-card" href="./triggers-actions.html"><span class="badge rose">自动化</span><h3>触发器、表达式与动作插件</h3><p class="muted">条件树、内置插件、动作链、测试与日志。</p></a>
+        <a class="doc-card" href="./interceptors-templates.html"><span class="badge amber">高级</span><h3>拦截器与模板复用</h3><p class="muted">before/after、错误策略、过滤器模板和动作模板。</p></a>
+        <a class="doc-card" href="./business-account-automation.html"><span class="badge green">自动化</span><h3>基于业务账户的自动化教程</h3><p class="muted">领取邮箱、预热取件、验证码提取、完成注册和回写业务资料。</p></a>
+        <a class="doc-card" href="./ai-business-proxy.html"><span class="badge">AI</span><h3>AI、业务资料、标签与代理池</h3><p class="muted">AI 配置、业务账户、标签体系、代理池和账户代理。</p></a>
+        <a class="doc-card" href="./api-reference.html"><span class="badge green">API</span><h3>API 接入总览</h3><p class="muted">登录、账户、邮件、模板、触发器、系统管理接口。</p></a>
+        <a class="doc-card" href="./recipes-troubleshooting.html"><span class="badge violet">配方</span><h3>组合场景与故障排查</h3><p class="muted">验证码取件、AI 分流、Webhook 通知、常见问题。</p></a>
+        <a class="doc-card" href="./deployment-ops.html"><span class="badge amber">运维</span><h3>部署与生产运维</h3><p class="muted">Docker、Compose、K3s、Helm、备份、升级和监控。</p></a>
+      </div>
+    </section>
+
+    <section id="routes" class="section">
+      <h2>核心接口地图</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>账户与 OAuth2</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/auth/login</code><span class="muted">登录</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/session/start/{provider}</code><span class="muted">启动授权</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/oauth2/onboard</code><span class="muted">OAuth2 开通账户</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/verify</code><span class="muted">验证账户</span></div>
+        </div>
+        <div class="card">
+          <h3>邮件与取件</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/accounts/{id}/sync-now</code><span class="muted">立即同步</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/emails/search</code><span class="muted">搜索邮件</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/pickup/poll</code><span class="muted">统一取件</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/extractor-templates/test</code><span class="muted">测试取件模板</span></div>
+        </div>
+        <div class="card">
+          <h3>自动化</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers</code><span class="muted">触发器列表</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/test-condition</code><span class="muted">测试条件</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/v2/triggers/test-action</code><span class="muted">测试动作</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/triggers/logs</code><span class="muted">执行日志</span></div>
+        </div>
+        <div class="card">
+          <h3>业务账户自动化</h3>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-modules/{id}/email-accounts/claim</code><span class="muted">领取邮箱</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/pickup/poll</code><span class="muted">取验证码</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-accounts/{id}/complete-registration</code><span class="muted">完成注册</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/business-accounts/{id}/release-registration-claim</code><span class="muted">释放占用</span></div>
+        </div>
+        <div class="card">
+          <h3>系统与扩展</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/openai/configs</code><span class="muted">AI 配置</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-pool</code><span class="muted">代理池</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/interceptors</code><span class="muted">拦截器</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/organizations</code><span class="muted">组织</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources" class="section">
+      <h2>源码依据</h2>
+      <p class="lead">本轮文档以这些文件为主要事实来源，后续每篇扩写时会继续逐接口核对 handler、service、model 和前端调用。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>范围</th><th>源码文件</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>认证路由</td><td><code>backend/internal/api/router_auth.go</code></td><td>受保护 API、权限中间件、OAuth2、触发器、同步等路由注册。</td></tr>
+            <tr><td>模型</td><td><code>backend/internal/models/*.go</code></td><td>账户、邮件、同步、触发器、取件模板、组织、代理池字段定义。</td></tr>
+            <tr><td>插件</td><td><code>backend/internal/triggerv2/plugins/builtin/*.go</code></td><td>内置条件插件、动作插件、UI Schema 和配置项。</td></tr>
+            <tr><td>前端调用</td><td><code>frontend/src/services/*.ts</code></td><td>页面实际调用的 API 路径、参数和响应处理。</td></tr>
+            <tr><td>菜单入口</td><td><code>frontend/src/components/tabs/html-integration-guide-tab.tsx</code></td><td>新的 HTML 文档阅读器。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="footer">Mailman HTML Guide · 与实际代码同步维护</p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>
