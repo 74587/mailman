@@ -142,45 +142,39 @@ function MenuItemComponent({
     onClick: () => void
     isSubItem?: boolean
 }) {
+    const tooltip = item.description ? `${item.name} - ${item.description}` : item.name
+
     return (
         <button
             onClick={onClick}
             className={cn(
-                'group relative flex w-full items-center rounded-lg text-sm font-medium transition-all duration-200',
-                // 适中的高度和内边距
-                isSubItem && !collapsed ? 'py-2 px-3 ml-2' : 'py-2.5 px-3',
-                // 激活状态
+                'group relative flex h-9 w-full items-center rounded-md text-sm font-medium transition-colors duration-150',
+                isSubItem && !collapsed ? 'px-2.5 pl-3' : 'px-2.5',
                 isActive
-                    ? 'bg-gradient-to-r from-blue-500/10 to-indigo-500/10 text-blue-600 dark:from-blue-500/15 dark:to-indigo-500/15 dark:text-blue-400'
-                    : 'text-gray-600 hover:bg-gray-100/80 dark:text-gray-400 dark:hover:bg-white/5 hover:text-gray-900 dark:hover:text-gray-200',
+                    ? 'bg-[rgb(var(--sidebar-active-bg)_/_0.82)] text-sidebar-active'
+                    : 'text-sidebar-text hover:bg-[rgb(var(--sidebar-hover-bg)_/_0.68)] hover:text-sidebar-text-hover',
                 collapsed && 'justify-center px-2'
             )}
-            title={collapsed ? item.name : undefined}
+            title={collapsed || item.description ? tooltip : undefined}
+            aria-current={isActive ? 'page' : undefined}
         >
-            {/* 激活指示条 */}
             {isActive && (
-                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-gradient-to-b from-blue-500 to-indigo-500 rounded-r-full" />
+                <div className="absolute left-0 top-1 bottom-1 w-0.5 rounded-r-full bg-sidebar-active" />
             )}
 
-            {/* 图标 */}
-            <item.icon
-                className={cn(
-                    'h-[18px] w-[18px] shrink-0 transition-all duration-200',
-                    isActive
-                        ? 'text-blue-600 dark:text-blue-400'
-                        : 'text-gray-400 group-hover:text-gray-600 dark:text-gray-500 dark:group-hover:text-gray-300'
-                )}
-            />
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center">
+                <item.icon
+                    className={cn(
+                        'h-4 w-4 transition-colors duration-150',
+                        isActive ? 'text-sidebar-active' : 'text-sidebar-text group-hover:text-sidebar-text-hover'
+                    )}
+                />
+            </span>
 
             {!collapsed && (
-                <div className="ml-2.5 flex-1 text-left overflow-hidden">
-                    <div className="truncate">{item.name}</div>
-                    {item.description && (
-                        <div className="text-[11px] text-gray-400 dark:text-gray-500 truncate leading-tight">
-                            {item.description}
-                        </div>
-                    )}
-                </div>
+                <span className="ml-2 min-w-0 flex-1 truncate text-left leading-5">
+                    {item.name}
+                </span>
             )}
         </button>
     )
@@ -204,35 +198,34 @@ function MenuGroupComponent({
     const open = group.expanded || hasActiveItem || collapsed
 
     return (
-        <div className="pt-2">
-            {/* 分组标题 */}
+        <div
+            className={cn(
+                'rounded-lg border border-[rgb(var(--sidebar-border)_/_0.72)] bg-[rgb(var(--sidebar-bg)_/_0.86)] shadow-[0_1px_2px_rgb(15_23_42_/_0.025)] transition-colors duration-150',
+                hasActiveItem && 'border-[rgb(var(--sidebar-active)_/_0.24)] bg-[linear-gradient(180deg,rgb(var(--sidebar-active-bg)_/_0.62),rgb(var(--sidebar-bg)_/_0.94))] shadow-[0_4px_12px_rgb(37_99_235_/_0.055)]',
+                collapsed ? 'p-1' : 'p-1.5'
+            )}
+        >
             <button
                 onClick={() => group.setExpanded(!group.expanded)}
                 className={cn(
-                    'flex w-full items-center rounded-lg px-3 py-1.5 text-xs font-semibold transition-all duration-200',
+                    'group flex h-8 w-full items-center rounded-lg px-2 text-xs font-semibold transition-colors duration-150',
                     hasActiveItem
-                        ? 'bg-blue-50/80 text-blue-600 dark:bg-blue-950/30 dark:text-blue-400'
-                        : 'text-gray-500 hover:bg-gray-100/70 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-200',
-                    collapsed && 'justify-center'
+                        ? 'text-sidebar-active'
+                        : 'text-sidebar-text hover:bg-[rgb(var(--sidebar-hover-bg)_/_0.58)] hover:text-sidebar-text-hover',
+                    collapsed && 'h-8 justify-center px-2'
                 )}
+                title={collapsed ? group.title : undefined}
+                aria-expanded={open}
             >
                 <group.icon className={cn(
-                    'h-4 w-4',
-                    hasActiveItem ? 'text-blue-500 dark:text-blue-400' : ''
+                    'h-4 w-4 shrink-0 transition-colors duration-150',
+                    hasActiveItem ? 'text-sidebar-active' : 'text-sidebar-text group-hover:text-sidebar-text-hover'
                 )} />
                 {!collapsed && (
                     <>
-                        <span className="flex-1 text-left ml-2">{group.title}</span>
-                        <span className={cn(
-                            'mr-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
-                            hasActiveItem
-                                ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/50 dark:text-blue-300'
-                                : 'bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500'
-                        )}>
-                            {group.items.length}
-                        </span>
+                        <span className="ml-2 flex-1 truncate text-left">{group.title}</span>
                         <ChevronDown className={cn(
-                            'h-3.5 w-3.5 transition-transform duration-200',
+                            'h-3.5 w-3.5 transition-transform duration-150',
                             open ? 'rotate-0' : '-rotate-90'
                         )} />
                     </>
@@ -243,10 +236,11 @@ function MenuGroupComponent({
             <div
                 className={cn(
                     'overflow-hidden transition-all duration-200',
-                    open ? 'max-h-[520px] opacity-100' : 'max-h-0 opacity-0'
+                    open ? 'max-h-[520px] opacity-100' : 'max-h-0 opacity-0',
+                    open && !collapsed && 'mt-1 border-t border-[rgb(var(--sidebar-border)_/_0.56)] pt-1'
                 )}
             >
-                <div className="space-y-0.5 mt-1">
+                <div className="space-y-0.5">
                     {group.items.filter(item => !item.hidden && isMenuVisible(item.id) && (!item.permission || hasPermission(item.permission.resource, item.permission.action))).map((item) => (
                         <MenuItemComponent
                             key={item.id}
@@ -265,10 +259,10 @@ function MenuGroupComponent({
 
 export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     const [collapsed, setCollapsed] = useState(false)
-    const [triggerMenuExpanded, setTriggerMenuExpanded] = useState(true)
-    const [pluginMenuExpanded, setPluginMenuExpanded] = useState(true)
+    const [triggerMenuExpanded, setTriggerMenuExpanded] = useState(false)
+    const [pluginMenuExpanded, setPluginMenuExpanded] = useState(false)
     const [developerMenuExpanded, setDeveloperMenuExpanded] = useState(false)
-    const [adminMenuExpanded, setAdminMenuExpanded] = useState(true)
+    const [adminMenuExpanded, setAdminMenuExpanded] = useState(false)
     const [businessMenuExpanded, setBusinessMenuExpanded] = useState(true)
     const [mailMenuExpanded, setMailMenuExpanded] = useState(true)
     const [, setMenuVersion] = useState(0) // 用于触发菜单重新渲染
@@ -382,30 +376,27 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
         <div
             className={cn(
                 'relative flex h-screen flex-col transition-all duration-300',
-                // 背景 - 简洁渐变
-                'bg-gradient-to-b from-white to-gray-50/80 dark:from-gray-900 dark:to-gray-950',
-                'border-r border-gray-200/80 dark:border-gray-800/50',
-                // 宽度
-                collapsed ? 'w-16' : 'w-64'
+                'bg-sidebar-bg border-r border-sidebar-border',
+                collapsed ? 'w-16' : 'w-[248px]'
             )}
         >
             {/* Logo Header */}
             <div className={cn(
-                'relative flex-shrink-0 flex items-center border-b border-gray-200/80 dark:border-gray-800/50',
+                'relative flex-shrink-0 flex items-center border-b border-sidebar-border',
                 'h-14 px-3',
                 collapsed ? 'justify-center' : 'gap-3'
             )}>
                 {/* Logo 图标 */}
-                <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 shadow-md shadow-blue-500/25">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-active shadow-sm">
                     <Mail className="h-[18px] w-[18px] text-white" />
                 </div>
 
                 {!collapsed && (
                     <div className="flex flex-col min-w-0">
-                        <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">
+                        <span className="truncate text-sm font-semibold text-sidebar-text-hover">
                             邮箱管理系统
                         </span>
-                        <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                        <span className="text-[11px] text-sidebar-text">
                             Mailman
                         </span>
                     </div>
@@ -413,7 +404,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
             </div>
 
             {/* Navigation */}
-            <nav className="relative flex-1 min-h-0 px-2 py-3 overflow-y-auto scrollbar-hide">
+            <nav className="relative min-h-0 flex-1 overflow-y-auto px-3 py-3 scrollbar-hide">
                 {/* 主导航 */}
                 <div className="space-y-0.5">
                     {filterByVisibility(navigation).map((item) => (
@@ -429,7 +420,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
 
                 {/* 分组导航 */}
                 {menuGroups.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-gray-200/60 dark:border-gray-800/60">
+                    <div className="mt-3 space-y-2">
                         {menuGroups.map((group) => (
                             <MenuGroupComponent
                                 key={group.title}
@@ -445,7 +436,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
             </nav>
 
             {/* Bottom section */}
-            <div className="relative flex-shrink-0 border-t border-gray-200/80 dark:border-gray-800/50 p-2 space-y-1">
+            <div className="relative flex-shrink-0 space-y-1 border-t border-sidebar-border p-2">
                 {/* Theme toggle */}
                 <button
                     onClick={() => {
@@ -455,8 +446,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                     }}
                     className={cn(
                         'group flex w-full items-center rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200',
-                        'bg-gray-100/60 hover:bg-gray-200/80 dark:bg-white/5 dark:hover:bg-white/10',
-                        'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200',
+                        'bg-sidebar-hover-bg text-sidebar-text hover:text-sidebar-text-hover',
                         collapsed && 'justify-center px-2'
                     )}
                 >
@@ -483,11 +473,11 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                     className={cn(
                         'group flex w-full items-center rounded-lg px-3 py-2.5 text-sm font-medium transition-all duration-200',
                         'hover:bg-red-50 dark:hover:bg-red-900/20',
-                        'text-gray-600 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400',
+                        'text-sidebar-text hover:text-red-600 dark:hover:text-red-400',
                         collapsed && 'justify-center px-2'
                     )}
                 >
-                    <LogOut className="h-[18px] w-[18px] text-gray-400 group-hover:text-red-500 dark:text-gray-500" />
+                    <LogOut className="h-[18px] w-[18px] text-sidebar-text group-hover:text-red-500" />
                     {!collapsed && <span className="ml-2.5">退出登录</span>}
                 </button>
             </div>
@@ -499,9 +489,9 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
                     'absolute -right-3 top-[72px] z-10',
                     'flex h-6 w-6 items-center justify-center',
                     'rounded-full shadow-md',
-                    'bg-white dark:bg-gray-800',
-                    'border border-gray-200 dark:border-gray-700',
-                    'text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300',
+                    'bg-sidebar-bg',
+                    'border border-sidebar-border',
+                    'text-sidebar-text hover:text-sidebar-text-hover',
                     'hover:scale-110 active:scale-95',
                     'transition-all duration-200'
                 )}

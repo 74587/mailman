@@ -523,7 +523,7 @@ export default function BusinessAccountsTab() {
     }
 
     return (
-        <div className="min-h-full bg-gray-50/70 p-5 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+        <div className="h-full min-h-0 overflow-y-auto bg-gray-50/70 p-5 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
             <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300">
