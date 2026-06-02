@@ -62,6 +62,10 @@ func NewEmailAccountSetPlugin() plugins.ConditionPlugin {
 						"type":        "string",
 						"description": "动态获取账户列表的API端点（可选）",
 					},
+					"api_proxy": map[string]interface{}{
+						"type":        "string",
+						"description": "调用外部API时使用的代理（可选）",
+					},
 					"api_headers": map[string]interface{}{
 						"type":        "object",
 						"description": "API请求头（可选）",
@@ -74,6 +78,7 @@ func NewEmailAccountSetPlugin() plugins.ConditionPlugin {
 				"match_type":     "from",
 				"case_sensitive": false,
 				"api_endpoint":   "",
+				"api_proxy":      "",
 				"api_headers":    map[string]interface{}{},
 			},
 			Dependencies: []string{},
@@ -115,7 +120,7 @@ func (p *EmailAccountSetPlugin) GetUISchema() *plugins.UISchema {
 				Tooltip:      "选择匹配邮件的发件人地址还是收件人地址。'发件人或收件人'表示任意一个匹配即可。",
 				Required:     true,
 				Width:        "half",
-				DefaultValue: "to",
+				DefaultValue: "from",
 				Options: []plugins.UIOption{
 					{Value: "from", Label: "发件人", Description: "匹配邮件发件人"},
 					{Value: "to", Label: "收件人", Description: "匹配邮件收件人"},
@@ -230,7 +235,8 @@ func (p *EmailAccountSetPlugin) GetDynamicOptions(field string, query string) ([
 func (p *EmailAccountSetPlugin) ValidateFieldValue(field string, value interface{}) error {
 	switch field {
 	case "account_emails":
-		if emails, ok := value.([]interface{}); ok {
+		switch emails := value.(type) {
+		case []interface{}:
 			for _, email := range emails {
 				if emailStr, ok := email.(string); ok {
 					if !isValidEmail(emailStr) {
@@ -240,7 +246,13 @@ func (p *EmailAccountSetPlugin) ValidateFieldValue(field string, value interface
 					return fmt.Errorf("email must be a string")
 				}
 			}
-		} else {
+		case []string:
+			for _, email := range emails {
+				if !isValidEmail(email) {
+					return fmt.Errorf("invalid email format: %s", email)
+				}
+			}
+		default:
 			return fmt.Errorf("account_emails must be an array")
 		}
 	case "match_type":
@@ -310,7 +322,10 @@ func isValidEmail(email string) bool {
 
 // Initialize 初始化插件
 func (p *EmailAccountSetPlugin) Initialize(ctx *plugins.PluginContext) error {
-	p.config = p.info.DefaultConfig
+	p.config = cloneConfig(p.info.DefaultConfig)
+	if ctx != nil && ctx.Config != nil && ctx.Config.Config != nil {
+		return p.ApplyConfig(ctx.Config.Config)
+	}
 	return nil
 }
 
@@ -350,13 +365,20 @@ func (p *EmailAccountSetPlugin) GetDefaultConfig() map[string]interface{} {
 func (p *EmailAccountSetPlugin) ValidateConfig(config map[string]interface{}) error {
 	// 验证账户邮箱列表
 	if emails, ok := config["account_emails"]; ok {
-		if emailList, ok := emails.([]interface{}); ok {
+		switch emailList := emails.(type) {
+		case []interface{}:
 			for _, email := range emailList {
 				if _, ok := email.(string); !ok {
 					return fmt.Errorf("邮箱账户必须是字符串")
 				}
 			}
-		} else {
+		case []string:
+			for _, email := range emailList {
+				if strings.TrimSpace(email) == "" {
+					return fmt.Errorf("邮箱账户不能为空")
+				}
+			}
+		default:
 			return fmt.Errorf("邮箱账户必须是数组")
 		}
 	}
@@ -446,9 +468,9 @@ func (p *EmailAccountSetPlugin) Evaluate(ctx *plugins.PluginContext, event *mode
 		}
 	}
 
-	// 从 ctx.Config.Config 获取用户配置的条件（优先）
+	// 使用插件当前配置；插件管理器在执行前会将上下文配置应用到插件实例。
 	conditions := p.config
-	if ctx.Config != nil && ctx.Config.Config != nil {
+	if len(conditions) == 0 && ctx != nil && ctx.Config != nil && ctx.Config.Config != nil {
 		conditions = ctx.Config.Config
 	}
 
@@ -476,7 +498,7 @@ func (p *EmailAccountSetPlugin) Evaluate(ctx *plugins.PluginContext, event *mode
 	if len(accountEmails) == 0 {
 		return &plugins.PluginResult{
 			Success:       true,
-			Data:          map[string]interface{}{"matched": true, "reason": "未配置邮箱账户，默认通过"},
+			Data:          map[string]interface{}{"matched": false, "reason": "未配置邮箱账户，无法匹配"},
 			ExecutionTime: time.Since(startTime),
 			Timestamp:     time.Now(),
 		}, nil
@@ -515,7 +537,7 @@ func (p *EmailAccountSetPlugin) Evaluate(ctx *plugins.PluginContext, event *mode
 	}
 
 	result := &plugins.PluginResult{
-		Success: matched, // Success 表示是否匹配
+		Success: true,
 		Data: map[string]interface{}{
 			"matched":        matched,
 			"reason":         reason,
@@ -588,7 +610,7 @@ func (p *EmailAccountSetPlugin) getMatchTypeFromConfig(config map[string]interfa
 			return str
 		}
 	}
-	return "to" // 默认匹配收件人
+	return "from"
 }
 
 // getCaseSensitive 获取大小写敏感配置

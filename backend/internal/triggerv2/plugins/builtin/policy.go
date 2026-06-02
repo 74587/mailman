@@ -58,6 +58,18 @@ var builtinPluginPolicies = map[string]builtinPluginPolicy{
 		Capabilities: []string{PluginCapabilityCondition, PluginCapabilityPure},
 		Contexts:     []string{PluginContextTrigger, PluginContextPickup, PluginContextInterceptor},
 	},
+	"email_header_filter": {
+		Capabilities: []string{PluginCapabilityCondition, PluginCapabilityPure},
+		Contexts:     []string{PluginContextTrigger, PluginContextPickup, PluginContextInterceptor},
+	},
+	"email_attachment_filter": {
+		Capabilities: []string{PluginCapabilityCondition, PluginCapabilityPure},
+		Contexts:     []string{PluginContextTrigger, PluginContextPickup, PluginContextInterceptor},
+	},
+	"email_security_filter": {
+		Capabilities: []string{PluginCapabilityCondition, PluginCapabilityPure},
+		Contexts:     []string{PluginContextTrigger, PluginContextPickup, PluginContextInterceptor},
+	},
 	"variable_extract_action": {
 		Capabilities: []string{PluginCapabilityExtraction, PluginCapabilityPure},
 		Contexts:     []string{PluginContextTrigger, PluginContextPickup},
