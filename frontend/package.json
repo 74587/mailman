@@ -10,7 +10,8 @@
     "type-check": "tsc --noEmit",
     "test:action-dropdown": "node scripts/test-action-dropdown-scroll.mjs",
     "test:plugin-config-form": "node scripts/test-plugin-config-form.mjs",
-    "test:ui-regression": "npm run test:action-dropdown && npm run test:plugin-config-form",
+    "test:configuration-menu-overflow": "node scripts/test-configuration-menu-overflow.mjs",
+    "test:ui-regression": "npm run test:action-dropdown && npm run test:plugin-config-form && npm run test:configuration-menu-overflow",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,css,scss,md}\""
   },
   "dependencies": {

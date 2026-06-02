@@ -43,7 +43,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
     const isDevRegressionPage =
         process.env.NODE_ENV !== 'production' && (
             normalizedPathname === '/dev/action-dropdown-regression' ||
-            normalizedPathname === '/dev/plugin-config-form-regression'
+            normalizedPathname === '/dev/plugin-config-form-regression' ||
+            normalizedPathname === '/dev/configuration-menu-overflow-regression'
         )
     const isStandalonePublicPage = isOAuth2StandalonePage || isLegalPage || isDevRegressionPage
     const [queryClient] = useState(

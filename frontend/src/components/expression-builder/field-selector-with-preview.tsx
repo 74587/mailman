@@ -14,6 +14,10 @@ interface FieldSelectorWithPreviewProps {
     className?: string
 }
 
+const FIELD_DROPDOWN_MAX_HEIGHT = 400
+const FIELD_DROPDOWN_MIN_HEIGHT = 160
+const FIELD_DROPDOWN_VIEWPORT_PADDING = 16
+
 // 递归提取JSON对象中的所有字段路径（包括数组字段本身）
 function extractFieldPaths(obj: any, prefix: string = '', paths: Set<string> = new Set()): string[] {
     if (obj === null || obj === undefined) return Array.from(paths)
@@ -170,8 +174,30 @@ export function FieldSelectorWithPreview({
 }: FieldSelectorWithPreviewProps) {
     const [isDropdownOpen, setIsDropdownOpen] = useState(false)
     const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+    const [dropdownLayout, setDropdownLayout] = useState<{ placement: 'top' | 'bottom'; maxHeight: number }>({
+        placement: 'bottom',
+        maxHeight: FIELD_DROPDOWN_MAX_HEIGHT,
+    })
     const containerRef = useRef<HTMLDivElement>(null)
     const buttonRef = useRef<HTMLButtonElement>(null)
+
+    const updateDropdownLayout = () => {
+        if (!containerRef.current) return
+
+        const rect = containerRef.current.getBoundingClientRect()
+        const availableBelow = window.innerHeight - rect.bottom - FIELD_DROPDOWN_VIEWPORT_PADDING
+        const availableAbove = rect.top - FIELD_DROPDOWN_VIEWPORT_PADDING
+        const openUp = availableBelow < FIELD_DROPDOWN_MIN_HEIGHT && availableAbove > availableBelow
+        const availableSpace = openUp ? availableAbove : availableBelow
+
+        setDropdownLayout({
+            placement: openUp ? 'top' : 'bottom',
+            maxHeight: Math.max(
+                FIELD_DROPDOWN_MIN_HEIGHT,
+                Math.min(FIELD_DROPDOWN_MAX_HEIGHT, availableSpace)
+            ),
+        })
+    }
 
     // 获取所有字段路径
     const fieldPaths = extractFieldPaths(testData)
@@ -192,6 +218,19 @@ export function FieldSelectorWithPreview({
         document.addEventListener('mousedown', handleClickOutside)
         return () => document.removeEventListener('mousedown', handleClickOutside)
     }, [])
+
+    useEffect(() => {
+        if (!isDropdownOpen) return
+
+        updateDropdownLayout()
+        window.addEventListener('resize', updateDropdownLayout)
+        window.addEventListener('scroll', updateDropdownLayout, true)
+
+        return () => {
+            window.removeEventListener('resize', updateDropdownLayout)
+            window.removeEventListener('scroll', updateDropdownLayout, true)
+        }
+    }, [isDropdownOpen, filteredPaths.length])
 
     return (
         <div ref={containerRef} className={`relative ${className}`}>
@@ -224,7 +263,12 @@ export function FieldSelectorWithPreview({
 
             {/* 下拉菜单 */}
             {isDropdownOpen && filteredPaths.length > 0 && (
-                <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-xl min-w-[280px] max-h-[400px] overflow-y-auto">
+                <div
+                    data-testid="field-selector-suggestions"
+                    className={`absolute left-0 z-50 min-w-[280px] overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white shadow-xl dropdown-scrollbar ${dropdownLayout.placement === 'top' ? 'bottom-full mb-1' : 'top-full mt-1'
+                        }`}
+                    style={{ maxHeight: dropdownLayout.maxHeight }}
+                >
                     <div className="p-2 border-b bg-gray-50 text-xs text-gray-500 font-medium sticky top-0 z-10">
                         可用字段 ({filteredPaths.length})
                     </div>
