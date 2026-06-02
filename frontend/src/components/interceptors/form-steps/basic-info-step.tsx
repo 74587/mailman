@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/select'
 import { Interceptor, InterceptorPluginInfo } from '@/services/interceptor.service'
 import { Badge } from '@/components/ui/badge'
+import { PluginConfigForm } from '@/components/plugins/plugin-config-form'
 
 interface BasicInfoStepProps {
     formData: Partial<Interceptor>
@@ -134,93 +135,14 @@ export function BasicInfoStep({
                 <div className="space-y-3">
                     <Label>插件配置</Label>
                     <div className="p-4 rounded-lg border space-y-4">
-                        {renderPluginConfig(
-                            currentPlugin.config_schema,
-                            formData.plugin_config || {},
-                            (newConfig) => onChange({ plugin_config: newConfig })
-                        )}
+                        <PluginConfigForm
+                            schema={currentPlugin.config_schema}
+                            value={formData.plugin_config || {}}
+                            onChange={(newConfig) => onChange({ plugin_config: newConfig })}
+                        />
                     </div>
                 </div>
             )}
         </div>
     )
-}
-
-// 渲染插件配置表单
-function renderPluginConfig(
-    schema: Record<string, any>,
-    config: Record<string, any>,
-    onChange: (config: Record<string, any>) => void
-) {
-    const properties = schema.properties || {}
-
-    return Object.entries(properties).map(([key, propSchema]: [string, any]) => {
-        const value = config[key] ?? propSchema.default
-
-        // 布尔类型
-        if (propSchema.type === 'boolean') {
-            return (
-                <div key={key} className="flex items-center justify-between">
-                    <div className="space-y-0.5">
-                        <Label className="capitalize">{propSchema.description || key.replace(/_/g, ' ')}</Label>
-                    </div>
-                    <Switch
-                        checked={value ?? false}
-                        onCheckedChange={(checked) => onChange({ ...config, [key]: checked })}
-                    />
-                </div>
-            )
-        }
-
-        // 枚举类型
-        if (propSchema.enum) {
-            return (
-                <div key={key} className="space-y-2">
-                    <Label className="capitalize">{propSchema.description || key.replace(/_/g, ' ')}</Label>
-                    <Select
-                        value={value || propSchema.default || ''}
-                        onValueChange={(val) => onChange({ ...config, [key]: val })}
-                    >
-                        <SelectTrigger>
-                            <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {propSchema.enum.map((opt: string) => (
-                                <SelectItem key={opt} value={opt}>
-                                    {opt}
-                                </SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-                </div>
-            )
-        }
-
-        // 数字类型
-        if (propSchema.type === 'integer' || propSchema.type === 'number') {
-            return (
-                <div key={key} className="space-y-2">
-                    <Label className="capitalize">{propSchema.description || key.replace(/_/g, ' ')}</Label>
-                    <Input
-                        type="number"
-                        value={value ?? propSchema.default ?? 0}
-                        min={propSchema.minimum}
-                        max={propSchema.maximum}
-                        onChange={(e) => onChange({ ...config, [key]: parseInt(e.target.value) || 0 })}
-                    />
-                </div>
-            )
-        }
-
-        // 字符串类型（默认）
-        return (
-            <div key={key} className="space-y-2">
-                <Label className="capitalize">{propSchema.description || key.replace(/_/g, ' ')}</Label>
-                <Input
-                    value={value || ''}
-                    onChange={(e) => onChange({ ...config, [key]: e.target.value })}
-                />
-            </div>
-        )
-    })
 }

@@ -6,11 +6,13 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Interceptor, FilterMode } from '@/services/interceptor.service'
-import { Filter, Check, X, Loader2, Puzzle, Code2 } from 'lucide-react'
+import { Filter, Check, X, Loader2, Puzzle, Code2, Database } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { apiClient } from '@/lib/api-client'
 import { ExpressionGroup } from '@/components/expression-builder/expression-group'
+import { FilterTestDialog } from '@/components/triggers/create/filter-test-dialog'
 
 interface ActionPluginInfo {
     id: string
@@ -31,6 +33,10 @@ export function FilterConditionStep({ formData, onChange }: FilterConditionStepP
     const filter = formData.filter || { mode: 'all' as FilterMode, action_types: [], use_advanced_filter: false, expressions: [] }
     const [actionPlugins, setActionPlugins] = useState<ActionPluginInfo[]>(actionPluginsCache || [])
     const [loadingPlugins, setLoadingPlugins] = useState(false)
+    const [showFilterTestDialog, setShowFilterTestDialog] = useState(false)
+    const advancedRootExpression = getAdvancedRootExpression(filter.expressions || [])
+    const normalizedAdvancedExpressions = getNormalizedAdvancedExpressions(filter.expressions || [])
+    const advancedConditionCount = countExpressionConditions(normalizedAdvancedExpressions)
 
     // 加载动作插件列表
     useEffect(() => {
@@ -78,8 +84,8 @@ export function FilterConditionStep({ formData, onChange }: FilterConditionStepP
         updateFilter({ action_types: newTypes })
     }
 
-    const handleExpressionsChange = (expressions: any[]) => {
-        updateFilter({ expressions })
+    const handleRootExpressionChange = (expression: any) => {
+        updateFilter({ expressions: [expression] })
     }
 
     return (
@@ -245,25 +251,70 @@ export function FilterConditionStep({ formData, onChange }: FilterConditionStepP
 
                 {filter.use_advanced_filter && (
                     <div className="pt-4 border-t">
-                        <div className="mb-3">
-                            <Label className="text-sm text-muted-foreground">配置过滤表达式</Label>
-                            <p className="text-xs text-muted-foreground mt-1">
-                                当所有表达式条件满足时，拦截器才会执行
-                            </p>
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                            <div>
+                                <Label className="text-sm text-muted-foreground">配置过滤表达式</Label>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                    命中高级表达式后，拦截器才会执行
+                                </p>
+                            </div>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={advancedConditionCount === 0}
+                                onClick={() => setShowFilterTestDialog(true)}
+                            >
+                                <Database className="w-4 h-4 mr-2" />
+                                测试过滤条件
+                            </Button>
                         </div>
                         <ExpressionGroup
-                            expression={{
-                                id: 'root',
-                                type: 'group',
-                                operator: 'and',
-                                conditions: filter.expressions || []
-                            }}
-                            onChange={(newExpr) => handleExpressionsChange(newExpr.conditions || [])}
+                            expression={advancedRootExpression}
+                            onChange={handleRootExpressionChange}
                             isRoot={true}
+                            pluginContext="interceptor"
                         />
                     </div>
                 )}
             </div>
+            <FilterTestDialog
+                open={showFilterTestDialog}
+                onOpenChange={setShowFilterTestDialog}
+                expressions={normalizedAdvancedExpressions}
+            />
         </div>
     )
+}
+
+function getAdvancedRootExpression(expressions: any[]) {
+    if (expressions.length === 1 && expressions[0]?.type === 'group') {
+        return expressions[0]
+    }
+    return {
+        id: 'interceptor-root',
+        type: 'group',
+        operator: 'and',
+        conditions: expressions,
+    }
+}
+
+function getNormalizedAdvancedExpressions(expressions: any[]) {
+    if (expressions.length === 0) {
+        return []
+    }
+    if (expressions.length === 1 && expressions[0]?.type === 'group') {
+        return expressions
+    }
+    return [getAdvancedRootExpression(expressions)]
+}
+
+function countExpressionConditions(expressions: any[]): number {
+    return expressions.reduce((count, expression) => {
+        if (!expression) return count
+        if (expression.type === 'group') {
+            return count + countExpressionConditions(expression.conditions || [])
+        }
+        return count + 1
+    }, 0)
 }

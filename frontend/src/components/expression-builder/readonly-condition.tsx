@@ -39,6 +39,7 @@ const operatorLabels: Record<string, string> = {
 const engineNames: Record<string, string> = {
     'expr.javascript': 'JavaScript',
     'expr.cel': 'CEL',
+    'expr.go-template': 'Go Template',
     'expr.go_template': 'Go Template',
     'expr.jsonpath': 'JSONPath',
 }

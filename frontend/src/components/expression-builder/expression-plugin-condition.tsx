@@ -54,6 +54,13 @@ const EXPRESSION_ENGINES: ExpressionEngine[] = [
     }
 ]
 
+function normalizeExpressionEngineId(pluginId?: string): ExpressionEngineType {
+    if (pluginId === 'expr.go_template') {
+        return 'expr.go-template'
+    }
+    return (pluginId || 'expr.javascript') as ExpressionEngineType
+}
+
 interface ExpressionPluginConditionProps {
     condition: any
     onChange: (condition: any) => void
@@ -81,7 +88,7 @@ export function ExpressionPluginCondition({
     const [isModalOpen, setIsModalOpen] = useState(false)
 
     // Get current engine or default to JavaScript
-    const engineId = (condition.pluginId || 'expr.javascript') as ExpressionEngineType
+    const engineId = normalizeExpressionEngineId(condition.pluginId)
     const currentEngine = useMemo(() =>
         EXPRESSION_ENGINES.find(e => e.id === engineId) || EXPRESSION_ENGINES[0],
         [engineId]
