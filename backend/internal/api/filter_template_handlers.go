@@ -39,6 +39,10 @@ type FilterTemplateResponse struct {
 func (h *APIHandler) ListFilterTemplatesHandler(w http.ResponseWriter, r *http.Request) {
 	db := database.GetDB()
 	orgID := GetCurrentOrgID(r)
+	if err := ensureBuiltinFilterTemplates(db, orgID); err != nil {
+		http.Error(w, "初始化内置过滤器模板失败", http.StatusInternalServerError)
+		return
+	}
 
 	// 解析查询参数
 	query := r.URL.Query()
@@ -104,6 +108,10 @@ func (h *APIHandler) ListFilterTemplatesHandler(w http.ResponseWriter, r *http.R
 func (h *APIHandler) GetFilterTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	db := database.GetDB()
 	orgID := GetCurrentOrgID(r)
+	if err := ensureBuiltinFilterTemplates(db, orgID); err != nil {
+		http.Error(w, "初始化内置过滤器模板失败", http.StatusInternalServerError)
+		return
+	}
 	vars := mux.Vars(r)
 	id, err := strconv.ParseUint(vars["id"], 10, 64)
 	if err != nil {
@@ -334,6 +342,10 @@ func (h *APIHandler) IncrementFilterTemplateUsageHandler(w http.ResponseWriter, 
 func (h *APIHandler) GetFilterTemplateCategoriesHandler(w http.ResponseWriter, r *http.Request) {
 	db := database.GetDB()
 	orgID := GetCurrentOrgID(r)
+	if err := ensureBuiltinFilterTemplates(db, orgID); err != nil {
+		http.Error(w, "初始化内置过滤器模板失败", http.StatusInternalServerError)
+		return
+	}
 
 	var categories []string
 	q := db.Model(&models.FilterTemplate{})

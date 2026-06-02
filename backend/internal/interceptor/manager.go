@@ -1,6 +1,7 @@
 package interceptor
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -11,7 +12,9 @@ import (
 
 // Manager 拦截器管理器实现
 type Manager struct {
-	registry *Registry
+	registry                *Registry
+	advancedFilterEvaluator AdvancedFilterEvaluator
+	diagnosticLogWriter     DiagnosticLogWriter
 }
 
 // NewManager 创建拦截器管理器
@@ -19,6 +22,18 @@ func NewManager() *Manager {
 	return &Manager{
 		registry: NewRegistry(),
 	}
+}
+
+// SetAdvancedFilterEvaluator wires advanced expression filtering into the
+// interceptor manager without coupling this package to the condition engine.
+func (m *Manager) SetAdvancedFilterEvaluator(evaluator AdvancedFilterEvaluator) {
+	m.advancedFilterEvaluator = evaluator
+}
+
+// SetDiagnosticLogWriter enables manager-level diagnostic persistence for
+// filter decisions that skip plugin execution.
+func (m *Manager) SetDiagnosticLogWriter(writer DiagnosticLogWriter) {
+	m.diagnosticLogWriter = writer
 }
 
 // RegisterPlugin 注册拦截器插件
@@ -164,10 +179,19 @@ func (m *Manager) executeOne(ctx *InterceptorContext, config *InterceptorConfig,
 	}
 
 	// 检查是否可以拦截此动作
-	if !m.shouldIntercept(config, ctx.Action) {
+	filterDecision, err := m.shouldIntercept(config, ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !filterDecision.Matched {
+		m.logFilterSkip(ctx, config, phase, filterDecision)
 		return &InterceptorResult{
 			Decision: DecisionContinue,
 			Success:  true,
+			Data: map[string]interface{}{
+				"skipped": true,
+				"reason":  filterDecision.Reason,
+			},
 		}, nil
 	}
 
@@ -200,34 +224,142 @@ func (m *Manager) executeOne(ctx *InterceptorContext, config *InterceptorConfig,
 	return result, err
 }
 
+type filterDecision struct {
+	Matched         bool
+	Reason          string
+	ActionMatched   bool
+	AdvancedEnabled bool
+	AdvancedMatched *bool
+	Details         models.JSONMap
+}
+
 // shouldIntercept 检查是否应该拦截此动作
-func (m *Manager) shouldIntercept(config *InterceptorConfig, action *ActionInfo) bool {
+func (m *Manager) shouldIntercept(config *InterceptorConfig, ctx *InterceptorContext) (filterDecision, error) {
+	action := ctx.Action
+	matchesActionType := true
 	if action == nil {
-		return true
+		matchesActionType = true
+	} else {
+		filter := config.Filter
+
+		switch filter.Mode {
+		case models.FilterModeAll:
+			matchesActionType = true
+		case models.FilterModeInclude:
+			matchesActionType = false
+			for _, t := range filter.ActionTypes {
+				if t == action.PluginID {
+					matchesActionType = true
+					break
+				}
+			}
+		case models.FilterModeExclude:
+			matchesActionType = true
+			for _, t := range filter.ActionTypes {
+				if t == action.PluginID {
+					matchesActionType = false
+					break
+				}
+			}
+		default:
+			matchesActionType = true
+		}
 	}
 
 	filter := config.Filter
-
-	switch filter.Mode {
-	case models.FilterModeAll:
-		return true
-	case models.FilterModeInclude:
-		for _, t := range filter.ActionTypes {
-			if t == action.PluginID {
-				return true
-			}
-		}
-		return false
-	case models.FilterModeExclude:
-		for _, t := range filter.ActionTypes {
-			if t == action.PluginID {
-				return false
-			}
-		}
-		return true
-	default:
-		return true
+	if !matchesActionType {
+		return filterDecision{
+			Matched:       false,
+			Reason:        "action_type_not_matched",
+			ActionMatched: false,
+		}, nil
 	}
+
+	if !filter.UseAdvancedFilter || len(filter.Expressions) == 0 {
+		return filterDecision{
+			Matched:       true,
+			Reason:        "matched",
+			ActionMatched: true,
+		}, nil
+	}
+	if m.advancedFilterEvaluator == nil {
+		return filterDecision{}, fmt.Errorf("advanced interceptor filter is enabled but evaluator is not configured")
+	}
+	matched, details, err := m.advancedFilterEvaluator(filter, ctx)
+	if err != nil {
+		return filterDecision{}, err
+	}
+	return filterDecision{
+		Matched:         matched,
+		Reason:          map[bool]string{true: "matched", false: "advanced_filter_not_matched"}[matched],
+		ActionMatched:   true,
+		AdvancedEnabled: true,
+		AdvancedMatched: &matched,
+		Details:         details,
+	}, nil
+}
+
+func (m *Manager) logFilterSkip(ctx *InterceptorContext, config *InterceptorConfig, phase Phase, decision filterDecision) {
+	if m.diagnosticLogWriter == nil || !config.SkipConfig.LogSkipped {
+		return
+	}
+
+	start := time.Now()
+	input := map[string]interface{}{
+		"skip_reason":             decision.Reason,
+		"action_filter_matched":   decision.ActionMatched,
+		"advanced_filter_enabled": decision.AdvancedEnabled,
+		"filter":                  config.Filter,
+	}
+	if decision.AdvancedMatched != nil {
+		input["advanced_filter_matched"] = *decision.AdvancedMatched
+	}
+	if len(decision.Details) > 0 {
+		input["advanced_filter_details"] = decision.Details
+	}
+	if ctx != nil && ctx.Action != nil {
+		input["action"] = ctx.Action
+	}
+
+	logEntry := &models.InterceptorLog{
+		InterceptorID:   config.ID,
+		InterceptorName: config.Name,
+		Phase:           string(phase),
+		Success:         true,
+		Duration:        time.Since(start).Milliseconds(),
+		DecisionMade:    string(DecisionContinue),
+		InputData:       marshalDiagnosticInput(input),
+		CreatedAt:       time.Now(),
+	}
+	if ctx != nil {
+		if ctx.Action != nil {
+			logEntry.ActionID = ctx.Action.ID
+			logEntry.ActionPluginID = ctx.Action.PluginID
+		}
+		if ctx.TriggerID > 0 {
+			triggerID := ctx.TriggerID
+			logEntry.TriggerID = &triggerID
+		}
+		if ctx.Email != nil && ctx.Email.ID > 0 {
+			emailID := ctx.Email.ID
+			logEntry.EmailID = &emailID
+		}
+	}
+
+	if err := m.diagnosticLogWriter(logEntry); err != nil {
+		log.Printf("[InterceptorManager] Failed to save filter skip log for interceptor %s: %v", config.Name, err)
+	}
+}
+
+func marshalDiagnosticInput(input map[string]interface{}) string {
+	bytes, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Sprintf(`{"marshal_error":%q}`, err.Error())
+	}
+	if len(bytes) > 20000 {
+		return string(bytes[:20000]) + "...[truncated]"
+	}
+	return string(bytes)
 }
 
 // handleError 处理拦截器执行错误
