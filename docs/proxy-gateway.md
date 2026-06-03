@@ -2,6 +2,8 @@
 
 Proxy Gateway 让 Mailman 作为一个独立的 HTTP / SOCKS5 代理入口，对外暴露监听端口，实际访问目标时再按代理池策略选择上游代理。代理访问账号独立于 Mailman 登录账号，适合给外部工具、浏览器、爬虫或自动化任务分配受控代理能力。
 
+> 这篇文档是功能概要。完整的手把手配置和接入手册见：[代理池管理模块接入手册](./proxy-pool-management-guide.md)。
+
 ## 功能范围
 
 - 支持 HTTP 代理、SOCKS5 代理、Mixed 混合监听。Mixed 会通过首字节自动识别 SOCKS5，其余按 HTTP 代理处理。

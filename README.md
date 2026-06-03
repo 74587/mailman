@@ -103,6 +103,12 @@ npm run dev
 
 通过 Web 界面「设置 → AI 配置」添加 OpenAI、Claude 或 Gemini 的 API 密钥。
 
+### 代理池与代理网关
+
+通过 Web 界面「代理池管理」维护上游代理、HTTP / SOCKS5 网关、网关用户、安全策略、DNS 策略和用户名路由。
+
+📖 详见 [docs/proxy-pool-management-guide.md](./docs/proxy-pool-management-guide.md)
+
 ## 🤝 贡献指南
 
 1. Fork 项目

@@ -18,6 +18,7 @@ import {
     PanelLeftClose,
     PanelLeftOpen,
     Briefcase,
+    Network,
     type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -115,6 +116,15 @@ const HTML_GUIDE_DOCS: HtmlGuideDoc[] = [
         category: '高级能力',
         icon: Bot,
         tags: ['AI', '业务账户', '代理池'],
+    },
+    {
+        id: 'proxy-pool-management',
+        title: '代理池管理与代理网关接入',
+        description: '上游代理、HTTP/SOCKS5 网关、安全策略、DNS 策略、网关用户和接入示例。',
+        href: '/guide-html/proxy-pool-management.html',
+        category: '高级能力',
+        icon: Network,
+        tags: ['代理网关', 'SOCKS5', '安全策略'],
     },
     {
         id: 'api-reference',

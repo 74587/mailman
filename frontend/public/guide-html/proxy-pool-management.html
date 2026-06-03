@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>代理池管理与代理网关接入 · Mailman</title>
+  <link rel="stylesheet" href="./assets/guide.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-inner">
+        <div>
+          <span class="eyebrow">Proxy Pool & Gateway</span>
+          <h1>从代理资产到 HTTP / SOCKS5 网关的完整接入手册</h1>
+          <p>这份手册按真实配置顺序讲解：先维护上游代理，再创建 Mailman 代理网关，配置安全、DNS、用户名路由和网关用户，最后用 curl、浏览器、Playwright 或业务程序接入代理。</p>
+          <div class="badge-row">
+            <span class="badge">代理列表</span>
+            <span class="badge green">HTTP / SOCKS5</span>
+            <span class="badge violet">安全与 DNS</span>
+            <span class="badge amber">用户名路由</span>
+          </div>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <svg viewBox="0 0 360 240">
+            <rect x="24" y="28" width="312" height="184" rx="22" fill="#111827" stroke="#334155"/>
+            <rect x="46" y="58" width="92" height="52" rx="12" fill="#172554" stroke="#2563eb"/>
+            <rect x="184" y="58" width="112" height="52" rx="12" fill="#042f2e" stroke="#0f766e"/>
+            <rect x="58" y="148" width="94" height="42" rx="12" fill="#312e81" stroke="#7c3aed"/>
+            <rect x="204" y="148" width="94" height="42" rx="12" fill="#451a03" stroke="#d97706"/>
+            <path d="M138 84 H184" stroke="#93c5fd" stroke-width="4" stroke-linecap="round"/>
+            <path d="M240 110 V148" stroke="#5eead4" stroke-width="4" stroke-linecap="round"/>
+            <path d="M92 110 V148" stroke="#c4b5fd" stroke-width="4" stroke-linecap="round"/>
+            <path d="M152 169 H204" stroke="#fbbf24" stroke-width="4" stroke-linecap="round"/>
+            <text x="92" y="88" fill="#dbeafe" text-anchor="middle" font-size="12" font-weight="800">Client</text>
+            <text x="240" y="88" fill="#ccfbf1" text-anchor="middle" font-size="12" font-weight="800">Gateway</text>
+            <text x="105" y="174" fill="#ede9fe" text-anchor="middle" font-size="12" font-weight="800">Policies</text>
+            <text x="251" y="174" fill="#fef3c7" text-anchor="middle" font-size="12" font-weight="800">Proxy Pool</text>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <nav>
+        <a href="./index.html">文档中心</a>
+        <a href="#concepts">概念</a>
+        <a href="#proxy-pool">代理</a>
+        <a href="#gateway">网关</a>
+        <a href="#policies">策略</a>
+        <a href="#accounts">用户</a>
+        <a href="#usage">接入</a>
+        <a href="#troubleshooting">排查</a>
+      </nav>
+      <a href="/main?tab=proxy-gateway-gateways" target="_top">打开代理网关</a>
+    </div>
+
+    <section id="concepts" class="section">
+      <h2>先理解资源层级</h2>
+      <p class="lead">代理池管理模块不是简单的“保存代理”。它有三个顶级资源：代理、网关、网关用户；用户名路由、安全策略和 DNS 策略都属于具体网关。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>层级</th><th>资源</th><th>作用</th></tr></thead>
+          <tbody>
+            <tr><td>顶级</td><td>代理列表</td><td>保存上游 HTTP、SOCKS5、SSH 等代理，是真实访问目标网站的出口。</td></tr>
+            <tr><td>顶级</td><td>代理网关</td><td>Mailman 自己监听的 HTTP / SOCKS5 / Mixed 代理入口。</td></tr>
+            <tr><td>顶级</td><td>网关用户</td><td>外部客户端连接 Mailman 代理网关时使用的账号，独立于 Mailman 登录账号。</td></tr>
+            <tr><td>网关级</td><td>用户名路由</td><td>用户通过用户名后缀临时切换不同代理池、fallback、安全或 DNS 策略。</td></tr>
+            <tr><td>网关级</td><td>安全策略</td><td>限制来源 IP、目标 Host、目标端口，并阻断内网、回环和 metadata 地址。</td></tr>
+            <tr><td>网关级</td><td>DNS 策略</td><td>控制远端解析、本地解析、自定义 resolver、缓存 TTL 和 DNS 安全检查。</td></tr>
+            <tr><td>用户级</td><td>账号分组 / 标签</td><td>单独维护，再在创建网关用户时选择，用于权限和运营分层。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>客户端连接 Mailman 网关</strong><br><span class="muted">客户端使用 HTTP、SOCKS5 或 Mixed 端口，并提交网关用户名和密码。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>认证和授权</strong><br><span class="muted">Mailman 校验网关用户、可用网关、用户名路由权限和账号限制。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>安全与 DNS 检查</strong><br><span class="muted">按网关或路由策略检查来源、目标、端口和解析结果。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>选择上游代理</strong><br><span class="muted">按代理范围、调度算法、fallback 和粘性策略从代理池中选择真实出口。</span></div></div>
+      </div>
+    </section>
+
+    <section id="proxy-pool" class="section">
+      <h2>第一步：维护上游代理</h2>
+      <p class="lead">先进入“代理池管理 → 代理列表”，把上游代理按分组和标签整理好。网关用户和路由策略后续都会从这些代理中选择。</p>
+      <div class="grid three">
+        <div class="card"><h3>分组</h3><p class="muted">主分类，例如 <code>US Residential</code>、<code>SG Datacenter</code>、<code>Backup Pool</code>。</p></div>
+        <div class="card"><h3>标签</h3><p class="muted">多维标记，例如 <code>login</code>、<code>scraping</code>、<code>high-quality</code>、<code>warmup</code>。</p></div>
+        <div class="card"><h3>检测</h3><p class="muted">导入后立即测试，记录状态、延迟、出口 IP、国家、地区、城市和 ISP。</p></div>
+      </div>
+      <h3>批量导入格式</h3>
+      <pre><code>host:port
+host:port:username:password
+username:password@host:port
+socks5://username:password@host:port
+http://username:password@host:port</code></pre>
+      <h3>API 示例</h3>
+      <pre><code>curl -X POST "$BASE_URL/api/proxy-groups" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "US Residential", "description": "美国住宅代理", "color": "#0f766e" }'
+
+curl -X POST "$BASE_URL/api/proxy-tags" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "login", "color": "#2563eb" }'
+
+curl -X POST "$BASE_URL/api/proxy-pool/bulk-import" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "defaultType": "socks5",
+    "groupId": 1,
+    "tagIds": [1],
+    "checkProxy": true,
+    "channel": "default",
+    "duplicatePolicy": "skip",
+    "content": "127.0.0.1:1080:user:pass\n127.0.0.2:1080:user:pass"
+  }'</code></pre>
+      <div class="callout success">生产建议先小批量导入并检测，再按地区、用途和质量扩大导入范围。</div>
+    </section>
+
+    <section id="gateway" class="section">
+      <h2>第二步：创建代理网关</h2>
+      <p class="lead">代理网关是 Mailman 对外暴露的代理入口。客户端看到的是 Mailman 的地址，实际出口由 Mailman 从代理池中选择。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>推荐值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>监听 IP</td><td><code>127.0.0.1</code> / 内网 IP / <code>0.0.0.0</code></td><td>公网或全网卡监听必须显式确认公开监听。</td></tr>
+            <tr><td>外部访问地址</td><td><code>proxy.example.com</code></td><td>不做校验，只用于生成示例 curl。</td></tr>
+            <tr><td>端口</td><td><code>32109</code></td><td>避免使用系统保留端口。</td></tr>
+            <tr><td>协议</td><td><code>mixed</code></td><td>同一端口支持 HTTP 和 SOCKS5，推荐。</td></tr>
+            <tr><td>需要认证</td><td>开启</td><td>公网监听不允许关闭认证。</td></tr>
+            <tr><td>默认安全策略</td><td>选择网关级策略</td><td>控制访问安全边界。</td></tr>
+            <tr><td>默认 DNS 策略</td><td>选择网关级策略</td><td>控制解析方式。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="grid three">
+        <div class="card"><h3>HTTP</h3><p class="muted">适合 HTTP 代理和 HTTPS CONNECT。curl 使用 <code>-x http://...</code>。</p></div>
+        <div class="card"><h3>SOCKS5</h3><p class="muted">适合浏览器、爬虫和自动化工具。curl 使用 <code>--socks5-hostname</code>。</p></div>
+        <div class="card"><h3>Mixed</h3><p class="muted">同一端口自动识别 HTTP 或 SOCKS5，是最省端口的方式。</p></div>
+      </div>
+      <div class="callout warning">保存网关后需要进入网关概览点击“热加载”，监听端口才会按最新配置启动或重建。</div>
+    </section>
+
+    <section id="policies" class="section">
+      <h2>第三步：配置安全、DNS 和用户名路由</h2>
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="策略类型">
+          <button role="tab" aria-selected="true" aria-controls="policy-security">安全策略</button>
+          <button role="tab" aria-selected="false" aria-controls="policy-dns">DNS 策略</button>
+          <button role="tab" aria-selected="false" aria-controls="policy-route">用户名路由</button>
+        </div>
+        <div id="policy-security" class="tab-panel active" role="tabpanel">
+          <p>安全策略用于防止代理入口变成 SSRF 或开放代理。生产环境建议开启内网、回环、链路本地、多播、metadata 地址阻断和 DNS rebinding 防护。</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>配置</th><th>建议</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td>来源允许 CIDR</td><td><code>203.0.113.20/32</code></td><td>只允许指定客户端连接。</td></tr>
+                <tr><td>目标端口允许</td><td><code>80</code>、<code>443</code></td><td>只允许 Web 目标。</td></tr>
+                <tr><td>Host allowlist</td><td><code>*.example.com</code></td><td>限制只能访问指定业务域名。</td></tr>
+                <tr><td>未匹配动作</td><td><code>deny</code></td><td>没有命中允许规则时拒绝。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div id="policy-dns" class="tab-panel" role="tabpanel">
+          <p>DNS 策略决定域名在哪里解析，以及解析结果如何参与安全检查。</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>字段</th><th>生产建议</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td>解析模式</td><td>远端解析</td><td>减少本地 DNS 泄露，适合代理访问外网。</td></tr>
+                <tr><td>SOCKS5 远端解析</td><td>开启</td><td>关闭时 Mailman 会先本地解析。</td></tr>
+                <tr><td>HTTP CONNECT 保留 Host</td><td>开启</td><td>本地解析成 IP 后仍保留原始 Host 头。</td></tr>
+                <tr><td>安全预解析</td><td>开启</td><td>远端解析模式也先解析目标，用于安全策略。</td></tr>
+                <tr><td>多 IP 策略</td><td>全部检查</td><td>所有解析 IP 都必须通过安全检查。</td></tr>
+                <tr><td>解析失败动作</td><td>拒绝</td><td>生产不建议 remote fallback。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div id="policy-route" class="tab-panel" role="tabpanel">
+          <p>用户名路由允许用户在用户名后携带标志号，临时切换策略。标志号会在页面中显示，用户必须被授权才能使用。</p>
+          <pre><code>proxy_user#17
+proxy_user?route=17
+proxy_user?rs=17
+proxy_user?strategy=17
+proxy_user#17;purpose=signup;batch=202606</code></pre>
+          <ul>
+            <li>网关用户必须开启“允许用户名携带路由标志”。</li>
+            <li>网关用户必须被授权使用当前网关。</li>
+            <li>网关用户必须被授权使用该路由策略，或开启“允许全部路由策略”。</li>
+            <li>未携带标志号时，使用网关用户自己的默认策略。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="accounts" class="section">
+      <h2>第四步：创建网关用户</h2>
+      <p class="lead">网关用户是外部客户端连接 Mailman 代理网关时使用的账号。它和 Mailman 登录账号完全独立。</p>
+      <div class="grid two">
+        <div class="card">
+          <h3>账号与授权</h3>
+          <p class="muted">用户名和密码可一键生成；分组和标签从已有项中搜索选择；可用网关通过搜索下拉选择后以标签回显。</p>
+        </div>
+        <div class="card">
+          <h3>代理选择</h3>
+          <p class="muted">支持全部可用、按组/标签、临时代理池。临时代理池通过代理列表子弹窗筛选并多选。</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>策略</th><th>选项</th><th>建议</th></tr></thead>
+          <tbody>
+            <tr><td>调度算法</td><td>随机、轮询、权重、最低延迟、优先复用最近成功</td><td>通用场景用随机或轮询；会话稳定场景用优先复用。</td></tr>
+            <tr><td>粘性策略</td><td>账号、客户端 IP、目标域名、客户端 IP + 目标域名</td><td>登录和浏览器会话建议按账号或客户端 IP 粘性。</td></tr>
+            <tr><td>Fallback</td><td>中断、重试换代理、备用池、直连</td><td>生产谨慎开启直连 fallback。</td></tr>
+            <tr><td>限速</td><td>最大并发、每分钟连接数、带宽、最大会话时长</td><td>外部用户必须设置合理限制。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout success">创建完成后，在网关用户列表点击“生成测试 curl”，选择可用网关，页面会实时拉取网关信息并生成 HTTP 与 SOCKS5 示例。</div>
+    </section>
+
+    <section id="usage" class="section">
+      <h2>第五步：客户端接入代理</h2>
+      <h3>curl</h3>
+      <pre><code># HTTP CONNECT
+curl -x 'http://gw_user:gw_password@proxy.example.com:32109' \
+  'https://api.ipify.org?format=json'
+
+# HTTP CONNECT + 用户名路由
+curl -x 'http://gw_user#17:gw_password@proxy.example.com:32109' \
+  'https://api.ipify.org?format=json'
+
+# SOCKS5 远端解析
+curl --socks5-hostname 'gw_user:gw_password@proxy.example.com:32109' \
+  'https://api.ipify.org?format=json'
+
+# SOCKS5 + 用户名路由
+curl --socks5-hostname 'gw_user#17:gw_password@proxy.example.com:32109' \
+  'https://example.com'</code></pre>
+      <h3>Playwright</h3>
+      <pre><code>import { chromium } from 'playwright'
+
+const browser = await chromium.launch({
+  proxy: {
+    server: 'http://proxy.example.com:32109',
+    username: 'gw_user#17',
+    password: 'gw_password',
+  },
+})
+
+const page = await browser.newPage()
+await page.goto('https://api.ipify.org?format=json')
+console.log(await page.textContent('body'))
+await browser.close()</code></pre>
+      <h3>Python requests</h3>
+      <pre><code>import requests
+from urllib.parse import quote
+
+username = quote("gw_user#17", safe="")
+proxy = f"http://{username}:gw_password@proxy.example.com:32109"
+
+proxies = { "http": proxy, "https": proxy }
+print(requests.get("https://api.ipify.org?format=json", proxies=proxies, timeout=20).text)</code></pre>
+      <h3>浏览器和指纹浏览器</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>字段</th><th>HTTP / SOCKS5 填写</th></tr></thead>
+          <tbody>
+            <tr><td>Host</td><td><code>proxy.example.com</code> 或网关外部访问 IP。</td></tr>
+            <tr><td>Port</td><td>网关端口，例如 <code>32109</code>。</td></tr>
+            <tr><td>Username</td><td><code>gw_user</code>，需要路由时填 <code>gw_user#17</code>。</td></tr>
+            <tr><td>Password</td><td>网关用户密码。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="account-proxy" class="section">
+      <h2>邮箱账户如何使用代理池</h2>
+      <p class="lead">代理池也能给邮箱账户使用。邮箱账户代理主要用于 IMAP、SMTP、OAuth2 等邮箱访问；代理网关则用于对外提供通用 HTTP / SOCKS5 入口。</p>
+      <div class="grid three">
+        <div class="card"><h3>手动代理</h3><p class="muted">直接填写 <code>socks5://user:pass@host:port</code>。</p></div>
+        <div class="card"><h3>指定代理</h3><p class="muted">从代理池中选择一个固定代理条目。</p></div>
+        <div class="card"><h3>自动匹配</h3><p class="muted">按代理分组和标签自动选择可用代理。</p></div>
+      </div>
+      <p>账户代理 fallback 支持 <code>interrupt</code>、<code>manual_backup</code> 和 <code>auto_select</code>。邮箱登录、同步或取件失败时，先看账户错误状态，再看代理检测状态。</p>
+    </section>
+
+    <section id="troubleshooting" class="section">
+      <h2>排查手册</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>现象</th><th>优先检查</th></tr></thead>
+          <tbody>
+            <tr><td>连接网关失败</td><td>网关是否启用、是否热加载、端口是否被占用、防火墙是否放行。</td></tr>
+            <tr><td>认证失败</td><td>用户名密码、账号是否启用/过期、是否授权当前网关、路由标志是否授权。</td></tr>
+            <tr><td>没有可用代理</td><td>代理状态、账号选择范围、分组标签、临时代理池和 fallback 配置。</td></tr>
+            <tr><td>被安全策略拒绝</td><td>来源 CIDR、目标 Host、目标端口、内网/回环/metadata 阻断。</td></tr>
+            <tr><td>DNS 失败</td><td>DNS 模式、自定义 resolver、解析失败动作、DNS rebinding 防护。</td></tr>
+            <tr><td>HTTP 可用但 SOCKS5 不可用</td><td>网关协议是否支持 SOCKS5，客户端是否使用 <code>--socks5-hostname</code>。</td></tr>
+            <tr><td>SOCKS5 可用但 HTTP 不可用</td><td>网关协议是否支持 HTTP，目标端口 443 是否允许。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <h3>上线安全清单</h3>
+      <ul>
+        <li>公网监听必须开启认证，并配置来源 CIDR 或外层防火墙。</li>
+        <li>默认安全策略开启内网、回环、链路本地、多播、metadata 阻断。</li>
+        <li>开启 DNS rebinding 防护，解析失败动作使用拒绝。</li>
+        <li>普通用户不要授权全部网关或全部路由策略。</li>
+        <li>不要默认开启直连 fallback。</li>
+        <li>外部用户设置过期时间、最大并发、每分钟连接数和最大会话时长。</li>
+      </ul>
+    </section>
+
+    <section id="api" class="section">
+      <h2>接口地图</h2>
+      <div class="grid two">
+        <div class="card">
+          <h3>代理池</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-pool</code><span>代理列表</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/proxy-pool</code><span>新增代理</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/proxy-pool/bulk-import</code><span>批量导入</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/proxy-pool/{id}/test</code><span>测试代理</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-groups</code><span>代理分组</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-tags</code><span>代理标签</span></div>
+        </div>
+        <div class="card">
+          <h3>代理网关</h3>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/listeners</code><span>网关列表</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/accounts</code><span>网关用户</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/route-strategies</code><span>用户名路由</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/security-policies</code><span>安全策略</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/dns-policies</code><span>DNS 策略</span></div>
+          <div class="endpoint"><span class="method post">POST</span><code>/api/proxy-gateway/reload</code><span>热加载</span></div>
+        </div>
+      </div>
+    </section>
+
+    <p class="footer">Markdown 完整版：docs/proxy-pool-management-guide.md · 概要：docs/proxy-gateway.md</p>
+  </main>
+  <script src="./assets/guide.js"></script>
+</body>
+</html>

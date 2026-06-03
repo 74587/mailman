@@ -238,6 +238,7 @@ curl -X POST "$BASE_URL/api/accounts/batch-add-tag" \
     <section id="proxy" class="section">
       <h2>代理池与账户代理</h2>
       <p class="lead">代理池保存可复用代理，账户可选择手动代理、指定代理池条目或自动匹配代理。Webhook 动作也支持代理配置。</p>
+      <div class="callout success">需要从 0 到 1 配置代理列表、HTTP/SOCKS5 网关、安全策略、DNS 策略、网关用户和 curl/浏览器接入时，请阅读独立专题：<a href="./proxy-pool-management.html">代理池管理与代理网关接入</a>。</div>
       <div class="grid three">
         <div class="card"><h3>代理类型</h3><p class="muted"><code>http</code>、<code>https</code>、<code>ssh</code>、<code>socks5</code>。</p></div>
         <div class="card"><h3>账户模式</h3><p class="muted"><code>manual</code>、<code>selected</code>、<code>auto</code>。</p></div>
