@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDownToLine, Bold, Bot, CheckCircle, ChevronDown, ChevronRight, Clock, Code, Italic, List, Loader2, Maximize2, MessageSquarePlus, Minimize2, MoveDiagonal2, Send, Sparkles, Square, XCircle } from 'lucide-react'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
@@ -44,11 +44,55 @@ function TaskStatusIcon({ status }: { status: AITaskStatus }) {
 const DEFAULT_PANEL_SIZE = { width: 440, height: 680 }
 const MIN_PANEL_WIDTH = 360
 const MIN_PANEL_HEIGHT = 420
+const FLOATING_BUTTON_SIZE = 48
+const FLOATING_BUTTON_EDGE_GAP = 20
+const FLOATING_BUTTON_POSITION_STORAGE_KEY = 'mailman.aiAssistant.floatingButtonPosition'
 
 type PanelResizeMode = 'width' | 'height' | 'both'
+type FloatingButtonPosition = { x: number; y: number }
 
 function clamp(value: number, min: number, max: number) {
     return Math.min(max, Math.max(min, value))
+}
+
+function getDefaultFloatingButtonPosition(): FloatingButtonPosition {
+    if (typeof window === 'undefined') return { x: FLOATING_BUTTON_EDGE_GAP, y: FLOATING_BUTTON_EDGE_GAP }
+    return {
+        x: Math.max(FLOATING_BUTTON_EDGE_GAP, window.innerWidth - FLOATING_BUTTON_SIZE - FLOATING_BUTTON_EDGE_GAP),
+        y: Math.max(FLOATING_BUTTON_EDGE_GAP, window.innerHeight - FLOATING_BUTTON_SIZE - FLOATING_BUTTON_EDGE_GAP),
+    }
+}
+
+function clampFloatingButtonPosition(position: FloatingButtonPosition): FloatingButtonPosition {
+    if (typeof window === 'undefined') return position
+    const maxX = Math.max(FLOATING_BUTTON_EDGE_GAP, window.innerWidth - FLOATING_BUTTON_SIZE - FLOATING_BUTTON_EDGE_GAP)
+    const maxY = Math.max(FLOATING_BUTTON_EDGE_GAP, window.innerHeight - FLOATING_BUTTON_SIZE - FLOATING_BUTTON_EDGE_GAP)
+    return {
+        x: clamp(position.x, FLOATING_BUTTON_EDGE_GAP, maxX),
+        y: clamp(position.y, FLOATING_BUTTON_EDGE_GAP, maxY),
+    }
+}
+
+function readFloatingButtonPosition() {
+    if (typeof window === 'undefined') return null
+    try {
+        const raw = window.localStorage.getItem(FLOATING_BUTTON_POSITION_STORAGE_KEY)
+        if (!raw) return null
+        const parsed = JSON.parse(raw) as Partial<FloatingButtonPosition>
+        if (typeof parsed.x !== 'number' || typeof parsed.y !== 'number') return null
+        return clampFloatingButtonPosition({ x: parsed.x, y: parsed.y })
+    } catch {
+        return null
+    }
+}
+
+function persistFloatingButtonPosition(position: FloatingButtonPosition) {
+    if (typeof window === 'undefined') return
+    try {
+        window.localStorage.setItem(FLOATING_BUTTON_POSITION_STORAGE_KEY, JSON.stringify(position))
+    } catch {
+        // Ignore storage failures; dragging should still work for the current page.
+    }
 }
 
 function getPanelBounds() {
@@ -356,11 +400,21 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
     const [input, setInput] = useState('')
     const [composerHeight, setComposerHeight] = useState(92)
     const [panelSize, setPanelSize] = useState(DEFAULT_PANEL_SIZE)
+    const [floatingButtonPosition, setFloatingButtonPosition] = useState<FloatingButtonPosition | null>(null)
     const [autoScroll, setAutoScroll] = useState(true)
     const [sending, setSending] = useState(false)
     const [detailsOpenTaskIds, setDetailsOpenTaskIds] = useState<Set<string>>(new Set())
     const editorRef = useRef<HTMLDivElement | null>(null)
     const messageScrollRef = useRef<HTMLDivElement | null>(null)
+    const floatingButtonDragRef = useRef<{
+        startX: number
+        startY: number
+        initialPosition: FloatingButtonPosition
+        latestPosition: FloatingButtonPosition
+        moved: boolean
+    } | null>(null)
+    const skipNextFloatingButtonClickRef = useRef(false)
+    const lastFloatingButtonDragAtRef = useRef(0)
 
     const isLoading = authState?.isLoading ?? false
     const isAuthenticated = authState?.isAuthenticated ?? true
@@ -385,6 +439,21 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
         }
 
         handleResize()
+        window.addEventListener('resize', handleResize)
+        return () => window.removeEventListener('resize', handleResize)
+    }, [])
+
+    useEffect(() => {
+        setFloatingButtonPosition(readFloatingButtonPosition() || getDefaultFloatingButtonPosition())
+
+        const handleResize = () => {
+            setFloatingButtonPosition(position => {
+                const next = clampFloatingButtonPosition(position || getDefaultFloatingButtonPosition())
+                persistFloatingButtonPosition(next)
+                return next
+            })
+        }
+
         window.addEventListener('resize', handleResize)
         return () => window.removeEventListener('resize', handleResize)
     }, [])
@@ -510,6 +579,77 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
         window.addEventListener('mouseup', handleUp)
     }
 
+    const startFloatingButtonDragFromPoint = (
+        startX: number,
+        startY: number,
+        moveEventName: 'pointermove' | 'mousemove',
+        upEventName: 'pointerup' | 'mouseup',
+        cancelEventName?: 'pointercancel'
+    ) => {
+        if (floatingButtonDragRef.current) return
+        const initialPosition = floatingButtonPosition || getDefaultFloatingButtonPosition()
+        floatingButtonDragRef.current = {
+            startX,
+            startY,
+            initialPosition,
+            latestPosition: initialPosition,
+            moved: false,
+        }
+
+        const cleanup = () => {
+            window.removeEventListener(moveEventName, handleMove as EventListener)
+            window.removeEventListener(upEventName, handleUp)
+            if (cancelEventName) {
+                window.removeEventListener(cancelEventName, handleUp)
+            }
+        }
+
+        const handleMove = (moveEvent: PointerEvent | globalThis.MouseEvent) => {
+            const state = floatingButtonDragRef.current
+            if (!state) return
+            const deltaX = moveEvent.clientX - state.startX
+            const deltaY = moveEvent.clientY - state.startY
+            if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) {
+                state.moved = true
+            }
+            const nextPosition = clampFloatingButtonPosition({
+                x: state.initialPosition.x + deltaX,
+                y: state.initialPosition.y + deltaY,
+            })
+            state.latestPosition = nextPosition
+            setFloatingButtonPosition(nextPosition)
+        }
+
+        const handleUp = () => {
+            const state = floatingButtonDragRef.current
+            floatingButtonDragRef.current = null
+            cleanup()
+            if (!state?.moved) return
+            skipNextFloatingButtonClickRef.current = true
+            lastFloatingButtonDragAtRef.current = Date.now()
+            window.setTimeout(() => {
+                skipNextFloatingButtonClickRef.current = false
+            }, 250)
+            persistFloatingButtonPosition(state.latestPosition)
+        }
+
+        window.addEventListener(moveEventName, handleMove as EventListener)
+        window.addEventListener(upEventName, handleUp)
+        if (cancelEventName) {
+            window.addEventListener(cancelEventName, handleUp)
+        }
+    }
+
+    const startFloatingButtonDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+        if (event.button > 0) return
+        startFloatingButtonDragFromPoint(event.clientX, event.clientY, 'pointermove', 'pointerup', 'pointercancel')
+    }
+
+    const startFloatingButtonMouseDrag = (event: ReactMouseEvent<HTMLButtonElement>) => {
+        if (event.button > 0) return
+        startFloatingButtonDragFromPoint(event.clientX, event.clientY, 'mousemove', 'mouseup')
+    }
+
     const toggleDetails = (taskId: string) => {
         setDetailsOpenTaskIds(prev => {
             const next = new Set(prev)
@@ -527,9 +667,22 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
             {!isOpen && (
                 <button
                     type="button"
-                    onClick={openAssistant}
-                    className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full border border-primary-200 bg-primary-600 text-white shadow-lg shadow-primary-900/15 transition hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:border-primary-700 dark:shadow-black/30"
-                    title="AI 助手"
+                    onClick={(event) => {
+                        if (skipNextFloatingButtonClickRef.current && Date.now() - lastFloatingButtonDragAtRef.current < 300) {
+                            event.preventDefault()
+                            skipNextFloatingButtonClickRef.current = false
+                            return
+                        }
+                        openAssistant()
+                    }}
+                    onPointerDown={startFloatingButtonDrag}
+                    onMouseDown={startFloatingButtonMouseDrag}
+                    className="fixed z-[100000] flex h-12 w-12 cursor-grab touch-none items-center justify-center rounded-full border border-primary-200 bg-primary-600 text-white shadow-lg shadow-primary-900/15 transition-colors hover:bg-primary-700 active:cursor-grabbing focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:border-primary-700 dark:shadow-black/30"
+                    style={floatingButtonPosition
+                        ? { left: floatingButtonPosition.x, top: floatingButtonPosition.y }
+                        : { right: FLOATING_BUTTON_EDGE_GAP, bottom: FLOATING_BUTTON_EDGE_GAP }}
+                    title="AI 助手，拖拽调整位置"
+                    aria-label="AI 助手，拖拽调整位置"
                 >
                     <Sparkles className="h-5 w-5" />
                 </button>
@@ -537,7 +690,7 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
 
             {isOpen && (
                 <section
-                    className="fixed bottom-4 right-4 z-40 flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl shadow-gray-900/20 dark:border-gray-700 dark:bg-gray-900 dark:shadow-black/40"
+                    className="fixed bottom-4 right-4 z-[100000] flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl shadow-gray-900/20 dark:border-gray-700 dark:bg-gray-900 dark:shadow-black/40"
                     style={{
                         width: `min(${panelSize.width}px, calc(100vw - 32px))`,
                         height: `min(${panelSize.height}px, calc(100vh - 32px))`,
