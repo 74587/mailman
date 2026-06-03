@@ -6,12 +6,13 @@ import { Toaster as SonnerToaster } from 'sonner'
 import { useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { ThemeProvider, useTheme } from '@/components/theme-provider'
-import { AuthProvider } from '@/context/auth-context'
+import { AuthProvider, useAuth } from '@/context/auth-context'
 import { KeyboardProvider, DefaultKeybindings } from '@/context/keyboard'
 import { CommandPalette } from '@/components/command-palette/command-palette'
 import { HintModeProvider } from '@/components/hint-mode'
 import EmailNotificationToast from '@/components/notifications/email-notification-toast'
 import { ConfirmDialogProvider } from '@/hooks/use-confirm-dialog'
+import { AIRuntimeProvider, GlobalAIAssistant } from '@/components/ai'
 
 // Sonner Toaster with theme support
 function ThemedSonnerToaster() {
@@ -35,6 +36,24 @@ function ThemedSonnerToaster() {
     )
 }
 
+function AuthenticatedAIRuntimeScope({ children }: { children: React.ReactNode }) {
+    const { user, isAuthenticated, isLoading } = useAuth()
+
+    return (
+        <AIRuntimeProvider
+            userContext={user ? {
+                id: user.id,
+                username: user.username,
+                email: user.email,
+                isSuperAdmin: user.is_super_admin,
+            } : undefined}
+        >
+            {children}
+            <GlobalAIAssistant authState={{ isAuthenticated, isLoading }} />
+        </AIRuntimeProvider>
+    )
+}
+
 export function Providers({ children }: { children: React.ReactNode }) {
     const pathname = usePathname()
     const normalizedPathname = pathname.replace(/\/+$/, '') || '/'
@@ -44,7 +63,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
         process.env.NODE_ENV !== 'production' && (
             normalizedPathname === '/dev/action-dropdown-regression' ||
             normalizedPathname === '/dev/plugin-config-form-regression' ||
-            normalizedPathname === '/dev/configuration-menu-overflow-regression'
+            normalizedPathname === '/dev/configuration-menu-overflow-regression' ||
+            normalizedPathname === '/dev/ai-assistant-regression'
         )
     const isStandalonePublicPage = isOAuth2StandalonePage || isLegalPage || isDevRegressionPage
     const [queryClient] = useState(
@@ -74,9 +94,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
                         <ConfirmDialogProvider>
                             <KeyboardProvider>
                                 <HintModeProvider>
-                                    <DefaultKeybindings />
-                                    {children}
-                                    <CommandPalette />
+                                    <AuthenticatedAIRuntimeScope>
+                                        <DefaultKeybindings />
+                                        {children}
+                                        <CommandPalette />
+                                    </AuthenticatedAIRuntimeScope>
                                 </HintModeProvider>
                             </KeyboardProvider>
                         </ConfirmDialogProvider>

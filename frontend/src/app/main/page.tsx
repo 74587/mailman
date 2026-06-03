@@ -29,6 +29,7 @@ import { cn } from '@/lib/utils'
 import { hasRefreshCallback, registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
 import type { ShortcutAction, ShortcutCategory } from '@/components/command-palette/command-palette'
 import { registerPaletteCategory, updatePaletteCategory } from '@/components/command-palette/command-palette'
+import { useAIRuntime } from '@/components/ai'
 
 // Tab 名称映射表 - 格式: 中文名[英文名]
 const tabNameMap: { [key: string]: string } = {
@@ -137,6 +138,7 @@ export default function MainPage() {
     const [openTabs, setOpenTabs] = useState<string[]>(['dashboard'])
     const [tabContents, setTabContents] = useState<TabContent>({})
     const { isAuthenticated, isLoading, hasPermission } = useAuth()
+    const { setNavigationContext } = useAIRuntime()
     const router = useRouter()
 
     // 存储待处理的Tab数据
@@ -148,6 +150,10 @@ export default function MainPage() {
             router.push('/login')
         }
     }, [isAuthenticated, isLoading, router])
+
+    useEffect(() => {
+        setNavigationContext({ activeTab, openTabs })
+    }, [activeTab, openTabs, setNavigationContext])
 
     // 注册命令面板分类
     useEffect(() => {

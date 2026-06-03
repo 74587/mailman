@@ -1,7 +1,7 @@
 'use client'
 import { logger } from '@/lib/logger';
 
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Search, MoreVertical, Edit2, Trash2, RefreshCw, CheckCircle, XCircle, AlertCircle, Grid, List, Table, ChevronLeft, ChevronRight, Shield, ShieldCheck, Mail, Inbox, ChevronDown, X, Settings, Square, CheckSquare, Clock, Loader2, TableProperties, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 import { emailAccountService } from '@/services/email-account.service'
@@ -26,6 +26,7 @@ import { AccountsDataTable, type AccountsDataTableHandle } from '@/components/ac
 import { AccountFilterPanel } from '@/components/accounts/account-filter-panel'
 import { AccountSyncStatus, syncConfigService } from '@/services/sync-config.service'
 import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
+import { useAISkill, type AISkill, type AISkillAction } from '@/components/ai'
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -615,6 +616,123 @@ export default function AccountsTab() {
 
     // 后端已经返回分页数据，直接使用
     const paginatedAccounts = filteredAccounts
+
+    const accountsAISkill = useMemo<AISkill>(() => ({
+        id: 'accounts',
+        title: '邮箱账户管理',
+        description: '搜索、筛选和打开邮箱账户添加入口。',
+        aliases: ['邮箱账户', '邮箱账号', '账户管理', 'mail accounts'],
+        pageTabs: ['accounts'],
+        getContext: () => ({
+            searchQuery,
+            submittedSearchQuery,
+            providerFilter,
+            advancedFilters,
+            tagFilter,
+            viewType,
+            selectedAccountsCount: selectedAccounts.length,
+            page: pagination.page,
+            pageSize: pagination.limit,
+            total: pagination.total,
+            totalPages: pagination.totalPages,
+            visibleAccountsCount: paginatedAccounts.length,
+            availableOAuth2ProviderTypes,
+            sampleVisibleAccounts: paginatedAccounts.slice(0, 5).map(account => ({
+                id: account.id,
+                email: account.emailAddress,
+                provider: account.mailProvider?.type,
+                authType: account.authType,
+                isVerified: account.isVerified,
+                errorStatus: account.errorStatus,
+            })),
+        }),
+        actions: [
+            {
+                name: 'searchAccounts',
+                title: '搜索邮箱账户',
+                description: '更新账户页搜索词并刷新分页。',
+                risk: 'read',
+                parameters: { query: '搜索关键词，可以是邮箱、域名、转发地址或备注' },
+                run: (params) => {
+                    const query = String(params.query || '').trim()
+                    if (!query) {
+                        return { success: false, summary: '没有提供搜索关键词。' }
+                    }
+                    setSearchQuery(query)
+                    setSubmittedSearchQuery(query)
+                    setProviderFilter(null)
+                    setPagination(prev => ({ ...prev, page: 1 }))
+                    return {
+                        success: true,
+                        summary: `已在邮箱账户管理中搜索：${query}`,
+                        details: '搜索会通过账户页现有分页接口刷新结果。',
+                    }
+                },
+            },
+            {
+                name: 'clearAccountSearch',
+                title: '清空账户搜索',
+                description: '清空账户页搜索和 provider 过滤。',
+                risk: 'read',
+                run: () => {
+                    setSearchQuery('')
+                    setSubmittedSearchQuery('')
+                    setProviderFilter(null)
+                    setPagination(prev => ({ ...prev, page: 1 }))
+                    return { success: true, summary: '已清空邮箱账户搜索和过滤。' }
+                },
+            },
+            {
+                name: 'openAddAccountModal',
+                title: '打开添加账户窗口',
+                description: '打开账户添加表单，由用户确认并提交。',
+                risk: 'write',
+                parameters: {
+                    provider: '可选，邮箱提供商类型',
+                    authType: '可选，认证方式',
+                },
+                run: (params) => {
+                    const provider = typeof params.provider === 'string' ? params.provider : undefined
+                    const authType = typeof params.authType === 'string' ? params.authType : undefined
+                    setModalPresets({
+                        provider,
+                        authType,
+                    })
+                    setShowEnhancedAddModal(true)
+                    return {
+                        success: true,
+                        summary: '已打开添加账户窗口，提交前仍需要用户手动确认。',
+                    }
+                },
+            },
+            {
+                name: 'openOAuth2Config',
+                title: '打开 OAuth2 配置',
+                description: '切换到 OAuth2 配置页面。',
+                risk: 'navigation',
+                run: () => {
+                    window.dispatchEvent(new CustomEvent('switchTab', { detail: { tab: 'oauth2-config' } }))
+                    return { success: true, summary: '已切换到 OAuth2 配置。' }
+                },
+            },
+        ] satisfies AISkillAction[],
+    }), [
+        advancedFilters,
+        availableOAuth2ProviderTypes,
+        paginatedAccounts,
+        pagination.limit,
+        pagination.page,
+        pagination.total,
+        pagination.totalPages,
+        providerFilter,
+        searchQuery,
+        selectedAccounts.length,
+        submittedSearchQuery,
+        tagFilter,
+        viewType,
+    ])
+
+    useAISkill(accountsAISkill)
 
 
     const getProviderColor = (provider: string | undefined) => {
