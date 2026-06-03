@@ -154,6 +154,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	apiRouter.HandleFunc("/openai/generate-template", openAIHandler.GenerateEmailTemplate).Methods("POST")
 	apiRouter.HandleFunc("/openai/initialize-templates", openAIHandler.InitializeDefaultPromptTemplates).Methods("POST")
 	apiRouter.HandleFunc("/openai/call", openAIHandler.CallOpenAI).Methods("POST")
+	apiRouter.HandleFunc("/openai/call/stream", openAIHandler.StreamOpenAI).Methods("POST")
 	apiRouter.HandleFunc("/openai/test-config", openAIHandler.TestOpenAIConfig).Methods("POST")
 
 	// Email subscription endpoints

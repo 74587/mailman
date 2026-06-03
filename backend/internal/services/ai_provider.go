@@ -17,6 +17,11 @@ type AIProvider interface {
 	GenerateEmailTemplate(systemPrompt, userInput string, maxTokens int, temperature float64) (*ChatCompletionResponse, error)
 }
 
+// AIStreamProvider is implemented by providers that support token streaming.
+type AIStreamProvider interface {
+	StreamAI(messages []Message, maxTokens int, temperature float64, onDelta func(string) error) error
+}
+
 // BaseAIService contains common functionality for AI services
 type BaseAIService struct {
 	Config *models.OpenAIConfig
@@ -203,6 +208,7 @@ type ClaudeRequest struct {
 	MaxTokens   int       `json:"max_tokens"`
 	Temperature float64   `json:"temperature"`
 	System      string    `json:"system,omitempty"`
+	Stream      bool      `json:"stream,omitempty"`
 }
 
 // ClaudeResponse represents the Claude API response

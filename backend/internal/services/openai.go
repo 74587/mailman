@@ -35,6 +35,7 @@ type ChatCompletionRequest struct {
 	Messages    []ChatCompletionMessage `json:"messages"`
 	Temperature float64                 `json:"temperature,omitempty"`
 	MaxTokens   int                     `json:"max_tokens,omitempty"`
+	Stream      bool                    `json:"stream,omitempty"`
 }
 
 // ChatCompletionMessage represents a message in the chat completion
@@ -199,8 +200,6 @@ func (s *OpenAIService) CallOpenAI(messages []Message, maxTokens int, temperatur
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-
-
 
 	// Check if response is HTML (error page)
 	contentType := resp.Header.Get("Content-Type")

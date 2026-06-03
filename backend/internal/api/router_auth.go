@@ -278,6 +278,7 @@ func NewRouterWithAuth(
 	aiConfigRouter.HandleFunc("/generate-template", openAIHandler.GenerateEmailTemplate).Methods("POST")
 	aiConfigRouter.HandleFunc("/initialize-templates", openAIHandler.InitializeDefaultPromptTemplates).Methods("POST")
 	aiConfigRouter.HandleFunc("/call", openAIHandler.CallOpenAI).Methods("POST")
+	aiConfigRouter.HandleFunc("/call/stream", openAIHandler.StreamOpenAI).Methods("POST")
 	aiConfigRouter.HandleFunc("/test-config", openAIHandler.TestOpenAIConfig).Methods("POST")
 
 	// --- Sync Config resources ---

@@ -2,6 +2,7 @@
 
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { openAIService } from '@/services/openai.service'
+import type { OpenAIConfig } from '@/types/openai'
 import {
     AIActionResult,
     AIChatMessage,
@@ -42,7 +43,8 @@ const AIRuntimeContext = createContext<AIRuntimeContextValue | null>(null)
 const TASK_POLL_INTERVAL_MS = 80
 const WAIT_FOR_SKILL_TIMEOUT_MS = 4000
 const SELECTED_TEXT_LIMIT = 1200
-const STREAM_CHUNK_DELAY_MS = 14
+const DIRECT_CHAT_MAX_TOKENS = 1800
+const LOCAL_UNSUPPORTED_RESPONSE = '我已经感知到当前页面，但这个请求还没有对应的页面 skill。可以先试试“搜索 xxx 邮箱账户”“添加账户”或“打开 OAuth2 配置”。'
 
 function createId(prefix: string) {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -69,20 +71,6 @@ function trimText(value: string, limit: number) {
     const text = maskSensitiveText(value.trim())
     if (text.length <= limit) return text
     return `${text.slice(0, limit)}...`
-}
-
-function wait(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function splitStreamingChunks(value: string) {
-    const chars = Array.from(value)
-    const chunkSize = chars.length > 700 ? 18 : chars.length > 240 ? 10 : 5
-    const chunks: string[] = []
-    for (let index = 0; index < chars.length; index += chunkSize) {
-        chunks.push(chars.slice(index, index + chunkSize).join(''))
-    }
-    return chunks
 }
 
 function readSelectedText() {
@@ -197,7 +185,7 @@ function planLocally(input: string, context: AICompressedContext, skills: AISkil
     }
 
     return {
-        response: '我已经感知到当前页面，但这个请求还没有对应的页面 skill。可以先试试“搜索 xxx 邮箱账户”“添加账户”或“打开 OAuth2 配置”。'
+        response: LOCAL_UNSUPPORTED_RESPONSE
     }
 }
 
@@ -211,6 +199,7 @@ interface AIPlanResult {
     plan: AIPlannedAction
     source: 'model' | 'local'
     thinkingSummary?: string[]
+    configId?: number
     modelName?: string
     fallbackReason?: string
 }
@@ -272,9 +261,71 @@ function compactForModel(context: AICompressedContext) {
     }
 }
 
-async function planWithModel(input: string, context: AICompressedContext, skills: AISkill[]): Promise<AIPlanResult> {
+function buildFinalResponsePrompts(
+    userMessage: string,
+    result: AIActionResult,
+    context: AICompressedContext,
+    plan: AIPlannedAction
+) {
+    const systemPrompt = [
+        '你是 Mailman 内置 AI 助手的最终回复生成器。',
+        '用中文简洁回复用户，最多 3 句话；可以使用少量 Markdown。',
+        '只能基于执行结果、页面上下文和用户请求回复，不要编造未执行的操作。',
+        '如果执行结果已经足够清楚，保持原意，不要扩展敏感信息。',
+    ].join('\n')
+
+    const userPayload = {
+        userMessage,
+        action: {
+            skillId: plan.skillId,
+            actionName: plan.actionName,
+            tabId: plan.tabId,
+            params: plan.params,
+        },
+        result,
+        context: compactForModel(context),
+    }
+
+    return {
+        systemPrompt,
+        userMessage: JSON.stringify(userPayload).slice(0, 12000),
+    }
+}
+
+function buildDirectResponsePrompts(userMessage: string, context: AICompressedContext) {
+    const systemPrompt = [
+        '你是 Mailman 内置 AI 助手。',
+        '直接完成用户请求，不要输出 JSON 包装，不要解释内部规划、skill、action 或 subagent。',
+        '可以使用 Markdown。写作、问答、解释、总结类请求应直接给出结果。',
+        '只有在用户请求和页面上下文相关时，才引用当前页面信息；不要编造没有执行过的页面操作。',
+    ].join('\n')
+
+    return {
+        systemPrompt,
+        userMessage: [
+            `用户请求：${userMessage}`,
+            '',
+            '可用页面上下文（仅在请求相关时使用）：',
+            JSON.stringify(compactForModel(context)).slice(0, 8000),
+        ].join('\n'),
+    }
+}
+
+function shouldUseDirectChat(input: string, context: AICompressedContext, skills: AISkill[]) {
+    const localPlan = planLocally(input, context, skills)
+    return !localPlan.skillId
+        && !localPlan.actionName
+        && !localPlan.tabId
+        && localPlan.response === LOCAL_UNSUPPORTED_RESPONSE
+}
+
+async function getActiveAIConfig(): Promise<OpenAIConfig | null> {
     const configs = await openAIService.getOpenAIConfigs()
-    const activeConfig = configs.find(config => config.is_active)
+    return configs.find(config => config.is_active) || null
+}
+
+async function planWithModel(input: string, context: AICompressedContext, skills: AISkill[], config?: OpenAIConfig | null): Promise<AIPlanResult> {
+    const activeConfig = config || await getActiveAIConfig()
     if (!activeConfig) {
         return {
             plan: planLocally(input, context, skills),
@@ -309,6 +360,7 @@ async function planWithModel(input: string, context: AICompressedContext, skills
             return {
                 plan: planLocally(input, context, skills),
                 source: 'local',
+                configId: activeConfig.id,
                 modelName: response.model || activeConfig.model,
                 fallbackReason: 'AI 返回了不可执行的 action',
             }
@@ -318,12 +370,14 @@ async function planWithModel(input: string, context: AICompressedContext, skills
             plan,
             source: 'model',
             thinkingSummary: plan.thinkingSummary,
+            configId: activeConfig.id,
             modelName: response.model || activeConfig.model,
         }
     } catch {
         return {
             plan: planLocally(input, context, skills),
             source: 'local',
+            configId: activeConfig.id,
             modelName: response.model || activeConfig.model,
             fallbackReason: 'AI 返回内容不是合法 JSON',
         }
@@ -459,34 +513,64 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         }))
     }, [updateTask])
 
-    const streamAssistantMessage = useCallback(async (content: string, taskId?: string) => {
+    const streamAssistantMessage = useCallback(async (
+        fallbackContent: string,
+        taskId?: string,
+        streamRequest?: {
+            configId: number
+            systemPrompt: string
+            userMessage: string
+            maxTokens?: number
+            temperature?: number
+        }
+    ) => {
         const messageId = createId('msg')
-        const chunks = splitStreamingChunks(content)
+        const canStream = Boolean(streamRequest?.configId)
 
         setMessages(prev => [...prev, {
             id: messageId,
             role: 'assistant',
-            content: '',
+            content: canStream ? '' : fallbackContent,
             createdAt: now(),
             taskId,
-            isStreaming: true,
+            isStreaming: canStream,
         }])
 
-        if (chunks.length === 0) {
-            setMessages(prev => prev.map(message => message.id === messageId ? { ...message, isStreaming: false } : message))
+        if (!streamRequest) {
             return
         }
 
-        for (const chunk of chunks) {
-            await wait(STREAM_CHUNK_DELAY_MS)
+        let receivedContent = false
+
+        try {
+            await openAIService.streamOpenAI({
+                config_id: streamRequest.configId,
+                system_prompt: streamRequest.systemPrompt,
+                user_message: streamRequest.userMessage,
+                max_tokens: streamRequest.maxTokens ?? 700,
+                temperature: streamRequest.temperature ?? 0.3,
+                response_format: 'text',
+            }, async (delta) => {
+                receivedContent = true
+                setMessages(prev => prev.map(message => (
+                    message.id === messageId
+                        ? { ...message, content: message.content + delta }
+                        : message
+                )))
+            })
+        } catch {
             setMessages(prev => prev.map(message => (
                 message.id === messageId
-                    ? { ...message, content: message.content + chunk }
+                    ? { ...message, content: message.content || fallbackContent }
+                    : message
+            )))
+        } finally {
+            setMessages(prev => prev.map(message => (
+                message.id === messageId
+                    ? { ...message, content: receivedContent ? message.content : (message.content || fallbackContent), isStreaming: false }
                     : message
             )))
         }
-
-        setMessages(prev => prev.map(message => message.id === messageId ? { ...message, isStreaming: false } : message))
     }, [])
 
     const sendMessage = useCallback(async (content: string) => {
@@ -527,14 +611,44 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             const firstContext = await collectContext()
             const routeStep = addStep(
                 taskId,
-                enableModelPlanning ? '调用 AI 规划动作' : '分析请求与选择 skill',
+                enableModelPlanning ? '识别请求类型' : '分析请求与选择 skill',
                 `当前 tab: ${firstContext.global.activeTab || 'unknown'}`
             )
             const skills = Array.from(skillsRef.current.values())
+            const activeConfig = enableModelPlanning
+                ? await getActiveAIConfig().catch(() => null)
+                : null
+
+            if (enableModelPlanning && activeConfig && shouldUseDirectChat(message, firstContext, skills)) {
+                updateTask(taskId, taskValue => ({
+                    ...taskValue,
+                    status: 'running',
+                    targetActionName: 'directChat',
+                    thinkingSummary: [
+                        '识别到这是直接问答或创作请求，不需要页面 action。',
+                        '保留当前页面、域名和选中文本作为辅助上下文。',
+                        '使用当前 AI 配置直接流式生成最终回复。',
+                    ],
+                }))
+                finishStep(routeStep, `使用 ${activeConfig.channel_type} · ${activeConfig.model} 直接流式回复`)
+                const streamStep = addStep(taskId, '流式生成直接回复', `${activeConfig.channel_type} · ${activeConfig.model}`)
+                const prompts = buildDirectResponsePrompts(message, firstContext)
+                await streamAssistantMessage('AI 流式回复失败，请检查当前 AI 配置。', taskId, {
+                    configId: activeConfig.id,
+                    systemPrompt: prompts.systemPrompt,
+                    userMessage: prompts.userMessage,
+                    maxTokens: DIRECT_CHAT_MAX_TOKENS,
+                    temperature: 0.7,
+                })
+                finishStep(taskId, streamStep, '已完成流式回复')
+                completeTask(taskId, 'completed', { success: true, summary: '已生成直接回复' })
+                return
+            }
+
             let planResult: AIPlanResult
             if (enableModelPlanning) {
                 try {
-                    planResult = await planWithModel(message, firstContext, skills)
+                    planResult = await planWithModel(message, firstContext, skills, activeConfig)
                 } catch (error) {
                     planResult = {
                         plan: planLocally(message, firstContext, skills),
@@ -547,6 +661,16 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             }
 
             const plan = planResult.plan
+            const createStreamRequest = (result: AIActionResult, context: AICompressedContext) => {
+                if (!planResult.configId) return undefined
+                const prompts = buildFinalResponsePrompts(message, result, context, plan)
+                return {
+                    configId: planResult.configId,
+                    systemPrompt: prompts.systemPrompt,
+                    userMessage: prompts.userMessage,
+                }
+            }
+
             updateTask(taskId, taskValue => ({
                 ...taskValue,
                 thinkingSummary: planResult.thinkingSummary?.length
@@ -572,14 +696,14 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 finishStep(taskId, stepId, '页面切换事件已发送')
                 const result = { success: true, summary: plan.response || `已切换到 ${plan.tabId}` }
                 completeTask(taskId, 'completed', result)
-                await streamAssistantMessage(result.summary, taskId)
+                await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, firstContext))
                 return
             }
 
             if (!plan.skillId || !plan.actionName) {
                 const result = { success: true, summary: plan.response || '当前没有可执行动作。' }
                 completeTask(taskId, 'completed', result)
-                await streamAssistantMessage(result.summary, taskId)
+                await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, firstContext))
                 return
             }
 
@@ -615,7 +739,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 updateTask(taskId, taskValue => ({ ...taskValue, status: 'waiting_confirmation' }))
                 const result = { success: false, summary: '这个动作需要确认，当前版本先阻止破坏性操作。' }
                 completeTask(taskId, 'completed', result)
-                await streamAssistantMessage(result.summary, taskId)
+                await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, actionContext))
                 return
             }
 
@@ -623,7 +747,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             const result = await action.run(plan.params || {}, actionContext)
             finishStep(taskId, actionStep, result.summary, !result.success)
             completeTask(taskId, result.success ? 'completed' : 'failed', result, result.success ? undefined : result.summary)
-            await streamAssistantMessage(result.summary, taskId)
+            await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, actionContext))
         } catch (error) {
             const messageText = error instanceof Error ? error.message : '任务执行失败'
             completeTask(taskId, 'failed', undefined, messageText)
@@ -632,11 +756,16 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
     }, [addStep, collectContext, completeTask, finishStep, streamAssistantMessage, switchTab, updateTask, waitForSkill])
 
     const registerSkill = useCallback((skill: AISkill) => {
+        const previousSkill = skillsRef.current.get(skill.id)
         skillsRef.current.set(skill.id, skill)
-        setSkillsVersion(version => version + 1)
-        return () => {
-            skillsRef.current.delete(skill.id)
+        if (previousSkill !== skill) {
             setSkillsVersion(version => version + 1)
+        }
+        return () => {
+            if (skillsRef.current.get(skill.id) === skill) {
+                skillsRef.current.delete(skill.id)
+                setSkillsVersion(version => version + 1)
+            }
         }
     }, [])
 

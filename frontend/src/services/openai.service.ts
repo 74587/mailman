@@ -78,6 +78,80 @@ export const openAIService = {
         return response
     },
 
+    async streamOpenAI(
+        request: CallOpenAIRequest,
+        onDelta: (delta: string) => void | Promise<void>
+    ): Promise<void> {
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+        }
+        const token = typeof window !== 'undefined'
+            ? localStorage.getItem('auth_token') || localStorage.getItem('sessionToken') || localStorage.getItem('token')
+            : null
+        if (token) {
+            headers.Authorization = `Bearer ${token}`
+        }
+
+        const response = await fetch(apiClient.getFullUrl('/openai/call/stream'), {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(request),
+        })
+
+        if (!response.ok) {
+            const message = await response.text()
+            throw new Error(message || `Stream request failed: ${response.status}`)
+        }
+        if (!response.body) {
+            throw new Error('Stream response body is empty')
+        }
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        const handleLine = async (line: string) => {
+            const trimmed = line.trim()
+            if (!trimmed || !trimmed.startsWith('data:')) return false
+
+            const data = trimmed.slice(5).trim()
+            if (data === '[DONE]') return true
+
+            const event = JSON.parse(data) as { type?: string; content?: string; error?: string }
+            if (event.type === 'error') {
+                throw new Error(event.error || 'Stream failed')
+            }
+            if (event.type === 'done') {
+                return true
+            }
+            if (event.type === 'delta' && event.content) {
+                await onDelta(event.content)
+            }
+            return false
+        }
+
+        while (true) {
+            const { value, done } = await reader.read()
+            if (done) break
+
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split(/\r?\n/)
+            buffer = lines.pop() || ''
+
+            for (const line of lines) {
+                if (await handleLine(line)) {
+                    return
+                }
+            }
+        }
+
+        buffer += decoder.decode()
+        if (buffer.trim() && await handleLine(buffer)) {
+            return
+        }
+    },
+
     // Test OpenAI configuration
     async testOpenAIConfig(config: OpenAIConfigRequest): Promise<{
         success: boolean

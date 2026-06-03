@@ -572,50 +572,7 @@ func (h *OpenAIHandler) CallOpenAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Initialize system prompt and user message
-	systemPrompt := req.SystemPrompt
-	userMessage := req.UserMessage
-
-	// If template ID is provided, use template to enhance prompts
-	if req.TemplateID > 0 {
-		template, err := h.AIPromptTemplateRepo.GetByID(req.TemplateID)
-		if err == nil && template.IsActive {
-			// Use template prompts as base if not provided in request
-			if systemPrompt == "" {
-				systemPrompt = template.SystemPrompt
-			}
-			if template.UserPrompt != "" && userMessage == "" {
-				userMessage = template.UserPrompt
-			}
-
-			// Apply variables to prompts
-			if req.Variables != nil {
-				for key, value := range req.Variables {
-					systemPrompt = strings.ReplaceAll(systemPrompt, "{{"+key+"}}", value)
-					userMessage = strings.ReplaceAll(userMessage, "{{"+key+"}}", value)
-				}
-			}
-
-			// Use template settings if not provided in request
-			if req.MaxTokens == 0 && template.MaxTokens > 0 {
-				req.MaxTokens = template.MaxTokens
-			}
-			if req.Temperature == 0 && template.Temperature > 0 {
-				req.Temperature = template.Temperature
-			}
-		}
-	}
-
-	// Set defaults if not provided
-	if req.MaxTokens == 0 {
-		req.MaxTokens = 1000
-	}
-	if req.Temperature == 0 {
-		req.Temperature = 0.7
-	}
-	if req.ResponseFormat == "" {
-		req.ResponseFormat = "text"
-	}
+	systemPrompt, userMessage := h.prepareCallOpenAIPrompts(&req)
 
 	// Create AI provider based on channel type
 	aiProvider := services.NewAIProvider(config)
@@ -650,6 +607,120 @@ func (h *OpenAIHandler) CallOpenAI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(callResponse)
+}
+
+func (h *OpenAIHandler) prepareCallOpenAIPrompts(req *CallOpenAIRequest) (string, string) {
+	systemPrompt := req.SystemPrompt
+	userMessage := req.UserMessage
+
+	if req.TemplateID > 0 {
+		template, err := h.AIPromptTemplateRepo.GetByID(req.TemplateID)
+		if err == nil && template.IsActive {
+			if systemPrompt == "" {
+				systemPrompt = template.SystemPrompt
+			}
+			if template.UserPrompt != "" && userMessage == "" {
+				userMessage = template.UserPrompt
+			}
+
+			if req.Variables != nil {
+				for key, value := range req.Variables {
+					systemPrompt = strings.ReplaceAll(systemPrompt, "{{"+key+"}}", value)
+					userMessage = strings.ReplaceAll(userMessage, "{{"+key+"}}", value)
+				}
+			}
+
+			if req.MaxTokens == 0 && template.MaxTokens > 0 {
+				req.MaxTokens = template.MaxTokens
+			}
+			if req.Temperature == 0 && template.Temperature > 0 {
+				req.Temperature = template.Temperature
+			}
+		}
+	}
+
+	if req.MaxTokens == 0 {
+		req.MaxTokens = 1000
+	}
+	if req.Temperature == 0 {
+		req.Temperature = 0.7
+	}
+	if req.ResponseFormat == "" {
+		req.ResponseFormat = "text"
+	}
+
+	return systemPrompt, userMessage
+}
+
+// StreamOpenAI streams OpenAI-compatible chat completion deltas as SSE.
+func (h *OpenAIHandler) StreamOpenAI(w http.ResponseWriter, r *http.Request) {
+	var req CallOpenAIRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	config, err := h.OpenAIConfigRepo.GetByID(req.ConfigID)
+	if err != nil {
+		http.Error(w, "Configuration not found", http.StatusNotFound)
+		return
+	}
+	config.APIKey = services.DecryptIfAvailable(config.APIKey)
+
+	if !config.IsActive {
+		http.Error(w, "Configuration is not active", http.StatusBadRequest)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming is not supported by this server", http.StatusInternalServerError)
+		return
+	}
+
+	aiProvider := services.NewAIProvider(config)
+	streamProvider, ok := aiProvider.(services.AIStreamProvider)
+	if !ok {
+		http.Error(w, fmt.Sprintf("Streaming is not supported for %s configurations", config.ChannelType), http.StatusBadRequest)
+		return
+	}
+
+	systemPrompt, userMessage := h.prepareCallOpenAIPrompts(&req)
+	messages := []services.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userMessage},
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	writeEvent := func(payload map[string]string) error {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+
+	if err := streamProvider.StreamAI(messages, req.MaxTokens, req.Temperature, func(delta string) error {
+		return writeEvent(map[string]string{
+			"type":    "delta",
+			"content": delta,
+		})
+	}); err != nil {
+		_ = writeEvent(map[string]string{
+			"type":  "error",
+			"error": err.Error(),
+		})
+		return
+	}
+
+	_ = writeEvent(map[string]string{"type": "done"})
 }
 
 // TestOpenAIConfig godoc
