@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	defaultBusinessClaimTTLSeconds = 600
-	minBusinessClaimTTLSeconds     = 60
-	maxBusinessClaimTTLSeconds     = 3600
+	defaultBusinessClaimTTLSeconds  = 600
+	minBusinessClaimTTLSeconds      = 60
+	maxBusinessClaimTTLSeconds      = 3600
+	businessClaimCandidateBatchSize = 100
 
 	businessEmailModeAuto      = "auto"
 	businessEmailModePrimary   = "primary"
@@ -30,6 +31,8 @@ const (
 	businessAliasTypeGmailPlus  = "gmail_plus"
 	businessAliasTypeDomainPart = "domain_local_part"
 	businessAliasTypeForwarded  = "forwarded"
+
+	businessClaimAccountOrder = "last_sync_at IS NOT NULL ASC, last_sync_at ASC, id ASC"
 )
 
 type BusinessEmailClaimRequest struct {
@@ -161,6 +164,12 @@ type businessClaimPlan struct {
 	account           models.EmailAccount
 	registrationEmail string
 	recipient         BusinessClaimRecipient
+}
+
+type businessClaimAccountCursor struct {
+	set        bool
+	lastSyncAt *time.Time
+	id         uint
 }
 
 // ClaimBusinessModuleEmailAccountHandler atomically reserves an email address for a business module registration.
@@ -356,83 +365,57 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 			return err
 		}
 
-		plans, err := h.buildBusinessClaimPlans(tx, orgID, module, req)
-		if err != nil {
-			return err
-		}
-		if len(plans) == 0 {
-			return gorm.ErrRecordNotFound
-		}
-
 		token, err := generateBusinessClaimToken()
 		if err != nil {
 			return err
 		}
 		expiresAt := now.Add(time.Duration(ttl) * time.Second)
 
-		for _, plan := range plans {
-			available, err := businessRegistrationEmailAvailable(tx, orgID, module.ID, plan.registrationEmail)
+		tryClaim := func(plan businessClaimPlan) (bool, error) {
+			businessAccount, claimed, err := createBusinessRegistrationClaimForPlan(tx, orgID, module, req, plan, token, expiresAt, now)
+			if err != nil || !claimed {
+				return claimed, err
+			}
+			response = buildBusinessClaimResponse(module, businessAccount, plan, token, expiresAt, ttl)
+			return true, nil
+		}
+
+		if businessClaimRequestTargetsAccount(req) {
+			plans, err := h.buildBusinessClaimPlans(tx, orgID, module, req)
 			if err != nil {
 				return err
 			}
-			if !available {
-				continue
+			for _, plan := range plans {
+				claimed, err := tryClaim(plan)
+				if err != nil {
+					return err
+				}
+				if claimed {
+					return nil
+				}
 			}
+			return gorm.ErrRecordNotFound
+		}
 
-			accountID := plan.account.ID
-			moduleID := module.ID
-			registrationEmail := plan.registrationEmail
-			businessAccount := models.BusinessAccount{
-				OrgID:             orgID,
-				EmailAccountID:    &accountID,
-				ModuleID:          &moduleID,
-				ModuleName:        module.Name,
-				DisplayName:       strings.TrimSpace(req.BusinessAccount.DisplayName),
-				Website:           module.Website,
-				LoginURL:          module.LoginURL,
-				Username:          strings.TrimSpace(req.BusinessAccount.Username),
-				Status:            models.BusinessAccountStatusPending,
-				Description:       strings.TrimSpace(req.BusinessAccount.Description),
-				Note:              req.BusinessAccount.Note,
-				NoteFormat:        models.NormalizeAccountNoteFormat(req.BusinessAccount.NoteFormat),
-				Tags:              normalizeBusinessStringSlice(req.BusinessAccount.Tags),
-				CustomFields:      safeBusinessJSONMap(req.BusinessAccount.CustomFields),
-				ExtraData:         safeBusinessJSONMap(req.BusinessAccount.ExtraData),
-				RegistrationEmail: &registrationEmail,
-				ClaimToken:        token,
-				ClaimExpiresAt:    &expiresAt,
-				ClaimedBy:         strings.TrimSpace(req.ClaimedBy),
-			}
-			if businessAccount.DisplayName == "" {
-				businessAccount.DisplayName = module.Name + " registration"
-			}
-			businessAccount.ExtraData = mergeBusinessJSONMap(businessAccount.ExtraData, models.JSONMapInterface{
-				"registrationState": "claimed",
-				"registrationEmail": registrationEmail,
-				"recipientKind":     plan.recipient.Kind,
-				"claimedAt":         now.Format(time.RFC3339),
-				"claimedBy":         businessAccount.ClaimedBy,
-			})
-
-			insert := tx.Clauses(clause.OnConflict{
-				Columns: []clause.Column{
-					{Name: "org_id"},
-					{Name: "module_id"},
-					{Name: "registration_email"},
-				},
-				DoNothing: true,
-			}).Create(&businessAccount)
-			if insert.Error != nil {
-				return insert.Error
-			}
-			if insert.RowsAffected == 0 {
-				continue
-			}
-			if err := tx.Preload("EmailAccount").Preload("Module").First(&businessAccount, businessAccount.ID).Error; err != nil {
+		cursor := businessClaimAccountCursor{}
+		for {
+			plans, nextCursor, hasMore, err := h.buildBusinessClaimPlanBatch(tx, orgID, module, req, cursor, businessClaimCandidateBatchSize)
+			if err != nil {
 				return err
 			}
-			response = buildBusinessClaimResponse(module, &businessAccount, plan, token, expiresAt, ttl)
-			return nil
+			for _, plan := range plans {
+				claimed, err := tryClaim(plan)
+				if err != nil {
+					return err
+				}
+				if claimed {
+					return nil
+				}
+			}
+			if !hasMore {
+				break
+			}
+			cursor = nextCursor
 		}
 		return gorm.ErrRecordNotFound
 	})
@@ -445,23 +428,121 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 	return response, http.StatusCreated, nil
 }
 
-func (h *APIHandler) buildBusinessClaimPlans(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest) ([]businessClaimPlan, error) {
-	if req.AccountID != nil || strings.TrimSpace(req.EmailAddress) != "" {
-		account, err := h.resolveBusinessClaimAccount(tx, orgID, req)
-		if err != nil {
-			return nil, err
-		}
-		if err := h.validateBusinessClaimAccount(tx, account, req); err != nil {
-			return nil, err
-		}
-		plan, err := deriveBusinessClaimPlan(account, module, req)
-		if err != nil {
-			return nil, err
-		}
-		return []businessClaimPlan{plan}, nil
+func createBusinessRegistrationClaimForPlan(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest, plan businessClaimPlan, token string, expiresAt time.Time, now time.Time) (*models.BusinessAccount, bool, error) {
+	available, err := businessRegistrationEmailAvailable(tx, orgID, module.ID, plan.registrationEmail)
+	if err != nil {
+		return nil, false, err
+	}
+	if !available {
+		return nil, false, nil
 	}
 
+	accountID := plan.account.ID
+	moduleID := module.ID
+	registrationEmail := plan.registrationEmail
+	businessAccount := models.BusinessAccount{
+		OrgID:             orgID,
+		EmailAccountID:    &accountID,
+		ModuleID:          &moduleID,
+		ModuleName:        module.Name,
+		DisplayName:       strings.TrimSpace(req.BusinessAccount.DisplayName),
+		Website:           module.Website,
+		LoginURL:          module.LoginURL,
+		Username:          strings.TrimSpace(req.BusinessAccount.Username),
+		Status:            models.BusinessAccountStatusPending,
+		Description:       strings.TrimSpace(req.BusinessAccount.Description),
+		Note:              req.BusinessAccount.Note,
+		NoteFormat:        models.NormalizeAccountNoteFormat(req.BusinessAccount.NoteFormat),
+		Tags:              normalizeBusinessStringSlice(req.BusinessAccount.Tags),
+		CustomFields:      safeBusinessJSONMap(req.BusinessAccount.CustomFields),
+		ExtraData:         safeBusinessJSONMap(req.BusinessAccount.ExtraData),
+		RegistrationEmail: &registrationEmail,
+		ClaimToken:        token,
+		ClaimExpiresAt:    &expiresAt,
+		ClaimedBy:         strings.TrimSpace(req.ClaimedBy),
+	}
+	if businessAccount.DisplayName == "" {
+		businessAccount.DisplayName = module.Name + " registration"
+	}
+	businessAccount.ExtraData = mergeBusinessJSONMap(businessAccount.ExtraData, models.JSONMapInterface{
+		"registrationState": "claimed",
+		"registrationEmail": registrationEmail,
+		"recipientKind":     plan.recipient.Kind,
+		"claimedAt":         now.Format(time.RFC3339),
+		"claimedBy":         businessAccount.ClaimedBy,
+	})
+
+	insert := tx.Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "org_id"},
+			{Name: "module_id"},
+			{Name: "registration_email"},
+		},
+		DoNothing: true,
+	}).Create(&businessAccount)
+	if insert.Error != nil {
+		return nil, false, insert.Error
+	}
+	if insert.RowsAffected == 0 {
+		return nil, false, nil
+	}
+	if err := tx.Preload("EmailAccount").Preload("Module").First(&businessAccount, businessAccount.ID).Error; err != nil {
+		return nil, false, err
+	}
+	return &businessAccount, true, nil
+}
+
+func (h *APIHandler) buildBusinessClaimPlans(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest) ([]businessClaimPlan, error) {
+	if !businessClaimRequestTargetsAccount(req) {
+		return nil, fmt.Errorf("accountId or emailAddress is required")
+	}
+	account, err := h.resolveBusinessClaimAccount(tx, orgID, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.validateBusinessClaimAccount(tx, account, req); err != nil {
+		return nil, err
+	}
+	plan, err := deriveBusinessClaimPlan(account, module, req)
+	if err != nil {
+		return nil, err
+	}
+	return []businessClaimPlan{plan}, nil
+}
+
+func (h *APIHandler) buildBusinessClaimPlanBatch(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest, cursor businessClaimAccountCursor, limit int) ([]businessClaimPlan, businessClaimAccountCursor, bool, error) {
+	if limit <= 0 {
+		limit = businessClaimCandidateBatchSize
+	}
 	var accounts []models.EmailAccount
+	query := h.buildBusinessClaimAccountQuery(tx, orgID, module, req)
+	query = applyBusinessClaimAccountCursor(query, cursor)
+
+	if err := query.Order(businessClaimAccountOrder).Limit(limit).Find(&accounts).Error; err != nil {
+		return nil, cursor, false, err
+	}
+
+	nextCursor := cursor
+	if len(accounts) > 0 {
+		last := accounts[len(accounts)-1]
+		nextCursor = businessClaimAccountCursor{
+			set:        true,
+			lastSyncAt: last.LastSyncAt,
+			id:         last.ID,
+		}
+	}
+
+	plans := make([]businessClaimPlan, 0, len(accounts))
+	for _, account := range accounts {
+		plan, err := deriveBusinessClaimPlan(account, module, req)
+		if err == nil {
+			plans = append(plans, plan)
+		}
+	}
+	return plans, nextCursor, len(accounts) == limit, nil
+}
+
+func (h *APIHandler) buildBusinessClaimAccountQuery(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest) *gorm.DB {
 	query := tx.Preload("MailProvider").Preload("Tags").
 		Where("org_id = ?", orgID).
 		Where("is_verified = ?", true).
@@ -476,7 +557,7 @@ func (h *APIHandler) buildBusinessClaimPlans(tx *gorm.DB, orgID uint, module *mo
 	if strings.TrimSpace(req.ProxyMode) != "" {
 		query = query.Where("proxy_mode = ?", strings.TrimSpace(req.ProxyMode))
 	}
-	mode := normalizeBusinessEmailMode(req.EmailMode)
+	mode := effectiveBusinessEmailMode(req)
 	domain := strings.ToLower(strings.TrimSpace(req.Domain))
 	if shouldRequireBusinessDomainMail(mode, req) {
 		query = query.Where("is_domain_mail = ?", true)
@@ -500,18 +581,27 @@ func (h *APIHandler) buildBusinessClaimPlans(tx *gorm.DB, orgID uint, module *mo
 		}
 	}
 
-	if err := query.Order("last_sync_at ASC, id ASC").Limit(100).Find(&accounts).Error; err != nil {
-		return nil, err
+	if mode == businessEmailModePrimary {
+		query = applyBusinessPrimaryClaimAvailabilityFilter(query, orgID, module.ID)
 	}
+	return query
+}
 
-	plans := make([]businessClaimPlan, 0, len(accounts))
-	for _, account := range accounts {
-		plan, err := deriveBusinessClaimPlan(account, module, req)
-		if err == nil {
-			plans = append(plans, plan)
-		}
+func applyBusinessClaimAccountCursor(query *gorm.DB, cursor businessClaimAccountCursor) *gorm.DB {
+	if !cursor.set {
+		return query
 	}
-	return plans, nil
+	if cursor.lastSyncAt == nil {
+		return query.Where("((last_sync_at IS NULL AND id > ?) OR last_sync_at IS NOT NULL)", cursor.id)
+	}
+	return query.Where("(last_sync_at IS NOT NULL AND (last_sync_at > ? OR (last_sync_at = ? AND id > ?)))", *cursor.lastSyncAt, *cursor.lastSyncAt, cursor.id)
+}
+
+func applyBusinessPrimaryClaimAvailabilityFilter(query *gorm.DB, orgID uint, moduleID uint) *gorm.DB {
+	if orgID > 0 {
+		return query.Where("NOT EXISTS (SELECT 1 FROM business_accounts ba WHERE ba.org_id = ? AND ba.module_id = ? AND ba.registration_email IS NOT NULL AND LOWER(ba.registration_email) = LOWER(email_accounts.email_address))", orgID, moduleID)
+	}
+	return query.Where("NOT EXISTS (SELECT 1 FROM business_accounts ba WHERE ba.module_id = ? AND ba.registration_email IS NOT NULL AND LOWER(ba.registration_email) = LOWER(email_accounts.email_address))", moduleID)
 }
 
 func (h *APIHandler) resolveBusinessClaimAccount(tx *gorm.DB, orgID uint, req BusinessEmailClaimRequest) (models.EmailAccount, error) {
@@ -601,16 +691,7 @@ func deriveBusinessClaimPlan(account models.EmailAccount, module *models.Busines
 		return businessClaimPlan{account: account, registrationEmail: registrationEmail, recipient: recipient}, nil
 	}
 
-	mode := normalizeBusinessEmailMode(req.EmailMode)
-	if mode == businessEmailModeAuto {
-		if req.UseAlias {
-			mode = businessEmailModeAlias
-		} else if shouldRequireBusinessDomainMail(mode, req) {
-			mode = businessEmailModeDomain
-		} else {
-			mode = businessEmailModePrimary
-		}
-	}
+	mode := effectiveBusinessEmailMode(req)
 
 	localPart := strings.TrimSpace(req.AliasLocalPart)
 	if localPart == "" {
@@ -920,6 +1001,24 @@ func normalizeBusinessClaimTTL(value int) int {
 		return maxBusinessClaimTTLSeconds
 	}
 	return value
+}
+
+func businessClaimRequestTargetsAccount(req BusinessEmailClaimRequest) bool {
+	return req.AccountID != nil || strings.TrimSpace(req.EmailAddress) != ""
+}
+
+func effectiveBusinessEmailMode(req BusinessEmailClaimRequest) string {
+	mode := normalizeBusinessEmailMode(req.EmailMode)
+	if mode != businessEmailModeAuto {
+		return mode
+	}
+	if req.UseAlias {
+		return businessEmailModeAlias
+	}
+	if shouldRequireBusinessDomainMail(mode, req) {
+		return businessEmailModeDomain
+	}
+	return businessEmailModePrimary
 }
 
 func normalizeBusinessEmailMode(value string) string {
