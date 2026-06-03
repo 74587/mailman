@@ -235,21 +235,39 @@ function normalizeQuery(raw: string) {
     return raw
         .replace(/^[\s"'“”‘’`]+|[\s"'“”‘’`]+$/g, '')
         .replace(/^(搜索|查找|查询|找一下|帮我查|帮我搜索|search)\s*[:：]?\s*/i, '')
-        .replace(/\s*(邮箱账户|邮箱|账户|账号)$/i, '')
+        .replace(/^(以|用|按)\s*/i, '')
+        .replace(/\s*(开头|开始|前缀|prefix).*/i, '')
+        .replace(/\s*(的)?(邮件|邮箱账户|邮箱|账户|账号)$/i, '')
         .trim()
+}
+
+function extractSearchToken(raw: string) {
+    const normalized = normalizeQuery(raw)
+    if (!normalized) return ''
+
+    const emailMatch = normalized.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+    if (emailMatch?.[0]) return emailMatch[0]
+
+    const prefixMatch = normalized.match(/(?:^|[\s：:，,])([A-Z0-9._%+-]{3,}(?:@[A-Z0-9.-]*)?)\s*(?:开头|开始|前缀|prefix)?/i)
+    if (prefixMatch?.[1]) return prefixMatch[1]
+
+    return normalized
 }
 
 function inferSearchQuery(input: string, selectedText: string) {
     const quoted = input.match(/[“"']([^“"']{1,160})[”"']/)
-    if (quoted?.[1]) return normalizeQuery(quoted[1])
-
-    const searchMatch = input.match(/(?:搜索|查找|查询|找一下|帮我查|帮我搜索|search)\s*[:：]?\s*(.{1,180})/i)
-    if (searchMatch?.[1]) return normalizeQuery(searchMatch[1])
+    if (quoted?.[1]) return extractSearchToken(quoted[1])
 
     const emailMatch = input.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
     if (emailMatch?.[0]) return emailMatch[0]
 
-    if (selectedText) return normalizeQuery(selectedText)
+    const explicitPrefixMatch = input.match(/(?:以|用|按)?\s*([A-Z0-9._%+-]{3,}(?:@[A-Z0-9.-]*)?)\s*(?:开头|开始|前缀|prefix)/i)
+    if (explicitPrefixMatch?.[1]) return explicitPrefixMatch[1]
+
+    const searchMatch = input.match(/(?:搜索|查找|查询|找一下|帮我查|帮我搜索|search)\s*[:：]?\s*(.{1,180})/i)
+    if (searchMatch?.[1]) return extractSearchToken(searchMatch[1])
+
+    if (selectedText) return extractSearchToken(selectedText)
     return ''
 }
 
@@ -262,7 +280,7 @@ function inferEmailAddress(input: string, selectedText = '') {
 }
 
 function isViewEmailIntent(input: string) {
-    return /(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索).*(邮件|邮箱|收件箱|inbox|mail)|(邮件|邮箱|收件箱|inbox|mail).*(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索)/i.test(input)
+    return /(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索|read|view|open|check|show).*(邮件|邮箱|收件箱|inbox|mail)|(邮件|邮箱|收件箱|inbox|mail).*(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索|read|view|open|check|show)/i.test(input)
 }
 
 function planLocally(input: string, context: AICompressedContext, skills: AISkill[]): AIPlannedAction {
@@ -409,6 +427,40 @@ function buildActionAttempts(plan: AIPlannedAction) {
     return attempts.slice(0, MAX_ACTION_ATTEMPTS)
 }
 
+function describePlan(plan: AIPlannedAction, source: AIPlanResult['source']) {
+    if (plan.skillId && plan.actionName) {
+        const params = plan.params ? Object.entries(plan.params)
+            .filter(([, value]) => value !== undefined && value !== null && String(value).trim())
+            .map(([key, value]) => `${key}: ${String(value)}`)
+            .join(', ') : ''
+        return `${source === 'model' ? 'AI 规划' : '本地规则'}选择 ${plan.skillId}.${plan.actionName}${params ? ` (${params})` : ''}。`
+    }
+    if (plan.tabId) return `准备切换到 ${plan.tabId} 页面。`
+    return '当前请求不需要页面动作，直接回复。'
+}
+
+function buildThinkingSummary(plan: AIPlannedAction, planResult: AIPlanResult, context: AICompressedContext) {
+    const attempts = buildActionAttempts(plan)
+    const lines = [
+        `当前 tab: ${context.global.activeTab || 'unknown'}，域名: ${context.global.host || context.global.origin || 'unknown'}。`,
+        describePlan(plan, planResult.source),
+    ]
+
+    if (attempts.length > 1) {
+        lines.push(`准备按候选顺序尝试 ${attempts.map(item => `${item.skillId}.${item.actionName}`).join(' -> ')}。`)
+    } else if (attempts.length === 1) {
+        lines.push('找到一个可执行页面动作，等待页面 executor 返回真实结果。')
+    } else {
+        lines.push('没有找到需要执行的页面动作。')
+    }
+
+    if (planResult.fallbackReason) {
+        lines.push(`规划回退原因: ${planResult.fallbackReason}。`)
+    }
+
+    return lines.slice(0, 4)
+}
+
 function compactForModel(context: AICompressedContext) {
     return {
         global: {
@@ -439,6 +491,7 @@ function buildFinalResponsePrompts(
         '用中文简洁回复用户，最多 3 句话；可以使用少量 Markdown。',
         '只能基于执行结果、页面上下文和用户请求回复，不要编造未执行的操作。',
         '如果执行结果已经足够清楚，保持原意，不要扩展敏感信息。',
+        '如果 result.success 为 false，或 result.data.matchedCount 为 0，必须明确说没有找到，不能声称匹配到了任何账户或邮件。',
     ].join('\n')
 
     const userPayload = {
@@ -458,6 +511,10 @@ function buildFinalResponsePrompts(
         systemPrompt,
         userMessage: JSON.stringify(userPayload).slice(0, 12000),
     }
+}
+
+function shouldUseExactActionSummary(plan: AIPlannedAction) {
+    return plan.skillId === 'accounts' && ['searchAccounts', 'viewAccountEmails'].includes(plan.actionName || '')
 }
 
 function buildDirectResponsePrompts(userMessage: string, context: AICompressedContext) {
@@ -692,7 +749,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             durationMs: endedAt - task.startedAt,
             result,
             error,
-            thinkingCollapsed: true,
+            thinkingCollapsed: false,
         }))
     }, [updateTask])
 
@@ -708,18 +765,36 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             signal?: AbortSignal
         }
     ) => {
-        const messageId = createId('msg')
+        let messageId = createId('msg')
         const canStream = Boolean(streamRequest?.configId)
         const isAborted = () => Boolean(streamRequest?.signal?.aborted)
 
-        setMessages(prev => [...prev, {
-            id: messageId,
-            role: 'assistant',
-            content: canStream && !isAborted() ? '' : fallbackContent,
-            createdAt: now(),
-            taskId,
-            isStreaming: canStream && !isAborted(),
-        }])
+        setMessages(prev => {
+            const existingMessage = taskId
+                ? prev.find(message => message.role === 'assistant' && message.taskId === taskId)
+                : undefined
+            if (existingMessage) {
+                messageId = existingMessage.id
+                return prev.map(message => (
+                    message.id === existingMessage.id
+                        ? {
+                            ...message,
+                            content: canStream && !isAborted() ? '' : fallbackContent,
+                            isStreaming: canStream && !isAborted(),
+                        }
+                        : message
+                ))
+            }
+
+            return [...prev, {
+                id: messageId,
+                role: 'assistant',
+                content: canStream && !isAborted() ? '' : fallbackContent,
+                createdAt: now(),
+                taskId,
+                isStreaming: canStream && !isAborted(),
+            }]
+        })
 
         if (!streamRequest || isAborted()) {
             return
@@ -843,6 +918,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         setMessages(prev => [
             ...prev,
             { id: userMessageId, role: 'user', content: message, createdAt: startedAt },
+            { id: createId('msg'), role: 'assistant', content: '', createdAt: startedAt, taskId },
         ])
         setTasks(prev => [task, ...prev])
 
@@ -851,9 +927,8 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 ...prevTask,
                 status: 'thinking',
                 thinkingSummary: [
-                    '读取当前访问域、页面 tab、选中文本和已注册页面 skill。',
-                    '压缩上下文，只保留当前任务需要的页面状态。',
-                    '选择一个受控 action，由页面 executor 执行。',
+                    `正在读取当前页面、访问域和可用页面能力。`,
+                    `用户请求: ${message.slice(0, 80)}${message.length > 80 ? '...' : ''}`,
                 ],
             }))
 
@@ -939,11 +1014,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 ...taskValue,
                 thinkingSummary: planResult.thinkingSummary?.length
                     ? planResult.thinkingSummary
-                    : [
-                        planResult.source === 'model' ? '调用已配置 AI 模型生成结构化 action。' : 'AI 规划不可用，使用本地规则生成结构化 action。',
-                        '只保留当前页面和已注册 skill 的压缩上下文。',
-                        '由页面 executor 执行最终 action。',
-                    ],
+                    : buildThinkingSummary(plan, planResult, firstContext),
             }))
             finishStep(
                 taskId,
@@ -1078,7 +1149,11 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             if (isTaskCancelled(taskId)) return
             const result = finalResult || { success: false, summary: '没有候选页面能够执行这个请求。' }
             completeTask(taskId, result.success ? 'completed' : 'failed', result, result.success ? undefined : result.summary)
-            await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, finalContext, finalPlan))
+            await streamAssistantMessage(
+                result.summary,
+                taskId,
+                shouldUseExactActionSummary(finalPlan) ? undefined : createStreamRequest(result, finalContext, finalPlan)
+            )
         } catch (error) {
             if (taskSignal.aborted || isTaskCancelled(taskId)) {
                 completeTask(taskId, 'cancelled', { success: false, summary: '已停止当前任务。' }, '用户已停止任务')

@@ -653,19 +653,64 @@ export default function AccountsTab() {
                 description: '更新账户页搜索词并刷新分页。',
                 risk: 'read',
                 parameters: { query: '搜索关键词，可以是邮箱、域名、转发地址或备注' },
-                run: (params) => {
+                run: async (params) => {
                     const query = String(params.query || '').trim()
                     if (!query) {
                         return { success: false, summary: '没有提供搜索关键词。' }
                     }
+
                     setSearchQuery(query)
                     setSubmittedSearchQuery(query)
                     setProviderFilter(null)
-                    setPagination(prev => ({ ...prev, page: 1 }))
-                    return {
-                        success: true,
-                        summary: `已在邮箱账户管理中搜索：${query}`,
-                        details: '搜索会通过账户页现有分页接口刷新结果。',
+                    setLoading(true)
+
+                    try {
+                        const response = await emailAccountService.getAccountsPaginated({
+                            page: 1,
+                            limit: pagination.limit,
+                            sort_by: sortBy,
+                            sort_order: sortOrder,
+                            search: query,
+                            tag_ids: tagFilter.length > 0 ? tagFilter.join(',') : undefined,
+                            provider_id: advancedFilters.provider_id,
+                            is_verified: advancedFilters.is_verified,
+                            error_status: advancedFilters.error_status,
+                            created_after: advancedFilters.created_after,
+                            created_before: advancedFilters.created_before,
+                            last_sync_after: advancedFilters.last_sync_after,
+                            last_sync_before: advancedFilters.last_sync_before,
+                        })
+                        const matches = response.data || []
+                        const matchedCount = response.total || matches.length
+
+                        setAccounts(matches)
+                        setPagination(prev => ({
+                            ...prev,
+                            page: 1,
+                            total: response.total,
+                            totalPages: response.total_pages,
+                        }))
+
+                        return {
+                            success: true,
+                            summary: matchedCount > 0
+                                ? `已搜索 ${query}，找到 ${matchedCount} 个匹配账户。`
+                                : `已搜索 ${query}，没有找到匹配账户。`,
+                            data: {
+                                query,
+                                matchedCount,
+                                pageSize: pagination.limit,
+                                accounts: matches.slice(0, 5).map(account => ({
+                                    id: account.id,
+                                    email: account.emailAddress,
+                                    provider: account.mailProvider?.type,
+                                    authType: account.authType,
+                                    isVerified: account.isVerified,
+                                })),
+                            },
+                        }
+                    } finally {
+                        setLoading(false)
                     }
                 },
             },
@@ -773,6 +818,8 @@ export default function AccountsTab() {
         providerFilter,
         searchQuery,
         selectedAccounts.length,
+        sortBy,
+        sortOrder,
         submittedSearchQuery,
         tagFilter,
         viewType,

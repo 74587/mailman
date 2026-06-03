@@ -1,9 +1,8 @@
 'use client'
 
 import { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownToLine, Bold, Bot, CheckCircle, ChevronDown, ChevronRight, Clock, Code, Italic, List, Loader2, Maximize2, MessageSquarePlus, MoveDiagonal2, PanelRightClose, Send, Sparkles, Square, XCircle } from 'lucide-react'
+import { ArrowDownToLine, Bold, Bot, CheckCircle, ChevronDown, ChevronRight, Clock, Code, Italic, List, Loader2, Maximize2, MessageSquarePlus, Minimize2, MoveDiagonal2, Send, Sparkles, Square, XCircle } from 'lucide-react'
 import { usePathname } from 'next/navigation'
-import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useAIRuntime, formatDuration } from './ai-runtime-provider'
 import type { AISubagentTask, AITaskStatus } from './types'
@@ -108,7 +107,7 @@ function TaskCard({
                         onClick={onToggleThinking}
                         className="flex w-full items-center justify-between rounded-md px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700"
                     >
-                        <span>思考摘要</span>
+                        <span>思考与计划</span>
                         {task.thinkingCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                     </button>
                     {!task.thinkingCollapsed && (
@@ -130,7 +129,7 @@ function TaskCard({
                     onClick={onToggleDetails}
                     className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700"
                 >
-                    <span>执行详情</span>
+                    <span>执行过程</span>
                     {detailsOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
                 </button>
                 {detailsOpen && (
@@ -396,10 +395,29 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
         return () => window.cancelAnimationFrame(frame)
     }, [autoScroll, isOpen, messages, scrollMessagesToBottom, tasks])
 
+    useEffect(() => {
+        setDetailsOpenTaskIds(prev => {
+            let changed = false
+            const next = new Set(prev)
+            tasks.forEach(task => {
+                if (!next.has(task.id)) {
+                    next.add(task.id)
+                    changed = true
+                }
+            })
+            return changed ? next : prev
+        })
+    }, [tasks])
+
     if (hidden) return null
 
     const handleSubmit = async (event?: FormEvent) => {
         event?.preventDefault()
+        if (hasRunningTask) {
+            cancelTask(currentTask?.id)
+            setSending(false)
+            return
+        }
         const value = input.trim()
         if (!value || sending) return
         setSending(true)
@@ -572,20 +590,6 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                         >
                             <ArrowDownToLine className="h-4 w-4" />
                         </button>
-                        {hasRunningTask && (
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    cancelTask(currentTask?.id)
-                                    setSending(false)
-                                }}
-                                className="flex h-8 w-8 items-center justify-center rounded-md text-red-500 transition hover:bg-red-50 hover:text-red-700 dark:text-red-300 dark:hover:bg-red-950/40 dark:hover:text-red-200"
-                                title="停止当前任务"
-                                aria-label="停止当前任务"
-                            >
-                                <Square className="h-3.5 w-3.5 fill-current" />
-                            </button>
-                        )}
                         <button
                             type="button"
                             onClick={newSession}
@@ -598,9 +602,10 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                             type="button"
                             onClick={closeAssistant}
                             className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-gray-100"
-                            title="收起"
+                            title="最小化为悬浮按钮"
+                            aria-label="最小化为悬浮按钮"
                         >
-                            <PanelRightClose className="h-4 w-4" />
+                            <Minimize2 className="h-4 w-4" />
                         </button>
                     </header>
 
@@ -629,8 +634,21 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                                                     ? 'bg-primary-600 text-white'
                                                     : 'border border-gray-200 bg-gray-50 text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100'
                                             )}>
+                                                {task && (
+                                                    <div className={message.content ? 'mb-3' : ''}>
+                                                        <TaskCard
+                                                            task={task}
+                                                            detailsOpen={detailsOpenTaskIds.has(task.id)}
+                                                            onToggleDetails={() => toggleDetails(task.id)}
+                                                            onToggleThinking={() => toggleTaskThinking(task.id)}
+                                                        />
+                                                    </div>
+                                                )}
                                                 {message.content ? (
-                                                    <MarkdownContent content={message.content} isUser={message.role === 'user'} />
+                                                    <div className={cn(task && 'border-t border-gray-200 pt-2 dark:border-gray-700')}>
+                                                        {task && <div className="mb-1 text-[11px] font-medium text-gray-500 dark:text-gray-400">结论</div>}
+                                                        <MarkdownContent content={message.content} isUser={message.role === 'user'} />
+                                                    </div>
                                                 ) : message.isStreaming ? (
                                                     <div className="flex h-5 items-center">
                                                         <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-500 dark:text-gray-300" />
@@ -640,16 +658,6 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                                                 )}
                                                 {message.isStreaming && message.content && (
                                                     <span className="mt-1 inline-block h-2 w-2 animate-pulse rounded-full bg-primary-500 align-middle" />
-                                                )}
-                                                {task && (
-                                                    <div className="mt-2">
-                                                        <TaskCard
-                                                            task={task}
-                                                            detailsOpen={detailsOpenTaskIds.has(task.id)}
-                                                            onToggleDetails={() => toggleDetails(task.id)}
-                                                            onToggleThinking={() => toggleTaskThinking(task.id)}
-                                                        />
-                                                    </div>
                                                 )}
                                             </div>
                                         </div>
@@ -689,17 +697,7 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                                 <ComposerButton title="列表" onClick={() => applyFormat(() => insertTextAtSelection('- '))}>
                                     <List className="h-3.5 w-3.5" />
                                 </ComposerButton>
-                                <Button
-                                    type="submit"
-                                    size="sm"
-                                    disabled={!input.trim() || sending}
-                                    aria-label="发送 · Cmd/Ctrl + Enter"
-                                    className="ml-auto h-7 gap-1.5 rounded-md px-2 text-xs"
-                                    title="发送 · Cmd/Ctrl + Enter"
-                                >
-                                    {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                                    <span className="font-medium">⌘↵</span>
-                                </Button>
+                                <span className="ml-auto rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500 dark:bg-gray-800 dark:text-gray-400">⌘↵</span>
                             </div>
                             <div className="relative">
                                 {!input.trim() && (
@@ -713,12 +711,40 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                                     suppressContentEditableWarning
                                     onInput={handleComposerInput}
                                     onKeyDown={handleKeyDown}
-                                    className="overflow-y-auto whitespace-pre-wrap break-words px-3 py-2 text-sm outline-none"
+                                    className="overflow-y-auto whitespace-pre-wrap break-words px-3 py-2 pb-11 pr-16 text-sm outline-none"
                                     style={{ height: composerHeight }}
                                     role="textbox"
                                     aria-multiline="true"
                                     aria-label="输入请求"
                                 />
+                                <button
+                                    type={hasRunningTask ? 'button' : 'submit'}
+                                    disabled={!hasRunningTask && (!input.trim() || sending)}
+                                    onClick={(event) => {
+                                        if (hasRunningTask) {
+                                            event.preventDefault()
+                                            cancelTask(currentTask?.id)
+                                            setSending(false)
+                                        }
+                                    }}
+                                    aria-label={hasRunningTask ? '停止当前任务' : '发送 · Cmd/Ctrl + Enter'}
+                                    title={hasRunningTask ? '停止当前任务' : '发送 · Cmd/Ctrl + Enter'}
+                                    className={cn(
+                                        'absolute bottom-2 right-2 flex h-8 min-w-10 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium text-white shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-900',
+                                        hasRunningTask
+                                            ? 'bg-red-500 hover:bg-red-600 focus:ring-red-500'
+                                            : 'bg-primary-600 hover:bg-primary-700 focus:ring-primary-500 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700 dark:disabled:text-gray-400'
+                                    )}
+                                >
+                                    {hasRunningTask ? (
+                                        <Square className="h-3.5 w-3.5 fill-current" />
+                                    ) : (
+                                        <>
+                                            <Send className="h-3.5 w-3.5" />
+                                            <span>⌘↵</span>
+                                        </>
+                                    )}
+                                </button>
                             </div>
                         </div>
                     </form>
