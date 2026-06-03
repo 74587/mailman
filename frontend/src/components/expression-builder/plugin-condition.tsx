@@ -113,7 +113,7 @@ interface PluginConditionProps {
 interface UIField {
     name: string
     label: string
-    type: 'text' | 'number' | 'select' | 'textarea' | 'dynamic' | 'boolean' | 'multi_select'
+    type: 'text' | 'number' | 'select' | 'textarea' | 'dynamic' | 'boolean' | 'multi_select' | 'json' | 'array' | 'code' | 'javascript' | 'gotemplate' | 'regex' | 'key_value' | 'date' | 'time'
     description?: string
     placeholder?: string
     required?: boolean
@@ -946,6 +946,42 @@ export function PluginCondition({
                     />
                 )
 
+            case 'json':
+            case 'array':
+            case 'key_value':
+                return (
+                    <Textarea
+                        value={typeof value === 'string' ? value : JSON.stringify(value ?? (field.type === 'array' ? [] : {}), null, 2)}
+                        onChange={(e) => {
+                            const rawValue = e.target.value
+                            try {
+                                handleFieldChange(field.name, rawValue.trim() ? JSON.parse(rawValue) : (field.type === 'array' ? [] : {}))
+                            } catch {
+                                handleFieldChange(field.name, rawValue)
+                            }
+                        }}
+                        placeholder={field.placeholder || (field.type === 'array' ? '[]' : '{}')}
+                        className="min-h-[80px] font-mono text-xs resize-y"
+                        rows={4}
+                        disabled={field.disabled}
+                    />
+                )
+
+            case 'code':
+            case 'javascript':
+            case 'gotemplate':
+            case 'regex':
+                return (
+                    <Textarea
+                        value={value || ''}
+                        onChange={(e) => handleFieldChange(field.name, e.target.value)}
+                        placeholder={field.placeholder}
+                        className="min-h-[80px] font-mono text-xs resize-y"
+                        rows={4}
+                        disabled={field.disabled}
+                    />
+                )
+
             case 'number':
                 return (
                     <Input
@@ -956,6 +992,19 @@ export function PluginCondition({
                         className="h-8 text-sm"
                         min={field.min || undefined}
                         max={field.max || undefined}
+                        disabled={field.disabled}
+                    />
+                )
+
+            case 'date':
+            case 'time':
+                return (
+                    <Input
+                        type={field.type}
+                        value={value || ''}
+                        onChange={(e) => handleFieldChange(field.name, e.target.value)}
+                        placeholder={field.placeholder}
+                        className="h-8 text-sm"
                         disabled={field.disabled}
                     />
                 )

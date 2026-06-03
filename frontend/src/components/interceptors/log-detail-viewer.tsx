@@ -14,6 +14,7 @@ import {
     ArrowRight,
     ArrowDown,
     AlertCircle,
+    Filter,
 } from 'lucide-react'
 import { InterceptorLog } from '@/services/interceptor.service'
 import { toast } from 'sonner'
@@ -193,10 +194,48 @@ function JsonViewer({ data, title, emptyText = '无数据' }: JsonViewerProps) {
     )
 }
 
+function parseLogObject(data?: string): Record<string, any> | null {
+    if (!data) return null
+    try {
+        const parsed = JSON.parse(data)
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed as Record<string, any>
+            : null
+    } catch {
+        return null
+    }
+}
+
+const FILTER_SKIP_REASON_LABELS: Record<string, string> = {
+    action_type_not_matched: '动作类型未匹配',
+    advanced_filter_not_matched: '高级过滤条件未命中',
+}
+
+function getFilterDiagnostic(log: InterceptorLog) {
+    const input = parseLogObject(log.input_data)
+    if (!input?.skip_reason) return null
+
+    const reason = String(input.skip_reason)
+    const details = input.advanced_filter_details
+    const result = details && typeof details === 'object'
+        ? (details.result ?? details.evaluated)
+        : undefined
+
+    return {
+        reason,
+        reasonLabel: FILTER_SKIP_REASON_LABELS[reason] || reason,
+        actionMatched: input.action_filter_matched,
+        advancedEnabled: input.advanced_filter_enabled,
+        advancedMatched: input.advanced_filter_matched,
+        result,
+    }
+}
+
 export function LogDetailViewer({ log }: LogDetailViewerProps) {
     const [expanded, setExpanded] = useState(false)
 
-    const hasDetails = log.input_data || log.output_data || log.action_result || log.error
+    const filterDiagnostic = getFilterDiagnostic(log)
+    const hasDetails = log.input_data || log.output_data || log.action_result || log.error || filterDiagnostic
 
     if (!hasDetails && !log.action_plugin_id) {
         return null
@@ -235,6 +274,40 @@ export function LogDetailViewer({ log }: LogDetailViewerProps) {
                                     : '中止'}
                         </Badge>
                     )}
+                </div>
+            )}
+
+            {/* 过滤诊断 */}
+            {filterDiagnostic && (
+                <div className="p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-900/50">
+                    <div className="flex items-start gap-2">
+                        <Filter className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="flex-1 space-y-2">
+                            <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                                    过滤条件跳过
+                                </div>
+                                <Badge variant="outline" className="text-xs border-amber-300 text-amber-700 dark:text-amber-200">
+                                    {filterDiagnostic.reasonLabel}
+                                </Badge>
+                            </div>
+                            <div className="flex flex-wrap gap-2 text-xs">
+                                <Badge variant="secondary">
+                                    动作类型: {filterDiagnostic.actionMatched ? '匹配' : '未匹配'}
+                                </Badge>
+                                {filterDiagnostic.advancedEnabled && (
+                                    <Badge variant="secondary">
+                                        高级条件: {filterDiagnostic.advancedMatched ? '命中' : '未命中'}
+                                    </Badge>
+                                )}
+                                {filterDiagnostic.result !== undefined && (
+                                    <Badge variant="secondary">
+                                        评估结果: {String(filterDiagnostic.result)}
+                                    </Badge>
+                                )}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
 

@@ -16,7 +16,7 @@ func TestEmailAccountSetPlugin_GetUISchema(t *testing.T) {
 	schema := plugin.GetUISchema()
 
 	assert.NotNil(t, schema)
-	assert.Len(t, schema.Fields, 4) // account_emails, match_type, case_sensitive, api_endpoint
+	assert.Len(t, schema.Fields, 6) // account_emails, match_type, case_sensitive, api_endpoint, api_proxy, api_headers
 
 	// 验证 account_emails 字段配置
 	accountEmailsField := schema.Fields[0]
@@ -32,6 +32,7 @@ func TestEmailAccountSetPlugin_GetUISchema(t *testing.T) {
 	assert.Equal(t, "匹配类型", matchTypeField.Label)
 	assert.Equal(t, plugins.UIFieldTypeSelect, matchTypeField.Type)
 	assert.True(t, matchTypeField.Required)
+	assert.Equal(t, "from", matchTypeField.DefaultValue)
 	assert.Len(t, matchTypeField.Options, 3)
 
 	// 验证 case_sensitive 字段配置
@@ -40,6 +41,22 @@ func TestEmailAccountSetPlugin_GetUISchema(t *testing.T) {
 	assert.Equal(t, "区分大小写", caseSensitiveField.Label)
 	assert.Equal(t, plugins.UIFieldTypeBoolean, caseSensitiveField.Type)
 	assert.False(t, caseSensitiveField.Required)
+
+	// 验证 API 配置字段
+	apiEndpointField := schema.Fields[3]
+	assert.Equal(t, "api_endpoint", apiEndpointField.Name)
+	assert.Equal(t, plugins.UIFieldTypeText, apiEndpointField.Type)
+	assert.False(t, apiEndpointField.Required)
+
+	apiProxyField := schema.Fields[4]
+	assert.Equal(t, "api_proxy", apiProxyField.Name)
+	assert.Equal(t, plugins.UIFieldTypeText, apiProxyField.Type)
+	assert.False(t, apiProxyField.Required)
+
+	apiHeadersField := schema.Fields[5]
+	assert.Equal(t, "api_headers", apiHeadersField.Name)
+	assert.Equal(t, plugins.UIFieldTypeJSON, apiHeadersField.Type)
+	assert.False(t, apiHeadersField.Required)
 
 	// 验证操作符
 	assert.Len(t, schema.Operators, 2)

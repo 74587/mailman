@@ -26,6 +26,9 @@ func GetBuiltinPlugins() []plugins.Plugin {
 		NewEmailSuffixPlugin(),
 		NewEmailTimeRangePlugin(),
 		NewEmailSizePlugin(),
+		NewEmailHeaderFilterPlugin(),
+		NewEmailAttachmentFilterPlugin(),
+		NewEmailSecurityFilterPlugin(),
 
 		// 新增的邮件动作插件
 		NewEmailForwardActionPlugin(),

@@ -11,7 +11,7 @@
     <section class="hero">
       <div class="hero-inner">
         <div>
-          <span class="eyebrow">Accounts & OAuth2</span>
+          <span class="eyebrow">Accounts &amp; OAuth2</span>
           <h1>把邮箱账户稳定接入 Mailman</h1>
           <p>本页从准备 provider 凭据开始，完整走一遍 OAuth2 授权、账户入库、验证、初始同步、自动同步和错误恢复。密码、Token、IMAP/SMTP、自定义 provider、代理和转发落件地址也一并说明。</p>
           <div class="badge-row">
@@ -42,6 +42,7 @@
         <a href="#zero-to-one">0 到 1</a>
         <a href="#models">模型</a>
         <a href="#oauth-flow">OAuth2</a>
+        <a href="#thunderbird-oauth2">临时凭据</a>
         <a href="#password-imap">密码/Token</a>
         <a href="#account-fields">字段</a>
         <a href="#errors">错误</a>
@@ -187,6 +188,96 @@
           <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/exchange-token</code><span>直接交换授权码</span></div>
           <div class="endpoint"><span class="method post">POST</span><code>/api/oauth2/refresh-token</code><span>刷新 access token</span></div>
         </div>
+      </div>
+    </section>
+
+    <section id="thunderbird-oauth2" class="section">
+      <h2>临时使用 Thunderbird OAuth2 凭据验证</h2>
+      <div class="danger-banner" role="alert">
+        <strong>高风险警告：不要在生产环境使用其他人的 OAuth2 客户端凭据。</strong>
+        <span>使用第三方客户端凭据是不安全的，也是不允许的。下面内容只用于在你自己的应用凭据尚未审批下来前，快速验证 Mailman 的 OAuth2 授权、回调、入库和同步链路。生产环境务必使用你自己在 Google、Microsoft 或对应邮箱服务商控制台注册的凭据。</span>
+      </div>
+      <p class="lead">Thunderbird 的开源代码中维护了一组 provider 元数据，可在临时验证时作为参考。源码里的 <code>kHostnames</code> 会把邮箱主机映射到 issuer 和 scope，<code>kIssuers</code> 中包含 <code>clientId</code>、可选 <code>clientSecret</code>、授权端点、token 端点和 PKCE 配置。Thunderbird 源码本身也明确提醒不要复制这些值作为自己的应用凭据。</p>
+
+      <div class="grid two">
+        <div class="card">
+          <h3>从 Thunderbird 源码读取字段</h3>
+          <ol>
+            <li>打开 <a href="https://searchfox.org/comm-central/source/mailnews/base/src/OAuth2Providers.sys.mjs" target="_blank" rel="noopener noreferrer">OAuth2Providers.sys.mjs</a>。</li>
+            <li>在 <code>kHostnames</code> 中按邮箱服务找到 issuer，例如 Gmail 对应 <code>accounts.google.com</code>，Outlook/Office365 对应 <code>login.microsoftonline.com</code>。</li>
+            <li>到 <code>kIssuers</code> 中找到同名 issuer，把 <code>clientId</code> 填入 Mailman 的 <code>client_id</code>；如果有 <code>clientSecret</code>，填入 <code>client_secret</code>，没有则留空。</li>
+            <li>Mailman 已内置常见 provider 的授权端点和 token 端点；这里只需要确认 <code>provider_type</code>、<code>client_id</code>、<code>client_secret</code>、<code>redirect_uri</code> 和 <code>scopes</code>。</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>本地回调代理是必需的</h3>
+          <p class="muted">使用第三方客户端凭据时，授权回调通常会打到本机 loopback 地址。如果不在本地启动代理，部署在 <code>mailman.easycat.io</code> 的 Mailman 无法接收到授权回调，也就无法保存授权会话。</p>
+          <pre><code># 在 mailman 仓库根目录执行
+make proxy PROXY_PORT=18080 PROXY_TARGET=https://mailman.easycat.io PROXY_BACKGROUND=true</code></pre>
+          <p class="muted small">这个命令会在本地监听 <code>18080</code>，并把收到的 OAuth2 回调请求转发到 <code>https://mailman.easycat.io</code>。完成临时验证后应停止代理，并删除这套临时 OAuth2 配置。</p>
+        </div>
+      </div>
+
+      <h3>在 Mailman 中新增临时 OAuth2 Provider</h3>
+      <p>进入 <strong>系统配置 → OAuth2 配置</strong>，新增一套临时配置。<code>provider_type</code> 必须使用 Mailman 支持的类型，例如 <code>gmail</code>、<code>outlook</code>、<code>yahoo</code>、<code>aol</code>、<code>fastmail</code>、<code>yandex</code>、<code>mailru</code> 或 <code>comcast</code>。<code>redirect_uri</code> 使用本地代理地址，并保留 Mailman 的回调路径：</p>
+      <pre><code>http://localhost:18080/api/oauth2/callback/{provider}</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Mailman 字段</th><th>临时填写方式</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>name</code></td><td><code>Gmail Thunderbird quick verify</code></td><td>名称要明确标记为临时验证配置。</td></tr>
+            <tr><td><code>provider_type</code></td><td><code>gmail</code> 或 <code>outlook</code> 等</td><td>选择与邮箱账户匹配的 Mailman provider 类型。</td></tr>
+            <tr><td><code>client_id</code></td><td>Thunderbird <code>kIssuers</code> 对应 issuer 的 <code>clientId</code></td><td>只用于临时验证，不要设为生产默认配置。</td></tr>
+            <tr><td><code>client_secret</code></td><td>对应 issuer 的 <code>clientSecret</code>；若源码未提供则留空</td><td>Outlook 这类 public client 通常没有 secret。</td></tr>
+            <tr><td><code>redirect_uri</code></td><td><code>http://localhost:18080/api/oauth2/callback/gmail</code></td><td>把 <code>gmail</code> 替换成实际 provider，例如 <code>outlook</code>。</td></tr>
+            <tr><td><code>scopes</code></td><td>优先使用 Mailman 默认 scopes</td><td>Gmail 常用 <code>https://mail.google.com/</code>；Outlook 常用 IMAP、POP、SMTP 和 <code>offline_access</code>。</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>API 示例</h3>
+      <p class="muted">下面示例只展示字段映射，不包含 Thunderbird 的真实凭据。请从上面的源码链接中读取对应 provider 的值，并在完成验证后删除。</p>
+      <pre><code>curl -X POST "$BASE_URL/api/oauth2/global-config" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Gmail Thunderbird quick verify",
+    "provider_type": "gmail",
+    "client_id": "&lt;Thunderbird accounts.google.com clientId&gt;",
+    "client_secret": "&lt;Thunderbird accounts.google.com clientSecret&gt;",
+    "redirect_uri": "http://localhost:18080/api/oauth2/callback/gmail",
+    "scopes": [
+      "https://mail.google.com/",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ],
+    "is_enabled": true,
+    "is_default": false
+  }'</code></pre>
+      <pre><code>curl -X POST "$BASE_URL/api/oauth2/global-config" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Outlook Thunderbird quick verify",
+    "provider_type": "outlook",
+    "client_id": "&lt;Thunderbird login.microsoftonline.com clientId&gt;",
+    "client_secret": "",
+    "redirect_uri": "http://localhost:18080/api/oauth2/callback/outlook",
+    "scopes": [
+      "https://outlook.office.com/IMAP.AccessAsUser.All",
+      "https://outlook.office.com/POP.AccessAsUser.All",
+      "https://outlook.office.com/SMTP.Send",
+      "offline_access"
+    ],
+    "is_enabled": true,
+    "is_default": false
+  }'</code></pre>
+
+      <div class="flow">
+        <div class="flow-step"><span class="step-no">1</span><div><strong>启动本地代理</strong><br><span class="muted">先执行 <code>make proxy PROXY_PORT=18080 PROXY_TARGET=https://mailman.easycat.io PROXY_BACKGROUND=true</code>，确认本机端口未被占用。</span></div></div>
+        <div class="flow-step"><span class="step-no">2</span><div><strong>保存临时 OAuth2 配置</strong><br><span class="muted">在 Mailman 中填入 Thunderbird 源码里的 client 信息，redirect URI 指向 <code>localhost:18080</code>。</span></div></div>
+        <div class="flow-step"><span class="step-no">3</span><div><strong>启动授权会话</strong><br><span class="muted">调用普通的 <code>/api/oauth2/session/start/{provider}</code> 或在界面中发起授权，浏览器授权后回调会先到本地代理，再转发给 EasyCat 上的 Mailman。</span></div></div>
+        <div class="flow-step"><span class="step-no">4</span><div><strong>完成账户入库并清理</strong><br><span class="muted">验证 token、账户验证和初始同步都成功后，删除临时 provider，停止本地代理，等待自己的正式应用凭据审批完成后重新配置。</span></div></div>
       </div>
     </section>
 

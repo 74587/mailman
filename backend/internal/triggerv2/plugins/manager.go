@@ -495,6 +495,12 @@ func (pm *TriggerV2PluginManager) ExecuteCondition(pluginID string, ctx *PluginC
 		return nil, err
 	}
 
+	if ctx != nil && ctx.Config != nil && ctx.Config.Config != nil {
+		if err := conditionPlugin.ApplyConfig(ctx.Config.Config); err != nil {
+			return nil, fmt.Errorf("条件插件配置应用失败: %w", err)
+		}
+	}
+
 	// 执行条件
 	startTime := time.Now()
 	result, err := pm.executor.Execute(ctx, conditionPlugin, event)
@@ -1065,9 +1071,9 @@ func (l *noopLogger) Fatal(msg string, args ...interface{}) {}
 
 type noopMetrics struct{}
 
-func (m *noopMetrics) Counter(name string, value int64, tags map[string]string) {}
-func (m *noopMetrics) Gauge(name string, value float64, tags map[string]string) {}
-func (m *noopMetrics) Histogram(name string, value float64, tags map[string]string) {}
+func (m *noopMetrics) Counter(name string, value int64, tags map[string]string)          {}
+func (m *noopMetrics) Gauge(name string, value float64, tags map[string]string)          {}
+func (m *noopMetrics) Histogram(name string, value float64, tags map[string]string)      {}
 func (m *noopMetrics) Timer(name string, duration time.Duration, tags map[string]string) {}
 
 type noopStorage struct{}
@@ -1076,19 +1082,21 @@ func (s *noopStorage) Get(key string) ([]byte, error)       { return nil, nil }
 func (s *noopStorage) Set(key string, value []byte) error   { return nil }
 func (s *noopStorage) Delete(key string) error              { return nil }
 func (s *noopStorage) List(prefix string) ([]string, error) { return nil, nil }
-func (s *noopStorage) Exists(key string) bool { return false }
+func (s *noopStorage) Exists(key string) bool               { return false }
 
 type noopEventBus struct{}
 
-func (e *noopEventBus) Publish(event *models.Event) error { return nil }
-func (e *noopEventBus) Subscribe(eventType string, handler func(*models.Event)) error { return nil }
+func (e *noopEventBus) Publish(event *models.Event) error                               { return nil }
+func (e *noopEventBus) Subscribe(eventType string, handler func(*models.Event)) error   { return nil }
 func (e *noopEventBus) Unsubscribe(eventType string, handler func(*models.Event)) error { return nil }
 
 type noopScheduler struct{}
 
-func (s *noopScheduler) ScheduleTask(task Task) error { return nil }
+func (s *noopScheduler) ScheduleTask(task Task) error   { return nil }
 func (s *noopScheduler) CancelTask(taskID string) error { return nil }
-func (s *noopScheduler) GetTaskStatus(taskID string) (TaskStatus, error) { return TaskStatusPending, nil }
+func (s *noopScheduler) GetTaskStatus(taskID string) (TaskStatus, error) {
+	return TaskStatusPending, nil
+}
 
 type noopDatabase struct{}
 
@@ -1096,4 +1104,4 @@ func (d *noopDatabase) Query(query string, args ...interface{}) ([]map[string]in
 	return nil, nil
 }
 func (d *noopDatabase) Execute(query string, args ...interface{}) error { return nil }
-func (d *noopDatabase) Transaction(fn func(tx Database) error) error { return nil }
+func (d *noopDatabase) Transaction(fn func(tx Database) error) error    { return nil }

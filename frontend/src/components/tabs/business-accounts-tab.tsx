@@ -523,8 +523,8 @@ export default function BusinessAccountsTab() {
     }
 
     return (
-        <div className="h-full min-h-0 overflow-y-auto bg-gray-50/70 p-5 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
-            <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden bg-gray-50/70 p-5 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+            <div className="mb-4 flex shrink-0 flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-300">
                         <Briefcase className="h-5 w-5" />
@@ -550,186 +550,190 @@ export default function BusinessAccountsTab() {
                 </div>
             </div>
 
-            <section className="min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
-                    <div className="flex flex-col gap-3 border-b border-gray-200 p-4 dark:border-gray-800 lg:flex-row lg:items-center">
-                        <div className="relative flex-1">
-                            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                            <input
-                                value={search}
-                                onChange={event => {
-                                    setSearch(event.target.value)
-                                    setPage(1)
-                                }}
-                                placeholder="搜索业务、站点、邮箱、用户名、描述..."
-                                className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
-                            />
-                        </div>
-                        <select
-                            value={moduleId || ''}
+            <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                <div className="z-20 flex shrink-0 flex-col gap-2 border-b border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900 lg:flex-row lg:items-center">
+                    <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                        <input
+                            value={search}
                             onChange={event => {
-                                setModuleId(event.target.value ? Number(event.target.value) : undefined)
+                                setSearch(event.target.value)
                                 setPage(1)
                             }}
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
-                        >
-                            <option value="">全部模块</option>
-                            {modules.map(module => <option key={module.id} value={module.id}>{module.name}</option>)}
-                        </select>
-                        <select
-                            value={status}
-                            onChange={event => {
-                                setStatus(event.target.value as BusinessAccountStatus | '')
-                                setPage(1)
-                            }}
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
-                        >
-                            <option value="">全部状态</option>
-                            {statusFilterOptions.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
-                        </select>
-                        <select
-                            value={emailLinked}
-                            onChange={event => {
-                                setEmailLinked(event.target.value as '' | 'linked' | 'unlinked')
-                                setPage(1)
-                            }}
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
-                        >
-                            <option value="">全部邮箱关联</option>
-                            <option value="linked">已关联邮箱</option>
-                            <option value="unlinked">未关联邮箱</option>
-                        </select>
-                        <button onClick={openCreateAccount} className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-gray-900 px-3 text-sm font-medium text-white hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100">
-                            <Plus className="h-4 w-4" />
-                            新增
-                        </button>
+                            placeholder="搜索业务、站点、邮箱、用户名、描述..."
+                            className="h-9 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
+                        />
                     </div>
+                    <select
+                        value={moduleId || ''}
+                        onChange={event => {
+                            setModuleId(event.target.value ? Number(event.target.value) : undefined)
+                            setPage(1)
+                        }}
+                        className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
+                    >
+                        <option value="">全部模块</option>
+                        {modules.map(module => <option key={module.id} value={module.id}>{module.name}</option>)}
+                    </select>
+                    <select
+                        value={status}
+                        onChange={event => {
+                            setStatus(event.target.value as BusinessAccountStatus | '')
+                            setPage(1)
+                        }}
+                        className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
+                    >
+                        <option value="">全部状态</option>
+                        {statusFilterOptions.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                    </select>
+                    <select
+                        value={emailLinked}
+                        onChange={event => {
+                            setEmailLinked(event.target.value as '' | 'linked' | 'unlinked')
+                            setPage(1)
+                        }}
+                        className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
+                    >
+                        <option value="">全部邮箱关联</option>
+                        <option value="linked">已关联邮箱</option>
+                        <option value="unlinked">未关联邮箱</option>
+                    </select>
+                    <button onClick={openCreateAccount} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-gray-900 px-3 text-sm font-medium text-white hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100">
+                        <Plus className="h-4 w-4" />
+                        新增
+                    </button>
+                </div>
 
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-gray-100 text-sm dark:divide-gray-800">
-                            <thead className="bg-gray-50 text-xs text-gray-500 dark:bg-gray-950/50 dark:text-gray-400">
+                <div className="min-h-0 flex-1 overflow-auto">
+                    <table className="min-w-full divide-y divide-gray-100 text-[13px] dark:divide-gray-800">
+                        <thead className="sticky top-0 z-10 bg-gray-50 text-xs text-gray-500 shadow-[0_1px_0_0_rgba(229,231,235,1)] dark:bg-gray-950 dark:text-gray-400 dark:shadow-[0_1px_0_0_rgba(31,41,55,1)]">
+                            <tr>
+                                <th className="px-3 py-2 text-left font-medium">业务</th>
+                                <th className="px-3 py-2 text-left font-medium">关联邮箱</th>
+                                <th className="px-3 py-2 text-left font-medium">站点</th>
+                                <th className="px-3 py-2 text-left font-medium">凭据</th>
+                                <th className="px-3 py-2 text-left font-medium">扩展信息</th>
+                                <th className="px-3 py-2 text-left font-medium">状态</th>
+                                <th className="px-3 py-2 text-left font-medium">更新时间</th>
+                                <th className="px-3 py-2 text-right font-medium">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                            {loading ? (
                                 <tr>
-                                    <th className="px-4 py-3 text-left font-medium">业务</th>
-                                    <th className="px-4 py-3 text-left font-medium">关联邮箱</th>
-                                    <th className="px-4 py-3 text-left font-medium">站点</th>
-                                    <th className="px-4 py-3 text-left font-medium">凭据</th>
-                                    <th className="px-4 py-3 text-left font-medium">扩展信息</th>
-                                    <th className="px-4 py-3 text-left font-medium">状态</th>
-                                    <th className="px-4 py-3 text-left font-medium">更新时间</th>
-                                    <th className="px-4 py-3 text-right font-medium">操作</th>
+                                    <td colSpan={8} className="px-3 py-16 text-center text-gray-500">
+                                        <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin" />
+                                        正在加载业务账户
+                                    </td>
                                 </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                                {loading ? (
-                                    <tr>
-                                        <td colSpan={8} className="px-4 py-16 text-center text-gray-500">
-                                            <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin" />
-                                            正在加载业务账户
-                                        </td>
-                                    </tr>
-                                ) : accounts.length === 0 ? (
-                                    <tr>
-                                        <td colSpan={8} className="px-4 py-16 text-center">
-                                            <Briefcase className="mx-auto mb-3 h-9 w-9 text-gray-300" />
-                                            <p className="text-sm font-medium">还没有业务账户</p>
-                                            <p className="mt-1 text-xs text-gray-500">可以先新建业务模块，再把站点账号绑定到邮箱。</p>
-                                        </td>
-                                    </tr>
-                                ) : accounts.map((account, index) => (
-                                    <motion.tr
-                                        key={account.id}
-                                        initial={{ opacity: 0, y: 8 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        transition={{ delay: index * 0.02 }}
-                                        className="hover:bg-gray-50/80 dark:hover:bg-gray-800/50"
-                                    >
-                                        <td className="px-4 py-3">
-                                            <div className="flex min-w-0 items-start gap-2">
-                                                <ModuleAvatar module={account.module} fallback={getModuleName(account)} />
-                                                <div className="min-w-0">
-                                                    <div className="truncate font-medium">{account.displayName || getModuleName(account)}</div>
-                                                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
-                                                        <span>{getModuleName(account)}</span>
-                                                        {(account.tags || []).slice(0, 2).map(tag => (
-                                                            <span key={tag} className="inline-flex items-center gap-1 rounded border border-gray-200 px-1.5 py-0.5 dark:border-gray-700">
-                                                                <Tag className="h-3 w-3" />
-                                                                {tag}
-                                                            </span>
-                                                        ))}
-                                                    </div>
+                            ) : accounts.length === 0 ? (
+                                <tr>
+                                    <td colSpan={8} className="px-3 py-16 text-center">
+                                        <Briefcase className="mx-auto mb-3 h-9 w-9 text-gray-300" />
+                                        <p className="text-sm font-medium">还没有业务账户</p>
+                                        <p className="mt-1 text-xs text-gray-500">可以先新建业务模块，再把站点账号绑定到邮箱。</p>
+                                    </td>
+                                </tr>
+                            ) : accounts.map((account, index) => (
+                                <motion.tr
+                                    key={account.id}
+                                    initial={{ opacity: 0, y: 8 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: index * 0.02 }}
+                                    className="hover:bg-gray-50/80 dark:hover:bg-gray-800/50"
+                                >
+                                    <td className="px-3 py-2 align-top">
+                                        <div className="flex min-w-0 items-start gap-2">
+                                            <ModuleAvatar module={account.module} fallback={getModuleName(account)} />
+                                            <div className="min-w-0">
+                                                <div className="max-w-[260px] truncate font-medium leading-5">{account.displayName || getModuleName(account)}</div>
+                                                <div className="mt-0.5 flex flex-wrap items-center gap-1 text-xs leading-4 text-gray-500">
+                                                    <span>{getModuleName(account)}</span>
+                                                    {(account.tags || []).slice(0, 2).map(tag => (
+                                                        <span key={tag} className="inline-flex items-center gap-1 rounded border border-gray-200 px-1 py-0.5 dark:border-gray-700">
+                                                            <Tag className="h-3 w-3" />
+                                                            {tag}
+                                                        </span>
+                                                    ))}
                                                 </div>
                                             </div>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            {account.emailAccount?.emailAddress ? (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => jumpToEmailAccount(account.emailAccount?.emailAddress)}
-                                                    className="max-w-[220px] truncate text-left font-medium text-blue-600 hover:underline"
-                                                >
-                                                    {account.emailAccount.emailAddress}
-                                                </button>
+                                        </div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        {account.emailAccount?.emailAddress ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => jumpToEmailAccount(account.emailAccount?.emailAddress)}
+                                                className="max-w-[220px] truncate text-left font-medium leading-5 text-blue-600 hover:underline"
+                                                title={account.emailAccount.emailAddress}
+                                            >
+                                                {account.emailAccount.emailAddress}
+                                            </button>
+                                        ) : (
+                                            <div className="max-w-[220px] truncate font-medium leading-5 text-gray-400">{getAccountEmail(account)}</div>
+                                        )}
+                                        {account.emailAccount?.mailProvider?.name && <div className="text-xs leading-4 text-gray-500">{account.emailAccount.mailProvider.name}</div>}
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <div className="flex flex-col gap-0.5">
+                                            {account.website ? <a href={account.website} target="_blank" rel="noreferrer" className="inline-flex max-w-[220px] items-center gap-1 truncate text-blue-600 hover:underline"><Globe2 className="h-3.5 w-3.5" />{account.website}</a> : <span className="text-gray-400">未配置</span>}
+                                            {account.loginUrl && <a href={account.loginUrl} target="_blank" rel="noreferrer" className="inline-flex max-w-[220px] items-center gap-1 truncate text-xs text-gray-500 hover:text-blue-600"><ExternalLink className="h-3 w-3" />登录地址</a>}
+                                        </div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <div className="space-y-0.5 text-xs leading-4">
+                                            <SecretLine icon={UserRound} label="账号" value={account.username} showSecrets={true} onCopy={copyText} />
+                                            <SecretLine icon={KeyRound} label="密码" value={account.password} showSecrets={showSecrets} onCopy={copyText} sensitive />
+                                            {account.totpSecret ? (
+                                                <TotpCode secret={account.totpSecret} showSecret={showSecrets} onCopy={copyText} compact />
                                             ) : (
-                                                <div className="max-w-[220px] truncate font-medium text-gray-400">{getAccountEmail(account)}</div>
+                                                <div className="flex items-center gap-1.5 text-gray-400"><ShieldCheck className="h-3 w-3" />2FA：-</div>
                                             )}
-                                            {account.emailAccount?.mailProvider?.name && <div className="text-xs text-gray-500">{account.emailAccount.mailProvider.name}</div>}
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <div className="flex flex-col gap-1">
-                                                {account.website ? <a href={account.website} target="_blank" rel="noreferrer" className="inline-flex max-w-[220px] items-center gap-1 truncate text-blue-600 hover:underline"><Globe2 className="h-3.5 w-3.5" />{account.website}</a> : <span className="text-gray-400">未配置</span>}
-                                                {account.loginUrl && <a href={account.loginUrl} target="_blank" rel="noreferrer" className="inline-flex max-w-[220px] items-center gap-1 truncate text-xs text-gray-500 hover:text-blue-600"><ExternalLink className="h-3 w-3" />登录地址</a>}
-                                            </div>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <div className="space-y-1 text-xs">
-                                                <SecretLine icon={UserRound} label="账号" value={account.username} showSecrets={true} onCopy={copyText} />
-                                                <SecretLine icon={KeyRound} label="密码" value={account.password} showSecrets={showSecrets} onCopy={copyText} sensitive />
-                                                {account.totpSecret ? (
-                                                    <TotpCode secret={account.totpSecret} showSecret={showSecrets} onCopy={copyText} compact />
-                                                ) : (
-                                                    <div className="flex items-center gap-1.5 text-gray-400"><ShieldCheck className="h-3.5 w-3.5" />2FA：-</div>
+                                        </div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <div className="flex max-w-[380px] flex-wrap items-center gap-1 text-xs leading-4 text-gray-600 dark:text-gray-300">
+                                            <span className="inline-flex min-w-0 items-center gap-1 rounded-md bg-gray-50 px-1.5 py-0.5 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                                                <Phone className="h-3 w-3 shrink-0 text-gray-400" />
+                                                <span className="max-w-[150px] truncate">{account.phoneNumber || '无手机号'}</span>
+                                            </span>
+                                            {getAccountCustomFields(account).slice(0, 3).map(field => (
+                                                <CustomFieldPreview key={field.key} field={field} showSecrets={showSecrets} onCopy={copyText} />
+                                            ))}
+                                            {getAccountCustomFields(account).length > 3 && <span className="text-gray-400">+{getAccountCustomFields(account).length - 3} 个字段</span>}
+                                            <button
+                                                type="button"
+                                                onClick={() => openNoteDialog(account, account.note ? 'preview' : 'edit')}
+                                                className={cn(
+                                                    'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs transition',
+                                                    account.note
+                                                        ? 'border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300'
+                                                        : 'border-gray-200 text-gray-400 hover:text-blue-600 dark:border-gray-700'
                                                 )}
-                                            </div>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <div className="space-y-1 text-xs text-gray-600 dark:text-gray-300">
-                                                <div className="flex items-center gap-1.5"><Phone className="h-3.5 w-3.5 text-gray-400" />{account.phoneNumber || '无手机号'}</div>
-                                                {getAccountCustomFields(account).slice(0, 3).map(field => (
-                                                    <CustomFieldPreview key={field.key} field={field} showSecrets={showSecrets} onCopy={copyText} />
-                                                ))}
-                                                {getAccountCustomFields(account).length > 3 && <div className="text-gray-400">+{getAccountCustomFields(account).length - 3} 个字段</div>}
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openNoteDialog(account, account.note ? 'preview' : 'edit')}
-                                                    className={cn(
-                                                        'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition',
-                                                        account.note
-                                                            ? 'border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300'
-                                                            : 'border-gray-200 text-gray-400 hover:text-blue-600 dark:border-gray-700'
-                                                    )}
-                                                >
-                                                    <StickyNote className="h-3.5 w-3.5" />
-                                                    {account.note ? '查看备注' : '添加备注'}
-                                                </button>
-                                            </div>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <StatusBadge status={account.status} module={account.module} />
-                                        </td>
-                                        <td className="px-4 py-3 text-xs text-gray-500">
-                                            <div className="flex items-center gap-1.5"><CalendarClock className="h-3.5 w-3.5" />{safeDate(account.updatedAt)}</div>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <div className="flex items-center justify-end gap-1">
-                                                <button onClick={() => openEditAccount(account)} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-blue-600 dark:hover:bg-gray-800"><Pencil className="h-4 w-4" /></button>
-                                                <button onClick={() => deleteAccount(account)} className="rounded-lg p-2 text-gray-500 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/30"><Trash2 className="h-4 w-4" /></button>
-                                            </div>
-                                        </td>
-                                    </motion.tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3 text-sm text-gray-500 dark:border-gray-800">
+                                            >
+                                                <StickyNote className="h-3 w-3" />
+                                                {account.note ? '查看备注' : '添加备注'}
+                                            </button>
+                                        </div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <StatusBadge status={account.status} module={account.module} />
+                                    </td>
+                                    <td className="px-3 py-2 align-top text-xs text-gray-500">
+                                        <div className="flex items-center gap-1.5 whitespace-nowrap"><CalendarClock className="h-3.5 w-3.5" />{safeDate(account.updatedAt)}</div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <div className="flex items-center justify-end gap-1">
+                                            <button onClick={() => openEditAccount(account)} className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-blue-600 dark:hover:bg-gray-800"><Pencil className="h-4 w-4" /></button>
+                                            <button onClick={() => deleteAccount(account)} className="rounded-lg p-1.5 text-gray-500 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/30"><Trash2 className="h-4 w-4" /></button>
+                                        </div>
+                                    </td>
+                                </motion.tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+                <div className="z-20 flex shrink-0 flex-col gap-2 border-t border-gray-100 bg-white px-3 py-2 text-sm text-gray-500 shadow-[0_-6px_16px_rgba(15,23,42,0.04)] dark:border-gray-800 dark:bg-gray-900 sm:flex-row sm:items-center sm:justify-between">
                     <span>显示第 {total === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, total)} 条，共 {total} 条</span>
                     <div className="flex items-center gap-2">
                         <button disabled={page <= 1} onClick={() => setPage(prev => Math.max(1, prev - 1))} className="rounded-lg border border-gray-200 px-3 py-1.5 disabled:opacity-50 dark:border-gray-700">上一页</button>
@@ -1042,22 +1046,27 @@ function TotpCode({
                     <span className="truncate text-amber-600 dark:text-amber-300">{error}</span>
                 ) : (
                     <>
-                        <span className="font-mono text-sm font-semibold tracking-wider text-emerald-700 dark:text-emerald-200">{code || '------'}</span>
+                        <span className={cn('font-mono font-semibold tracking-wider text-emerald-700 dark:text-emerald-200', compact ? 'text-xs' : 'text-sm')}>{code || '------'}</span>
                         <span className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-[11px] text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200">{remaining}s</span>
                         {code && (
                             <button onClick={() => onCopy(code)} className="rounded p-0.5 text-emerald-500 hover:text-emerald-700">
                                 <Copy className="h-3 w-3" />
                             </button>
                         )}
+                        {showSecret && compact && (
+                            <span className="min-w-0 max-w-[120px] truncate font-mono text-[11px] text-emerald-700/80 dark:text-emerald-200/70" title={secret}>
+                                Secret: {secret}
+                            </span>
+                        )}
                     </>
                 )}
             </div>
-            {showSecret && (
+            {showSecret && !compact && (
                 <div className="mt-1 max-w-[260px] truncate font-mono text-[11px] text-emerald-700/80 dark:text-emerald-200/70">
                     Secret: {secret}
                 </div>
             )}
-            {!error && (
+            {!error && !compact && (
                 <div className="mt-1 h-1 overflow-hidden rounded-full bg-emerald-100 dark:bg-emerald-900/60">
                     <div className="h-full rounded-full bg-emerald-500 transition-all duration-1000" style={{ width: `${(remaining / 30) * 100}%` }} />
                 </div>
@@ -1078,31 +1087,35 @@ function CustomFieldPreview({
     if (!field.key) return null
     if (field.type === 'totp') {
         return (
-            <div className="space-y-1">
-                <div className="text-gray-400">{field.key}</div>
+            <div className="inline-flex min-w-0 items-center gap-1 rounded-md bg-gray-50 px-1.5 py-0.5 dark:bg-gray-800">
+                <span className="shrink-0 text-gray-400">{field.key}：</span>
                 <TotpCode secret={field.value} showSecret={showSecrets} onCopy={onCopy} compact />
             </div>
         )
     }
     if (field.type === 'url' && field.value) {
         return (
-            <a href={field.value} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1.5 text-blue-600 hover:underline">
-                <Globe2 className="h-3.5 w-3.5 shrink-0" />
+            <a href={field.value} target="_blank" rel="noreferrer" className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-blue-600 hover:underline dark:bg-blue-950/30">
+                <Globe2 className="h-3 w-3 shrink-0" />
                 <span className="shrink-0 text-gray-400">{field.key}：</span>
                 <span className="truncate">{field.value}</span>
             </a>
         )
     }
     const sensitive = field.type === 'password'
+    const displayValue = field.value ? (sensitive && !showSecrets ? maskValue(field.value) : field.value) : '-'
+    const Icon = field.type === 'phone' ? Phone : field.type === 'email' ? Mail : field.type === 'password' ? KeyRound : Tag
     return (
-        <SecretLine
-            icon={field.type === 'phone' ? Phone : field.type === 'email' ? Mail : field.type === 'password' ? KeyRound : Tag}
-            label={field.key}
-            value={field.value}
-            showSecrets={showSecrets}
-            sensitive={sensitive}
-            onCopy={onCopy}
-        />
+        <button
+            type="button"
+            onClick={() => field.value && onCopy(field.value)}
+            className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded-md bg-gray-50 px-1.5 py-0.5 text-left hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700"
+            title={`${field.key}: ${displayValue}`}
+        >
+            <Icon className="h-3 w-3 shrink-0 text-gray-400" />
+            <span className="shrink-0 text-gray-400">{field.key}：</span>
+            <span className="truncate font-mono">{displayValue}</span>
+        </button>
     )
 }
 

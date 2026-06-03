@@ -33,6 +33,7 @@ func NewRouterWithAuth(
 	interceptorHandler *InterceptorHandler,
 	tagHandlers *TagHandlers,
 	proxyPoolHandlers *ProxyPoolHandlers,
+	proxyGatewayHandlers *ProxyGatewayHandlers,
 	pickupHandler *PickupHandler,
 	orgHandler *OrganizationHandler,
 	userMgmtHandler *UserManagementHandler,
@@ -161,6 +162,10 @@ func NewRouterWithAuth(
 	if proxyPoolHandlers != nil {
 		proxyPoolHandlers.RegisterRoutes(accountRouter)
 		utils.NewLogger("Router").Info("Proxy pool API routes registered")
+	}
+	if proxyGatewayHandlers != nil {
+		proxyGatewayHandlers.RegisterRoutes(accountRouter)
+		utils.NewLogger("Router").Info("Proxy gateway API routes registered")
 	}
 
 	accountRouter.HandleFunc("/account-emails/fetch/{id}", handler.FetchAndStoreEmailsHandler).Methods("POST")

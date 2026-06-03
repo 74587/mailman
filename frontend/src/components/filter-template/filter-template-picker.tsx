@@ -39,10 +39,13 @@ import { cn } from '@/lib/utils'
 // 预定义分类
 const PRESET_CATEGORIES = [
     { value: 'common', label: '常用' },
+    { value: 'security', label: '安全治理' },
+    { value: 'header', label: '邮件头' },
     { value: 'sender', label: '发件人相关' },
     { value: 'content', label: '邮件内容' },
     { value: 'time', label: '时间相关' },
     { value: 'attachment', label: '附件相关' },
+    { value: 'account', label: '账号相关' },
     { value: 'other', label: '其他' },
 ]
 

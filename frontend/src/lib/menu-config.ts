@@ -13,7 +13,7 @@ const EVENT_NAME = 'menuVisibilityChanged'
 export interface MenuItemConfig {
     id: string
     name: string
-    group: 'main' | 'mail' | 'business' | 'admin' | 'trigger' | 'plugin' | 'developer'
+    group: 'main' | 'mail' | 'proxy' | 'business' | 'admin' | 'trigger' | 'plugin' | 'developer'
     defaultVisible: boolean
     locked?: boolean  // 锁定的菜单项不允许隐藏
 }
@@ -30,7 +30,14 @@ export const menuRegistry: MenuItemConfig[] = [
     { id: 'mail-pickup-v2', name: '取件', group: 'mail', defaultVisible: true },
     { id: 'extractor-v2-list', name: '取件模板', group: 'mail', defaultVisible: true },
     { id: 'sync-config', name: '同步配置', group: 'mail', defaultVisible: true },
-    { id: 'proxy-pool', name: '代理池管理', group: 'mail', defaultVisible: true },
+
+    // 代理池管理
+    { id: 'proxy-pool', name: '代理列表', group: 'proxy', defaultVisible: true },
+    { id: 'proxy-gateway-gateways', name: '代理网关', group: 'proxy', defaultVisible: true },
+    { id: 'proxy-gateway-accounts', name: '网关用户', group: 'proxy', defaultVisible: true },
+    { id: 'proxy-gateway-account-groups', name: '账号分组', group: 'proxy', defaultVisible: true },
+    { id: 'proxy-gateway-account-tags', name: '账号标签', group: 'proxy', defaultVisible: true },
+    { id: 'proxy-gateway-logs', name: '网关日志', group: 'proxy', defaultVisible: true },
 
     // 业务资料
     { id: 'business-accounts', name: '业务账户', group: 'business', defaultVisible: true },
@@ -66,6 +73,7 @@ export const menuRegistry: MenuItemConfig[] = [
 export const groupNames: Record<string, string> = {
     main: '工作台',
     mail: '邮箱运营',
+    proxy: '代理池管理',
     business: '业务资料',
     trigger: '自动化',
     admin: '系统与权限',
@@ -87,6 +95,11 @@ const LEGACY_DEFAULT_MENU_ORDER = [
     'classic-mailbox',
     'sync-config',
     'proxy-pool',
+    'proxy-gateway-gateways',
+    'proxy-gateway-accounts',
+    'proxy-gateway-account-groups',
+    'proxy-gateway-account-tags',
+    'proxy-gateway-logs',
     'mail-pickup-v2',
     'extractor-v2-list',
     'api-docs',

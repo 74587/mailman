@@ -84,6 +84,7 @@ export function generateConditionDescription(condition: any): string {
         const engineMap: Record<string, string> = {
             'expr.javascript': 'JS表达式',
             'expr.cel': 'CEL表达式',
+            'expr.go-template': 'Go模板',
             'expr.go_template': 'Go模板',
             'expr.jsonpath': 'JSONPath'
         }

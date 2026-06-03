@@ -168,6 +168,15 @@ type InterceptorManager interface {
 	Unsubscribe(ch chan struct{})
 }
 
+// AdvancedFilterEvaluator evaluates interceptor advanced filter expressions.
+// It is injected by the application layer to keep the interceptor package
+// independent from the trigger condition engine implementation.
+type AdvancedFilterEvaluator func(filter models.InterceptorFilter, ctx *InterceptorContext) (bool, models.JSONMap, error)
+
+// DiagnosticLogWriter persists manager-level interceptor diagnostics, such as
+// filter skips that happen before a plugin instance is executed.
+type DiagnosticLogWriter func(logEntry *models.InterceptorLog) error
+
 // InterceptorSnapshot 拦截器配置快照（不可变）
 type InterceptorSnapshot struct {
 	Version       int64                         `json:"version"`

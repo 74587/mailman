@@ -301,7 +301,10 @@ func (p *EmailSuffixPlugin) GetFieldSuggestions(field string, prefix string) ([]
 
 // Initialize 初始化插件
 func (p *EmailSuffixPlugin) Initialize(ctx *plugins.PluginContext) error {
-	p.config = p.info.DefaultConfig
+	p.config = cloneConfig(p.info.DefaultConfig)
+	if ctx != nil && ctx.Config != nil && ctx.Config.Config != nil {
+		return p.ApplyConfig(ctx.Config.Config)
+	}
 	return nil
 }
 
@@ -334,20 +337,27 @@ func (p *EmailSuffixPlugin) OnDeactivate() error {
 
 // GetDefaultConfig 获取默认配置
 func (p *EmailSuffixPlugin) GetDefaultConfig() map[string]interface{} {
-	return p.info.DefaultConfig
+	return cloneConfig(p.info.DefaultConfig)
 }
 
 // ValidateConfig 验证配置
 func (p *EmailSuffixPlugin) ValidateConfig(config map[string]interface{}) error {
 	// 验证后缀列表
 	if suffixes, ok := config["suffixes"]; ok {
-		if suffixList, ok := suffixes.([]interface{}); ok {
+		switch suffixList := suffixes.(type) {
+		case []interface{}:
 			for _, suffix := range suffixList {
 				if _, ok := suffix.(string); !ok {
 					return fmt.Errorf("后缀必须是字符串")
 				}
 			}
-		} else {
+		case []string:
+			for _, suffix := range suffixList {
+				if strings.TrimSpace(suffix) == "" {
+					return fmt.Errorf("后缀不能为空")
+				}
+			}
+		default:
 			return fmt.Errorf("后缀必须是数组")
 		}
 	}
@@ -453,9 +463,9 @@ func (p *EmailSuffixPlugin) Evaluate(ctx *plugins.PluginContext, event *models.E
 		}
 	}
 
-	// 从 ctx.Config.Config 获取用户配置的条件（优先）
+	// 使用插件当前配置；插件管理器在执行前会将上下文配置应用到插件实例。
 	conditions := p.config
-	if ctx.Config != nil && ctx.Config.Config != nil {
+	if len(conditions) == 0 && ctx != nil && ctx.Config != nil && ctx.Config.Config != nil {
 		conditions = ctx.Config.Config
 	}
 
@@ -466,11 +476,11 @@ func (p *EmailSuffixPlugin) Evaluate(ctx *plugins.PluginContext, event *models.E
 	matchMode := p.getMatchModeFromConfig(conditions)
 	exactMatch := p.getExactMatchFromConfig(conditions)
 
-	// 如果没有配置后缀，返回 true（表示不过滤）
+	// 如果没有配置后缀，则条件无法命中。
 	if len(suffixes) == 0 {
 		return &plugins.PluginResult{
 			Success:       true,
-			Data:          map[string]interface{}{"matched": true, "reason": "未配置后缀，默认通过"},
+			Data:          map[string]interface{}{"matched": false, "reason": "未配置后缀，无法匹配"},
 			ExecutionTime: time.Since(startTime),
 			Timestamp:     time.Now(),
 		}, nil
@@ -516,7 +526,7 @@ func (p *EmailSuffixPlugin) Evaluate(ctx *plugins.PluginContext, event *models.E
 	finalResult := len(matches) > 0 && matches[0]
 
 	result := &plugins.PluginResult{
-		Success: finalResult, // Success 表示是否匹配
+		Success: true,
 		Data: map[string]interface{}{
 			"matched":        finalResult,
 			"reasons":        reasons,
@@ -618,7 +628,7 @@ func (p *EmailSuffixPlugin) getMatchTypeFromConfig(config map[string]interface{}
 			return str
 		}
 	}
-	return "to" // 默认匹配收件人
+	return "from"
 }
 
 // getCaseSensitive 获取大小写敏感配置

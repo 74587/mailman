@@ -29,9 +29,21 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 const EXPRESSION_ENGINES = [
     { id: 'expr.javascript', name: 'JavaScript', description: 'Full JS syntax with ES6+' },
     { id: 'expr.cel', name: 'CEL', description: 'Safe expression language by Google' },
-    { id: 'expr.go_template', name: 'Go Template', description: 'Go template with functions' },
+    { id: 'expr.go-template', name: 'Go Template', description: 'Go template with functions' },
     { id: 'expr.jsonpath', name: 'JSONPath', description: 'Query JSON data' }
 ]
+
+const FILTER_TEMPLATE_CATEGORY_LABELS: Record<string, string> = {
+    common: '常用',
+    security: '安全治理',
+    header: '邮件头',
+    sender: '发件人相关',
+    content: '邮件内容',
+    time: '时间相关',
+    attachment: '附件相关',
+    account: '账号相关',
+    other: '其他'
+}
 
 interface EvaluationResult {
     expressionId: string
@@ -630,7 +642,7 @@ export function ExpressionGroup({
                                                             <div className="flex items-center gap-1.5 pl-5 mt-0.5">
                                                                 {template.category && (
                                                                     <Badge variant="outline" className="text-[10px] px-1 py-0">
-                                                                        {template.category}
+                                                                        {FILTER_TEMPLATE_CATEGORY_LABELS[template.category] || template.category}
                                                                     </Badge>
                                                                 )}
                                                                 {template.tags?.slice(0, 2).map(tag => (

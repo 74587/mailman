@@ -87,6 +87,13 @@ export function InterceptorFormModal({
                 }
                 return true
             case 2: // 过滤条件
+                if (
+                    formData.filter?.use_advanced_filter &&
+                    countExpressionConditions(formData.filter.expressions || []) === 0
+                ) {
+                    toast.error('请至少添加一个高级过滤条件，或关闭高级过滤')
+                    return false
+                }
                 return true
             case 3: // 错误处理
                 return true
@@ -270,4 +277,14 @@ export function InterceptorFormModal({
             </ModalContent>
         </Modal>
     )
+}
+
+function countExpressionConditions(expressions: any[]): number {
+    return expressions.reduce((count, expression) => {
+        if (!expression) return count
+        if (expression.type === 'group') {
+            return count + countExpressionConditions(expression.conditions || [])
+        }
+        return count + 1
+    }, 0)
 }

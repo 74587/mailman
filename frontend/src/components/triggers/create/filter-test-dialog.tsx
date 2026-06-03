@@ -56,6 +56,27 @@ interface TestResult {
 
 type DialogStep = 'config' | 'loading' | 'results'
 
+function normalizeEvaluationForDisplay(evaluation: Record<string, any>) {
+    return Object.fromEntries(
+        Object.entries(evaluation || {}).map(([key, value]) => [key, parseMaybeJson(value)])
+    )
+}
+
+function parseMaybeJson(value: any): any {
+    if (typeof value !== 'string') {
+        return value
+    }
+    const trimmed = value.trim()
+    if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) {
+        return value
+    }
+    try {
+        return JSON.parse(trimmed)
+    } catch {
+        return value
+    }
+}
+
 export function FilterTestDialog({ open, onOpenChange, expressions }: FilterTestDialogProps) {
     const [step, setStep] = useState<DialogStep>('config')
     const [config, setConfig] = useState({
@@ -397,15 +418,14 @@ export function FilterTestDialog({ open, onOpenChange, expressions }: FilterTest
                                         )}
                                     </div>
 
-                                    {/* 评估详情 - 暂时隐藏，因为所有邮件显示相同内容 */}
-                                    {false && selectedEmail.evaluation && Object.keys(selectedEmail.evaluation).length > 0 && (
-                                        <div className="flex-shrink-0 mt-3 p-2 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
-                                            <div className="flex items-center gap-2 text-xs font-medium text-green-700 dark:text-green-300 mb-1">
+                                    {selectedEmail.evaluation && Object.keys(selectedEmail.evaluation).length > 0 && (
+                                        <div className="flex-shrink-0 mt-3 p-3 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
+                                            <div className="flex items-center gap-2 text-xs font-medium text-green-700 dark:text-green-300 mb-2">
                                                 <CheckCircle2 className="w-3 h-3" />
                                                 匹配详情
                                             </div>
-                                            <pre className="text-xs text-green-600 dark:text-green-400 overflow-auto max-h-16">
-                                                {JSON.stringify(selectedEmail.evaluation, null, 2)}
+                                            <pre className="text-xs text-green-700 dark:text-green-300 overflow-auto max-h-36 whitespace-pre-wrap">
+                                                {JSON.stringify(normalizeEvaluationForDisplay(selectedEmail.evaluation), null, 2)}
                                             </pre>
                                         </div>
                                     )}

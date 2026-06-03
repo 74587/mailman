@@ -316,24 +316,24 @@ func (e *ConditionEngine) evaluateGroup(expression models.TriggerExpression, con
 		// 短路评估
 		if operator == models.TriggerOperatorAnd && !result {
 			// AND 操作符，一个条件为假则整个表达式为假
-			return false, models.JSONMap{
+			return false, withConditionEvaluationDetails(models.JSONMap{
 				"expressionId": expression.ID,
 				"type":         string(expression.Type),
 				"result":       "false",
 				"operator":     string(operator),
 
 				"message": "AND condition failed",
-			}, nil
+			}, results[:i+1]), nil
 		} else if operator == models.TriggerOperatorOr && result {
 			// OR 操作符，一个条件为真则整个表达式为真
-			return true, models.JSONMap{
+			return true, withConditionEvaluationDetails(models.JSONMap{
 				"expressionId": expression.ID,
 				"type":         string(expression.Type),
 				"result":       "true",
 				"operator":     string(operator),
 
 				"message": "OR condition succeeded",
-			}, nil
+			}, results[:i+1]), nil
 		}
 	}
 
@@ -379,7 +379,7 @@ func (e *ConditionEngine) evaluateGroup(expression models.TriggerExpression, con
 		message = fmt.Sprintf("NOT (%s)", message)
 	}
 
-	return finalResult, models.JSONMap{
+	return finalResult, withConditionEvaluationDetails(models.JSONMap{
 		"expressionId": expression.ID,
 		"type":         string(expression.Type),
 		"result":       fmt.Sprintf("%v", finalResult),
@@ -387,7 +387,19 @@ func (e *ConditionEngine) evaluateGroup(expression models.TriggerExpression, con
 
 		"message": message,
 		"not":     fmt.Sprintf("%v", expression.Not != nil && *expression.Not),
-	}, nil
+	}, results), nil
+}
+
+func withConditionEvaluationDetails(details models.JSONMap, results []models.JSONMap) models.JSONMap {
+	if len(results) == 0 {
+		return details
+	}
+	rawResults, err := json.Marshal(results)
+	if err != nil {
+		return details
+	}
+	details["conditions"] = string(rawResults)
+	return details
 }
 
 // evaluatePlugin 评估插件表达式
@@ -509,6 +521,13 @@ func (e *ConditionEngine) evaluatePlugin(expression models.TriggerExpression, ev
 	}
 
 	result := pluginResult.Success
+	if pluginResult.Data != nil {
+		if matched, ok := boolFromPluginResult(pluginResult.Data["matched"]); ok {
+			result = matched
+		} else if matched, ok := boolFromPluginResult(pluginResult.Data["result"]); ok {
+			result = matched
+		}
+	}
 
 	// 处理否定条件
 	if expression.Not != nil && *expression.Not {
@@ -626,6 +645,21 @@ func (e *ConditionEngine) evaluateBuiltinPlugin(expression models.TriggerExpress
 		"result":       fmt.Sprintf("%v", result),
 		"not":          fmt.Sprintf("%v", expression.Not != nil && *expression.Not),
 	}, nil
+}
+
+func boolFromPluginResult(value interface{}) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // evaluateExpression evaluates a custom expression (JavaScript, CEL, Go-Template, JSONPath)

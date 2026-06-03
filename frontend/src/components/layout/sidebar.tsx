@@ -39,6 +39,9 @@ import {
     Crown,
     Network,
     Briefcase,
+    Server,
+    KeyRound,
+    Tags,
     type LucideIcon,
 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
@@ -79,7 +82,16 @@ const mailNavigation: MenuItem[] = [
     { name: '取件模板', id: 'pickup', icon: FileText, hidden: true },
     { name: '取件模板', id: 'extractor-v2-list', icon: FileText, description: '管理提取模板', permission: { resource: 'template', action: 'read' } },
     { name: '同步配置', id: 'sync-config', icon: RefreshCw, permission: { resource: 'sync_config', action: 'read' } },
-    { name: '代理池管理', id: 'proxy-pool', icon: Network, description: '代理分组 · 标签 · 检测', permission: { resource: 'email_account', action: 'read' } },
+]
+
+// 代理池管理菜单组
+const proxyNavigation: MenuItem[] = [
+    { name: '代理列表', id: 'proxy-pool', icon: Network, description: '代理分组 · 标签 · 检测', permission: { resource: 'email_account', action: 'read' } },
+    { name: '代理网关', id: 'proxy-gateway-gateways', icon: Server, description: '入口 · 路由 · 安全 · DNS', permission: { resource: 'email_account', action: 'read' } },
+    { name: '网关用户', id: 'proxy-gateway-accounts', icon: KeyRound, description: '授权网关 · 策略 · 限速', permission: { resource: 'email_account', action: 'read' } },
+    { name: '账号分组', id: 'proxy-gateway-account-groups', icon: Users, description: '用户分组维护', permission: { resource: 'email_account', action: 'read' } },
+    { name: '账号标签', id: 'proxy-gateway-account-tags', icon: Tags, description: '用户标签维护', permission: { resource: 'email_account', action: 'read' } },
+    { name: '网关日志', id: 'proxy-gateway-logs', icon: FileText, description: '访问日志 · 审计记录', permission: { resource: 'email_account', action: 'read' } },
 ]
 
 // 业务资料菜单组
@@ -265,6 +277,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     const [adminMenuExpanded, setAdminMenuExpanded] = useState(false)
     const [businessMenuExpanded, setBusinessMenuExpanded] = useState(true)
     const [mailMenuExpanded, setMailMenuExpanded] = useState(true)
+    const [proxyMenuExpanded, setProxyMenuExpanded] = useState(true)
     const [, setMenuVersion] = useState(0) // 用于触发菜单重新渲染
     const { theme, setTheme } = useTheme()
     const { logout, isSuperAdmin, hasPermission } = useAuth()
@@ -301,6 +314,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     // 菜单组配置 - 以菜单管理显隐配置和权限为准
     const menuGroups: MenuGroup[] = []
     const filteredMailNav = filterByVisibility(mailNavigation)
+    const filteredProxyNav = filterByVisibility(proxyNavigation)
     const filteredBusinessNav = filterByVisibility(businessNavigation)
     const filteredTriggerNav = filterByVisibility(triggerNavigation)
     const filteredPluginNav = filterByVisibility(pluginNavigation)
@@ -313,6 +327,16 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
             items: filteredMailNav,
             expanded: mailMenuExpanded,
             setExpanded: setMailMenuExpanded,
+        })
+    }
+
+    if (filteredProxyNav.length > 0) {
+        menuGroups.push({
+            title: '代理池管理',
+            icon: Network,
+            items: filteredProxyNav,
+            expanded: proxyMenuExpanded,
+            setExpanded: setProxyMenuExpanded,
         })
     }
 

@@ -147,6 +147,7 @@ function AddActionDropdown({ availablePlugins, onAddAction, onAddActionsFromTemp
             <DropdownMenuTrigger asChild>
                 <Button
                     variant="outline"
+                    data-testid={insertAtIndex === 0 ? 'add-action-start' : 'add-action-end'}
                     className="min-w-[120px] h-[80px] border-2 border-dashed border-gray-300 hover:border-blue-500 hover:bg-blue-50"
                 >
                     <div className="flex flex-col items-center gap-1">
@@ -155,143 +156,150 @@ function AddActionDropdown({ availablePlugins, onAddAction, onAddActionsFromTemp
                     </div>
                 </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
-                {/* 引入模板 - 子菜单形式，放在第一个位置 */}
-                {onAddActionsFromTemplate && (
-                    <>
-                        <DropdownMenuLabel className="text-xs text-amber-600">模板</DropdownMenuLabel>
-                        <DropdownMenuSub>
-                            <DropdownMenuSubTrigger
-                                className="flex items-start gap-2"
-                                onPointerEnter={() => {
-                                    // 悬停时加载模板
-                                    if (templates.length === 0 && !loadingTemplates) {
-                                        loadTemplates()
-                                    }
-                                }}
-                            >
-                                <Sparkles className="h-3 w-3 mt-0.5 text-amber-500" />
-                                <div className="flex-1">
-                                    <div className="font-medium text-sm">引入模板</div>
-                                </div>
-                            </DropdownMenuSubTrigger>
-                            <DropdownMenuPortal>
-                                <DropdownMenuSubContent
-                                    className="w-72 p-0"
-                                    onClick={(e) => e.stopPropagation()}
+            <DropdownMenuContent align="start" sideOffset={8} className="w-72 overflow-hidden p-0">
+                <div
+                    data-testid="add-action-menu-scroll"
+                    className="dropdown-scrollbar overflow-y-auto p-1"
+                    style={{ maxHeight: 'min(420px, var(--radix-dropdown-menu-content-available-height))' }}
+                >
+                    {/* 引入模板 - 子菜单形式，放在第一个位置 */}
+                    {onAddActionsFromTemplate && (
+                        <>
+                            <DropdownMenuLabel className="text-xs text-amber-600">模板</DropdownMenuLabel>
+                            <DropdownMenuSub>
+                                <DropdownMenuSubTrigger
+                                    className="flex items-start gap-2"
+                                    onPointerEnter={() => {
+                                        // 悬停时加载模板
+                                        if (templates.length === 0 && !loadingTemplates) {
+                                            loadTemplates()
+                                        }
+                                    }}
                                 >
-                                    {/* 搜索框 */}
-                                    <div className="p-2 border-b">
-                                        <div className="relative">
-                                            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
-                                            <Input
-                                                ref={searchInputRef}
-                                                placeholder="搜索模板..."
-                                                value={templateSearch}
-                                                onChange={(e) => setTemplateSearch(e.target.value)}
-                                                className="h-8 pl-8 text-sm"
-                                                onClick={(e) => e.stopPropagation()}
-                                                onKeyDown={(e) => e.stopPropagation()}
-                                            />
-                                        </div>
+                                    <Sparkles className="h-3 w-3 mt-0.5 text-amber-500" />
+                                    <div className="flex-1">
+                                        <div className="font-medium text-sm">引入模板</div>
                                     </div>
+                                </DropdownMenuSubTrigger>
+                                <DropdownMenuPortal>
+                                    <DropdownMenuSubContent
+                                        className="w-72 p-0"
+                                        onClick={(e) => e.stopPropagation()}
+                                    >
+                                        {/* 搜索框 */}
+                                        <div className="p-2 border-b">
+                                            <div className="relative">
+                                                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+                                                <Input
+                                                    ref={searchInputRef}
+                                                    placeholder="搜索模板..."
+                                                    value={templateSearch}
+                                                    onChange={(e) => setTemplateSearch(e.target.value)}
+                                                    className="h-8 pl-8 text-sm"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    onKeyDown={(e) => e.stopPropagation()}
+                                                />
+                                            </div>
+                                        </div>
 
-                                    {/* 模板列表 */}
-                                    <ScrollArea className="h-[280px]">
-                                        {loadingTemplates ? (
-                                            <div className="flex items-center justify-center py-8">
-                                                <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
-                                            </div>
-                                        ) : filteredTemplates.length === 0 ? (
-                                            <div className="text-center py-8 text-sm text-gray-500">
-                                                {templateSearch ? '未找到匹配的模板' : '暂无模板'}
-                                            </div>
-                                        ) : (
-                                            <div className="py-1">
-                                                {filteredTemplates.map(template => (
-                                                    <DropdownMenuItem
-                                                        key={template.id}
-                                                        onClick={(e) => {
-                                                            e.stopPropagation()
-                                                            handleApplyTemplate(template)
-                                                        }}
-                                                        disabled={applyingTemplate === template.id}
-                                                        className="flex flex-col items-start gap-0.5 py-2 px-3 cursor-pointer"
-                                                    >
-                                                        <div className="flex items-center gap-2 w-full">
-                                                            {applyingTemplate === template.id ? (
-                                                                <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-500" />
-                                                            ) : (
-                                                                <Zap className="h-3.5 w-3.5 text-amber-500" />
-                                                            )}
-                                                            <span className="font-medium text-sm truncate flex-1">
-                                                                {template.name}
-                                                            </span>
-                                                            <Badge variant="outline" className="text-[10px] px-1 py-0">
-                                                                {template.actionCount} 个动作
-                                                            </Badge>
-                                                            {template.isBuiltin && (
-                                                                <Badge variant="secondary" className="text-[10px] px-1 py-0">
-                                                                    内置
-                                                                </Badge>
-                                                            )}
-                                                        </div>
-                                                        {template.description && (
-                                                            <div className="text-xs text-gray-500 truncate w-full pl-5">
-                                                                {template.description}
-                                                            </div>
-                                                        )}
-                                                        <div className="flex items-center gap-1.5 pl-5 mt-0.5">
-                                                            {template.category && (
+                                        {/* 模板列表 */}
+                                        <ScrollArea className="h-[280px]">
+                                            {loadingTemplates ? (
+                                                <div className="flex items-center justify-center py-8">
+                                                    <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                                                </div>
+                                            ) : filteredTemplates.length === 0 ? (
+                                                <div className="text-center py-8 text-sm text-gray-500">
+                                                    {templateSearch ? '未找到匹配的模板' : '暂无模板'}
+                                                </div>
+                                            ) : (
+                                                <div className="py-1">
+                                                    {filteredTemplates.map(template => (
+                                                        <DropdownMenuItem
+                                                            key={template.id}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation()
+                                                                handleApplyTemplate(template)
+                                                            }}
+                                                            disabled={applyingTemplate === template.id}
+                                                            className="flex flex-col items-start gap-0.5 py-2 px-3 cursor-pointer"
+                                                        >
+                                                            <div className="flex items-center gap-2 w-full">
+                                                                {applyingTemplate === template.id ? (
+                                                                    <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-500" />
+                                                                ) : (
+                                                                    <Zap className="h-3.5 w-3.5 text-amber-500" />
+                                                                )}
+                                                                <span className="font-medium text-sm truncate flex-1">
+                                                                    {template.name}
+                                                                </span>
                                                                 <Badge variant="outline" className="text-[10px] px-1 py-0">
-                                                                    {template.category}
+                                                                    {template.actionCount} 个动作
                                                                 </Badge>
+                                                                {template.isBuiltin && (
+                                                                    <Badge variant="secondary" className="text-[10px] px-1 py-0">
+                                                                        内置
+                                                                    </Badge>
+                                                                )}
+                                                            </div>
+                                                            {template.description && (
+                                                                <div className="text-xs text-gray-500 truncate w-full pl-5">
+                                                                    {template.description}
+                                                                </div>
                                                             )}
-                                                            {template.tags?.slice(0, 2).map(tag => (
-                                                                <Badge key={tag} variant="secondary" className="text-[10px] px-1 py-0">
-                                                                    {tag}
-                                                                </Badge>
-                                                            ))}
-                                                            <span className="text-[10px] text-gray-400 flex items-center gap-0.5 ml-auto">
-                                                                <TrendingUp className="h-2.5 w-2.5" />
-                                                                {template.usageCount}
-                                                            </span>
-                                                        </div>
-                                                    </DropdownMenuItem>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </ScrollArea>
-                                </DropdownMenuSubContent>
-                            </DropdownMenuPortal>
-                        </DropdownMenuSub>
-                        <DropdownMenuSeparator />
-                    </>
-                )}
+                                                            <div className="flex items-center gap-1.5 pl-5 mt-0.5">
+                                                                {template.category && (
+                                                                    <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                                                        {template.category}
+                                                                    </Badge>
+                                                                )}
+                                                                {template.tags?.slice(0, 2).map(tag => (
+                                                                    <Badge key={tag} variant="secondary" className="text-[10px] px-1 py-0">
+                                                                        {tag}
+                                                                    </Badge>
+                                                                ))}
+                                                                <span className="text-[10px] text-gray-400 flex items-center gap-0.5 ml-auto">
+                                                                    <TrendingUp className="h-2.5 w-2.5" />
+                                                                    {template.usageCount}
+                                                                </span>
+                                                            </div>
+                                                        </DropdownMenuItem>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </ScrollArea>
+                                    </DropdownMenuSubContent>
+                                </DropdownMenuPortal>
+                            </DropdownMenuSub>
+                            <DropdownMenuSeparator />
+                        </>
+                    )}
 
-                {/* 动作插件列表 */}
-                <DropdownMenuLabel className="text-xs">动作插件</DropdownMenuLabel>
-                {availablePlugins.length === 0 ? (
-                    <div className="text-sm text-gray-500 p-2">
-                        暂无可用的动作插件
-                    </div>
-                ) : (
-                    availablePlugins.map((plugin) => (
-                        <DropdownMenuItem
-                            key={plugin.id}
-                            onClick={() => onAddAction(plugin.id)}
-                            className="flex items-start gap-2"
-                        >
-                            <Zap className="h-3 w-3 mt-0.5 text-green-500" />
-                            <div className="flex-1">
-                                <div className="font-medium text-sm">{plugin.name}</div>
-                                {plugin.description && (
-                                    <div className="text-xs text-gray-500">{plugin.description}</div>
-                                )}
-                            </div>
-                        </DropdownMenuItem>
-                    ))
-                )}
+                    {/* 动作插件列表 */}
+                    <DropdownMenuLabel className="text-xs">动作插件</DropdownMenuLabel>
+                    {availablePlugins.length === 0 ? (
+                        <div className="text-sm text-gray-500 p-2">
+                            暂无可用的动作插件
+                        </div>
+                    ) : (
+                        availablePlugins.map((plugin) => (
+                            <DropdownMenuItem
+                                key={plugin.id}
+                                data-testid={`add-action-plugin-${plugin.id}`}
+                                onClick={() => onAddAction(plugin.id)}
+                                className="flex items-start gap-2"
+                            >
+                                <Zap className="h-3 w-3 mt-0.5 text-green-500" />
+                                <div className="flex-1">
+                                    <div className="font-medium text-sm">{plugin.name}</div>
+                                    {plugin.description && (
+                                        <div className="text-xs text-gray-500">{plugin.description}</div>
+                                    )}
+                                </div>
+                            </DropdownMenuItem>
+                        ))
+                    )}
+                </div>
             </DropdownMenuContent>
         </DropdownMenu>
     )
@@ -799,4 +807,3 @@ export function ActionPipeline({
         </div>
     )
 }
-

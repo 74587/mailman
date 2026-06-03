@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -91,6 +92,7 @@ func main() {
 	systemConfigRepo := repository.NewSystemConfigRepository(db)
 	tagRepo := repository.NewTagRepository(db)
 	proxyPoolRepo := repository.NewProxyPoolRepository(db)
+	proxyGatewayRepo := repository.NewProxyGatewayRepository(db)
 
 	// Organization & RBAC repositories
 	orgRepo := repository.NewOrganizationRepository(db)
@@ -110,6 +112,7 @@ func main() {
 	// Initialize services with repositories
 	fetcherService := services.NewFetcherService(emailAccountRepo, emailRepo, db)
 	proxyPoolService := services.NewProxyPoolService(proxyPoolRepo, emailAccountRepo)
+	proxyGatewayService := services.NewProxyGatewayService(proxyGatewayRepo, proxyPoolRepo)
 	fetcherService.SetProxyPoolService(proxyPoolService)
 	parserService := services.NewParserService()
 	authService := services.NewAuthService(userRepo, userSessionRepo)
@@ -172,6 +175,9 @@ func main() {
 
 	// Create interceptor manager
 	interceptorManager := interceptor.NewManager()
+	interceptorManager.SetDiagnosticLogWriter(func(logEntry *models.InterceptorLog) error {
+		return interceptorRepo.CreateLog(logEntry)
+	})
 
 	// Register logging interceptor plugin
 	loggingInterceptorPlugin := interceptorPlugins.NewLoggingInterceptor()
@@ -228,6 +234,43 @@ func main() {
 	// Initialize EventBus and ConditionEngine
 	eventBus := services.NewEventBus()
 	conditionEngine := services.NewConditionEngine(pluginManager)
+	interceptorManager.SetAdvancedFilterEvaluator(func(filter models.InterceptorFilter, ictx *interceptor.InterceptorContext) (bool, models.JSONMap, error) {
+		if len(filter.Expressions) == 0 {
+			return true, nil, nil
+		}
+
+		rawExpressions, err := json.Marshal(filter.Expressions)
+		if err != nil {
+			return false, nil, fmt.Errorf("failed to marshal interceptor expressions: %w", err)
+		}
+		var expressions []models.TriggerExpression
+		if err := json.Unmarshal(rawExpressions, &expressions); err != nil {
+			return false, nil, fmt.Errorf("failed to parse interceptor expressions: %w", err)
+		}
+		if len(expressions) == 0 {
+			return true, nil, nil
+		}
+
+		var email models.Email
+		if ictx != nil && ictx.Email != nil {
+			email = *ictx.Email
+		}
+		evalCtx := services.NewEvaluationContext(email)
+		if ictx != nil {
+			evalCtx.Data["triggerId"] = ictx.TriggerID
+			evalCtx.Data["phase"] = string(ictx.Phase)
+			if ictx.Action != nil {
+				evalCtx.Data["action"] = ictx.Action
+				evalCtx.Data["actionPluginId"] = ictx.Action.PluginID
+				evalCtx.Data["actionId"] = ictx.Action.ID
+			}
+		}
+		detailsResult, details, err := conditionEngine.EvaluateExpressions(expressions, evalCtx)
+		if err != nil {
+			return false, details, err
+		}
+		return detailsResult, details, nil
+	})
 
 	// Initialize EmailTriggerService for V2
 	emailTriggerService := services.NewEmailTriggerService(
@@ -355,6 +398,11 @@ func main() {
 	// Initialize Proxy Pool handlers
 	mainLogger.Info("正在初始化代理池处理器...")
 	proxyPoolHandlers := api.NewProxyPoolHandlers(proxyPoolRepo, proxyPoolService)
+	proxyGatewayHandlers := api.NewProxyGatewayHandlers(proxyGatewayRepo, proxyGatewayService)
+
+	if err := proxyGatewayService.Start(context.Background()); err != nil {
+		mainLogger.Warn("Proxy Gateway 启动失败: %v", err)
+	}
 
 	// Initialize default AI prompt templates
 	if err := aiPromptTemplateRepo.InitializeDefaultTemplates(); err != nil {
@@ -384,6 +432,7 @@ func main() {
 		interceptorHandler,
 		tagHandlers,
 		proxyPoolHandlers,
+		proxyGatewayHandlers,
 		pickupHandler,
 		orgHandler,
 		userMgmtHandler,

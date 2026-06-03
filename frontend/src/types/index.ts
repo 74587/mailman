@@ -708,7 +708,7 @@ export type TriggerExpressionType = 'group' | 'condition' | 'plugin' | 'expressi
 export type TriggerOperator = 'and' | 'or' | 'not' | 'equals' | 'contains' | 'startswith' | 'endswith' | 'matches' | 'in' | 'notin' | 'greater_than' | 'less_than';
 
 // Expression engine types
-export type ExpressionEngineType = 'expr.javascript' | 'expr.cel' | 'expr.go_template' | 'expr.jsonpath';
+export type ExpressionEngineType = 'expr.javascript' | 'expr.cel' | 'expr.go-template' | 'expr.jsonpath';
 
 export interface TriggerExpression {
     id: string;
