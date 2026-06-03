@@ -82,6 +82,7 @@ const mailNavigation: MenuItem[] = [
     { name: '取件模板', id: 'pickup', icon: FileText, hidden: true },
     { name: '取件模板', id: 'extractor-v2-list', icon: FileText, description: '管理提取模板', permission: { resource: 'template', action: 'read' } },
     { name: '同步配置', id: 'sync-config', icon: RefreshCw, permission: { resource: 'sync_config', action: 'read' } },
+    { name: 'OAuth2 配置', id: 'oauth2-config', icon: Key, permission: { resource: 'system_config', action: 'read' } },
 ]
 
 // 代理池管理菜单组
@@ -105,7 +106,6 @@ const adminNavigation: MenuItem[] = [
     { name: '系统配置', id: 'system-config', icon: Settings, permission: { resource: 'system_config', action: 'read' } },
     { name: '团队管理', id: 'team-management', icon: Building2, description: '组织 · 成员 · 角色', permission: { resource: 'organization', action: 'read' } },
     { name: '用户管理', id: 'user-management', icon: Users, description: '创建和管理系统用户' },
-    { name: 'OAuth2 配置', id: 'oauth2-config', icon: Key, permission: { resource: 'system_config', action: 'read' } },
     { name: 'AI 配置', id: 'ai-config', icon: Bot, permission: { resource: 'ai_config', action: 'read' } },
     { name: '访问令牌', id: 'user-sessions', icon: Settings },
 ]

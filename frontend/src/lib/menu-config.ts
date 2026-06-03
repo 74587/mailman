@@ -30,6 +30,7 @@ export const menuRegistry: MenuItemConfig[] = [
     { id: 'mail-pickup-v2', name: '取件', group: 'mail', defaultVisible: true },
     { id: 'extractor-v2-list', name: '取件模板', group: 'mail', defaultVisible: true },
     { id: 'sync-config', name: '同步配置', group: 'mail', defaultVisible: true },
+    { id: 'oauth2-config', name: 'OAuth2 配置', group: 'mail', defaultVisible: true },
 
     // 代理池管理
     { id: 'proxy-pool', name: '代理列表', group: 'proxy', defaultVisible: true },
@@ -47,7 +48,6 @@ export const menuRegistry: MenuItemConfig[] = [
     { id: 'system-config', name: '系统配置', group: 'admin', defaultVisible: true, locked: true },
     { id: 'team-management', name: '团队管理', group: 'admin', defaultVisible: true },
     { id: 'user-management', name: '用户管理', group: 'admin', defaultVisible: true },
-    { id: 'oauth2-config', name: 'OAuth2 配置', group: 'admin', defaultVisible: true },
     { id: 'ai-config', name: 'AI 配置', group: 'admin', defaultVisible: true },
     { id: 'user-sessions', name: '访问令牌', group: 'admin', defaultVisible: true },
 
@@ -94,6 +94,7 @@ const LEGACY_DEFAULT_MENU_ORDER = [
     'compose-email',
     'classic-mailbox',
     'sync-config',
+    'oauth2-config',
     'proxy-pool',
     'proxy-gateway-gateways',
     'proxy-gateway-accounts',
@@ -107,7 +108,6 @@ const LEGACY_DEFAULT_MENU_ORDER = [
     'business-accounts',
     'team-management',
     'user-management',
-    'oauth2-config',
     'ai-config',
     'user-sessions',
     'system-config',
