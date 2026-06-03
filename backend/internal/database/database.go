@@ -124,6 +124,17 @@ func Migrate() error {
 		&models.ProxyTag{},
 		&models.ProxyPoolItem{},
 		&models.ProxyPoolItemTag{},
+		// Proxy gateway tables
+		&models.ProxyGatewayListener{},
+		&models.ProxyGatewayAccount{},
+		&models.ProxyGatewayRouteStrategy{},
+		&models.ProxyGatewayAccountGroup{},
+		&models.ProxyGatewayAccountTag{},
+		&models.ProxyGatewayAccountTagLink{},
+		&models.ProxyGatewaySecurityPolicy{},
+		&models.ProxyGatewayDNSPolicy{},
+		&models.ProxyGatewayAccessLog{},
+		&models.ProxyGatewayAuditLog{},
 		// Organization & RBAC tables
 		&models.Organization{},
 		&models.Role{},

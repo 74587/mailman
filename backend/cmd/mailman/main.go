@@ -92,6 +92,7 @@ func main() {
 	systemConfigRepo := repository.NewSystemConfigRepository(db)
 	tagRepo := repository.NewTagRepository(db)
 	proxyPoolRepo := repository.NewProxyPoolRepository(db)
+	proxyGatewayRepo := repository.NewProxyGatewayRepository(db)
 
 	// Organization & RBAC repositories
 	orgRepo := repository.NewOrganizationRepository(db)
@@ -111,6 +112,7 @@ func main() {
 	// Initialize services with repositories
 	fetcherService := services.NewFetcherService(emailAccountRepo, emailRepo, db)
 	proxyPoolService := services.NewProxyPoolService(proxyPoolRepo, emailAccountRepo)
+	proxyGatewayService := services.NewProxyGatewayService(proxyGatewayRepo, proxyPoolRepo)
 	fetcherService.SetProxyPoolService(proxyPoolService)
 	parserService := services.NewParserService()
 	authService := services.NewAuthService(userRepo, userSessionRepo)
@@ -396,6 +398,11 @@ func main() {
 	// Initialize Proxy Pool handlers
 	mainLogger.Info("正在初始化代理池处理器...")
 	proxyPoolHandlers := api.NewProxyPoolHandlers(proxyPoolRepo, proxyPoolService)
+	proxyGatewayHandlers := api.NewProxyGatewayHandlers(proxyGatewayRepo, proxyGatewayService)
+
+	if err := proxyGatewayService.Start(context.Background()); err != nil {
+		mainLogger.Warn("Proxy Gateway 启动失败: %v", err)
+	}
 
 	// Initialize default AI prompt templates
 	if err := aiPromptTemplateRepo.InitializeDefaultTemplates(); err != nil {
@@ -425,6 +432,7 @@ func main() {
 		interceptorHandler,
 		tagHandlers,
 		proxyPoolHandlers,
+		proxyGatewayHandlers,
 		pickupHandler,
 		orgHandler,
 		userMgmtHandler,

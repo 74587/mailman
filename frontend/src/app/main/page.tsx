@@ -40,7 +40,16 @@ const tabNameMap: { [key: string]: string } = {
     'classic-mailbox': '经典邮件管理器[classic-mailbox]',
     'compose-email': '发送邮件[compose-email]',
     'sync-config': '同步配置[sync-config]',
-    'proxy-pool': '代理池管理[proxy-pool]',
+    'proxy-pool': '代理列表[proxy-pool]',
+    'proxy-gateway-gateways': '代理网关[proxy-gateway-gateways]',
+    'proxy-gateway-listeners': '代理网关[proxy-gateway-listeners]',
+    'proxy-gateway-accounts': '网关用户[proxy-gateway-accounts]',
+    'proxy-gateway-account-groups': '账号分组[proxy-gateway-account-groups]',
+    'proxy-gateway-account-tags': '账号标签[proxy-gateway-account-tags]',
+    'proxy-gateway-routes': '代理网关[proxy-gateway-routes]',
+    'proxy-gateway-security': '代理网关[proxy-gateway-security]',
+    'proxy-gateway-dns': '代理网关[proxy-gateway-dns]',
+    'proxy-gateway-logs': '网关日志[proxy-gateway-logs]',
     'mail-pickup': '取件[mail-pickup]',
     'mail-pickup-v2': '取件[mail-pickup-v2]',
     'pickup': '取件模板[pickup]',
@@ -222,6 +231,20 @@ export default function MainPage() {
                     case 'proxy-pool':
                         const ProxyPoolTab = require('@/components/tabs/proxy-pool-tab').default
                         content = guard('email_account', 'read', <ProxyPoolTab key={tabId} />)
+                        break
+                    case 'proxy-gateway-gateways':
+                    case 'proxy-gateway-listeners':
+                    case 'proxy-gateway-accounts':
+                    case 'proxy-gateway-account-groups':
+                    case 'proxy-gateway-account-tags':
+                    case 'proxy-gateway-routes':
+                    case 'proxy-gateway-security':
+                    case 'proxy-gateway-dns':
+                    case 'proxy-gateway-logs':
+                    case 'proxy-gateway-status':
+                        const ProxyGatewayTab = require('@/components/tabs/proxy-gateway-tab').default
+                        const section = tabId.replace('proxy-gateway-', '') as 'gateways' | 'listeners' | 'accounts' | 'account-groups' | 'account-tags' | 'routes' | 'security' | 'dns' | 'logs' | 'status'
+                        content = guard('email_account', 'read', <ProxyGatewayTab key={tabId} section={section} />)
                         break
                     case 'pickup':
                         content = <PickupTab key={tabId} />
@@ -626,7 +649,7 @@ export default function MainPage() {
                         {openTabs.map((tabId) => {
                             // 定义需要全屏显示的 Tab（无 padding 和 container 限制）
                             // 包括需要固定header/footer布局的编辑和创建页面
-                            const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide', 'proxy-pool', 'business-modules', 'business-accounts']
+                            const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide', 'proxy-pool', 'proxy-gateway-gateways', 'proxy-gateway-listeners', 'proxy-gateway-accounts', 'proxy-gateway-account-groups', 'proxy-gateway-account-tags', 'proxy-gateway-routes', 'proxy-gateway-security', 'proxy-gateway-dns', 'proxy-gateway-logs', 'business-modules', 'business-accounts']
                             const isFullscreen = fullscreenTabs.includes(tabId) ||
                                 tabId.startsWith('account-note-') ||
                                 tabId.startsWith('trigger-edit-') ||
