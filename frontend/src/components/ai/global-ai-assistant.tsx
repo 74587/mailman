@@ -1,7 +1,7 @@
 'use client'
 
-import { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode, useMemo, useRef, useState } from 'react'
-import { Bold, Bot, CheckCircle, ChevronDown, ChevronRight, Clock, Code, Italic, List, Loader2, Maximize2, MessageSquarePlus, PanelRightClose, Send, Sparkles, XCircle } from 'lucide-react'
+import { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowDownToLine, Bold, Bot, CheckCircle, ChevronDown, ChevronRight, Clock, Code, Italic, List, Loader2, Maximize2, MessageSquarePlus, MoveDiagonal2, PanelRightClose, Send, Sparkles, XCircle } from 'lucide-react'
 import { usePathname } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -40,6 +40,31 @@ function TaskStatusIcon({ status }: { status: AITaskStatus }) {
     if (status === 'completed') return <CheckCircle className="h-3.5 w-3.5" />
     if (status === 'failed' || status === 'cancelled') return <XCircle className="h-3.5 w-3.5" />
     return <Loader2 className="h-3.5 w-3.5 animate-spin" />
+}
+
+const DEFAULT_PANEL_SIZE = { width: 440, height: 680 }
+const MIN_PANEL_WIDTH = 360
+const MIN_PANEL_HEIGHT = 420
+
+type PanelResizeMode = 'width' | 'height' | 'both'
+
+function clamp(value: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, value))
+}
+
+function getPanelBounds() {
+    if (typeof window === 'undefined') {
+        return { maxWidth: 720, maxHeight: 720, minWidth: MIN_PANEL_WIDTH, minHeight: MIN_PANEL_HEIGHT }
+    }
+
+    const maxWidth = Math.max(320, window.innerWidth - 32)
+    const maxHeight = Math.max(360, window.innerHeight - 32)
+    return {
+        maxWidth,
+        maxHeight,
+        minWidth: Math.min(MIN_PANEL_WIDTH, maxWidth),
+        minHeight: Math.min(MIN_PANEL_HEIGHT, maxHeight),
+    }
 }
 
 function TaskCard({
@@ -329,15 +354,44 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
     } = useAIRuntime()
     const [input, setInput] = useState('')
     const [composerHeight, setComposerHeight] = useState(92)
+    const [panelSize, setPanelSize] = useState(DEFAULT_PANEL_SIZE)
+    const [autoScroll, setAutoScroll] = useState(true)
     const [sending, setSending] = useState(false)
     const [detailsOpenTaskIds, setDetailsOpenTaskIds] = useState<Set<string>>(new Set())
     const editorRef = useRef<HTMLDivElement | null>(null)
+    const messageScrollRef = useRef<HTMLDivElement | null>(null)
 
     const isLoading = authState?.isLoading ?? false
     const isAuthenticated = authState?.isAuthenticated ?? true
     const hidden = !forceVisible && (isLoading || !isAuthenticated || pathname.startsWith('/login'))
     const selectedTextLength = selectedText.trim().length
     const latestTaskById = useMemo(() => new Map(tasks.map(task => [task.id, task])), [tasks])
+
+    const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+        const container = messageScrollRef.current
+        if (!container) return
+        container.scrollTo({ top: container.scrollHeight, behavior })
+    }, [])
+
+    useEffect(() => {
+        const handleResize = () => {
+            const bounds = getPanelBounds()
+            setPanelSize(size => ({
+                width: clamp(size.width, bounds.minWidth, bounds.maxWidth),
+                height: clamp(size.height, bounds.minHeight, bounds.maxHeight),
+            }))
+        }
+
+        handleResize()
+        window.addEventListener('resize', handleResize)
+        return () => window.removeEventListener('resize', handleResize)
+    }, [])
+
+    useEffect(() => {
+        if (!isOpen || !autoScroll) return
+        const frame = window.requestAnimationFrame(() => scrollMessagesToBottom('auto'))
+        return () => window.cancelAnimationFrame(frame)
+    }, [autoScroll, isOpen, messages, scrollMessagesToBottom, tasks])
 
     if (hidden) return null
 
@@ -402,6 +456,39 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
         window.addEventListener('mouseup', handleUp)
     }
 
+    const startPanelResize = (event: ReactMouseEvent<HTMLDivElement>, mode: PanelResizeMode) => {
+        event.preventDefault()
+        event.stopPropagation()
+
+        const startX = event.clientX
+        const startY = event.clientY
+        const startWidth = panelSize.width
+        const startHeight = panelSize.height
+
+        const handleMove = (moveEvent: MouseEvent) => {
+            const bounds = getPanelBounds()
+            const nextWidth = mode === 'width' || mode === 'both'
+                ? clamp(startWidth + startX - moveEvent.clientX, bounds.minWidth, bounds.maxWidth)
+                : startWidth
+            const nextHeight = mode === 'height' || mode === 'both'
+                ? clamp(startHeight + startY - moveEvent.clientY, bounds.minHeight, bounds.maxHeight)
+                : startHeight
+
+            setPanelSize({
+                width: nextWidth,
+                height: nextHeight,
+            })
+        }
+
+        const handleUp = () => {
+            window.removeEventListener('mousemove', handleMove)
+            window.removeEventListener('mouseup', handleUp)
+        }
+
+        window.addEventListener('mousemove', handleMove)
+        window.addEventListener('mouseup', handleUp)
+    }
+
     const toggleDetails = (taskId: string) => {
         setDetailsOpenTaskIds(prev => {
             const next = new Set(prev)
@@ -428,7 +515,30 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
             )}
 
             {isOpen && (
-                <section className="fixed bottom-4 right-4 z-40 flex h-[min(680px,calc(100vh-32px))] w-[min(440px,calc(100vw-32px))] flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl shadow-gray-900/20 dark:border-gray-700 dark:bg-gray-900 dark:shadow-black/40">
+                <section
+                    className="fixed bottom-4 right-4 z-40 flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl shadow-gray-900/20 dark:border-gray-700 dark:bg-gray-900 dark:shadow-black/40"
+                    style={{
+                        width: `min(${panelSize.width}px, calc(100vw - 32px))`,
+                        height: `min(${panelSize.height}px, calc(100vh - 32px))`,
+                    }}
+                >
+                    <div
+                        className="absolute left-4 right-4 top-0 z-20 h-1.5 cursor-ns-resize"
+                        onMouseDown={(event) => startPanelResize(event, 'height')}
+                        title="拖拽调整 AI 助手高度"
+                    />
+                    <div
+                        className="absolute bottom-4 left-0 top-4 z-20 w-1.5 cursor-ew-resize"
+                        onMouseDown={(event) => startPanelResize(event, 'width')}
+                        title="拖拽调整 AI 助手宽度"
+                    />
+                    <div
+                        className="absolute left-0 top-0 z-30 flex h-5 w-5 cursor-nwse-resize items-center justify-center text-gray-300 transition hover:text-primary-500 dark:text-gray-600 dark:hover:text-primary-300"
+                        onMouseDown={(event) => startPanelResize(event, 'both')}
+                        title="拖拽调整 AI 助手宽度和高度"
+                    >
+                        <MoveDiagonal2 className="h-3 w-3" />
+                    </div>
                     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-gray-200 px-4 dark:border-gray-700">
                         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-600 text-white">
                             <Bot className="h-4 w-4" />
@@ -439,6 +549,26 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                                 {navigation.activeTab || '未识别页面'} · {typeof window !== 'undefined' ? window.location.host : ''}
                             </p>
                         </div>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const next = !autoScroll
+                                setAutoScroll(next)
+                                if (next) {
+                                    window.requestAnimationFrame(() => scrollMessagesToBottom('smooth'))
+                                }
+                            }}
+                            aria-pressed={autoScroll}
+                            className={cn(
+                                'flex h-8 w-8 items-center justify-center rounded-md transition hover:bg-gray-100 dark:hover:bg-gray-700',
+                                autoScroll
+                                    ? 'bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-300'
+                                    : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-100'
+                            )}
+                            title={autoScroll ? '关闭自动滚动' : '开启自动滚动并跳到底部'}
+                        >
+                            <ArrowDownToLine className="h-4 w-4" />
+                        </button>
                         <button
                             type="button"
                             onClick={newSession}
@@ -457,7 +587,7 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                         </button>
                     </header>
 
-                    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+                    <div ref={messageScrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
                         {messages.length === 0 ? (
                             <div className="flex h-full flex-col items-center justify-center text-center">
                                 <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-primary-600 dark:border-gray-700 dark:bg-gray-800">
@@ -482,7 +612,18 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                                                     ? 'bg-primary-600 text-white'
                                                     : 'border border-gray-200 bg-gray-50 text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100'
                                             )}>
-                                                <MarkdownContent content={message.content} isUser={message.role === 'user'} />
+                                                {message.content ? (
+                                                    <MarkdownContent content={message.content} isUser={message.role === 'user'} />
+                                                ) : message.isStreaming ? (
+                                                    <div className="flex h-5 items-center">
+                                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-500 dark:text-gray-300" />
+                                                    </div>
+                                                ) : (
+                                                    <MarkdownContent content={message.content} isUser={message.role === 'user'} />
+                                                )}
+                                                {message.isStreaming && message.content && (
+                                                    <span className="mt-1 inline-block h-2 w-2 animate-pulse rounded-full bg-primary-500 align-middle" />
+                                                )}
                                                 {task && (
                                                     <div className="mt-2">
                                                         <TaskCard
@@ -531,9 +672,17 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                                 <ComposerButton title="列表" onClick={() => applyFormat(() => insertTextAtSelection('- '))}>
                                     <List className="h-3.5 w-3.5" />
                                 </ComposerButton>
-                                <span className="ml-auto rounded border border-gray-200 px-1.5 py-0.5 text-[11px] font-medium text-gray-500 dark:border-gray-700 dark:text-gray-400" title="Cmd/Ctrl + Enter 发送">
-                                    ⌘↵
-                                </span>
+                                <Button
+                                    type="submit"
+                                    size="sm"
+                                    disabled={!input.trim() || sending}
+                                    aria-label="发送 · Cmd/Ctrl + Enter"
+                                    className="ml-auto h-7 gap-1.5 rounded-md px-2 text-xs"
+                                    title="发送 · Cmd/Ctrl + Enter"
+                                >
+                                    {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                                    <span className="font-medium">⌘↵</span>
+                                </Button>
                             </div>
                             <div className="relative">
                                 {!input.trim() && (
@@ -554,17 +703,6 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                                     aria-label="输入请求"
                                 />
                             </div>
-                        </div>
-                        <div className="mt-2 flex justify-end">
-                            <Button
-                                type="submit"
-                                size="icon"
-                                disabled={!input.trim() || sending}
-                                className="h-9 w-9 shrink-0 rounded-lg"
-                                title="发送 · Cmd/Ctrl + Enter"
-                            >
-                                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                            </Button>
                         </div>
                     </form>
                 </section>

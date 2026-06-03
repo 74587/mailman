@@ -113,6 +113,7 @@ export interface AIChatMessage {
     content: string
     createdAt: number
     taskId?: string
+    isStreaming?: boolean
 }
 
 export interface AIPlannedAction {

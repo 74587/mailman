@@ -42,6 +42,7 @@ const AIRuntimeContext = createContext<AIRuntimeContextValue | null>(null)
 const TASK_POLL_INTERVAL_MS = 80
 const WAIT_FOR_SKILL_TIMEOUT_MS = 4000
 const SELECTED_TEXT_LIMIT = 1200
+const STREAM_CHUNK_DELAY_MS = 14
 
 function createId(prefix: string) {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -68,6 +69,20 @@ function trimText(value: string, limit: number) {
     const text = maskSensitiveText(value.trim())
     if (text.length <= limit) return text
     return `${text.slice(0, limit)}...`
+}
+
+function wait(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function splitStreamingChunks(value: string) {
+    const chars = Array.from(value)
+    const chunkSize = chars.length > 700 ? 18 : chars.length > 240 ? 10 : 5
+    const chunks: string[] = []
+    for (let index = 0; index < chars.length; index += chunkSize) {
+        chunks.push(chars.slice(index, index + chunkSize).join(''))
+    }
+    return chunks
 }
 
 function readSelectedText() {
@@ -444,6 +459,36 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         }))
     }, [updateTask])
 
+    const streamAssistantMessage = useCallback(async (content: string, taskId?: string) => {
+        const messageId = createId('msg')
+        const chunks = splitStreamingChunks(content)
+
+        setMessages(prev => [...prev, {
+            id: messageId,
+            role: 'assistant',
+            content: '',
+            createdAt: now(),
+            taskId,
+            isStreaming: true,
+        }])
+
+        if (chunks.length === 0) {
+            setMessages(prev => prev.map(message => message.id === messageId ? { ...message, isStreaming: false } : message))
+            return
+        }
+
+        for (const chunk of chunks) {
+            await wait(STREAM_CHUNK_DELAY_MS)
+            setMessages(prev => prev.map(message => (
+                message.id === messageId
+                    ? { ...message, content: message.content + chunk }
+                    : message
+            )))
+        }
+
+        setMessages(prev => prev.map(message => message.id === messageId ? { ...message, isStreaming: false } : message))
+    }, [])
+
     const sendMessage = useCallback(async (content: string) => {
         const message = content.trim()
         if (!message) return
@@ -527,26 +572,14 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 finishStep(taskId, stepId, '页面切换事件已发送')
                 const result = { success: true, summary: plan.response || `已切换到 ${plan.tabId}` }
                 completeTask(taskId, 'completed', result)
-                setMessages(prev => [...prev, {
-                    id: createId('msg'),
-                    role: 'assistant',
-                    content: result.summary,
-                    createdAt: now(),
-                    taskId,
-                }])
+                await streamAssistantMessage(result.summary, taskId)
                 return
             }
 
             if (!plan.skillId || !plan.actionName) {
                 const result = { success: true, summary: plan.response || '当前没有可执行动作。' }
                 completeTask(taskId, 'completed', result)
-                setMessages(prev => [...prev, {
-                    id: createId('msg'),
-                    role: 'assistant',
-                    content: result.summary,
-                    createdAt: now(),
-                    taskId,
-                }])
+                await streamAssistantMessage(result.summary, taskId)
                 return
             }
 
@@ -582,13 +615,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 updateTask(taskId, taskValue => ({ ...taskValue, status: 'waiting_confirmation' }))
                 const result = { success: false, summary: '这个动作需要确认，当前版本先阻止破坏性操作。' }
                 completeTask(taskId, 'completed', result)
-                setMessages(prev => [...prev, {
-                    id: createId('msg'),
-                    role: 'assistant',
-                    content: result.summary,
-                    createdAt: now(),
-                    taskId,
-                }])
+                await streamAssistantMessage(result.summary, taskId)
                 return
             }
 
@@ -596,25 +623,13 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             const result = await action.run(plan.params || {}, actionContext)
             finishStep(taskId, actionStep, result.summary, !result.success)
             completeTask(taskId, result.success ? 'completed' : 'failed', result, result.success ? undefined : result.summary)
-            setMessages(prev => [...prev, {
-                id: createId('msg'),
-                role: 'assistant',
-                content: result.summary,
-                createdAt: now(),
-                taskId,
-            }])
+            await streamAssistantMessage(result.summary, taskId)
         } catch (error) {
             const messageText = error instanceof Error ? error.message : '任务执行失败'
             completeTask(taskId, 'failed', undefined, messageText)
-            setMessages(prev => [...prev, {
-                id: createId('msg'),
-                role: 'assistant',
-                content: `执行失败：${messageText}`,
-                createdAt: now(),
-                taskId,
-            }])
+            await streamAssistantMessage(`执行失败：${messageText}`, taskId)
         }
-    }, [addStep, collectContext, completeTask, finishStep, switchTab, updateTask, waitForSkill])
+    }, [addStep, collectContext, completeTask, finishStep, streamAssistantMessage, switchTab, updateTask, waitForSkill])
 
     const registerSkill = useCallback((skill: AISkill) => {
         skillsRef.current.set(skill.id, skill)
