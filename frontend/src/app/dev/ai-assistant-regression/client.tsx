@@ -68,11 +68,51 @@ function AIAssistantRegressionContent() {
                 description: '开发验证用账户邮件入口。',
                 risk: 'navigation',
                 run: (params) => {
-                    const email = String(params.email || params.emailAddress || '')
+                    const email = String(params.email || params.emailAddress || params.query || '')
                     return {
                         success: true,
                         summary: `开发验证：已切换到 ${email || '指定账户'} 的邮件列表。`,
-                        data: { email },
+                        data: {
+                            email,
+                            nextAction: {
+                                skillId: 'classic-mailbox',
+                                actionName: 'openAccountInbox',
+                                params: { email },
+                            },
+                        },
+                    }
+                },
+            },
+        ],
+    }), [])
+
+    const mailboxSkill = useMemo<AISkill>(() => ({
+        id: 'classic-mailbox',
+        title: '经典邮件管理器',
+        description: 'AI regression harness for mailbox actions.',
+        pageTabs: ['classic-mailbox'],
+        getContext: () => ({
+            selectedAccount: null,
+            loadedEmailsCount: 0,
+            totalCount: 0,
+            sampleAccounts: [
+                { id: 1, email: 'alpha@example.com', provider: 'gmail', isVerified: true },
+                { id: 2, email: 'beta@example.com', provider: 'outlook', isVerified: false },
+            ],
+        }),
+        actions: [
+            {
+                name: 'openAccountInbox',
+                title: '打开账户收件箱',
+                description: '开发验证用收件箱加载动作。',
+                risk: 'navigation',
+                run: async (params) => {
+                    await new Promise(resolve => setTimeout(resolve, 120))
+                    const email = String(params.email || params.emailAddress || params.query || '')
+                    return {
+                        success: true,
+                        summary: `开发验证：已打开 ${email || '指定账户'} 的收件箱，当前加载 2 封。`,
+                        data: { email, loadedEmailsCount: 2 },
                     }
                 },
             },
@@ -80,6 +120,7 @@ function AIAssistantRegressionContent() {
     }), [])
 
     useAISkill(skill)
+    useAISkill(mailboxSkill)
 
     useEffect(() => {
         if (initializedRef.current) return

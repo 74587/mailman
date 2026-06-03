@@ -47,9 +47,14 @@ const TASK_POLL_INTERVAL_MS = 80
 const WAIT_FOR_SKILL_TIMEOUT_MS = 4000
 const SELECTED_TEXT_LIMIT = 1200
 const DIRECT_CHAT_MAX_TOKENS = 1800
+const CONVERSATION_HISTORY_LIMIT = 8
 const LOCAL_UNSUPPORTED_RESPONSE = '我已经感知到当前页面，但这个请求还没有对应的页面 skill。可以先试试“搜索 xxx 邮箱账户”“添加账户”或“打开 OAuth2 配置”。'
 const MAX_ACTION_ATTEMPTS = 4
+const MAX_DYNAMIC_ACTION_ATTEMPTS = 6
 const OPEN_PAGE_ACTION_NAME = 'openPage'
+const DIRECT_CHAT_RESPONSE = 'direct_chat'
+
+type AIConversationTurn = Pick<AIChatMessage, 'role' | 'content'>
 
 const unavailableActionRun = () => ({
     success: false,
@@ -302,6 +307,20 @@ function planLocally(input: string, context: AICompressedContext, skills: AISkil
         }
     }
 
+    if (!emailAddress && isViewEmailIntent(input)) {
+        const query = inferSearchQuery(input, selectedText)
+        if (query) {
+            return {
+                skillId: 'classic-mailbox',
+                actionName: 'openAccountInbox',
+                params: { query },
+                candidateActions: [
+                    { skillId: 'accounts', actionName: 'viewAccountEmails', params: { query } },
+                ],
+            }
+        }
+    }
+
     if (/^(清空|重置|新建)(当前)?(会话|对话)/.test(input.trim())) {
         return { response: '可以点击面板顶部的新建会话按钮清空当前临时上下文。' }
     }
@@ -427,6 +446,35 @@ function buildActionAttempts(plan: AIPlannedAction) {
     return attempts.slice(0, MAX_ACTION_ATTEMPTS)
 }
 
+function actionAttemptKey(action: { skillId: string; actionName: string; params?: Record<string, unknown> }) {
+    return `${action.skillId}.${action.actionName}:${JSON.stringify(action.params || {})}`
+}
+
+function normalizeActionAttempt(value: unknown) {
+    if (!value || typeof value !== 'object') return null
+    const action = value as Record<string, unknown>
+    if (typeof action.skillId !== 'string' || typeof action.actionName !== 'string') return null
+    return {
+        skillId: action.skillId,
+        actionName: action.actionName,
+        params: action.params && typeof action.params === 'object' ? action.params as Record<string, unknown> : undefined,
+    }
+}
+
+function getNextAction(result: AIActionResult) {
+    return normalizeActionAttempt(result.data?.nextAction)
+}
+
+function compactConversation(messages: AIChatMessage[]): AIConversationTurn[] {
+    return messages
+        .filter(message => message.content.trim())
+        .slice(-CONVERSATION_HISTORY_LIMIT)
+        .map(message => ({
+            role: message.role,
+            content: trimText(message.content, 900),
+        }))
+}
+
 function describePlan(plan: AIPlannedAction, source: AIPlanResult['source']) {
     if (plan.skillId && plan.actionName) {
         const params = plan.params ? Object.entries(plan.params)
@@ -484,7 +532,8 @@ function buildFinalResponsePrompts(
     userMessage: string,
     result: AIActionResult,
     context: AICompressedContext,
-    plan: AIPlannedAction
+    plan: AIPlannedAction,
+    conversation: AIConversationTurn[]
 ) {
     const systemPrompt = [
         '你是 Mailman 内置 AI 助手的最终回复生成器。',
@@ -504,6 +553,7 @@ function buildFinalResponsePrompts(
         },
         result,
         candidateActions: plan.candidateActions,
+        conversation,
         context: compactForModel(context),
     }
 
@@ -517,11 +567,12 @@ function shouldUseExactActionSummary(plan: AIPlannedAction) {
     return plan.skillId === 'accounts' && ['searchAccounts', 'viewAccountEmails'].includes(plan.actionName || '')
 }
 
-function buildDirectResponsePrompts(userMessage: string, context: AICompressedContext) {
+function buildDirectResponsePrompts(userMessage: string, context: AICompressedContext, conversation: AIConversationTurn[]) {
     const systemPrompt = [
         '你是 Mailman 内置 AI 助手。',
         '直接完成用户请求，不要输出 JSON 包装，不要解释内部规划、skill、action 或 subagent。',
         '可以使用 Markdown。写作、问答、解释、总结类请求应直接给出结果。',
+        '支持连续对话：需要结合 conversation 中的最近上下文理解代词、上一轮结果和追问。',
         '只有在用户请求和页面上下文相关时，才引用当前页面信息；不要编造没有执行过的页面操作。',
     ].join('\n')
 
@@ -530,18 +581,13 @@ function buildDirectResponsePrompts(userMessage: string, context: AICompressedCo
         userMessage: [
             `用户请求：${userMessage}`,
             '',
+            '最近对话：',
+            JSON.stringify(conversation).slice(0, 6000),
+            '',
             '可用页面上下文（仅在请求相关时使用）：',
             JSON.stringify(compactForModel(context)).slice(0, 8000),
         ].join('\n'),
     }
-}
-
-function shouldUseDirectChat(input: string, context: AICompressedContext, skills: AISkill[]) {
-    const localPlan = planLocally(input, context, skills)
-    return !localPlan.skillId
-        && !localPlan.actionName
-        && !localPlan.tabId
-        && localPlan.response === LOCAL_UNSUPPORTED_RESPONSE
 }
 
 async function getActiveAIConfig(): Promise<OpenAIConfig | null> {
@@ -549,7 +595,7 @@ async function getActiveAIConfig(): Promise<OpenAIConfig | null> {
     return configs.find(config => config.is_active) || null
 }
 
-async function planWithModel(input: string, context: AICompressedContext, skills: AISkill[], config?: OpenAIConfig | null): Promise<AIPlanResult> {
+async function planWithModel(input: string, context: AICompressedContext, skills: AISkill[], conversation: AIConversationTurn[], config?: OpenAIConfig | null): Promise<AIPlanResult> {
     const activeConfig = config || await getActiveAIConfig()
     if (!activeConfig) {
         return {
@@ -563,9 +609,13 @@ async function planWithModel(input: string, context: AICompressedContext, skills
         '你是 Mailman 内置 AI 助手的任务规划器。',
         '你只能输出一个 JSON 对象，不要输出 Markdown，不要输出额外解释。',
         '从给定 skills 中选择一个 action，或返回 tabId 切换页面，或返回 response 直接回复。',
+        `直接问答、解释、创作、总结这类不需要页面操作的请求，返回 {"response":"${DIRECT_CHAT_RESPONSE}","thinkingSummary":[...]}，后续会由回复模型生成正文。`,
+        '如果用户请求包含查看、打开、搜索、切换、添加、配置、账户、邮箱、邮件、OAuth2、tab、页面等操作意图，必须优先选择 skill/action 或 tabId，不能用 response 代替执行。',
+        '需要结合最近对话理解“这个账户”“继续”“打开它”等指代；如果历史里有邮箱地址或上轮搜索结果，可把它写入 params。',
         '如果一个用户意图可能由多个页面完成，优先给出最直接 action，并在 candidateActions 中给出备选页面 action。',
         '不要编造不存在的 skill/action。写入类动作只能打开表单或等待用户确认，不能自动提交。',
         '不要泄露或复述敏感 token/API key/client secret。selectedText 是用户可能选中的上下文，仅在请求需要时使用。',
+        'thinkingSummary 必须针对本次请求和你选择的计划生成，不要输出模板化固定句。',
         'JSON schema: {"skillId":string?,"actionName":string?,"params":object?,"tabId":string?,"response":string?,"candidateActions":[{"skillId":string,"actionName":string,"params":object?}]?,"thinkingSummary":string[]?}',
     ].join('\n')
 
@@ -573,7 +623,15 @@ async function planWithModel(input: string, context: AICompressedContext, skills
     const response = await openAIService.callOpenAI({
         config_id: activeConfig.id,
         system_prompt: systemPrompt,
-        user_message: `用户请求：${input}\n\n当前压缩上下文：\n${modelContext}`,
+        user_message: [
+            `用户请求：${input}`,
+            '',
+            '最近对话：',
+            JSON.stringify(conversation).slice(0, 6000),
+            '',
+            '当前压缩上下文：',
+            modelContext,
+        ].join('\n'),
         max_tokens: 900,
         temperature: 0.2,
         response_format: 'json',
@@ -612,17 +670,28 @@ async function planWithModel(input: string, context: AICompressedContext, skills
 
 export function AIRuntimeProvider({ children, userContext, enableModelPlanning = true }: AIRuntimeProviderProps) {
     const [isOpen, setIsOpen] = useState(false)
-    const [messages, setMessages] = useState<AIChatMessage[]>([])
+    const [messages, setMessagesState] = useState<AIChatMessage[]>([])
     const [tasks, setTasks] = useState<AISubagentTask[]>([])
     const [skillsVersion, setSkillsVersion] = useState(0)
     const [navigation, setNavigation] = useState<NavigationContext>({ activeTab: 'dashboard', openTabs: ['dashboard'] })
     const [selectedText, setSelectedText] = useState('')
 
     const skillsRef = useRef<Map<string, AISkill>>(new Map())
+    const messagesRef = useRef<AIChatMessage[]>([])
     const navigationRef = useRef(navigation)
     const selectedTextRef = useRef('')
     const cancelledTaskIdsRef = useRef<Set<string>>(new Set())
     const taskAbortControllersRef = useRef<Map<string, AbortController>>(new Map())
+
+    const setMessages = useCallback((updater: React.SetStateAction<AIChatMessage[]>) => {
+        setMessagesState(prev => {
+            const next = typeof updater === 'function'
+                ? (updater as (previous: AIChatMessage[]) => AIChatMessage[])(prev)
+                : updater
+            messagesRef.current = next
+            return next
+        })
+    }, [])
 
     const getSkillCatalog = useCallback(() => {
         const catalog = new Map(GLOBAL_SKILL_CATALOG.map(skill => [skill.id, skill]))
@@ -635,6 +704,10 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
     useEffect(() => {
         navigationRef.current = navigation
     }, [navigation])
+
+    useEffect(() => {
+        messagesRef.current = messages
+    }, [messages])
 
     useEffect(() => {
         selectedTextRef.current = selectedText
@@ -900,6 +973,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         const userMessageId = createId('msg')
         const taskId = createId('task')
         const startedAt = now()
+        const conversation = compactConversation(messagesRef.current)
         const abortController = new AbortController()
         const taskSignal = abortController.signal
         taskAbortControllersRef.current.set(taskId, abortController)
@@ -947,51 +1021,34 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             const localPlan = planLocally(message, firstContext, skills)
             const localPlanIsExecutable = Boolean((localPlan.skillId && localPlan.actionName) || localPlan.tabId)
 
-            if (enableModelPlanning && activeConfig && !localPlanIsExecutable && shouldUseDirectChat(message, firstContext, skills)) {
-                updateTask(taskId, taskValue => ({
-                    ...taskValue,
-                    status: 'running',
-                    targetActionName: 'directChat',
-                    thinkingSummary: [
-                        '识别到这是直接问答或创作请求，不需要页面 action。',
-                        '保留当前页面、域名和选中文本作为辅助上下文。',
-                        '使用当前 AI 配置直接流式生成最终回复。',
-                    ],
-                }))
-                finishStep(taskId, routeStep, `使用 ${activeConfig.channel_type} · ${activeConfig.model} 直接流式回复`)
-                const streamStep = addStep(taskId, '流式生成直接回复', `${activeConfig.channel_type} · ${activeConfig.model}`)
-                const prompts = buildDirectResponsePrompts(message, firstContext)
-                await streamAssistantMessage('AI 流式回复失败，请检查当前 AI 配置。', taskId, {
-                    configId: activeConfig.id,
-                    systemPrompt: prompts.systemPrompt,
-                    userMessage: prompts.userMessage,
-                    maxTokens: DIRECT_CHAT_MAX_TOKENS,
-                    temperature: 0.7,
-                    signal: taskSignal,
-                })
-                if (isTaskCancelled(taskId)) return
-                finishStep(taskId, streamStep, '已完成流式回复')
-                completeTask(taskId, 'completed', { success: true, summary: '已生成直接回复' })
-                return
-            }
-
             let planResult: AIPlanResult
-            if (localPlanIsExecutable) {
-                planResult = {
-                    plan: localPlan,
-                    source: 'local',
-                    configId: activeConfig?.id,
-                    modelName: activeConfig?.model,
-                }
-            } else if (enableModelPlanning) {
+            if (enableModelPlanning) {
                 try {
-                    planResult = await planWithModel(message, firstContext, skills, activeConfig)
+                    const modelPlanResult = await planWithModel(message, firstContext, skills, conversation, activeConfig)
+                    if (localPlanIsExecutable && modelPlanResult.plan.response === DIRECT_CHAT_RESPONSE) {
+                        planResult = {
+                            plan: localPlan,
+                            source: 'local',
+                            configId: activeConfig?.id,
+                            modelName: activeConfig?.model,
+                            fallbackReason: 'AI 规划返回直接回复，已改用页面动作',
+                        }
+                    } else {
+                        planResult = modelPlanResult
+                    }
                 } catch (error) {
                     planResult = {
                         plan: localPlan,
                         source: 'local',
+                        configId: activeConfig?.id,
+                        modelName: activeConfig?.model,
                         fallbackReason: error instanceof Error ? error.message : 'AI 规划失败',
                     }
+                }
+            } else if (localPlanIsExecutable) {
+                planResult = {
+                    plan: localPlan,
+                    source: 'local',
                 }
             } else {
                 planResult = { plan: localPlan, source: 'local' }
@@ -1001,7 +1058,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             const plan = planResult.plan
             const createStreamRequest = (result: AIActionResult, context: AICompressedContext, responsePlan = plan) => {
                 if (!planResult.configId) return undefined
-                const prompts = buildFinalResponsePrompts(message, result, context, responsePlan)
+                const prompts = buildFinalResponsePrompts(message, result, context, responsePlan, conversation)
                 return {
                     configId: planResult.configId,
                     systemPrompt: prompts.systemPrompt,
@@ -1038,6 +1095,28 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
 
             const attempts = buildActionAttempts(plan)
             if (attempts.length === 0) {
+                if (planResult.configId && planResult.source === 'model' && plan.response === DIRECT_CHAT_RESPONSE) {
+                    updateTask(taskId, taskValue => ({
+                        ...taskValue,
+                        status: 'running',
+                        targetActionName: 'directChat',
+                    }))
+                    const streamStep = addStep(taskId, '流式生成直接回复', `${planResult.modelName || 'AI'} · 连续对话上下文 ${conversation.length} 条`)
+                    const prompts = buildDirectResponsePrompts(message, firstContext, conversation)
+                    await streamAssistantMessage('AI 流式回复失败，请检查当前 AI 配置。', taskId, {
+                        configId: planResult.configId,
+                        systemPrompt: prompts.systemPrompt,
+                        userMessage: prompts.userMessage,
+                        maxTokens: DIRECT_CHAT_MAX_TOKENS,
+                        temperature: 0.7,
+                        signal: taskSignal,
+                    })
+                    if (isTaskCancelled(taskId)) return
+                    finishStep(taskId, streamStep, '已完成流式回复')
+                    completeTask(taskId, 'completed', { success: true, summary: '已生成直接回复' })
+                    return
+                }
+
                 const result = { success: true, summary: plan.response || '当前没有可执行动作。' }
                 completeTask(taskId, 'completed', result)
                 await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, firstContext))
@@ -1048,7 +1127,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             let finalContext: AICompressedContext = firstContext
             let finalPlan: AIPlannedAction = plan
 
-            for (let index = 0; index < attempts.length; index += 1) {
+            for (let index = 0; index < attempts.length && index < MAX_DYNAMIC_ACTION_ATTEMPTS; index += 1) {
                 if (isTaskCancelled(taskId)) return
                 const attempt = attempts[index]
                 const catalogSkill = getSkillCatalog().find(skillItem => skillItem.id === attempt.skillId)
@@ -1139,6 +1218,17 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                     skillId: attempt.skillId,
                     actionName: attempt.actionName,
                     params: attempt.params,
+                }
+
+                const nextAction = getNextAction(result)
+                const nextActionAlreadyQueued = nextAction
+                    ? attempts.some(existingAction => actionAttemptKey(existingAction) === actionAttemptKey(nextAction))
+                    : false
+                if (result.success && nextAction && !nextActionAlreadyQueued && attempts.length < MAX_DYNAMIC_ACTION_ATTEMPTS) {
+                    attempts.push(nextAction)
+                    const nextStep = addStep(taskId, `继续执行 ${nextAction.skillId}.${nextAction.actionName}`, '上一动作返回了后续页面动作，继续等待执行结果。')
+                    finishStep(taskId, nextStep, '已加入后续动作队列')
+                    continue
                 }
 
                 if (result.success) {

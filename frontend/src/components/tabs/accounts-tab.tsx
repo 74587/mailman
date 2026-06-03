@@ -735,25 +735,32 @@ export default function AccountsTab() {
                 parameters: { email: '邮箱地址' },
                 run: async (params) => {
                     const email = String(params.email || params.emailAddress || '').trim().toLowerCase()
+                    const query = String(params.query || params.emailPrefix || email).trim().toLowerCase()
                     const accountId = typeof params.accountId === 'number' ? params.accountId : Number(params.accountId || 0)
 
                     let targetAccount = accountId
                         ? paginatedAccounts.find(account => account.id === accountId)
-                        : paginatedAccounts.find(account => account.emailAddress.toLowerCase() === email)
+                        : email
+                            ? paginatedAccounts.find(account => account.emailAddress.toLowerCase() === email)
+                            : query
+                                ? paginatedAccounts.find(account => account.emailAddress.toLowerCase().startsWith(query))
+                                : undefined
 
-                    if (!targetAccount && email) {
+                    if (!targetAccount && query) {
                         const response = await emailAccountService.getAccountsPaginated({
-                            search: email,
+                            search: query,
                             page: 1,
                             limit: 10,
                         })
-                        targetAccount = response.data.find(account => account.emailAddress.toLowerCase() === email) || response.data[0]
+                        targetAccount = email
+                            ? response.data.find(account => account.emailAddress.toLowerCase() === email) || response.data[0]
+                            : response.data.find(account => account.emailAddress.toLowerCase().startsWith(query)) || response.data[0]
                     }
 
                     if (!targetAccount) {
                         return {
                             success: false,
-                            summary: email ? `没有找到邮箱账户 ${email}。` : '没有提供要查看的邮箱地址。',
+                            summary: query ? `没有找到匹配 ${query} 的邮箱账户。` : '没有提供要查看的邮箱地址或搜索前缀。',
                         }
                     }
 
@@ -769,6 +776,11 @@ export default function AccountsTab() {
                         data: {
                             accountId: targetAccount.id,
                             email: targetAccount.emailAddress,
+                            nextAction: {
+                                skillId: 'classic-mailbox',
+                                actionName: 'openAccountInbox',
+                                params: { email: targetAccount.emailAddress },
+                            },
                         },
                     }
                 },
