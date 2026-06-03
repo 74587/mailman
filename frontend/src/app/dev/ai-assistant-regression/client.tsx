@@ -92,9 +92,22 @@ function AIAssistantRegressionContent() {
         description: 'AI regression harness for mailbox actions.',
         pageTabs: ['classic-mailbox'],
         getContext: () => ({
-            selectedAccount: null,
-            loadedEmailsCount: 0,
-            totalCount: 0,
+            selectedAccount: { id: 1, email: 'alpha@example.com', provider: 'gmail', isVerified: true },
+            selectedEmailId: 101,
+            hasSelectedEmail: true,
+            activePanel: 'preview',
+            loadedEmailsCount: 2,
+            totalCount: 2,
+            selectedEmail: {
+                id: 101,
+                subject: 'Fivetran account idle warning',
+                from: 'Fivetran <hello@fivetran.com>',
+                to: 'alpha@example.com',
+                date: '2026-06-04T06:10:29Z',
+                bodyPreview: 'Your Fivetran account has idle resources and may need attention.',
+                hasAttachments: false,
+                attachmentCount: 0,
+            },
             sampleAccounts: [
                 { id: 1, email: 'alpha@example.com', provider: 'gmail', isVerified: true },
                 { id: 2, email: 'beta@example.com', provider: 'outlook', isVerified: false },
@@ -116,6 +129,25 @@ function AIAssistantRegressionContent() {
                     }
                 },
             },
+            {
+                name: 'getSelectedEmailDetails',
+                title: '读取当前选中邮件',
+                description: '开发验证用当前邮件详情动作。',
+                risk: 'read',
+                run: () => ({
+                    success: true,
+                    summary: '当前选中邮件是「Fivetran account idle warning」，发件人 Fivetran <hello@fivetran.com>。内容摘要：Your Fivetran account has idle resources and may need attention.',
+                    details: 'Your Fivetran account has idle resources and may need attention.',
+                    data: {
+                        selectedEmail: {
+                            id: 101,
+                            subject: 'Fivetran account idle warning',
+                            from: 'Fivetran <hello@fivetran.com>',
+                            bodyPreview: 'Your Fivetran account has idle resources and may need attention.',
+                        },
+                    },
+                }),
+            },
         ],
     }), [])
 
@@ -125,7 +157,7 @@ function AIAssistantRegressionContent() {
     useEffect(() => {
         if (initializedRef.current) return
         initializedRef.current = true
-        setNavigationContext({ activeTab: 'accounts', openTabs: ['dashboard', 'accounts'] })
+        setNavigationContext({ activeTab: 'classic-mailbox', openTabs: ['dashboard', 'accounts', 'classic-mailbox'] })
         openAssistant()
     }, [openAssistant, setNavigationContext])
 

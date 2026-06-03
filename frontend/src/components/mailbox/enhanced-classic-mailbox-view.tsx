@@ -54,8 +54,71 @@ const MIN_EMAIL_LIST_WIDTH = 360
 const MAX_EMAIL_LIST_WIDTH = 760
 const SYNC_WARNING_INTERVAL_SECONDS = 30
 const DEFAULT_TEMP_SYNC_FOLDERS = ['INBOX']
+const AI_EMAIL_CONTEXT_PREVIEW_LIMIT = 1600
+const AI_EMAIL_ACTION_BODY_LIMIT = 6000
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+
+const normalizeWhitespace = (value: string) => value.replace(/\s+/g, ' ').trim()
+
+const trimForAI = (value: string, limit: number) => {
+    const text = normalizeWhitespace(value)
+    if (text.length <= limit) return text
+    return `${text.slice(0, limit)}...`
+}
+
+const emailAddressList = (value?: string[] | string | null) => {
+    if (!value) return ''
+    if (Array.isArray(value)) return value.filter(Boolean).join(', ')
+    return value
+}
+
+const htmlToPlainText = (value?: string) => {
+    if (!value) return ''
+    return value
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+}
+
+const emailBodyForAI = (email: Email, limit: number) => {
+    const body = email.Body || htmlToPlainText(email.HTMLBody)
+    return trimForAI(body || '', limit)
+}
+
+const summarizeEmailForAI = (email: Email, bodyLimit = AI_EMAIL_CONTEXT_PREVIEW_LIMIT) => {
+    const attachments = email.Attachments || []
+    return {
+        id: email.ID,
+        messageId: email.MessageID,
+        accountId: email.AccountID,
+        mailboxName: email.MailboxName,
+        subject: email.Subject || '(无主题)',
+        from: emailAddressList(email.From),
+        to: emailAddressList(email.To),
+        cc: emailAddressList(email.Cc),
+        date: email.Date,
+        size: email.Size,
+        flags: email.Flags || [],
+        hasAttachments: Boolean(email.HasAttachments || attachments.length > 0),
+        attachmentCount: attachments.length,
+        attachments: attachments.slice(0, 5).map(attachment => ({
+            filename: attachment.Filename || attachment.filename || '附件',
+            contentType: attachment.MIMEType || attachment.ContentType || attachment.content_type || '',
+            size: attachment.Size || attachment.size || 0,
+        })),
+        bodyPreview: emailBodyForAI(email, bodyLimit),
+        bodySource: email.Body ? 'text' : email.HTMLBody ? 'html' : 'empty',
+    }
+}
 
 const getAdaptiveLayout = (containerWidth: number) => {
     const availableWidth = Math.max(containerWidth - DESKTOP_DIVIDER_WIDTH, 0)
@@ -972,11 +1035,23 @@ export default function EnhancedClassicMailboxView() {
                 provider: selectedAccount.mailProvider?.type,
                 isVerified: selectedAccount.isVerified,
             } : null,
+            selectedEmail: selectedEmail ? summarizeEmailForAI(selectedEmail) : null,
+            selectedEmailId,
+            hasSelectedEmail: Boolean(selectedEmail),
+            activePanel,
             accountsCount: accounts.length,
             loadedEmailsCount: emails.length,
             totalCount,
             directionFilter,
             searchQuery: emailSearchQuery,
+            sampleVisibleEmails: emails.slice(0, 8).map(email => ({
+                id: email.ID,
+                subject: email.Subject || '(无主题)',
+                from: emailAddressList(email.From),
+                date: email.Date,
+                isSelected: email.ID === selectedEmailId,
+                hasAttachments: Boolean(email.HasAttachments || email.Attachments?.length),
+            })),
             sampleAccounts: accounts.slice(0, 5).map(account => ({
                 id: account.id,
                 email: account.emailAddress,
@@ -1059,14 +1134,58 @@ export default function EnhancedClassicMailboxView() {
                     }
                 },
             },
+            {
+                name: 'getSelectedEmailDetails',
+                title: '读取当前选中邮件',
+                description: '读取当前已选中邮件的主题、发件人、收件人、正文摘要和附件信息。',
+                risk: 'read',
+                run: () => {
+                    if (!selectedEmail) {
+                        return {
+                            success: false,
+                            summary: '当前没有选中的邮件。请先在邮件列表中选择一封邮件。',
+                            data: {
+                                selectedEmailId,
+                                activePanel,
+                                selectedAccount: selectedAccount ? {
+                                    id: selectedAccount.id,
+                                    email: selectedAccount.emailAddress,
+                                } : null,
+                            },
+                        }
+                    }
+
+                    const emailSummary = summarizeEmailForAI(selectedEmail, AI_EMAIL_ACTION_BODY_LIMIT)
+                    const bodySummary = emailSummary.bodyPreview
+                        ? `内容摘要：${trimForAI(emailSummary.bodyPreview, 280)}`
+                        : '邮件正文为空。'
+                    return {
+                        success: true,
+                        summary: `当前选中邮件是「${emailSummary.subject}」，发件人 ${emailSummary.from || '未知'}。${bodySummary}`,
+                        details: emailSummary.bodyPreview || '邮件正文为空。',
+                        data: {
+                            selectedEmail: emailSummary,
+                            activePanel,
+                            selectedAccount: selectedAccount ? {
+                                id: selectedAccount.id,
+                                email: selectedAccount.emailAddress,
+                                provider: selectedAccount.mailProvider?.type,
+                            } : null,
+                        },
+                    }
+                },
+            },
         ] satisfies AISkillAction[],
     }), [
+        activePanel,
         accounts,
         directionFilter,
         emailSearchQuery,
-        emails.length,
+        emails,
         isMobileView,
         selectedAccount,
+        selectedEmail,
+        selectedEmailId,
         totalCount,
     ])
 

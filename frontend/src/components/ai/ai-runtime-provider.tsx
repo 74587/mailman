@@ -138,6 +138,13 @@ const GLOBAL_CORE_SKILL_CATALOG: AISkill[] = [
                 parameters: { email: '邮箱地址' },
                 run: unavailableActionRun,
             },
+            {
+                name: 'getSelectedEmailDetails',
+                title: '读取当前选中邮件',
+                description: '读取当前已选中邮件的主题、发件人、收件人、正文摘要和附件信息。',
+                risk: 'read',
+                run: unavailableActionRun,
+            },
         ],
     },
 ]
@@ -288,6 +295,10 @@ function isViewEmailIntent(input: string) {
     return /(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索|read|view|open|check|show).*(邮件|邮箱|收件箱|inbox|mail)|(邮件|邮箱|收件箱|inbox|mail).*(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索|read|view|open|check|show)/i.test(input)
 }
 
+function isSelectedEmailQuestion(input: string) {
+    return /((当前|现在|选中|已选|打开|正在看|这封|这条|current|selected|active|opened).*(邮件|email|mail).*(说|内容|讲|总结|摘要|详情|什么意思|是什么|what|say|says|about|content|detail|details|explain|summari[sz]e|summary))|((说|内容|讲|总结|摘要|详情|什么意思|是什么|what|say|says|about|content|detail|details|explain|summari[sz]e|summary).*(当前|现在|选中|已选|打开|正在看|这封|这条|current|selected|active|opened).*(邮件|email|mail))/i.test(input)
+}
+
 function planLocally(input: string, context: AICompressedContext, skills: AISkill[]): AIPlannedAction {
     const lower = input.toLowerCase()
     const activeTab = context.global.activeTab
@@ -295,6 +306,14 @@ function planLocally(input: string, context: AICompressedContext, skills: AISkil
     const hasAccountsSkill = skills.some(skill => skill.id === 'accounts')
     const accountsIntent = hasAccountsSkill || /(邮箱账户|邮箱账号|账户管理|账号管理|mail accounts?|accounts?)/i.test(input) || activeTab === 'accounts'
     const emailAddress = inferEmailAddress(input, selectedText)
+
+    if (activeTab === 'classic-mailbox' && isSelectedEmailQuestion(input)) {
+        return {
+            skillId: 'classic-mailbox',
+            actionName: 'getSelectedEmailDetails',
+            params: {},
+        }
+    }
 
     if (emailAddress && isViewEmailIntent(input)) {
         return {
@@ -611,6 +630,7 @@ async function planWithModel(input: string, context: AICompressedContext, skills
         '从给定 skills 中选择一个 action，或返回 tabId 切换页面，或返回 response 直接回复。',
         `直接问答、解释、创作、总结这类不需要页面操作的请求，返回 {"response":"${DIRECT_CHAT_RESPONSE}","thinkingSummary":[...]}，后续会由回复模型生成正文。`,
         '如果用户请求包含查看、打开、搜索、切换、添加、配置、账户、邮箱、邮件、OAuth2、tab、页面等操作意图，必须优先选择 skill/action 或 tabId，不能用 response 代替执行。',
+        '如果用户询问当前/选中/这封邮件的内容、摘要、详情或“说了什么”，优先选择 classic-mailbox.getSelectedEmailDetails。',
         '需要结合最近对话理解“这个账户”“继续”“打开它”等指代；如果历史里有邮箱地址或上轮搜索结果，可把它写入 params。',
         '如果一个用户意图可能由多个页面完成，优先给出最直接 action，并在 candidateActions 中给出备选页面 action。',
         '不要编造不存在的 skill/action。写入类动作只能打开表单或等待用户确认，不能自动提交。',
@@ -785,8 +805,15 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         }
 
         let pageContext: Record<string, unknown> | undefined
-        if (targetSkill?.getContext) {
-            pageContext = await targetSkill.getContext()
+        const activeTab = navigationRef.current.activeTab
+        const contextSkill = targetSkill || Array.from(skillsRef.current.values())
+            .find(skill => skill.id === activeTab || skill.pageTabs?.includes(activeTab))
+        if (contextSkill?.getContext) {
+            const contextValue = await contextSkill.getContext()
+            pageContext = {
+                skillId: contextSkill.id,
+                ...contextValue,
+            }
         }
 
         const allSkills = getSkillCatalog()
