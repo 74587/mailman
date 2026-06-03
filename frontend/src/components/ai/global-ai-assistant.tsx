@@ -1,7 +1,7 @@
 'use client'
 
 import { FormEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownToLine, Bold, Bot, CheckCircle, ChevronDown, ChevronRight, Clock, Code, Italic, List, Loader2, Maximize2, MessageSquarePlus, MoveDiagonal2, PanelRightClose, Send, Sparkles, XCircle } from 'lucide-react'
+import { ArrowDownToLine, Bold, Bot, CheckCircle, ChevronDown, ChevronRight, Clock, Code, Italic, List, Loader2, Maximize2, MessageSquarePlus, MoveDiagonal2, PanelRightClose, Send, Sparkles, Square, XCircle } from 'lucide-react'
 import { usePathname } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -344,12 +344,14 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
         isOpen,
         messages,
         tasks,
+        currentTask,
         navigation,
         selectedText,
         openAssistant,
         closeAssistant,
         newSession,
         sendMessage,
+        cancelTask,
         toggleTaskThinking,
     } = useAIRuntime()
     const [input, setInput] = useState('')
@@ -366,6 +368,7 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
     const hidden = !forceVisible && (isLoading || !isAuthenticated || pathname.startsWith('/login'))
     const selectedTextLength = selectedText.trim().length
     const latestTaskById = useMemo(() => new Map(tasks.map(task => [task.id, task])), [tasks])
+    const hasRunningTask = Boolean(currentTask && ['queued', 'thinking', 'running', 'waiting_confirmation'].includes(currentTask.status))
 
     const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
         const container = messageScrollRef.current
@@ -569,6 +572,20 @@ export function GlobalAIAssistant({ forceVisible = false, authState }: GlobalAIA
                         >
                             <ArrowDownToLine className="h-4 w-4" />
                         </button>
+                        {hasRunningTask && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    cancelTask(currentTask?.id)
+                                    setSending(false)
+                                }}
+                                className="flex h-8 w-8 items-center justify-center rounded-md text-red-500 transition hover:bg-red-50 hover:text-red-700 dark:text-red-300 dark:hover:bg-red-950/40 dark:hover:text-red-200"
+                                title="停止当前任务"
+                                aria-label="停止当前任务"
+                            >
+                                <Square className="h-3.5 w-3.5 fill-current" />
+                            </button>
+                        )}
                         <button
                             type="button"
                             onClick={newSession}

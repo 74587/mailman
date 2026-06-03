@@ -683,6 +683,52 @@ export default function AccountsTab() {
                 },
             },
             {
+                name: 'viewAccountEmails',
+                title: '查看账户邮件',
+                description: '按邮箱地址定位账户，并打开该账户的邮件列表。',
+                risk: 'navigation',
+                parameters: { email: '邮箱地址' },
+                run: async (params) => {
+                    const email = String(params.email || params.emailAddress || '').trim().toLowerCase()
+                    const accountId = typeof params.accountId === 'number' ? params.accountId : Number(params.accountId || 0)
+
+                    let targetAccount = accountId
+                        ? paginatedAccounts.find(account => account.id === accountId)
+                        : paginatedAccounts.find(account => account.emailAddress.toLowerCase() === email)
+
+                    if (!targetAccount && email) {
+                        const response = await emailAccountService.getAccountsPaginated({
+                            search: email,
+                            page: 1,
+                            limit: 10,
+                        })
+                        targetAccount = response.data.find(account => account.emailAddress.toLowerCase() === email) || response.data[0]
+                    }
+
+                    if (!targetAccount) {
+                        return {
+                            success: false,
+                            summary: email ? `没有找到邮箱账户 ${email}。` : '没有提供要查看的邮箱地址。',
+                        }
+                    }
+
+                    setSearchQuery(targetAccount.emailAddress)
+                    setSubmittedSearchQuery(targetAccount.emailAddress)
+                    setProviderFilter(null)
+                    setPagination(prev => ({ ...prev, page: 1 }))
+                    handleViewEmails(targetAccount)
+
+                    return {
+                        success: true,
+                        summary: `已切换到 ${targetAccount.emailAddress} 的邮件列表。`,
+                        data: {
+                            accountId: targetAccount.id,
+                            email: targetAccount.emailAddress,
+                        },
+                    }
+                },
+            },
+            {
                 name: 'openAddAccountModal',
                 title: '打开添加账户窗口',
                 description: '打开账户添加表单，由用户确认并提交。',

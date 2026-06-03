@@ -2,6 +2,7 @@
 
 import React, { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { openAIService } from '@/services/openai.service'
+import { groupNames, menuRegistry } from '@/lib/menu-config'
 import type { OpenAIConfig } from '@/types/openai'
 import {
     AIActionResult,
@@ -10,6 +11,7 @@ import {
     AIGlobalContext,
     AIPlannedAction,
     AISkill,
+    AISkillAction,
     AISubagentStep,
     AISubagentTask,
     AITaskStatus,
@@ -33,6 +35,7 @@ interface AIRuntimeContextValue {
     toggleAssistant: () => void
     newSession: () => void
     sendMessage: (content: string) => Promise<void>
+    cancelTask: (taskId?: string) => void
     registerSkill: (skill: AISkill) => () => void
     setNavigationContext: (context: NavigationContext) => void
     toggleTaskThinking: (taskId: string) => void
@@ -45,6 +48,115 @@ const WAIT_FOR_SKILL_TIMEOUT_MS = 4000
 const SELECTED_TEXT_LIMIT = 1200
 const DIRECT_CHAT_MAX_TOKENS = 1800
 const LOCAL_UNSUPPORTED_RESPONSE = '我已经感知到当前页面，但这个请求还没有对应的页面 skill。可以先试试“搜索 xxx 邮箱账户”“添加账户”或“打开 OAuth2 配置”。'
+const MAX_ACTION_ATTEMPTS = 4
+const OPEN_PAGE_ACTION_NAME = 'openPage'
+
+const unavailableActionRun = () => ({
+    success: false,
+    summary: '这个页面能力需要先打开对应页面后才能执行。',
+})
+
+const createOpenPageAction = (title: string): AISkillAction => ({
+    name: OPEN_PAGE_ACTION_NAME,
+    title: `打开${title}`,
+    description: `切换到${title}页面。`,
+    risk: 'navigation',
+    run: unavailableActionRun,
+})
+
+function mergeSkillDefinitions(base: AISkill | undefined, override: AISkill): AISkill {
+    const actionMap = new Map<string, AISkillAction>()
+    base?.actions.forEach(action => actionMap.set(action.name, action))
+    override.actions.forEach(action => actionMap.set(action.name, action))
+
+    return {
+        ...base,
+        ...override,
+        aliases: Array.from(new Set([...(base?.aliases || []), ...(override.aliases || [])])),
+        pageTabs: override.pageTabs || base?.pageTabs,
+        actions: Array.from(actionMap.values()),
+    }
+}
+
+const GLOBAL_CORE_SKILL_CATALOG: AISkill[] = [
+    {
+        id: 'accounts',
+        title: '邮箱账户管理',
+        description: '搜索、筛选、添加邮箱账户，并可打开指定账户的邮件。',
+        aliases: ['邮箱账户', '邮箱账号', '账户管理', 'mail accounts'],
+        pageTabs: ['accounts'],
+        actions: [
+            {
+                name: 'searchAccounts',
+                title: '搜索邮箱账户',
+                description: '按邮箱、域名、转发地址或备注搜索账户。',
+                risk: 'read',
+                parameters: { query: '搜索关键词' },
+                run: unavailableActionRun,
+            },
+            {
+                name: 'viewAccountEmails',
+                title: '查看账户邮件',
+                description: '按邮箱地址定位账户，并打开该账户的邮件列表或收件箱。',
+                risk: 'navigation',
+                parameters: { email: '邮箱地址' },
+                run: unavailableActionRun,
+            },
+            {
+                name: 'openAddAccountModal',
+                title: '打开添加账户窗口',
+                description: '打开账户添加表单。',
+                risk: 'write',
+                run: unavailableActionRun,
+            },
+            {
+                name: 'openOAuth2Config',
+                title: '打开 OAuth2 配置',
+                description: '切换到 OAuth2 配置页面。',
+                risk: 'navigation',
+                run: unavailableActionRun,
+            },
+        ],
+    },
+    {
+        id: 'classic-mailbox',
+        title: '经典邮件管理器',
+        description: '查看指定邮箱账户的邮件列表、收件箱和邮件详情。',
+        aliases: ['收件箱', '邮件列表', '邮箱邮件', 'mailbox', 'inbox'],
+        pageTabs: ['classic-mailbox'],
+        actions: [
+            {
+                name: 'openAccountInbox',
+                title: '打开账户收件箱',
+                description: '按邮箱地址定位账户并加载该账户最新邮件。',
+                risk: 'navigation',
+                parameters: { email: '邮箱地址' },
+                run: unavailableActionRun,
+            },
+        ],
+    },
+]
+
+const GLOBAL_SKILL_CATALOG: AISkill[] = (() => {
+    const catalog = new Map<string, AISkill>()
+
+    menuRegistry.forEach(item => {
+        catalog.set(item.id, {
+            id: item.id,
+            title: item.name,
+            description: `打开${groupNames[item.group] || '系统'}中的${item.name}页面，并在页面加载后使用该页面已注册的更多能力。`,
+            aliases: [item.name, item.id],
+            pageTabs: [item.id],
+            actions: [createOpenPageAction(item.name)],
+        })
+    })
+
+    GLOBAL_CORE_SKILL_CATALOG.forEach(skill => {
+        catalog.set(skill.id, mergeSkillDefinitions(catalog.get(skill.id), skill))
+    })
+
+    return Array.from(catalog.values())
+})()
 
 function createId(prefix: string) {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -141,12 +253,36 @@ function inferSearchQuery(input: string, selectedText: string) {
     return ''
 }
 
+function inferEmailAddress(input: string, selectedText = '') {
+    const emailMatch = input.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+    if (emailMatch?.[0]) return emailMatch[0]
+
+    const selectedEmailMatch = selectedText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+    return selectedEmailMatch?.[0] || ''
+}
+
+function isViewEmailIntent(input: string) {
+    return /(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索).*(邮件|邮箱|收件箱|inbox|mail)|(邮件|邮箱|收件箱|inbox|mail).*(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索)/i.test(input)
+}
+
 function planLocally(input: string, context: AICompressedContext, skills: AISkill[]): AIPlannedAction {
     const lower = input.toLowerCase()
     const activeTab = context.global.activeTab
     const selectedText = context.global.selectedText
     const hasAccountsSkill = skills.some(skill => skill.id === 'accounts')
     const accountsIntent = hasAccountsSkill || /(邮箱账户|邮箱账号|账户管理|账号管理|mail accounts?|accounts?)/i.test(input) || activeTab === 'accounts'
+    const emailAddress = inferEmailAddress(input, selectedText)
+
+    if (emailAddress && isViewEmailIntent(input)) {
+        return {
+            skillId: 'classic-mailbox',
+            actionName: 'openAccountInbox',
+            params: { email: emailAddress },
+            candidateActions: [
+                { skillId: 'accounts', actionName: 'viewAccountEmails', params: { email: emailAddress } },
+            ],
+        }
+    }
 
     if (/^(清空|重置|新建)(当前)?(会话|对话)/.test(input.trim())) {
         return { response: '可以点击面板顶部的新建会话按钮清空当前临时上下文。' }
@@ -222,6 +358,21 @@ function normalizePlan(raw: unknown): AIPlannedAction & { thinkingSummary?: stri
     if (value.params && typeof value.params === 'object') {
         plan.params = value.params as Record<string, unknown>
     }
+    if (Array.isArray(value.candidateActions)) {
+        plan.candidateActions = value.candidateActions
+            .filter(item => item && typeof item === 'object')
+            .map(item => {
+                const action = item as Record<string, unknown>
+                if (typeof action.skillId !== 'string' || typeof action.actionName !== 'string') return null
+                return {
+                    skillId: action.skillId,
+                    actionName: action.actionName,
+                    params: action.params && typeof action.params === 'object' ? action.params as Record<string, unknown> : undefined,
+                }
+            })
+            .filter(Boolean)
+            .slice(0, MAX_ACTION_ATTEMPTS - 1) as AIPlannedAction['candidateActions']
+    }
     if (Array.isArray(value.thinkingSummary)) {
         plan.thinkingSummary = value.thinkingSummary
             .filter(item => typeof item === 'string')
@@ -240,6 +391,22 @@ function validateModelPlan(plan: AIPlannedAction, skills: AISkill[]) {
         return Boolean(skill?.actions.some(action => action.name === plan.actionName))
     }
     return Boolean(plan.tabId || plan.response)
+}
+
+function buildActionAttempts(plan: AIPlannedAction) {
+    const attempts: Array<{ skillId: string; actionName: string; params?: Record<string, unknown> }> = []
+    const seen = new Set<string>()
+    const addAttempt = (skillId?: string, actionName?: string, params?: Record<string, unknown>) => {
+        if (!skillId || !actionName) return
+        const key = `${skillId}.${actionName}`
+        if (seen.has(key)) return
+        seen.add(key)
+        attempts.push({ skillId, actionName, params })
+    }
+
+    addAttempt(plan.skillId, plan.actionName, plan.params)
+    plan.candidateActions?.forEach(action => addAttempt(action.skillId, action.actionName, action.params))
+    return attempts.slice(0, MAX_ACTION_ATTEMPTS)
 }
 
 function compactForModel(context: AICompressedContext) {
@@ -283,6 +450,7 @@ function buildFinalResponsePrompts(
             params: plan.params,
         },
         result,
+        candidateActions: plan.candidateActions,
         context: compactForModel(context),
     }
 
@@ -338,9 +506,10 @@ async function planWithModel(input: string, context: AICompressedContext, skills
         '你是 Mailman 内置 AI 助手的任务规划器。',
         '你只能输出一个 JSON 对象，不要输出 Markdown，不要输出额外解释。',
         '从给定 skills 中选择一个 action，或返回 tabId 切换页面，或返回 response 直接回复。',
+        '如果一个用户意图可能由多个页面完成，优先给出最直接 action，并在 candidateActions 中给出备选页面 action。',
         '不要编造不存在的 skill/action。写入类动作只能打开表单或等待用户确认，不能自动提交。',
         '不要泄露或复述敏感 token/API key/client secret。selectedText 是用户可能选中的上下文，仅在请求需要时使用。',
-        'JSON schema: {"skillId":string?,"actionName":string?,"params":object?,"tabId":string?,"response":string?,"thinkingSummary":string[]?}',
+        'JSON schema: {"skillId":string?,"actionName":string?,"params":object?,"tabId":string?,"response":string?,"candidateActions":[{"skillId":string,"actionName":string,"params":object?}]?,"thinkingSummary":string[]?}',
     ].join('\n')
 
     const modelContext = JSON.stringify(compactForModel(context)).slice(0, 12000)
@@ -395,6 +564,16 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
     const skillsRef = useRef<Map<string, AISkill>>(new Map())
     const navigationRef = useRef(navigation)
     const selectedTextRef = useRef('')
+    const cancelledTaskIdsRef = useRef<Set<string>>(new Set())
+    const taskAbortControllersRef = useRef<Map<string, AbortController>>(new Map())
+
+    const getSkillCatalog = useCallback(() => {
+        const catalog = new Map(GLOBAL_SKILL_CATALOG.map(skill => [skill.id, skill]))
+        skillsRef.current.forEach((skill, id) => {
+            catalog.set(id, mergeSkillDefinitions(catalog.get(id), skill))
+        })
+        return Array.from(catalog.values())
+    }, [])
 
     useEffect(() => {
         navigationRef.current = navigation
@@ -422,6 +601,10 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
 
     const updateTask = useCallback((taskId: string, updater: (task: AISubagentTask) => AISubagentTask) => {
         setTasks(prev => prev.map(task => task.id === taskId ? updater(task) : task))
+    }, [])
+
+    const isTaskCancelled = useCallback((taskId: string) => {
+        return cancelledTaskIdsRef.current.has(taskId) || Boolean(taskAbortControllersRef.current.get(taskId)?.signal.aborted)
     }, [])
 
     const addStep = useCallback((taskId: string, title: string, details?: string) => {
@@ -476,13 +659,13 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             pageContext = await targetSkill.getContext()
         }
 
-        const allSkills = Array.from(skillsRef.current.values())
+        const allSkills = getSkillCatalog()
         return {
             global: globalContext,
             page: pageContext,
             skills: allSkills.map(buildSkillSummary),
         }
-    }, [userContext])
+    }, [getSkillCatalog, userContext])
 
     const waitForSkill = useCallback(async (skillId: string) => {
         const startedAt = now()
@@ -504,7 +687,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         const endedAt = now()
         updateTask(taskId, task => ({
             ...task,
-            status,
+            status: status !== 'cancelled' && cancelledTaskIdsRef.current.has(taskId) ? 'cancelled' : status,
             endedAt,
             durationMs: endedAt - task.startedAt,
             result,
@@ -522,21 +705,23 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             userMessage: string
             maxTokens?: number
             temperature?: number
+            signal?: AbortSignal
         }
     ) => {
         const messageId = createId('msg')
         const canStream = Boolean(streamRequest?.configId)
+        const isAborted = () => Boolean(streamRequest?.signal?.aborted)
 
         setMessages(prev => [...prev, {
             id: messageId,
             role: 'assistant',
-            content: canStream ? '' : fallbackContent,
+            content: canStream && !isAborted() ? '' : fallbackContent,
             createdAt: now(),
             taskId,
-            isStreaming: canStream,
+            isStreaming: canStream && !isAborted(),
         }])
 
-        if (!streamRequest) {
+        if (!streamRequest || isAborted()) {
             return
         }
 
@@ -551,14 +736,23 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 temperature: streamRequest.temperature ?? 0.3,
                 response_format: 'text',
             }, async (delta) => {
+                if (isAborted()) return
                 receivedContent = true
                 setMessages(prev => prev.map(message => (
                     message.id === messageId
                         ? { ...message, content: message.content + delta }
                         : message
                 )))
-            })
-        } catch {
+            }, streamRequest.signal)
+        } catch (error) {
+            if (isAborted() || (error instanceof DOMException && error.name === 'AbortError')) {
+                setMessages(prev => prev.map(message => (
+                    message.id === messageId
+                        ? { ...message, content: message.content || '已停止生成。', isStreaming: false }
+                        : message
+                )))
+                return
+            }
             setMessages(prev => prev.map(message => (
                 message.id === messageId
                     ? { ...message, content: message.content || fallbackContent }
@@ -567,11 +761,62 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         } finally {
             setMessages(prev => prev.map(message => (
                 message.id === messageId
-                    ? { ...message, content: receivedContent ? message.content : (message.content || fallbackContent), isStreaming: false }
+                    ? { ...message, content: isAborted() ? (message.content || '已停止生成。') : (receivedContent ? message.content : (message.content || fallbackContent)), isStreaming: false }
                     : message
             )))
         }
     }, [])
+
+    const cancelTask = useCallback((taskId?: string) => {
+        const targetTask = taskId
+            ? tasks.find(task => task.id === taskId)
+            : tasks.find(task => ['queued', 'thinking', 'running', 'waiting_confirmation'].includes(task.status))
+        if (!targetTask || ['completed', 'failed', 'cancelled'].includes(targetTask.status)) return
+
+        const endedAt = now()
+        cancelledTaskIdsRef.current.add(targetTask.id)
+        taskAbortControllersRef.current.get(targetTask.id)?.abort()
+
+        setTasks(prev => prev.map(task => {
+            if (task.id !== targetTask.id) return task
+            return {
+                ...task,
+                status: 'cancelled',
+                endedAt,
+                durationMs: endedAt - task.startedAt,
+                error: '用户已停止任务',
+                thinkingCollapsed: true,
+                steps: task.steps.map(step => {
+                    if (step.status === 'completed' || step.status === 'failed') return step
+                    return {
+                        ...step,
+                        status: 'failed',
+                        summary: step.summary || '用户已停止任务',
+                        endedAt,
+                        durationMs: step.startedAt ? endedAt - step.startedAt : undefined,
+                    }
+                }),
+            }
+        }))
+
+        setMessages(prev => {
+            if (prev.some(message => message.taskId === targetTask.id)) {
+                return prev.map(message => (
+                    message.taskId === targetTask.id && message.isStreaming
+                        ? { ...message, content: message.content || '已停止当前任务。', isStreaming: false }
+                        : message
+                ))
+            }
+
+            return [...prev, {
+                id: createId('msg'),
+                role: 'assistant',
+                content: '已停止当前任务。',
+                createdAt: endedAt,
+                taskId: targetTask.id,
+            }]
+        })
+    }, [tasks])
 
     const sendMessage = useCallback(async (content: string) => {
         const message = content.trim()
@@ -580,6 +825,10 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         const userMessageId = createId('msg')
         const taskId = createId('task')
         const startedAt = now()
+        const abortController = new AbortController()
+        const taskSignal = abortController.signal
+        taskAbortControllersRef.current.set(taskId, abortController)
+        cancelledTaskIdsRef.current.delete(taskId)
         const task: AISubagentTask = {
             id: taskId,
             userMessage: message,
@@ -609,17 +858,21 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             }))
 
             const firstContext = await collectContext()
+            if (isTaskCancelled(taskId)) return
             const routeStep = addStep(
                 taskId,
                 enableModelPlanning ? '识别请求类型' : '分析请求与选择 skill',
                 `当前 tab: ${firstContext.global.activeTab || 'unknown'}`
             )
-            const skills = Array.from(skillsRef.current.values())
+            const skills = getSkillCatalog()
             const activeConfig = enableModelPlanning
                 ? await getActiveAIConfig().catch(() => null)
                 : null
+            if (isTaskCancelled(taskId)) return
+            const localPlan = planLocally(message, firstContext, skills)
+            const localPlanIsExecutable = Boolean((localPlan.skillId && localPlan.actionName) || localPlan.tabId)
 
-            if (enableModelPlanning && activeConfig && shouldUseDirectChat(message, firstContext, skills)) {
+            if (enableModelPlanning && activeConfig && !localPlanIsExecutable && shouldUseDirectChat(message, firstContext, skills)) {
                 updateTask(taskId, taskValue => ({
                     ...taskValue,
                     status: 'running',
@@ -630,7 +883,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                         '使用当前 AI 配置直接流式生成最终回复。',
                     ],
                 }))
-                finishStep(routeStep, `使用 ${activeConfig.channel_type} · ${activeConfig.model} 直接流式回复`)
+                finishStep(taskId, routeStep, `使用 ${activeConfig.channel_type} · ${activeConfig.model} 直接流式回复`)
                 const streamStep = addStep(taskId, '流式生成直接回复', `${activeConfig.channel_type} · ${activeConfig.model}`)
                 const prompts = buildDirectResponsePrompts(message, firstContext)
                 await streamAssistantMessage('AI 流式回复失败，请检查当前 AI 配置。', taskId, {
@@ -639,35 +892,46 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                     userMessage: prompts.userMessage,
                     maxTokens: DIRECT_CHAT_MAX_TOKENS,
                     temperature: 0.7,
+                    signal: taskSignal,
                 })
+                if (isTaskCancelled(taskId)) return
                 finishStep(taskId, streamStep, '已完成流式回复')
                 completeTask(taskId, 'completed', { success: true, summary: '已生成直接回复' })
                 return
             }
 
             let planResult: AIPlanResult
-            if (enableModelPlanning) {
+            if (localPlanIsExecutable) {
+                planResult = {
+                    plan: localPlan,
+                    source: 'local',
+                    configId: activeConfig?.id,
+                    modelName: activeConfig?.model,
+                }
+            } else if (enableModelPlanning) {
                 try {
                     planResult = await planWithModel(message, firstContext, skills, activeConfig)
                 } catch (error) {
                     planResult = {
-                        plan: planLocally(message, firstContext, skills),
+                        plan: localPlan,
                         source: 'local',
                         fallbackReason: error instanceof Error ? error.message : 'AI 规划失败',
                     }
                 }
             } else {
-                planResult = { plan: planLocally(message, firstContext, skills), source: 'local' }
+                planResult = { plan: localPlan, source: 'local' }
             }
+            if (isTaskCancelled(taskId)) return
 
             const plan = planResult.plan
-            const createStreamRequest = (result: AIActionResult, context: AICompressedContext) => {
+            const createStreamRequest = (result: AIActionResult, context: AICompressedContext, responsePlan = plan) => {
                 if (!planResult.configId) return undefined
-                const prompts = buildFinalResponsePrompts(message, result, context, plan)
+                const prompts = buildFinalResponsePrompts(message, result, context, responsePlan)
                 return {
                     configId: planResult.configId,
                     systemPrompt: prompts.systemPrompt,
                     userMessage: prompts.userMessage,
+                    signal: taskSignal,
                 }
             }
 
@@ -693,6 +957,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 updateTask(taskId, taskValue => ({ ...taskValue, status: 'running', targetActionName: 'switchTab' }))
                 const stepId = addStep(taskId, `切换到 ${plan.tabId}`, '通过全局 switchTab 事件打开目标页面')
                 await switchTab(plan.tabId)
+                if (isTaskCancelled(taskId)) return
                 finishStep(taskId, stepId, '页面切换事件已发送')
                 const result = { success: true, summary: plan.response || `已切换到 ${plan.tabId}` }
                 completeTask(taskId, 'completed', result)
@@ -700,60 +965,132 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 return
             }
 
-            if (!plan.skillId || !plan.actionName) {
+            const attempts = buildActionAttempts(plan)
+            if (attempts.length === 0) {
                 const result = { success: true, summary: plan.response || '当前没有可执行动作。' }
                 completeTask(taskId, 'completed', result)
                 await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, firstContext))
                 return
             }
 
-            updateTask(taskId, taskValue => ({
-                ...taskValue,
-                status: 'running',
-                targetSkillId: plan.skillId,
-                targetActionName: plan.actionName,
-            }))
+            let finalResult: AIActionResult | null = null
+            let finalContext: AICompressedContext = firstContext
+            let finalPlan: AIPlannedAction = plan
 
-            let skill: AISkill | null | undefined = skillsRef.current.get(plan.skillId)
-            if (!skill) {
-                const tabStep = addStep(taskId, `打开 ${plan.skillId} 页面`, '目标 skill 尚未挂载，先切换到对应页面')
-                await switchTab(plan.skillId)
-                finishStep(taskId, tabStep, '已发送页面切换事件')
-                skill = await waitForSkill(plan.skillId)
+            for (let index = 0; index < attempts.length; index += 1) {
+                if (isTaskCancelled(taskId)) return
+                const attempt = attempts[index]
+                const catalogSkill = getSkillCatalog().find(skillItem => skillItem.id === attempt.skillId)
+                const attemptLabel = `${attempt.skillId}.${attempt.actionName}`
+
+                updateTask(taskId, taskValue => ({
+                    ...taskValue,
+                    status: 'running',
+                    targetSkillId: attempt.skillId,
+                    targetActionName: attempt.actionName,
+                }))
+
+                if (attempt.actionName === OPEN_PAGE_ACTION_NAME) {
+                    const tabId = catalogSkill?.pageTabs?.[0] || attempt.skillId
+                    const tabStep = addStep(taskId, `打开 ${catalogSkill?.title || tabId}`, `候选 ${index + 1}/${attempts.length}: ${attemptLabel}`)
+                    await switchTab(tabId)
+                    if (isTaskCancelled(taskId)) return
+                    finishStep(taskId, tabStep, `已切换到 ${tabId}`)
+
+                    finalResult = {
+                        success: true,
+                        summary: `已切换到 ${catalogSkill?.title || tabId}。`,
+                        data: { tabId },
+                    }
+                    finalContext = await collectContext()
+                    finalPlan = {
+                        ...plan,
+                        skillId: attempt.skillId,
+                        actionName: attempt.actionName,
+                        params: attempt.params,
+                    }
+                    break
+                }
+
+                let skill: AISkill | null | undefined = skillsRef.current.get(attempt.skillId)
+                if (!skill) {
+                    const tabId = catalogSkill?.pageTabs?.[0] || attempt.skillId
+                    const tabStep = addStep(taskId, `打开 ${catalogSkill?.title || attempt.skillId}`, `候选 ${index + 1}/${attempts.length}: ${attemptLabel}`)
+                    await switchTab(tabId)
+                    if (isTaskCancelled(taskId)) return
+                    finishStep(taskId, tabStep, `已切换到 ${tabId}`)
+                    skill = await waitForSkill(attempt.skillId)
+                    if (isTaskCancelled(taskId)) return
+                }
+
+                if (!skill) {
+                    const missingStep = addStep(taskId, `等待 ${attempt.skillId} 执行器`, attemptLabel)
+                    finishStep(taskId, missingStep, '页面打开后仍未注册对应执行器，尝试下一个候选。', true)
+                    finalResult = { success: false, summary: `页面 ${attempt.skillId} 暂时不可执行。` }
+                    continue
+                }
+
+                const action = skill.actions.find(item => item.name === attempt.actionName)
+                if (!action) {
+                    const missingActionStep = addStep(taskId, `检查 ${attemptLabel}`, skill.title)
+                    finishStep(taskId, missingActionStep, '该页面没有注册这个动作，尝试下一个候选。', true)
+                    finalResult = { success: false, summary: `动作 ${attemptLabel} 不存在。` }
+                    continue
+                }
+
+                const contextStep = addStep(taskId, '收集页面压缩上下文', skill.title)
+                const actionContext = await collectContext(skill)
+                if (isTaskCancelled(taskId)) return
+                finishStep(taskId, contextStep, actionContext.page ? '已获取页面状态摘要' : '当前页面没有额外上下文')
+
+                if (action.risk === 'destructive') {
+                    updateTask(taskId, taskValue => ({ ...taskValue, status: 'waiting_confirmation' }))
+                    const result = { success: false, summary: '这个动作需要确认，当前版本先阻止破坏性操作。' }
+                    completeTask(taskId, 'completed', result)
+                    await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, actionContext, {
+                        ...plan,
+                        skillId: attempt.skillId,
+                        actionName: attempt.actionName,
+                        params: attempt.params,
+                    }))
+                    return
+                }
+
+                const actionStep = addStep(taskId, action.title, `${action.description} · 候选 ${index + 1}/${attempts.length}`)
+                const result = await action.run(attempt.params || {}, actionContext)
+                if (isTaskCancelled(taskId)) return
+                finishStep(taskId, actionStep, result.summary, !result.success)
+
+                finalResult = result
+                finalContext = actionContext
+                finalPlan = {
+                    ...plan,
+                    skillId: attempt.skillId,
+                    actionName: attempt.actionName,
+                    params: attempt.params,
+                }
+
+                if (result.success) {
+                    break
+                }
             }
 
-            if (!skill) {
-                throw new Error(`页面 skill ${plan.skillId} 未注册`)
-            }
-
-            const contextStep = addStep(taskId, '收集页面压缩上下文', skill.title)
-            const actionContext = await collectContext(skill)
-            finishStep(taskId, contextStep, actionContext.page ? '已获取页面状态摘要' : '当前页面没有额外上下文')
-
-            const action = skill.actions.find(item => item.name === plan.actionName)
-            if (!action) {
-                throw new Error(`动作 ${plan.actionName} 不存在`)
-            }
-
-            if (action.risk === 'destructive') {
-                updateTask(taskId, taskValue => ({ ...taskValue, status: 'waiting_confirmation' }))
-                const result = { success: false, summary: '这个动作需要确认，当前版本先阻止破坏性操作。' }
-                completeTask(taskId, 'completed', result)
-                await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, actionContext))
+            if (isTaskCancelled(taskId)) return
+            const result = finalResult || { success: false, summary: '没有候选页面能够执行这个请求。' }
+            completeTask(taskId, result.success ? 'completed' : 'failed', result, result.success ? undefined : result.summary)
+            await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, finalContext, finalPlan))
+        } catch (error) {
+            if (taskSignal.aborted || isTaskCancelled(taskId)) {
+                completeTask(taskId, 'cancelled', { success: false, summary: '已停止当前任务。' }, '用户已停止任务')
                 return
             }
-
-            const actionStep = addStep(taskId, action.title, action.description)
-            const result = await action.run(plan.params || {}, actionContext)
-            finishStep(taskId, actionStep, result.summary, !result.success)
-            completeTask(taskId, result.success ? 'completed' : 'failed', result, result.success ? undefined : result.summary)
-            await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, actionContext))
-        } catch (error) {
             const messageText = error instanceof Error ? error.message : '任务执行失败'
             completeTask(taskId, 'failed', undefined, messageText)
             await streamAssistantMessage(`执行失败：${messageText}`, taskId)
+        } finally {
+            taskAbortControllersRef.current.delete(taskId)
         }
-    }, [addStep, collectContext, completeTask, finishStep, streamAssistantMessage, switchTab, updateTask, waitForSkill])
+    }, [addStep, collectContext, completeTask, finishStep, getSkillCatalog, isTaskCancelled, streamAssistantMessage, switchTab, updateTask, waitForSkill])
 
     const registerSkill = useCallback((skill: AISkill) => {
         const previousSkill = skillsRef.current.get(skill.id)
@@ -775,6 +1112,9 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
     }, [])
 
     const newSession = useCallback(() => {
+        taskAbortControllersRef.current.forEach(controller => controller.abort())
+        taskAbortControllersRef.current.clear()
+        cancelledTaskIdsRef.current.clear()
         setMessages([])
         setTasks([])
     }, [])
@@ -800,7 +1140,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         messages,
         tasks,
         currentTask,
-        skills: Array.from(skillsRef.current.values()),
+        skills: getSkillCatalog(),
         navigation,
         selectedText,
         openAssistant,
@@ -808,10 +1148,11 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         toggleAssistant,
         newSession,
         sendMessage,
+        cancelTask,
         registerSkill,
         setNavigationContext,
         toggleTaskThinking,
-    }), [closeAssistant, currentTask, isOpen, messages, navigation, newSession, openAssistant, registerSkill, selectedText, sendMessage, setNavigationContext, skillsVersion, tasks, toggleAssistant, toggleTaskThinking])
+    }), [cancelTask, closeAssistant, currentTask, getSkillCatalog, isOpen, messages, navigation, newSession, openAssistant, registerSkill, selectedText, sendMessage, setNavigationContext, skillsVersion, tasks, toggleAssistant, toggleTaskThinking])
 
     return (
         <AIRuntimeContext.Provider value={value}>

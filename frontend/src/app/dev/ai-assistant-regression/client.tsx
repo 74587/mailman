@@ -62,6 +62,20 @@ function AIAssistantRegressionContent() {
                 risk: 'write',
                 run: () => ({ success: true, summary: '开发验证：已打开添加账户窗口。' }),
             },
+            {
+                name: 'viewAccountEmails',
+                title: '查看账户邮件',
+                description: '开发验证用账户邮件入口。',
+                risk: 'navigation',
+                run: (params) => {
+                    const email = String(params.email || params.emailAddress || '')
+                    return {
+                        success: true,
+                        summary: `开发验证：已切换到 ${email || '指定账户'} 的邮件列表。`,
+                        data: { email },
+                    }
+                },
+            },
         ],
     }), [])
 

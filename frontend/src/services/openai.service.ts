@@ -80,7 +80,8 @@ export const openAIService = {
 
     async streamOpenAI(
         request: CallOpenAIRequest,
-        onDelta: (delta: string) => void | Promise<void>
+        onDelta: (delta: string) => void | Promise<void>,
+        signal?: AbortSignal
     ): Promise<void> {
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
@@ -97,6 +98,7 @@ export const openAIService = {
             method: 'POST',
             headers,
             body: JSON.stringify(request),
+            signal,
         })
 
         if (!response.ok) {
@@ -132,6 +134,10 @@ export const openAIService = {
         }
 
         while (true) {
+            if (signal?.aborted) {
+                await reader.cancel().catch(() => undefined)
+                return
+            }
             const { value, done } = await reader.read()
             if (done) break
 

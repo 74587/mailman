@@ -122,4 +122,9 @@ export interface AIPlannedAction {
     params?: Record<string, unknown>
     tabId?: string
     response?: string
+    candidateActions?: Array<{
+        skillId: string
+        actionName: string
+        params?: Record<string, unknown>
+    }>
 }

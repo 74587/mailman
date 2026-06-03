@@ -27,6 +27,7 @@ import TemporarySyncPromptModal from '@/components/modals/temporary-sync-prompt-
 import { ResizableDivider } from './resizable-panel'
 import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
 import { toast } from 'sonner'
+import { useAISkill, type AISkill, type AISkillAction } from '@/components/ai'
 
 // 布局预设
 interface LayoutPreset {
@@ -957,6 +958,112 @@ export default function EnhancedClassicMailboxView() {
             unregisterTabCallback('classic-mailbox', 'onReady')
         }
     }, [handleLocateEmail])
+
+    const mailboxAISkill = useMemo<AISkill>(() => ({
+        id: 'classic-mailbox',
+        title: '经典邮件管理器',
+        description: '查看指定邮箱账户的邮件列表、收件箱和邮件详情。',
+        aliases: ['收件箱', '邮件列表', '邮箱邮件', 'mailbox', 'inbox'],
+        pageTabs: ['classic-mailbox'],
+        getContext: () => ({
+            selectedAccount: selectedAccount ? {
+                id: selectedAccount.id,
+                email: selectedAccount.emailAddress,
+                provider: selectedAccount.mailProvider?.type,
+                isVerified: selectedAccount.isVerified,
+            } : null,
+            accountsCount: accounts.length,
+            loadedEmailsCount: emails.length,
+            totalCount,
+            directionFilter,
+            searchQuery: emailSearchQuery,
+            sampleAccounts: accounts.slice(0, 5).map(account => ({
+                id: account.id,
+                email: account.emailAddress,
+                provider: account.mailProvider?.type,
+                isVerified: account.isVerified,
+            })),
+        }),
+        actions: [
+            {
+                name: 'openAccountInbox',
+                title: '打开账户收件箱',
+                description: '按邮箱地址定位账户并加载该账户最新邮件。',
+                risk: 'navigation',
+                parameters: { email: '邮箱地址' },
+                run: async (params) => {
+                    const email = String(params.email || params.emailAddress || '').trim().toLowerCase()
+                    const accountId = typeof params.accountId === 'number' ? params.accountId : Number(params.accountId || 0)
+
+                    let targetAccount = accountId
+                        ? accounts.find(account => account.id === accountId)
+                        : accounts.find(account => account.emailAddress.toLowerCase() === email)
+
+                    if (!targetAccount && email) {
+                        const response = await emailAccountService.getAccountsPaginated({
+                            search: email,
+                            page: 1,
+                            limit: 10,
+                        })
+                        targetAccount = response.data.find(account => account.emailAddress.toLowerCase() === email) || response.data[0]
+                    }
+
+                    if (!targetAccount) {
+                        return {
+                            success: false,
+                            summary: email ? `没有找到邮箱账户 ${email}。` : '没有提供要查看的邮箱地址。',
+                        }
+                    }
+
+                    setSelectedAccount(targetAccount)
+                    setSelectedEmailId(null)
+                    setEmailSearchQuery('')
+
+                    try {
+                        setLoadingEmails(true)
+                        const emailsData = await emailService.searchEmails({
+                            limit: PAGE_SIZE,
+                            offset: 0,
+                            sort_by: 'date_desc',
+                        }, targetAccount.id)
+                        const emailList = Array.isArray(emailsData) ? emailsData : (emailsData.emails || [])
+                        const pagination = (emailsData as any).pagination || {}
+
+                        setEmails(emailList)
+                        setTotalCount(pagination.total || emailList.length)
+                        setHasMore(pagination.has_next || false)
+                        setCurrentOffset(0)
+                        if (isMobileView) {
+                            setActivePanel('list')
+                        }
+
+                        return {
+                            success: true,
+                            summary: `已打开 ${targetAccount.emailAddress} 的邮件列表，当前加载 ${emailList.length} 封。`,
+                            data: {
+                                accountId: targetAccount.id,
+                                email: targetAccount.emailAddress,
+                                loadedEmailsCount: emailList.length,
+                                totalCount: pagination.total || emailList.length,
+                            },
+                        }
+                    } finally {
+                        setLoadingEmails(false)
+                    }
+                },
+            },
+        ] satisfies AISkillAction[],
+    }), [
+        accounts,
+        directionFilter,
+        emailSearchQuery,
+        emails.length,
+        isMobileView,
+        selectedAccount,
+        totalCount,
+    ])
+
+    useAISkill(mailboxAISkill)
 
     // 移动端视图
     if (isMobileView) {
