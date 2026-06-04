@@ -155,7 +155,8 @@ http://username:password@host:port
 | 网关名称 | `Mixed Proxy Gateway` | 便于用户识别。 |
 | 监听 IP | `127.0.0.1` / `0.0.0.0` / 内网 IP | `127.0.0.1` 仅本机可用；`0.0.0.0` 会监听所有网卡。 |
 | 外部访问地址 | `proxy.example.com` 或 `203.0.113.10` | 不做校验，只用于生成示例 curl。公网使用时应填真实域名或 IP。 |
-| 端口 | `32109` | 避免使用系统保留端口。 |
+| 外部访问端口 | `32027` 或留空 | Docker、Kubernetes、负载均衡把外部端口映射到监听端口时填写；留空则使用监听端口。 |
+| 监听端口 | `32109` | Mailman 进程实际监听的端口，避免使用系统保留端口。 |
 | 协议 | `mixed` | `mixed` 同端口支持 HTTP 和 SOCKS5。 |
 | 启用 | 开启 | 启用后热加载才会启动监听。 |
 | 设为默认网关 | 按需 | 创建网关用户时可默认选择。 |
@@ -168,8 +169,8 @@ http://username:password@host:port
 
 | 协议 | 客户端使用方式 | 适用场景 |
 | --- | --- | --- |
-| HTTP | `curl -x http://user:pass@host:port https://example.com` | 浏览器 HTTP 代理、curl、普通 HTTP CONNECT。 |
-| SOCKS5 | `curl --socks5 user:pass@host:port https://example.com` | 浏览器、爬虫、Playwright、支持 SOCKS5 的自动化工具。 |
+| HTTP | `curl -x http://host:port --proxy-user user:pass https://example.com` | 浏览器 HTTP 代理、curl、普通 HTTP CONNECT。 |
+| SOCKS5 | `curl --socks5-hostname host:port --proxy-user user:pass https://example.com` | 浏览器、爬虫、Playwright、支持 SOCKS5 的自动化工具。 |
 | Mixed | 同一端口同时支持 HTTP 和 SOCKS5 | 推荐。减少端口数量，客户端按协议自动接入。 |
 
 ### 5.3 热加载
@@ -451,40 +452,47 @@ TTL 建议：
 
 ## 11. 第八步：生成并使用测试命令
 
-在网关用户列表中点击“生成测试 curl”，选择一个该用户可用的网关。页面会实时拉取网关信息，不使用缓存。
+在网关用户列表中点击“生成测试 curl”，选择一个该用户可用的网关。页面会实时拉取网关信息，不使用缓存，并允许单独复制 HTTP 或 SOCKS5 示例。
+
+页面生成的 curl 使用 `--proxy-user '用户名:密码'` 传递原始凭据。这里不要把密码里的字符做 URL 编码，例如真实密码包含 `}` 时应写 `}`，不要写成 `%7d`。只有把凭据直接嵌入代理 URL 时，才需要按 URL 规则编码。
 
 ### 11.1 HTTP 代理 curl
 
 ```bash
-curl -x 'http://gw_user:gw_password@proxy.example.com:32109' \
+curl -x 'http://proxy.example.com:32109' \
+  --proxy-user 'gw_user:gw_password' \
   'https://api.ipify.org?format=json'
 ```
 
 如果用户名包含 `#`、`?` 等特殊字符，建议整体加引号：
 
 ```bash
-curl -x 'http://gw_user#17:gw_password@proxy.example.com:32109' \
+curl -x 'http://proxy.example.com:32109' \
+  --proxy-user 'gw_user#17:gw_password' \
   'https://api.ipify.org?format=json'
 ```
 
 ### 11.2 SOCKS5 代理 curl
 
 ```bash
-curl --socks5 'gw_user:gw_password@proxy.example.com:32109' \
+curl --socks5 'proxy.example.com:32109' \
+  --proxy-user 'gw_user:gw_password' \
   'https://api.ipify.org?format=json'
 ```
 
 使用 SOCKS5 远端解析：
 
 ```bash
-curl --socks5-hostname 'gw_user:gw_password@proxy.example.com:32109' \
+curl --socks5-hostname 'proxy.example.com:32109' \
+  --proxy-user 'gw_user:gw_password' \
   'https://example.com'
 ```
 
 使用用户名路由：
 
 ```bash
-curl --socks5-hostname 'gw_user#17:gw_password@proxy.example.com:32109' \
+curl --socks5-hostname 'proxy.example.com:32109' \
+  --proxy-user 'gw_user#17:gw_password' \
   'https://example.com'
 ```
 
@@ -494,10 +502,10 @@ Mixed 网关同一端口可同时支持 HTTP 和 SOCKS5。客户端选择哪种�
 
 ```bash
 # HTTP CONNECT
-curl -x 'http://gw_user:gw_password@proxy.example.com:32109' https://example.com
+curl -x 'http://proxy.example.com:32109' --proxy-user 'gw_user:gw_password' https://example.com
 
 # SOCKS5
-curl --socks5-hostname 'gw_user:gw_password@proxy.example.com:32109' https://example.com
+curl --socks5-hostname 'proxy.example.com:32109' --proxy-user 'gw_user:gw_password' https://example.com
 ```
 
 ### 11.4 浏览器接入
@@ -563,7 +571,8 @@ print(requests.get("https://api.ipify.org?format=json", proxies=proxies, timeout
 from urllib.parse import quote
 
 username = quote("gw_user#17", safe="")
-proxy = f"http://{username}:gw_password@proxy.example.com:32109"
+password = quote("gw_password", safe="")
+proxy = f"http://{username}:{password}@proxy.example.com:32109"
 ```
 
 ### 11.7 AdsPower / 指纹浏览器接入
@@ -711,14 +720,16 @@ Fallback：
 HTTP 测试：
 
 ```bash
-curl -x 'http://gw_login_us:password@proxy.example.com:32109' \
+curl -x 'http://proxy.example.com:32109' \
+  --proxy-user 'gw_login_us:password' \
   'https://api.ipify.org?format=json'
 ```
 
 SOCKS5 测试：
 
 ```bash
-curl --socks5-hostname 'gw_login_us:password@proxy.example.com:32109' \
+curl --socks5-hostname 'proxy.example.com:32109' \
+  --proxy-user 'gw_login_us:password' \
   'https://api.ipify.org?format=json'
 ```
 
@@ -832,4 +843,3 @@ curl --socks5-hostname 'gw_login_us:password@proxy.example.com:32109' \
 | 代理池模型 | `backend/internal/models/proxy_pool.go` |
 | 代理网关模型 | `backend/internal/models/proxy_gateway.go` |
 | 代理网关运行时 | `backend/internal/services/proxy_gateway.go` |
-

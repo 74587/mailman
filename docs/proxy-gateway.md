@@ -36,6 +36,7 @@ Proxy Gateway 让 Mailman 作为一个独立的 HTTP / SOCKS5 代理入口，对
    - `HTTP`：仅接受 HTTP 代理请求。
    - `SOCKS5`：仅接受 SOCKS5 请求。
    - `Mixed`：同一端口同时支持 HTTP 和 SOCKS5。
+   - 如果部署在 Docker、Kubernetes 或负载均衡后面，外部访问端口可以单独填写，例如容器内监听 `18080`，公网暴露 `32027`。
 3. 在该网关详情中维护安全策略和 DNS 策略。每个网关都有自己的默认策略。
 4. 如需让用户按需切换路由策略，在该网关详情的“用户名路由”中创建策略，并记录页面显示的标志号。
 5. 在“分组与标签”中维护网关用户分组和标签。
@@ -75,25 +76,25 @@ proxy_user#17;purpose=batch-a
 HTTP CONNECT:
 
 ```bash
-curl -x http://proxy_user:proxy_password@127.0.0.1:18080 https://example.com
+curl -x http://127.0.0.1:18080 --proxy-user 'proxy_user:proxy_password' https://example.com
 ```
 
 HTTP CONNECT 使用用户名路由策略：
 
 ```bash
-curl -x 'http://proxy_user#17:proxy_password@127.0.0.1:18080' https://example.com
+curl -x http://127.0.0.1:18080 --proxy-user 'proxy_user#17:proxy_password' https://example.com
 ```
 
 SOCKS5:
 
 ```bash
-curl --socks5 proxy_user:proxy_password@127.0.0.1:18081 https://example.com
+curl --socks5 127.0.0.1:18081 --proxy-user 'proxy_user:proxy_password' https://example.com
 ```
 
 SOCKS5 使用用户名路由策略：
 
 ```bash
-curl --socks5 'proxy_user#17:proxy_password@127.0.0.1:18081' https://example.com
+curl --socks5 127.0.0.1:18081 --proxy-user 'proxy_user#17:proxy_password' https://example.com
 ```
 
 Mixed 监听端口也可以同时承接上面两种客户端，只要客户端协议本身正确。

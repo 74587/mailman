@@ -129,7 +129,8 @@ curl -X POST "$BASE_URL/api/proxy-pool/bulk-import" \
           <tbody>
             <tr><td>监听 IP</td><td><code>127.0.0.1</code> / 内网 IP / <code>0.0.0.0</code></td><td>公网或全网卡监听必须显式确认公开监听。</td></tr>
             <tr><td>外部访问地址</td><td><code>proxy.example.com</code></td><td>不做校验，只用于生成示例 curl。</td></tr>
-            <tr><td>端口</td><td><code>32109</code></td><td>避免使用系统保留端口。</td></tr>
+            <tr><td>外部访问端口</td><td><code>32027</code> 或留空</td><td>Docker、Kubernetes、负载均衡端口映射时填写；留空则使用监听端口。</td></tr>
+            <tr><td>监听端口</td><td><code>32109</code></td><td>Mailman 进程实际监听的端口。</td></tr>
             <tr><td>协议</td><td><code>mixed</code></td><td>同一端口支持 HTTP 和 SOCKS5，推荐。</td></tr>
             <tr><td>需要认证</td><td>开启</td><td>公网监听不允许关闭认证。</td></tr>
             <tr><td>默认安全策略</td><td>选择网关级策略</td><td>控制访问安全边界。</td></tr>
@@ -230,20 +231,25 @@ proxy_user#17;purpose=signup;batch=202606</code></pre>
     <section id="usage" class="section">
       <h2>第五步：客户端接入代理</h2>
       <h3>curl</h3>
+      <p class="muted">curl 示例使用 <code>--proxy-user</code> 传递原始用户名密码，不要把密码里的 <code>}</code> 写成 <code>%7d</code> 这类 URL 编码。</p>
       <pre><code># HTTP CONNECT
-curl -x 'http://gw_user:gw_password@proxy.example.com:32109' \
+curl -x 'http://proxy.example.com:32109' \
+  --proxy-user 'gw_user:gw_password' \
   'https://api.ipify.org?format=json'
 
 # HTTP CONNECT + 用户名路由
-curl -x 'http://gw_user#17:gw_password@proxy.example.com:32109' \
+curl -x 'http://proxy.example.com:32109' \
+  --proxy-user 'gw_user#17:gw_password' \
   'https://api.ipify.org?format=json'
 
 # SOCKS5 远端解析
-curl --socks5-hostname 'gw_user:gw_password@proxy.example.com:32109' \
+curl --socks5-hostname 'proxy.example.com:32109' \
+  --proxy-user 'gw_user:gw_password' \
   'https://api.ipify.org?format=json'
 
 # SOCKS5 + 用户名路由
-curl --socks5-hostname 'gw_user#17:gw_password@proxy.example.com:32109' \
+curl --socks5-hostname 'proxy.example.com:32109' \
+  --proxy-user 'gw_user#17:gw_password' \
   'https://example.com'</code></pre>
       <h3>Playwright</h3>
       <pre><code>import { chromium } from 'playwright'
@@ -265,7 +271,8 @@ await browser.close()</code></pre>
 from urllib.parse import quote
 
 username = quote("gw_user#17", safe="")
-proxy = f"http://{username}:gw_password@proxy.example.com:32109"
+password = quote("gw_password", safe="")
+proxy = f"http://{username}:{password}@proxy.example.com:32109"
 
 proxies = { "http": proxy, "https": proxy }
 print(requests.get("https://api.ipify.org?format=json", proxies=proxies, timeout=20).text)</code></pre>

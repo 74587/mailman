@@ -35,6 +35,7 @@ type proxyGatewayListenerRequest struct {
 	Name                    string                      `json:"name"`
 	ListenIP                string                      `json:"listenIp"`
 	ExternalHost            string                      `json:"externalHost"`
+	ExternalPort            int                         `json:"externalPort"`
 	Port                    int                         `json:"port"`
 	Protocol                models.ProxyGatewayProtocol `json:"protocol"`
 	Enabled                 bool                        `json:"enabled"`
@@ -238,6 +239,7 @@ func applyListenerRequest(item *models.ProxyGatewayListener, req proxyGatewayLis
 		item.ListenIP = "127.0.0.1"
 	}
 	item.ExternalHost = strings.TrimSpace(req.ExternalHost)
+	item.ExternalPort = req.ExternalPort
 	item.Port = req.Port
 	item.Protocol = models.NormalizeProxyGatewayProtocol(req.Protocol)
 	item.Enabled = req.Enabled
@@ -1008,6 +1010,9 @@ func (h *ProxyGatewayHandlers) ensureGatewayDefaultsAndAssign(item *models.Proxy
 func validateProxyGatewayListener(item models.ProxyGatewayListener) string {
 	if item.Port <= 0 || item.Port > 65535 {
 		return "监听端口必须在 1 到 65535 之间"
+	}
+	if item.ExternalPort < 0 || item.ExternalPort > 65535 {
+		return "外部访问端口必须留空或在 1 到 65535 之间"
 	}
 	if item.AllowPublicListen && !isLoopbackListenIP(item.ListenIP) && !item.RequireAuth {
 		return "公开监听必须启用代理账号认证，避免暴露为开放代理"

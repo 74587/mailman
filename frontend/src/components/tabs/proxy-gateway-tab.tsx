@@ -83,6 +83,7 @@ const defaultListener = (): Partial<ProxyGatewayListener> => ({
     name: 'Mixed Proxy Gateway',
     listenIp: '127.0.0.1',
     externalHost: '',
+    externalPort: undefined,
     port: 18080,
     protocol: 'mixed',
     enabled: false,
@@ -189,6 +190,50 @@ const defaultDNSPolicy = (gatewayId: number): Partial<ProxyGatewayDNSPolicy> => 
     multiIpStrategy: 'check_all',
     resolveFailureAction: 'deny',
 })
+
+const SAFE_USERNAME_CHARS = 'abcdefghijkmnopqrstuvwxyz23456789'
+const SAFE_PASSWORD_UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+const SAFE_PASSWORD_LOWER = 'abcdefghijkmnopqrstuvwxyz'
+const SAFE_PASSWORD_DIGITS = '23456789'
+const SAFE_PASSWORD_CHARS = `${SAFE_PASSWORD_UPPER}${SAFE_PASSWORD_LOWER}${SAFE_PASSWORD_DIGITS}`
+
+function randomIndex(max: number) {
+    if (max <= 0) return 0
+    if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+        const bytes = new Uint32Array(1)
+        window.crypto.getRandomValues(bytes)
+        return bytes[0] % max
+    }
+    return Math.floor(Math.random() * max)
+}
+
+function randomChar(chars: string) {
+    return chars[randomIndex(chars.length)]
+}
+
+function randomString(length: number, chars: string) {
+    return Array.from({ length }, () => randomChar(chars)).join('')
+}
+
+function generateGatewayUsername() {
+    return `gw${randomString(10, SAFE_USERNAME_CHARS)}`
+}
+
+function generateGatewayPassword() {
+    const chars = [
+        randomChar(SAFE_PASSWORD_UPPER),
+        randomChar(SAFE_PASSWORD_LOWER),
+        randomChar(SAFE_PASSWORD_DIGITS),
+        ...Array.from({ length: 13 }, () => randomChar(SAFE_PASSWORD_CHARS)),
+    ]
+    for (let i = chars.length - 1; i > 0; i--) {
+        const j = randomIndex(i + 1)
+        const current = chars[i]
+        chars[i] = chars[j]
+        chars[j] = current
+    }
+    return chars.join('')
+}
 
 export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTabProps) {
     const normalizedSection = normalizeSection(section)
@@ -699,7 +744,7 @@ function GatewaysView({
                             </div>
                             <div className="min-w-0">
                                 <h3 className="truncate font-semibold text-gray-900 dark:text-white">{detailGateway.name}</h3>
-                                <p className="mt-1 text-xs text-gray-500">{gatewayExternalHost(detailGateway)}:{detailGateway.port} · {detailGateway.protocol.toUpperCase()}</p>
+                                <p className="mt-1 text-xs text-gray-500">{gatewayHostPort(detailGateway)} · {detailGateway.protocol.toUpperCase()}</p>
                             </div>
                         </div>
                         <div className="mt-3 flex flex-wrap gap-1.5">
@@ -800,7 +845,7 @@ function GatewaysView({
                                         </td>
                                         <td className="px-4 py-3 text-gray-600 dark:text-gray-300">
                                             <div>{item.listenIp}:{item.port}</div>
-                                            {item.externalHost && <div className="mt-1 text-xs text-gray-500">外部 {item.externalHost}:{item.port}</div>}
+                                            {(item.externalHost || item.externalPort) && <div className="mt-1 text-xs text-gray-500">外部 {gatewayHostPort(item)}</div>}
                                         </td>
                                         <td className="px-4 py-3"><Badge tone="blue">{item.protocol.toUpperCase()}</Badge></td>
                                         <td className="px-4 py-3 text-gray-600 dark:text-gray-300">{gatewayAccounts}</td>
@@ -848,7 +893,7 @@ function GatewayOverview({ gateway, status, allowedAccounts, routeCount, securit
                 <div className="flex flex-wrap items-start justify-between gap-4 border-b border-gray-100 p-4 dark:border-gray-800">
                     <div>
                         <h3 className="text-base font-semibold text-gray-900 dark:text-white">{gateway.name}</h3>
-                        <p className="mt-1 text-sm text-gray-500">{gatewayExternalHost(gateway)}:{gateway.port} · {gateway.protocol.toUpperCase()} · {gateway.requireAuth ? '需要认证' : '匿名入口'}</p>
+                        <p className="mt-1 text-sm text-gray-500">{gatewayHostPort(gateway)} · {gateway.protocol.toUpperCase()} · {gateway.requireAuth ? '需要认证' : '匿名入口'}</p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                         <button onClick={onReload} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
@@ -876,7 +921,7 @@ function GatewayOverview({ gateway, status, allowedAccounts, routeCount, securit
                 <div className="border-b border-gray-100 px-4 py-3 text-sm font-semibold text-gray-900 dark:border-gray-800 dark:text-white">网关配置摘要</div>
                 <div className="grid gap-3 p-4 md:grid-cols-2">
                     <SummaryRow label="监听地址" value={`${gateway.listenIp}:${gateway.port}`} />
-                    <SummaryRow label="外部访问" value={`${gatewayExternalHost(gateway)}:${gateway.port}`} />
+                    <SummaryRow label="外部访问" value={gatewayHostPort(gateway)} />
                     <SummaryRow label="协议" value={gateway.protocol.toUpperCase()} />
                     <SummaryRow label="公网监听" value={gateway.allowPublicListen ? '允许' : '不允许'} />
                     <SummaryRow label="默认网关" value={gateway.isDefault ? '是' : '否'} />
@@ -1044,14 +1089,14 @@ function AccountCurlModal({ account, onClose }: {
     if (!account) return null
 
     const selectedGateway = allowedGateways.find(item => item.id === gatewayId) || allowedGateways[0]
-    const gatewayOptions = toSearchOptions(allowedGateways, item => `${gatewayExternalHost(item)}:${item.port} · ${item.protocol.toUpperCase()}`)
+    const gatewayOptions = toSearchOptions(allowedGateways, item => `${gatewayHostPort(item)} · ${item.protocol.toUpperCase()}`)
     const commands = selectedGateway ? buildGatewayCurlCommands(account, selectedGateway) : []
     const commandText = commands.map(item => item.command).join('\n\n')
 
-    const copyCommand = async () => {
+    const copyText = async (text: string, successMessage = 'curl 命令已复制') => {
         try {
-            await navigator.clipboard.writeText(commandText)
-            toast.success('curl 命令已复制')
+            await navigator.clipboard.writeText(text)
+            toast.success(successMessage)
         } catch (error: any) {
             toast.error(error.message || '复制失败')
         }
@@ -1093,14 +1138,14 @@ function AccountCurlModal({ account, onClose }: {
                     {selectedGateway ? (
                         <>
                             <div className="grid gap-3 md:grid-cols-3">
-                                <Metric label="外部地址" value={`${gatewayExternalHost(selectedGateway)}:${selectedGateway.port}`} />
+                                <Metric label="外部地址" value={gatewayHostPort(selectedGateway)} />
                                 <Metric label="协议" value={selectedGateway.protocol.toUpperCase()} />
                                 <Metric label="认证" value={selectedGateway.requireAuth ? '需要账号密码' : '匿名'} />
                             </div>
                             <div>
                                 <div className="mb-2 flex items-center justify-between gap-3">
                                     <FieldLabel label="curl 命令" help="Mixed 网关同时提供 HTTP 和 SOCKS5 示例；HTTP 使用 -x，SOCKS5 使用 --socks5-hostname。" />
-                                    <button disabled={!commands.length} onClick={copyCommand} className={cn('inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm dark:border-gray-700', commands.length ? 'hover:bg-gray-50 dark:hover:bg-gray-800' : 'cursor-not-allowed opacity-60')}>
+                                    <button disabled={!commands.length} onClick={() => copyText(commandText)} className={cn('inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm dark:border-gray-700', commands.length ? 'hover:bg-gray-50 dark:hover:bg-gray-800' : 'cursor-not-allowed opacity-60')}>
                                         <Copy className="h-4 w-4" />
                                         复制全部
                                     </button>
@@ -1111,6 +1156,14 @@ function AccountCurlModal({ account, onClose }: {
                                             <div className="flex items-center justify-between gap-3 border-b border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-300">
                                                 <span>{item.label}</span>
                                                 <span>{item.description}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => copyText(item.command, `${item.label}命令已复制`)}
+                                                    className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-gray-200 hover:bg-gray-800"
+                                                >
+                                                    <Copy className="h-3.5 w-3.5" />
+                                                    复制
+                                                </button>
                                             </div>
                                             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all bg-gray-950 p-3 text-xs text-gray-100">
                                                 <code>{item.command}</code>
@@ -1136,6 +1189,10 @@ function gatewayExternalHost(gateway: ProxyGatewayListener) {
     return (gateway.externalHost || gateway.listenIp || '127.0.0.1').trim()
 }
 
+function gatewayExternalPort(gateway: ProxyGatewayListener) {
+    return gateway.externalPort && gateway.externalPort > 0 ? gateway.externalPort : gateway.port
+}
+
 function shellQuote(value: string) {
     return `'${value.replace(/'/g, `'\\''`)}'`
 }
@@ -1143,7 +1200,7 @@ function shellQuote(value: string) {
 function gatewayHostPort(gateway: ProxyGatewayListener) {
     const host = gatewayExternalHost(gateway)
     if (/:\d+$/.test(host)) return host
-    return `${host}:${gateway.port}`
+    return `${host}:${gatewayExternalPort(gateway)}`
 }
 
 function buildGatewayCurlCommands(account: ProxyGatewayAccount, gateway: ProxyGatewayListener) {
@@ -1560,6 +1617,7 @@ function ListenerModal({ draft, setDraft, securityPolicies, dnsPolicies, onSave 
                             </div>
                         </div>
                         <TextField label="外部访问 IP/域名" help="不参与监听和校验，只用于列表展示和一键生成测试 curl 示例。" value={draft.externalHost || ''} onChange={value => setDraft({ ...draft, externalHost: value })} />
+                        <OptionalNumberField label="外部访问端口" help="可选。Docker 或负载均衡把外部端口映射到监听端口时填写；留空则使用监听端口。" value={draft.externalPort} onChange={value => setDraft({ ...draft, externalPort: value })} />
                         <NumberField label="端口" help="该端口会提供 HTTP、SOCKS5 或混合代理入口。" value={draft.port || 0} onChange={value => setDraft({ ...draft, port: value })} />
                         <SelectField label="协议" help="Mixed 会自动识别 HTTP 代理请求和 SOCKS5 握手。" value={draft.protocol || 'mixed'} onChange={value => setDraft({ ...draft, protocol: value as any })} options={[['mixed', 'Mixed'], ['http', 'HTTP'], ['socks5', 'SOCKS5']]} />
                         <SearchSelect label="默认安全策略" help="网关未被路由策略覆盖时使用的访问边界。" items={securityOptions} value={draft.securityPolicyId} onChange={value => setDraft({ ...draft, securityPolicyId: value })} noneLabel="自动默认" placeholder="搜索安全策略" />
@@ -1668,13 +1726,8 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
     const groupOptions = toSearchOptions(accountGroups, item => item.description)
     const tagOptions = toSearchOptions(accountTags)
     const routeOptions = routeChoices.map(item => ({ id: item.id, name: `#${item.flagNo} ${item.name}`, description: item.description, meta: `标志号 ${item.flagNo}` }))
-    const generateUsername = () => `gw_${Math.random().toString(36).slice(2, 10)}`
-    const generatePassword = () => {
-        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%*?'
-        const bytes = new Uint32Array(16)
-        window.crypto?.getRandomValues(bytes)
-        return Array.from(bytes, value => chars[value % chars.length]).join('')
-    }
+    const generateUsername = generateGatewayUsername
+    const generatePassword = generateGatewayPassword
 
     return (
         <Modal open={!!draft} onOpenChange={open => !open && setDraft(null)}>
@@ -2179,6 +2232,20 @@ function NumberField({ label, value, onChange, help }: { label: string; value: n
         <label className="block text-sm">
             <FieldLabel label={label} help={help} />
             <input type="number" value={value} onChange={event => onChange(Number(event.target.value))} className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40" />
+        </label>
+    )
+}
+
+function OptionalNumberField({ label, value, onChange, help }: { label: string; value?: number; onChange: (value: number | undefined) => void; help?: string }) {
+    return (
+        <label className="block text-sm">
+            <FieldLabel label={label} help={help} />
+            <input
+                type="number"
+                value={value && value > 0 ? value : ''}
+                onChange={event => onChange(event.target.value === '' ? undefined : Number(event.target.value))}
+                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40"
+            />
         </label>
     )
 }

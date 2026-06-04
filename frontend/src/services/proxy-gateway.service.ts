@@ -17,6 +17,7 @@ export interface ProxyGatewayListener {
     name: string
     listenIp: string
     externalHost?: string
+    externalPort?: number
     port: number
     protocol: ProxyGatewayProtocol
     enabled: boolean

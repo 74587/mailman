@@ -88,6 +88,7 @@ type ProxyGatewayListener struct {
 	Name                    string                      `gorm:"not null;type:varchar(120)" json:"name"`
 	ListenIP                string                      `gorm:"not null;type:varchar(128);default:'127.0.0.1'" json:"listenIp"`
 	ExternalHost            string                      `gorm:"type:varchar(255)" json:"externalHost,omitempty"`
+	ExternalPort            int                         `gorm:"not null;default:0" json:"externalPort,omitempty"`
 	Port                    int                         `gorm:"not null;index" json:"port"`
 	Protocol                ProxyGatewayProtocol        `gorm:"not null;type:varchar(16);default:'mixed'" json:"protocol"`
 	Enabled                 bool                        `gorm:"not null;default:false" json:"enabled"`
