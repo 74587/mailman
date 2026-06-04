@@ -1,7 +1,7 @@
 'use client'
 import { logger } from '@/lib/logger';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import {
     Send,
@@ -26,6 +26,7 @@ import { EmailAccount, Email } from '@/types'
 import { cn, formatDate } from '@/lib/utils'
 import { apiClient } from '@/lib/api-client'
 import { registerTabCallback, unregisterTabCallback } from '@/lib/tab-utils'
+import { useAISkill, type AISkill, type AISkillAction } from '@/components/ai'
 import {
     Dialog,
     DialogContent,
@@ -482,6 +483,63 @@ const stripHtml = (html: string) => {
     return tmp.textContent || tmp.innerText || "";
 }
 
+const extractEmailAddress = (value?: unknown) => {
+    const text = String(value || '').trim()
+    if (!text) return ''
+
+    const angleMatch = text.match(/<([^<>@\s]+@[^<>\s]+)>/)
+    if (angleMatch?.[1]) return angleMatch[1].trim()
+
+    const emailMatch = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)
+    return emailMatch?.[0]?.trim() || ''
+}
+
+const normalizeDraftRecipients = (value?: unknown): string[] => {
+    const rawValues = Array.isArray(value)
+        ? value
+        : typeof value === 'string'
+            ? value.split(/[;,，；]/)
+            : value
+                ? [value]
+                : []
+
+    const seen = new Set<string>()
+    const recipients: string[] = []
+
+    rawValues.forEach(item => {
+        const email = extractEmailAddress(item)
+        if (!email) return
+        const key = email.toLowerCase()
+        if (seen.has(key)) return
+        seen.add(key)
+        recipients.push(email)
+    })
+
+    return recipients
+}
+
+const firstDraftString = (...values: unknown[]): string => {
+    for (const value of values) {
+        if (Array.isArray(value)) {
+            const nested: string = firstDraftString(...value)
+            if (nested) return nested
+            continue
+        }
+        const text = String(value || '').trim()
+        if (text) return text
+    }
+    return ''
+}
+
+const addReplyPrefix = (value: string) => {
+    const subject = value.trim() || '(无主题)'
+    return subject.toLowerCase().startsWith('re:') ? subject : `Re: ${subject}`
+}
+
+const readDraftRecord = (value: unknown): Record<string, unknown> | null => {
+    return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
 interface ComposeEmailTabProps {
     initialMode?: 'reply' | 'reply-all' | 'forward'
     initialEmail?: Email
@@ -517,6 +575,12 @@ export default function ComposeEmailTab({
     const [bccRecipients, setBccRecipients] = useState<string[]>([])
     const [subject, setSubject] = useState('')
     const [showCcBcc, setShowCcBcc] = useState(false)
+    const selectedAccount = useMemo(() => {
+        if (!selectedAccountId) return null
+        return senderAccounts.find(account => account.id === selectedAccountId)
+            || allAccounts.find(account => account.id === selectedAccountId)
+            || null
+    }, [allAccounts, selectedAccountId, senderAccounts])
 
     // 编辑器状态
     const [editorReady, setEditorReady] = useState(false)
@@ -655,6 +719,7 @@ export default function ComposeEmailTab({
 
     // 初始化标记，防止重复初始化导致覆盖用户输入
     const initializedRef = useRef(false)
+    const accountsLoadPromiseRef = useRef<Promise<EmailAccount[]> | null>(null)
 
     // 处理从 props 传入的初始数据（用于 compose-reply-tab）
     useEffect(() => {
@@ -669,26 +734,215 @@ export default function ComposeEmailTab({
         }
     }, [initialMode, initialEmail, initialAccountId, handleComposeData])
 
-    useEffect(() => {
-        loadAccounts()
+    const loadAccounts = useCallback(async () => {
+        if (accountsLoadPromiseRef.current) {
+            return accountsLoadPromiseRef.current
+        }
+
+        const promise = (async () => {
+            setLoadingAccounts(true)
+            try {
+                const data = await emailAccountService.getAccounts()
+                setAllAccounts(data)
+                const verifiedAccounts = data.filter((account) => account.isVerified)
+                setSenderAccounts(verifiedAccounts)
+                setSelectedAccountId(prev => prev || verifiedAccounts[0]?.id || null)
+                return verifiedAccounts
+            } catch (error) {
+                console.error('Failed to load accounts:', error)
+                return [] as EmailAccount[]
+            } finally {
+                setLoadingAccounts(false)
+                accountsLoadPromiseRef.current = null
+            }
+        })()
+
+        accountsLoadPromiseRef.current = promise
+        return promise
     }, [])
 
-    const loadAccounts = async () => {
-        try {
-            setLoadingAccounts(true)
-            const data = await emailAccountService.getAccounts()
-            setAllAccounts(data)
-            const verifiedAccounts = data.filter((account) => account.isVerified)
-            setSenderAccounts(verifiedAccounts)
-            if (verifiedAccounts.length > 0 && !selectedAccountId) {
-                setSelectedAccountId(verifiedAccounts[0].id)
-            }
-        } catch (error) {
-            console.error('Failed to load accounts:', error)
-        } finally {
-            setLoadingAccounts(false)
+    useEffect(() => {
+        loadAccounts()
+    }, [loadAccounts])
+
+    const resolveReplySenderAccounts = useCallback(async () => {
+        if (!loadingAccounts && senderAccounts.length > 0) {
+            return senderAccounts
         }
-    }
+
+        const loadedAccounts = await loadAccounts()
+        return loadedAccounts.length > 0 ? loadedAccounts : senderAccounts
+    }, [loadAccounts, loadingAccounts, senderAccounts])
+
+    const composeEmailAISkill = useMemo<AISkill>(() => ({
+        id: 'compose-email',
+        title: '发送邮件',
+        description: '撰写新邮件、预填回复草稿和确认邮件发送前的编辑状态。',
+        aliases: ['发送邮件', '撰写邮件', '回复邮件', '邮件草稿', 'compose email'],
+        pageTabs: ['compose-email'],
+        getContext: () => ({
+            loading: loadingAccounts || sending,
+            isLoading: loadingAccounts || sending,
+            loadingAccounts,
+            isLoadingAccounts: loadingAccounts,
+            sending,
+            selectedAccount: selectedAccount ? {
+                id: selectedAccount.id,
+                email: selectedAccount.emailAddress,
+                provider: selectedAccount.mailProvider?.type,
+                isVerified: selectedAccount.isVerified,
+            } : null,
+            senderAccountsCount: senderAccounts.length,
+            toRecipients,
+            ccRecipients,
+            bccRecipients,
+            subject,
+            editorMode,
+            markdownContent,
+            visualTextPreview: stripHtml(visualHtml).slice(0, 1200),
+            hasContent: editorMode === 'markdown'
+                ? markdownContent.trim() !== '' && markdownContent !== DEFAULT_MARKDOWN
+                : hasVisualContent,
+            composeMode,
+            originalEmail: originalEmail ? {
+                id: originalEmail.ID,
+                subject: originalEmail.Subject || '(无主题)',
+                from: Array.isArray(originalEmail.From) ? originalEmail.From.join(', ') : originalEmail.From,
+                date: originalEmail.Date,
+            } : null,
+            attachmentsCount: attachments.length,
+            lastSendResult: sendResult,
+        }),
+        actions: [
+            {
+                name: 'prepareReplyDraft',
+                title: '预填回复草稿',
+                description: '根据当前或指定邮件预填回复收件人、主题和正文，但不发送邮件。',
+                risk: 'write',
+                parameters: {
+                    content: '回复正文',
+                    to: '回复收件人邮箱',
+                    subject: '回复主题',
+                    accountId: '发件账户 ID',
+                },
+                run: async (params) => {
+                    const original = readDraftRecord(params.originalEmail)
+                    const content = firstDraftString(params.content, params.body, params.replyBody, params.message)
+                    const to = normalizeDraftRecipients(
+                        params.to
+                        || params.recipients
+                        || original?.from
+                        || original?.From
+                    )
+                    const cc = normalizeDraftRecipients(params.cc || original?.cc || original?.Cc)
+                    const bcc = normalizeDraftRecipients(params.bcc || original?.bcc || original?.Bcc)
+                    const subjectText = firstDraftString(params.subject)
+                        || addReplyPrefix(firstDraftString(original?.subject, original?.Subject))
+                    const sourceBodyPreviewRaw = firstDraftString(original?.bodyPreview, original?.body, original?.Body)
+                    const sourceBodyPreview = sourceBodyPreviewRaw.length > 800
+                        ? `${sourceBodyPreviewRaw.slice(0, 800)}...`
+                        : sourceBodyPreviewRaw
+                    const sourceEmail = original ? {
+                        id: original.id || original.ID,
+                        subject: firstDraftString(original.subject, original.Subject) || '(无主题)',
+                        from: firstDraftString(original.from, original.From),
+                        date: firstDraftString(original.date, original.Date),
+                        bodyPreview: sourceBodyPreview,
+                    } : undefined
+                    const requestedAccountId = Number(firstDraftString(params.accountId, original?.accountId, original?.AccountID) || 0)
+                    const availableSenders = await resolveReplySenderAccounts()
+                    const currentVerifiedSender = selectedAccountId
+                        ? availableSenders.find(account => account.id === selectedAccountId) || null
+                        : null
+                    const resolvedSender = requestedAccountId
+                        ? availableSenders.find(account => account.id === requestedAccountId)
+                            || currentVerifiedSender
+                            || availableSenders[0]
+                            || null
+                        : currentVerifiedSender || availableSenders[0] || null
+
+                    if (!resolvedSender) {
+                        return {
+                            success: false,
+                            summary: '没有可用的已验证发件账户，无法预填回复草稿。',
+                        }
+                    }
+
+                    if (to.length === 0) {
+                        return {
+                            success: false,
+                            summary: '没有识别到回复收件人，无法预填回复草稿。',
+                        }
+                    }
+
+                    if (!content) {
+                        return {
+                            success: false,
+                            summary: '没有提供回复正文，无法预填回复草稿。',
+                        }
+                    }
+
+                    setComposeMode('reply')
+                    setOriginalEmail(null)
+                    setSelectedAccountId(resolvedSender.id)
+                    setToRecipients(to)
+                    setCcRecipients(cc)
+                    setBccRecipients(bcc)
+                    setShowCcBcc(cc.length > 0 || bcc.length > 0)
+                    setSubject(subjectText)
+                    setEditorMode('markdown')
+                    setMarkdownContent(content)
+                    setVisualHtml('')
+                    setQuotedHtml('')
+                    setHasVisualContent(false)
+                    setSendResult(null)
+                    setShowResultDialog(false)
+
+                    return {
+                        success: true,
+                        summary: `${sourceBodyPreview ? `邮件摘要：${sourceBodyPreview}\n` : ''}已预填回复草稿：收件人 ${to.join(', ')}，主题「${subjectText}」，正文为「${content}」。邮件尚未发送。`,
+                        data: {
+                            sourceEmail,
+                            draft: {
+                                mode: 'reply',
+                                accountId: resolvedSender.id,
+                                from: resolvedSender.emailAddress,
+                                requestedAccountId: requestedAccountId || undefined,
+                                toRecipients: to,
+                                ccRecipients: cc,
+                                bccRecipients: bcc,
+                                subject: subjectText,
+                                content,
+                                shouldSend: false,
+                                sent: false,
+                            },
+                        },
+                    }
+                },
+            },
+        ] satisfies AISkillAction[],
+    }), [
+        attachments.length,
+        bccRecipients,
+        ccRecipients,
+        composeMode,
+        editorMode,
+        hasVisualContent,
+        loadingAccounts,
+        markdownContent,
+        originalEmail,
+        resolveReplySenderAccounts,
+        selectedAccount,
+        selectedAccountId,
+        sendResult,
+        senderAccounts,
+        sending,
+        subject,
+        toRecipients,
+        visualHtml,
+    ])
+
+    useAISkill(composeEmailAISkill)
 
     // 检查当前编辑器是否有内容
     const hasCurrentContent = (): boolean => {

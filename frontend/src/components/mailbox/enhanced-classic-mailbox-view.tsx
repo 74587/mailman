@@ -1039,9 +1039,22 @@ export default function EnhancedClassicMailboxView() {
             selectedEmailId,
             hasSelectedEmail: Boolean(selectedEmail),
             activePanel,
+            loading: loading || loadingEmails || loadingMore || isRefreshing,
+            isLoading: loading || loadingEmails || loadingMore || isRefreshing,
+            loadingAccounts: loading,
+            isLoadingAccounts: loading,
+            loadingEmails,
+            isLoadingEmails: loadingEmails,
+            loadingMore,
+            isLoadingMore: loadingMore,
+            isRefreshing,
+            isDataSettled: !loading && !loadingEmails && !loadingMore && !isRefreshing,
             accountsCount: accounts.length,
             loadedEmailsCount: emails.length,
             totalCount,
+            hasMore,
+            currentOffset,
+            pageSize: PAGE_SIZE,
             directionFilter,
             searchQuery: emailSearchQuery,
             sampleVisibleEmails: emails.slice(0, 8).map(email => ({
@@ -1135,6 +1148,100 @@ export default function EnhancedClassicMailboxView() {
                 },
             },
             {
+                name: 'openLatestAccountLatestEmail',
+                title: '打开最新账户最新邮件',
+                description: '定位最近创建的邮箱账户，加载其最新邮件，并打开最新一封邮件详情。',
+                risk: 'navigation',
+                run: async () => {
+                    let targetAccount = [...accounts]
+                        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]
+
+                    if (!targetAccount) {
+                        const accountsResponse = await emailAccountService.getAccountsPaginated({
+                            page: 1,
+                            limit: 1,
+                            sort_by: 'created_at',
+                            sort_order: 'desc',
+                        })
+                        targetAccount = accountsResponse.data[0]
+                    }
+
+                    if (!targetAccount) {
+                        return {
+                            success: false,
+                            summary: '没有找到任何邮箱账户。',
+                            data: { accountFound: false },
+                        }
+                    }
+
+                    setSelectedAccount(targetAccount)
+                    setSelectedEmailId(null)
+                    setEmailSearchQuery('')
+
+                    try {
+                        setLoadingEmails(true)
+                        const emailsData = await emailService.searchEmails({
+                            limit: PAGE_SIZE,
+                            offset: 0,
+                            sort_by: 'date_desc',
+                        }, targetAccount.id)
+                        const emailList: Email[] = Array.isArray(emailsData) ? emailsData : (emailsData.emails || [])
+                        const pagination = (emailsData as any).pagination || {}
+                        const latestEmail = emailList[0]
+
+                        let selectedLatestEmail: Email | undefined = latestEmail
+                        if (latestEmail) {
+                            try {
+                                selectedLatestEmail = await emailService.getEmail(latestEmail.ID) || latestEmail
+                            } catch (error) {
+                                console.warn('Failed to fetch latest email details:', error)
+                            }
+                        }
+
+                        let nextEmails = emailList
+                        if (selectedLatestEmail) {
+                            const selectedEmailValue = selectedLatestEmail
+                            nextEmails = emailList.map(email => email.ID === selectedEmailValue.ID ? selectedEmailValue : email)
+                        }
+
+                        setEmails(nextEmails)
+                        setTotalCount(pagination.total || emailList.length)
+                        setHasMore(pagination.has_next || false)
+                        setCurrentOffset(0)
+                        if (selectedLatestEmail) {
+                            setSelectedEmailId(selectedLatestEmail.ID)
+                            setActivePanel('preview')
+                        } else if (isMobileView) {
+                            setActivePanel('list')
+                        }
+
+                        const selectedEmailSummary = selectedLatestEmail
+                            ? summarizeEmailForAI(selectedLatestEmail, AI_EMAIL_ACTION_BODY_LIMIT)
+                            : null
+
+                        return {
+                            success: true,
+                            summary: selectedEmailSummary
+                                ? `已打开最新账户 ${targetAccount.emailAddress} 的最新邮件「${selectedEmailSummary.subject}」，发件人 ${selectedEmailSummary.from || '未知'}。`
+                                : `最新账户 ${targetAccount.emailAddress} 当前没有邮件。`,
+                            details: selectedEmailSummary?.bodyPreview,
+                            data: {
+                                accountFound: true,
+                                accountId: targetAccount.id,
+                                email: targetAccount.emailAddress,
+                                accountCreatedAt: targetAccount.createdAt,
+                                loadedEmailsCount: emailList.length,
+                                totalCount: pagination.total || emailList.length,
+                                emailFound: Boolean(selectedEmailSummary),
+                                selectedEmail: selectedEmailSummary,
+                            },
+                        }
+                    } finally {
+                        setLoadingEmails(false)
+                    }
+                },
+            },
+            {
                 name: 'getSelectedEmailDetails',
                 title: '读取当前选中邮件',
                 description: '读取当前已选中邮件的主题、发件人、收件人、正文摘要和附件信息。',
@@ -1179,10 +1286,16 @@ export default function EnhancedClassicMailboxView() {
     }), [
         activePanel,
         accounts,
+        currentOffset,
         directionFilter,
         emailSearchQuery,
         emails,
+        hasMore,
         isMobileView,
+        isRefreshing,
+        loading,
+        loadingEmails,
+        loadingMore,
         selectedAccount,
         selectedEmail,
         selectedEmailId,

@@ -10,6 +10,8 @@ import type {
     CallOpenAIResponse
 } from '@/types/openai'
 
+const AI_CALL_TIMEOUT_MS = 600_000
+
 export const openAIService = {
     // OpenAI Configuration methods
     async getOpenAIConfigs(): Promise<OpenAIConfig[]> {
@@ -74,7 +76,7 @@ export const openAIService = {
 
     // Call OpenAI API method
     async callOpenAI(request: CallOpenAIRequest): Promise<CallOpenAIResponse> {
-        const response = await apiClient.post('/openai/call', request)
+        const response = await apiClient.post('/openai/call', request, { timeout: AI_CALL_TIMEOUT_MS })
         return response
     },
 

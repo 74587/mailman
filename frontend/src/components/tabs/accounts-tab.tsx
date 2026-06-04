@@ -644,6 +644,8 @@ export default function AccountsTab() {
                 authType: account.authType,
                 isVerified: account.isVerified,
                 errorStatus: account.errorStatus,
+                createdAt: account.createdAt,
+                updatedAt: account.updatedAt,
             })),
         }),
         actions: [
@@ -732,19 +734,32 @@ export default function AccountsTab() {
                 title: '查看账户邮件',
                 description: '按邮箱地址定位账户，并打开该账户的邮件列表。',
                 risk: 'navigation',
-                parameters: { email: '邮箱地址' },
+                parameters: { email: '邮箱地址', latest: '为 true 时打开最近创建的账户' },
                 run: async (params) => {
                     const email = String(params.email || params.emailAddress || '').trim().toLowerCase()
                     const query = String(params.query || params.emailPrefix || email).trim().toLowerCase()
                     const accountId = typeof params.accountId === 'number' ? params.accountId : Number(params.accountId || 0)
+                    const latest = params.latest === true || String(params.latest || '').toLowerCase() === 'true'
 
-                    let targetAccount = accountId
+                    let targetAccount = latest
+                        ? [...paginatedAccounts].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]
+                        : accountId
                         ? paginatedAccounts.find(account => account.id === accountId)
                         : email
                             ? paginatedAccounts.find(account => account.emailAddress.toLowerCase() === email)
                             : query
                                 ? paginatedAccounts.find(account => account.emailAddress.toLowerCase().startsWith(query))
                                 : undefined
+
+                    if (!targetAccount && latest) {
+                        const response = await emailAccountService.getAccountsPaginated({
+                            page: 1,
+                            limit: 1,
+                            sort_by: 'created_at',
+                            sort_order: 'desc',
+                        })
+                        targetAccount = response.data[0]
+                    }
 
                     if (!targetAccount && query) {
                         const response = await emailAccountService.getAccountsPaginated({
@@ -760,7 +775,9 @@ export default function AccountsTab() {
                     if (!targetAccount) {
                         return {
                             success: false,
-                            summary: query ? `没有找到匹配 ${query} 的邮箱账户。` : '没有提供要查看的邮箱地址或搜索前缀。',
+                            summary: latest
+                                ? '没有找到任何邮箱账户。'
+                                : query ? `没有找到匹配 ${query} 的邮箱账户。` : '没有提供要查看的邮箱地址或搜索前缀。',
                         }
                     }
 
@@ -805,6 +822,14 @@ export default function AccountsTab() {
                     return {
                         success: true,
                         summary: '已打开添加账户窗口，提交前仍需要用户手动确认。',
+                        data: {
+                            formOpened: true,
+                            requiresUserCompletion: true,
+                            presets: {
+                                provider,
+                                authType,
+                            },
+                        },
                     }
                 },
             },
@@ -815,7 +840,14 @@ export default function AccountsTab() {
                 risk: 'navigation',
                 run: () => {
                     window.dispatchEvent(new CustomEvent('switchTab', { detail: { tab: 'oauth2-config' } }))
-                    return { success: true, summary: '已切换到 OAuth2 配置。' }
+                    return {
+                        success: true,
+                        summary: '已切换到 OAuth2 配置。',
+                        data: {
+                            tabId: 'oauth2-config',
+                            navigationOnly: true,
+                        },
+                    }
                 },
             },
         ] satisfies AISkillAction[],

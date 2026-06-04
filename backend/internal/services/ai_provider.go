@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const defaultAIProviderTimeout = 600 * time.Second
+
 // AIProvider defines the interface for AI providers
 type AIProvider interface {
 	CallAI(messages []Message, maxTokens int, temperature float64) (*ChatCompletionResponse, error)
@@ -33,7 +35,7 @@ func NewAIProvider(config *models.OpenAIConfig) AIProvider {
 	base := &BaseAIService{
 		Config: config,
 		Client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: defaultAIProviderTimeout,
 		},
 	}
 

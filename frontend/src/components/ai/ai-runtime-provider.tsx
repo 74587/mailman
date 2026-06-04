@@ -45,16 +45,37 @@ const AIRuntimeContext = createContext<AIRuntimeContextValue | null>(null)
 
 const TASK_POLL_INTERVAL_MS = 80
 const WAIT_FOR_SKILL_TIMEOUT_MS = 4000
+const PAGE_CONTEXT_WAIT_TIMEOUT_MS = 6000
+const PAGE_CONTEXT_WAIT_INTERVAL_MS = 150
+const PAGE_CONTEXT_STABLE_SAMPLES = 2
 const SELECTED_TEXT_LIMIT = 1200
 const DIRECT_CHAT_MAX_TOKENS = 1800
+const ACTION_REFLECTION_MAX_TOKENS = 700
 const CONVERSATION_HISTORY_LIMIT = 8
 const LOCAL_UNSUPPORTED_RESPONSE = '我已经感知到当前页面，但这个请求还没有对应的页面 skill。可以先试试“搜索 xxx 邮箱账户”“添加账户”或“打开 OAuth2 配置”。'
 const MAX_ACTION_ATTEMPTS = 4
 const MAX_DYNAMIC_ACTION_ATTEMPTS = 6
 const OPEN_PAGE_ACTION_NAME = 'openPage'
 const DIRECT_CHAT_RESPONSE = 'direct_chat'
+const PAGE_LOADING_KEYS = [
+    'loading',
+    'isLoading',
+    'loadingAccounts',
+    'isLoadingAccounts',
+    'loadingEmails',
+    'isLoadingEmails',
+    'loadingMore',
+    'isLoadingMore',
+    'refreshing',
+    'isRefreshing',
+]
 
 type AIConversationTurn = Pick<AIChatMessage, 'role' | 'content'>
+type AIActionAttempt = {
+    skillId: string
+    actionName: string
+    params?: Record<string, unknown>
+}
 
 const unavailableActionRun = () => ({
     success: false,
@@ -139,10 +160,39 @@ const GLOBAL_CORE_SKILL_CATALOG: AISkill[] = [
                 run: unavailableActionRun,
             },
             {
+                name: 'openLatestAccountLatestEmail',
+                title: '打开最新账户最新邮件',
+                description: '定位最近创建的邮箱账户，加载该账户邮件列表，并打开最新一封邮件详情。',
+                risk: 'navigation',
+                run: unavailableActionRun,
+            },
+            {
                 name: 'getSelectedEmailDetails',
                 title: '读取当前选中邮件',
                 description: '读取当前已选中邮件的主题、发件人、收件人、正文摘要和附件信息。',
                 risk: 'read',
+                run: unavailableActionRun,
+            },
+        ],
+    },
+    {
+        id: 'compose-email',
+        title: '发送邮件',
+        description: '撰写新邮件、预填回复草稿和确认邮件发送前的编辑状态。',
+        aliases: ['发送邮件', '撰写邮件', '回复邮件', '邮件草稿', 'compose email'],
+        pageTabs: ['compose-email'],
+        actions: [
+            {
+                name: 'prepareReplyDraft',
+                title: '预填回复草稿',
+                description: '根据当前或指定邮件预填回复收件人、主题和正文，但不发送邮件。',
+                risk: 'write',
+                parameters: {
+                    content: '回复正文',
+                    to: '回复收件人邮箱',
+                    subject: '回复主题',
+                    accountId: '发件账户 ID',
+                },
                 run: unavailableActionRun,
             },
         ],
@@ -295,6 +345,70 @@ function isViewEmailIntent(input: string) {
     return /(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索|read|view|open|check|show).*(邮件|邮箱|收件箱|inbox|mail)|(邮件|邮箱|收件箱|inbox|mail).*(查看|看一下|打开|进入|浏览|显示|找|读取|查阅|搜索|read|view|open|check|show)/i.test(input)
 }
 
+function isLatestAccountLatestEmailIntent(input: string) {
+    return /((最新|最近|最后|latest|newest|last).*(账户|账号|邮箱账户|mail account|account).*(最新|最近|最后|第一封|latest|newest|last).*(邮件|email|mail))|((最新|最近|最后|第一封|latest|newest|last).*(邮件|email|mail).*(最新|最近|最后|latest|newest|last).*(账户|账号|邮箱账户|mail account|account))/i.test(input)
+}
+
+function isReplyDraftIntent(input: string) {
+    return /(回复|恢复|回信|reply).*(当前|这封|该邮件|这个邮件|邮件|email|mail)|(当前|这封|该邮件|这个邮件|邮件|email|mail).*(回复|恢复|回信|reply)/i.test(input)
+}
+
+function cleanReplyDraftContent(value: string) {
+    const text = value.trim().replace(/[。；;]\s*$/, '')
+    if (/^[A-Za-z0-9\s'"!?,-]+[.]$/.test(text)) {
+        return text.slice(0, -1).trim()
+    }
+    return text
+}
+
+function extractReplyDraftContent(input: string) {
+    const explicit = input.match(/(?:内容|正文|body|content)\s*(?:为|是|=|:|：)\s*([\s\S]{1,1000}?)(?:[,，。；;]\s*(?:但|但是|不要|不发送|别发送|且|并且)|$)/i)
+    if (explicit?.[1]) return cleanReplyDraftContent(explicit[1])
+
+    const inlineReply = input.match(/(?:回复|恢复|回信|reply)\s*(?:当前|这封|该邮件|这个邮件|邮件|email|mail)?\s*[,，:：]\s*([\s\S]{1,1000}?)(?:[,，。；;]\s*(?:但|但是|不要|不发送|别发送|且|并且)|$)/i)
+    if (inlineReply?.[1]) return cleanReplyDraftContent(inlineReply[1])
+
+    const quoted = input.match(/[“"']([^“"']{1,1000})[”"']/)
+    if (quoted?.[1]) return quoted[1].trim()
+
+    return ''
+}
+
+function readContextRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === 'object' ? value as Record<string, unknown> : undefined
+}
+
+function buildReplyDraftParams(input: string, context: AICompressedContext): Record<string, unknown> | undefined {
+    const page = context.page
+    const selectedEmail = readContextRecord(page?.selectedEmail)
+    if (!selectedEmail) return undefined
+
+    const selectedAccount = readContextRecord(page?.selectedAccount)
+    const subject = String(selectedEmail.subject || '')
+    const from = String(selectedEmail.from || '')
+    const accountId = selectedEmail.accountId || selectedAccount?.id
+    const content = extractReplyDraftContent(input)
+
+    return {
+        mode: 'reply',
+        content,
+        body: content,
+        to: from,
+        subject: subject.toLowerCase().startsWith('re:') ? subject : `Re: ${subject || '(无主题)'}`,
+        accountId,
+        originalEmail: selectedEmail,
+        shouldSend: false,
+    }
+}
+
+function hasReplyDraftCoreParams(params?: Record<string, unknown>) {
+    if (!params) return false
+    const hasRecipient = Boolean(params.to || params.recipients)
+    const hasContent = Boolean(String(params.content || params.body || params.replyBody || params.message || '').trim())
+    const hasSubject = Boolean(String(params.subject || '').trim())
+    return hasRecipient && hasContent && hasSubject
+}
+
 function isSelectedEmailQuestion(input: string) {
     return /((当前|现在|选中|已选|打开|正在看|这封|这条|current|selected|active|opened).*(邮件|email|mail).*(说|内容|讲|总结|摘要|详情|什么意思|是什么|what|say|says|about|content|detail|details|explain|summari[sz]e|summary))|((说|内容|讲|总结|摘要|详情|什么意思|是什么|what|say|says|about|content|detail|details|explain|summari[sz]e|summary).*(当前|现在|选中|已选|打开|正在看|这封|这条|current|selected|active|opened).*(邮件|email|mail))/i.test(input)
 }
@@ -306,6 +420,28 @@ function planLocally(input: string, context: AICompressedContext, skills: AISkil
     const hasAccountsSkill = skills.some(skill => skill.id === 'accounts')
     const accountsIntent = hasAccountsSkill || /(邮箱账户|邮箱账号|账户管理|账号管理|mail accounts?|accounts?)/i.test(input) || activeTab === 'accounts'
     const emailAddress = inferEmailAddress(input, selectedText)
+
+    if (isReplyDraftIntent(input)) {
+        const params = buildReplyDraftParams(input, context)
+        if (params) {
+            return {
+                skillId: 'compose-email',
+                actionName: 'prepareReplyDraft',
+                params,
+            }
+        }
+    }
+
+    if (isLatestAccountLatestEmailIntent(input)) {
+        return {
+            skillId: 'classic-mailbox',
+            actionName: 'openLatestAccountLatestEmail',
+            params: {},
+            candidateActions: [
+                { skillId: 'accounts', actionName: 'viewAccountEmails', params: { latest: true } },
+            ],
+        }
+    }
 
     if (activeTab === 'classic-mailbox' && isSelectedEmailQuestion(input)) {
         return {
@@ -396,6 +532,31 @@ interface AIPlanResult {
     fallbackReason?: string
 }
 
+interface AIReflectionResult {
+    completed: boolean
+    confidence: 'high' | 'medium' | 'low'
+    reason: string
+    nextAction?: {
+        skillId: string
+        actionName: string
+        params?: Record<string, unknown>
+    }
+    finalResponseHint?: string
+    source: 'model' | 'local'
+    modelName?: string
+    fallbackReason?: string
+}
+
+interface AIActionReviewResult {
+    approved: boolean
+    confidence: 'high' | 'medium' | 'low'
+    reason: string
+    replacementAction?: AIActionAttempt
+    source: 'model' | 'local'
+    modelName?: string
+    fallbackReason?: string
+}
+
 function stripCodeFence(value: string) {
     const trimmed = value.trim()
     const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
@@ -438,6 +599,47 @@ function normalizePlan(raw: unknown): AIPlannedAction & { thinkingSummary?: stri
     return plan
 }
 
+function normalizeReflection(raw: unknown): Omit<AIReflectionResult, 'source' | 'modelName' | 'fallbackReason'> {
+    const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    const confidence = typeof value.confidence === 'string' && ['high', 'medium', 'low'].includes(value.confidence)
+        ? value.confidence as AIReflectionResult['confidence']
+        : 'medium'
+    const nextAction = normalizeActionAttempt(value.nextAction)
+
+    return {
+        completed: value.completed === true,
+        confidence,
+        reason: typeof value.reason === 'string' && value.reason.trim()
+            ? trimText(value.reason, 360)
+            : value.completed === true
+                ? '执行结果和页面上下文已满足用户目标。'
+                : '执行结果或页面上下文还不足以证明用户目标已完成。',
+        nextAction: nextAction || undefined,
+        finalResponseHint: typeof value.finalResponseHint === 'string' && value.finalResponseHint.trim()
+            ? trimText(value.finalResponseHint, 500)
+            : undefined,
+    }
+}
+
+function normalizeActionReview(raw: unknown): Omit<AIActionReviewResult, 'source' | 'modelName' | 'fallbackReason'> {
+    const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    const confidence = typeof value.confidence === 'string' && ['high', 'medium', 'low'].includes(value.confidence)
+        ? value.confidence as AIActionReviewResult['confidence']
+        : 'medium'
+    const replacementAction = normalizeActionAttempt(value.replacementAction)
+
+    return {
+        approved: value.approved !== false,
+        confidence,
+        reason: typeof value.reason === 'string' && value.reason.trim()
+            ? trimText(value.reason, 360)
+            : value.approved === false
+                ? '当前 action 不是完成用户目标的最优选择。'
+                : '当前 action 可以作为下一步执行。',
+        replacementAction: replacementAction || undefined,
+    }
+}
+
 function validateModelPlan(plan: AIPlannedAction, skills: AISkill[]) {
     if (plan.skillId && !skills.some(skill => skill.id === plan.skillId)) {
         return false
@@ -449,8 +651,15 @@ function validateModelPlan(plan: AIPlannedAction, skills: AISkill[]) {
     return Boolean(plan.tabId || plan.response)
 }
 
+function validateActionAttempt(action: AIActionAttempt | null, skills: AISkill[]) {
+    if (!action) return null
+    const skill = skills.find(item => item.id === action.skillId)
+    if (!skill?.actions.some(item => item.name === action.actionName)) return null
+    return action
+}
+
 function buildActionAttempts(plan: AIPlannedAction) {
-    const attempts: Array<{ skillId: string; actionName: string; params?: Record<string, unknown> }> = []
+    const attempts: AIActionAttempt[] = []
     const seen = new Set<string>()
     const addAttempt = (skillId?: string, actionName?: string, params?: Record<string, unknown>) => {
         if (!skillId || !actionName) return
@@ -465,11 +674,11 @@ function buildActionAttempts(plan: AIPlannedAction) {
     return attempts.slice(0, MAX_ACTION_ATTEMPTS)
 }
 
-function actionAttemptKey(action: { skillId: string; actionName: string; params?: Record<string, unknown> }) {
+function actionAttemptKey(action: AIActionAttempt) {
     return `${action.skillId}.${action.actionName}:${JSON.stringify(action.params || {})}`
 }
 
-function normalizeActionAttempt(value: unknown) {
+function normalizeActionAttempt(value: unknown): AIActionAttempt | null {
     if (!value || typeof value !== 'object') return null
     const action = value as Record<string, unknown>
     if (typeof action.skillId !== 'string' || typeof action.actionName !== 'string') return null
@@ -482,6 +691,41 @@ function normalizeActionAttempt(value: unknown) {
 
 function getNextAction(result: AIActionResult) {
     return normalizeActionAttempt(result.data?.nextAction)
+}
+
+function isPageContextLoading(page?: Record<string, unknown>) {
+    if (!page) return false
+    return PAGE_LOADING_KEYS.some(key => page[key] === true)
+}
+
+function isOpenFormOnlyIntent(input: string) {
+    const text = input.trim()
+    const opensForm = /(打开|弹出|显示|open|show).*(添加账户|添加账号|表单|窗口|弹窗|modal|dialog)/i.test(text)
+    const hasPayload = /(内容为|正文|邮箱[:：=]|账号[:：=]|账户[:：=]|密码|password|client[_\s-]?id|client[_\s-]?secret|secret|token)/i.test(text)
+    return opensForm && !hasPayload
+}
+
+function isPureNavigationIntent(input: string) {
+    const text = input.trim()
+    if (isOpenFormOnlyIntent(text)) return true
+
+    const explicitNavigation = /^(请|帮我|麻烦)?\s*(打开|切换到|进入|跳转到|前往|显示|open|go to|switch to)\s*.+?(页面|tab|菜单|配置|管理器|列表)?\s*$/i.test(text)
+    if (!explicitNavigation) return false
+
+    const hasOperationalGoal = /(添加|新增|创建|保存|修改|编辑|删除|搜索|查找|查询|找一下|读取|回复|恢复|回信|发送|同步|导入|导出|生成|执行|测试|内容为|正文|密码|password|client[_\s-]?id|client[_\s-]?secret|secret|token|查看.*(邮件|内容|详情|最新))/i.test(text)
+    if (!hasOperationalGoal) return true
+
+    return /^(请|帮我|麻烦)?\s*(打开|切换到|进入|跳转到|前往|显示)\s*(OAuth2\s*配置|发送邮件|邮箱账户管理|经典邮件管理器|收件箱|邮件列表|.*页面|.*tab|.*菜单)\s*$/i.test(text)
+}
+
+function isNavigationOnlyResult(result: AIActionResult, plan: AIPlannedAction) {
+    return plan.actionName === OPEN_PAGE_ACTION_NAME
+        || result.data?.navigationOnly === true
+        || Boolean(result.data?.tabId && !result.data?.selectedEmail && !result.data?.draft && !result.data?.matchedCount)
+}
+
+function resultRequiresUserCompletion(result: AIActionResult) {
+    return result.data?.requiresUserCompletion === true || result.data?.requiresUserInput === true
 }
 
 function compactConversation(messages: AIChatMessage[]): AIConversationTurn[] {
@@ -560,6 +804,13 @@ function buildFinalResponsePrompts(
         '只能基于执行结果、页面上下文和用户请求回复，不要编造未执行的操作。',
         '如果执行结果已经足够清楚，保持原意，不要扩展敏感信息。',
         '如果 result.success 为 false，或 result.data.matchedCount 为 0，必须明确说没有找到，不能声称匹配到了任何账户或邮件。',
+        '如果 result.data.verification.completed 为 false，必须明确说明目标尚未完成以及 verification.reason，不能包装成已完成。',
+        '如果 result.data.requiresUserCompletion=true，必须说明只是打开了表单或等待用户确认，不能声称业务已完成。',
+        '如果 result.data.navigationOnly=true 或只有 tabId，必须说明只是切换了页面，不能声称完成页面内操作。',
+        '如果 context.page 中任一 loading/isLoading/loadingEmails/isLoadingEmails/isRefreshing 为 true，只能说明数据仍在加载，不能判定为空。',
+        '如果 context.page.totalCount、loadedEmailsCount 大于 0，或 sampleVisibleEmails 非空，必须承认页面已有可见邮件，不能回复“未找到任何邮件”。',
+        '如果 result.data.selectedEmail 存在，优先围绕该邮件的主题、发件人和正文摘要回复用户。',
+        '如果 result.data.draft 存在，必须按 draft 的实际收件人、主题和正文说明草稿已预填且尚未发送；不要声称未在 draft 中出现的字段。',
     ].join('\n')
 
     const userPayload = {
@@ -583,7 +834,11 @@ function buildFinalResponsePrompts(
 }
 
 function shouldUseExactActionSummary(plan: AIPlannedAction) {
-    return plan.skillId === 'accounts' && ['searchAccounts', 'viewAccountEmails'].includes(plan.actionName || '')
+    return (
+        plan.skillId === 'accounts' && ['searchAccounts', 'viewAccountEmails'].includes(plan.actionName || '')
+    ) || (
+        plan.skillId === 'compose-email' && plan.actionName === 'prepareReplyDraft'
+    )
 }
 
 function buildDirectResponsePrompts(userMessage: string, context: AICompressedContext, conversation: AIConversationTurn[]) {
@@ -609,6 +864,353 @@ function buildDirectResponsePrompts(userMessage: string, context: AICompressedCo
     }
 }
 
+function formatReflectionSummary(reflection: AIReflectionResult) {
+    const status = reflection.completed ? '验收通过' : '验收未通过'
+    const nextAction = reflection.nextAction
+        ? ` · 下一步 ${reflection.nextAction.skillId}.${reflection.nextAction.actionName}`
+        : ''
+    const fallback = reflection.fallbackReason ? ` · ${reflection.fallbackReason}` : ''
+    return `${status} · ${reflection.confidence} · ${reflection.reason}${nextAction}${fallback}`
+}
+
+function attachReflectionToResult(result: AIActionResult, reflection: AIReflectionResult): AIActionResult {
+    return {
+        ...result,
+        data: {
+            ...(result.data || {}),
+            verification: {
+                completed: reflection.completed,
+                confidence: reflection.confidence,
+                reason: reflection.reason,
+                source: reflection.source,
+                modelName: reflection.modelName,
+                fallbackReason: reflection.fallbackReason,
+                finalResponseHint: reflection.finalResponseHint,
+                nextAction: reflection.nextAction,
+            },
+        },
+    }
+}
+
+function formatActionReviewSummary(review: AIActionReviewResult) {
+    const status = review.approved ? '方案可执行' : '建议替换'
+    const replacement = review.replacementAction
+        ? ` · 替代 ${review.replacementAction.skillId}.${review.replacementAction.actionName}`
+        : ''
+    const fallback = review.fallbackReason ? ` · ${review.fallbackReason}` : ''
+    return `${status} · ${review.confidence} · ${review.reason}${replacement}${fallback}`
+}
+
+function preferredLatestAccountLatestEmailAction(skills: AISkill[]) {
+    const skill = skills.find(item => item.id === 'classic-mailbox')
+    if (!skill?.actions.some(action => action.name === 'openLatestAccountLatestEmail')) return undefined
+    return {
+        skillId: 'classic-mailbox',
+        actionName: 'openLatestAccountLatestEmail',
+        params: {},
+    } satisfies AIActionAttempt
+}
+
+function preferredReplyDraftAction(userMessage: string, context: AICompressedContext, skills: AISkill[], proposedParams?: Record<string, unknown>) {
+    const skill = skills.find(item => item.id === 'compose-email')
+    if (!skill?.actions.some(action => action.name === 'prepareReplyDraft')) return undefined
+
+    const inferredParams = buildReplyDraftParams(userMessage, context)
+    const explicitContent = extractReplyDraftContent(userMessage)
+    const params: Record<string, unknown> = {
+        ...(inferredParams || {}),
+        ...(proposedParams || {}),
+        shouldSend: false,
+    }
+    if (explicitContent) {
+        params.content = explicitContent
+        params.body = explicitContent
+        params.replyBody = explicitContent
+        params.message = explicitContent
+    }
+
+    if (!hasReplyDraftCoreParams(params)) return undefined
+
+    return {
+        skillId: 'compose-email',
+        actionName: 'prepareReplyDraft',
+        params,
+    } satisfies AIActionAttempt
+}
+
+function reviewActionLocallyBeforeExecution(userMessage: string, proposedAction: AIActionAttempt, context: AICompressedContext, skills: AISkill[], fallbackReason?: string): AIActionReviewResult {
+    const preferredReplyAction = isReplyDraftIntent(userMessage)
+        ? preferredReplyDraftAction(userMessage, context, skills, proposedAction.params)
+        : undefined
+
+    if (preferredReplyAction && (
+        proposedAction.skillId !== 'compose-email'
+        || proposedAction.actionName !== 'prepareReplyDraft'
+        || !hasReplyDraftCoreParams(proposedAction.params)
+    )) {
+        return {
+            approved: false,
+            confidence: 'high',
+            reason: '用户目标是预填当前邮件的回复草稿且不要发送，需要执行能真实写入收件人、主题和正文的草稿 action。',
+            replacementAction: preferredReplyAction,
+            source: 'local',
+            fallbackReason,
+        }
+    }
+
+    const preferredAction = isLatestAccountLatestEmailIntent(userMessage)
+        ? preferredLatestAccountLatestEmailAction(skills)
+        : undefined
+
+    if (preferredAction && actionAttemptKey(preferredAction) !== actionAttemptKey(proposedAction)) {
+        return {
+            approved: false,
+            confidence: 'high',
+            reason: '用户目标是查看最新账户的最新邮件，直接执行专用 action 比先打开页面或只打开收件箱更准确。',
+            replacementAction: preferredAction,
+            source: 'local',
+            fallbackReason,
+        }
+    }
+
+    if (proposedAction.actionName === OPEN_PAGE_ACTION_NAME && isLatestAccountLatestEmailIntent(userMessage) && preferredAction) {
+        return {
+            approved: false,
+            confidence: 'high',
+            reason: '仅切换页面无法完成查看最新邮件，需要直接定位账户并打开邮件详情。',
+            replacementAction: preferredAction,
+            source: 'local',
+            fallbackReason,
+        }
+    }
+
+    return {
+        approved: true,
+        confidence: 'medium',
+        reason: '本地规则未发现更直接的替代 action。',
+        source: 'local',
+        fallbackReason,
+    }
+}
+
+async function reviewActionBeforeExecution(input: {
+    userMessage: string
+    proposedAction: AIActionAttempt
+    context: AICompressedContext
+    conversation: AIConversationTurn[]
+    skills: AISkill[]
+    config?: OpenAIConfig | null
+    attemptedActions: string[]
+}): Promise<AIActionReviewResult> {
+    const localReview = reviewActionLocallyBeforeExecution(
+        input.userMessage,
+        input.proposedAction,
+        input.context,
+        input.skills,
+        input.config ? undefined : '没有可用的 AI 配置，已使用本地预判'
+    )
+    if (!input.config || !localReview.approved) return localReview
+
+    const systemPrompt = [
+        '你是 Mailman 内置 AI 助手的执行前审查器。',
+        '你只能输出一个 JSON 对象，不要输出 Markdown，不要输出额外解释。',
+        '你的任务是在真正执行 proposedAction 前，判断它是否是完成用户目标的最优下一步。',
+        '必须参考用户请求、最近对话、当前页面上下文、已经执行过的 action 和可用 skills。',
+        '如果 proposedAction 只是 openPage，但存在能直接完成目标或更接近目标的页面 action，应该 approved=false 并给出 replacementAction。',
+        '如果用户不是单纯要求打开页面/窗口，而是要求添加、配置、搜索、查看内容、回复或发送，不能把只导航或只打开表单的 action 当作最优方案。',
+        '如果用户要查看最新账户的最新一封邮件，优先选择 classic-mailbox.openLatestAccountLatestEmail。',
+        '如果用户要回复/恢复/回信当前或这封邮件，且要求不要发送，必须优先选择 compose-email.prepareReplyDraft，并带上 to、subject、content、shouldSend=false；不要只选择 compose-email.openPage。',
+        '如果 action 缺少关键参数且上下文里有更明确的 accountId/email，应返回带参数的 replacementAction。',
+        '不要返回不存在的 skill/action，不要重复 attemptedActions 中已经执行过的同一 action。',
+        'JSON schema: {"approved":boolean,"confidence":"high|medium|low","reason":string,"replacementAction":{"skillId":string,"actionName":string,"params":object}?}',
+    ].join('\n')
+
+    try {
+        const response = await openAIService.callOpenAI({
+            config_id: input.config.id,
+            system_prompt: systemPrompt,
+            user_message: JSON.stringify({
+                userMessage: input.userMessage,
+                proposedAction: input.proposedAction,
+                attemptedActions: input.attemptedActions,
+                conversation: input.conversation,
+                context: compactForModel(input.context),
+                skills: input.skills.map(buildSkillSummary),
+            }).slice(0, 16000),
+            max_tokens: 600,
+            temperature: 0.1,
+            response_format: 'json',
+        })
+        const normalized = normalizeActionReview(JSON.parse(stripCodeFence(response.content)))
+        const replacementAction = validateActionAttempt(normalized.replacementAction || null, input.skills) || undefined
+
+        return {
+            ...normalized,
+            approved: replacementAction ? false : normalized.approved,
+            replacementAction,
+            source: 'model',
+            modelName: response.model || input.config.model,
+        }
+    } catch (error) {
+        return reviewActionLocallyBeforeExecution(
+            input.userMessage,
+            input.proposedAction,
+            input.context,
+            input.skills,
+            error instanceof Error ? `AI 预判失败，已使用本地预判: ${error.message}` : 'AI 预判失败，已使用本地预判'
+        )
+    }
+}
+
+function markResultIncomplete(result: AIActionResult, reflection: AIReflectionResult): AIActionResult {
+    const verifiedResult = attachReflectionToResult(result, reflection)
+    return {
+        ...verifiedResult,
+        success: false,
+        summary: reflection.finalResponseHint || `执行后验收未通过：${reflection.reason}`,
+    }
+}
+
+function reflectLocallyAfterExecution(userMessage: string, result: AIActionResult, context: AICompressedContext, plan: AIPlannedAction, skills: AISkill[], fallbackReason?: string): AIReflectionResult {
+    const nextAction = validateActionAttempt(getNextAction(result), skills) || undefined
+    if (nextAction) {
+        return {
+            completed: false,
+            confidence: 'high',
+            reason: '当前动作返回了后续动作，目标还需要继续执行。',
+            nextAction,
+            source: 'local',
+            fallbackReason,
+        }
+    }
+
+    if (isPageContextLoading(context.page)) {
+        return {
+            completed: false,
+            confidence: 'medium',
+            reason: '页面上下文仍显示数据加载中，暂时不能确认目标已完成。',
+            source: 'local',
+            fallbackReason,
+        }
+    }
+
+    if (result.success && resultRequiresUserCompletion(result) && !isOpenFormOnlyIntent(userMessage)) {
+        return {
+            completed: false,
+            confidence: 'high',
+            reason: '当前只打开了需要用户继续填写或确认的表单，业务目标还没有真正完成。',
+            source: 'local',
+            fallbackReason,
+        }
+    }
+
+    if (result.success && isNavigationOnlyResult(result, plan) && !isPureNavigationIntent(userMessage)) {
+        return {
+            completed: false,
+            confidence: 'high',
+            reason: '当前只完成了页面切换，没有执行用户请求中的具体业务操作。',
+            source: 'local',
+            fallbackReason,
+        }
+    }
+
+    return {
+        completed: result.success,
+        confidence: result.success ? 'medium' : 'high',
+        reason: result.success
+            ? '动作返回成功，且页面上下文没有显示仍在加载。'
+            : result.summary || '动作执行失败，目标尚未完成。',
+        source: 'local',
+        fallbackReason,
+    }
+}
+
+async function reflectAfterExecution(input: {
+    userMessage: string
+    result: AIActionResult
+    context: AICompressedContext
+    plan: AIPlannedAction
+    conversation: AIConversationTurn[]
+    skills: AISkill[]
+    config?: OpenAIConfig | null
+    attemptedActions: string[]
+}): Promise<AIReflectionResult> {
+    const explicitNextAction = validateActionAttempt(getNextAction(input.result), input.skills) || undefined
+    const localReflection = reflectLocallyAfterExecution(
+        input.userMessage,
+        input.result,
+        input.context,
+        input.plan,
+        input.skills,
+        input.config ? undefined : '没有可用的 AI 配置，已使用本地验收'
+    )
+    if (!input.config) return localReflection
+
+    const systemPrompt = [
+        '你是 Mailman 内置 AI 助手的执行后验收器。',
+        '你只能输出一个 JSON 对象，不要输出 Markdown，不要输出额外解释。',
+        '你的任务是判断刚刚执行的 action 是否真正完成了用户原始目标，而不是只看 result.success。',
+        '必须同时参考用户请求、最近对话、执行动作、执行结果、最新页面上下文和可用 skills。',
+        '如果用户不是单纯要求打开页面/窗口，而 action 只是切换页面、打开表单、返回 tabId 或 result.data.requiresUserCompletion=true，不能判定完成。',
+        '如果页面上下文显示 loading/isLoading/loadingEmails/isLoadingEmails/isRefreshing 为 true，通常不能判定完成。',
+        '查看某个邮箱账户邮件时，只有 selectedAccount 与目标账户匹配，且 loadedEmailsCount/totalCount/sampleVisibleEmails 或执行结果证明列表已加载，才能判定完成；加载完成但确实为 0 封也可以算完成。',
+        '查看最新账户的最新一封邮件时，只有执行结果或页面上下文证明已定位最新账户，并且 selectedEmail 或 result.data.selectedEmail 存在，才能判定查看到邮件；如果最新账户确实没有邮件，需要明确说明 emailFound=false。',
+        '询问当前选中邮件内容时，只有 selectedEmail 或执行结果中有邮件详情/正文摘要，才能判定完成。',
+        '回复/恢复/回信邮件且要求不要发送时，只有 result.data.draft 或 compose 页面上下文证明 toRecipients、subject 和正文内容已经写入，且没有发送邮件，才能判定完成；仅打开发送邮件页面不算完成。',
+        '如果还没完成且可以继续操作，必须从 skills 中选择一个 nextAction；不要返回不存在的 skill/action。',
+        '不要重复 attemptedActions 中已经执行过的同一个 action，除非参数不同且确实必要。',
+        '如果无法继续执行，completed=false，并在 reason/finalResponseHint 中说明缺少什么。',
+        'JSON schema: {"completed":boolean,"confidence":"high|medium|low","reason":string,"nextAction":{"skillId":string,"actionName":string,"params":object}?,"finalResponseHint":string?}',
+    ].join('\n')
+
+    try {
+        const response = await openAIService.callOpenAI({
+            config_id: input.config.id,
+            system_prompt: systemPrompt,
+            user_message: JSON.stringify({
+                userMessage: input.userMessage,
+                action: {
+                    skillId: input.plan.skillId,
+                    actionName: input.plan.actionName,
+                    tabId: input.plan.tabId,
+                    params: input.plan.params,
+                },
+                result: input.result,
+                attemptedActions: input.attemptedActions,
+                conversation: input.conversation,
+                context: compactForModel(input.context),
+                skills: input.skills.map(buildSkillSummary),
+            }).slice(0, 18000),
+            max_tokens: ACTION_REFLECTION_MAX_TOKENS,
+            temperature: 0.1,
+            response_format: 'json',
+        })
+        const parsed = JSON.parse(stripCodeFence(response.content))
+        const normalized = normalizeReflection(parsed)
+        const nextAction = explicitNextAction || validateActionAttempt(normalized.nextAction || null, input.skills) || undefined
+
+        return {
+            ...normalized,
+            completed: explicitNextAction ? false : normalized.completed,
+            reason: explicitNextAction && normalized.completed
+                ? `页面 action 返回了后续动作 ${explicitNextAction.skillId}.${explicitNextAction.actionName}，需要继续执行后才能确认完成。`
+                : normalized.reason,
+            nextAction,
+            source: 'model',
+            modelName: response.model || input.config.model,
+        }
+    } catch (error) {
+        return reflectLocallyAfterExecution(
+            input.userMessage,
+            input.result,
+            input.context,
+            input.plan,
+            input.skills,
+            error instanceof Error ? `AI 验收失败，已使用本地验收: ${error.message}` : 'AI 验收失败，已使用本地验收'
+        )
+    }
+}
+
 async function getActiveAIConfig(): Promise<OpenAIConfig | null> {
     const configs = await openAIService.getOpenAIConfigs()
     return configs.find(config => config.is_active) || null
@@ -630,7 +1232,9 @@ async function planWithModel(input: string, context: AICompressedContext, skills
         '从给定 skills 中选择一个 action，或返回 tabId 切换页面，或返回 response 直接回复。',
         `直接问答、解释、创作、总结这类不需要页面操作的请求，返回 {"response":"${DIRECT_CHAT_RESPONSE}","thinkingSummary":[...]}，后续会由回复模型生成正文。`,
         '如果用户请求包含查看、打开、搜索、切换、添加、配置、账户、邮箱、邮件、OAuth2、tab、页面等操作意图，必须优先选择 skill/action 或 tabId，不能用 response 代替执行。',
+        '如果用户请求“最新一个账户的最新一封邮件”或类似目标，优先选择 classic-mailbox.openLatestAccountLatestEmail，不要只返回 classic-mailbox.openPage。',
         '如果用户询问当前/选中/这封邮件的内容、摘要、详情或“说了什么”，优先选择 classic-mailbox.getSelectedEmailDetails。',
+        '如果用户请求回复/恢复/回信当前或这封邮件，并要求不要发送，选择 compose-email.prepareReplyDraft，params 必须包含 content、to、subject、accountId 和 shouldSend=false；不要只打开 compose-email 页面。',
         '需要结合最近对话理解“这个账户”“继续”“打开它”等指代；如果历史里有邮箱地址或上轮搜索结果，可把它写入 params。',
         '如果一个用户意图可能由多个页面完成，优先给出最直接 action，并在 candidateActions 中给出备选页面 action。',
         '不要编造不存在的 skill/action。写入类动作只能打开表单或等待用户确认，不能自动提交。',
@@ -833,6 +1437,36 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         }
         return skillsRef.current.get(skillId) || null
     }, [])
+
+    const waitForStableContext = useCallback(async (targetSkill?: AISkill | null) => {
+        const startedAt = now()
+        let stableSamples = 0
+        let latestContext = await collectContext(targetSkill || undefined)
+
+        while (now() - startedAt < PAGE_CONTEXT_WAIT_TIMEOUT_MS) {
+            if (isPageContextLoading(latestContext.page)) {
+                stableSamples = 0
+            } else {
+                stableSamples += 1
+                if (stableSamples >= PAGE_CONTEXT_STABLE_SAMPLES) {
+                    return {
+                        context: latestContext,
+                        waitedMs: now() - startedAt,
+                        timedOut: false,
+                    }
+                }
+            }
+
+            await new Promise(resolve => setTimeout(resolve, PAGE_CONTEXT_WAIT_INTERVAL_MS))
+            latestContext = await collectContext(targetSkill || undefined)
+        }
+
+        return {
+            context: latestContext,
+            waitedMs: now() - startedAt,
+            timedOut: isPageContextLoading(latestContext.page),
+        }
+    }, [collectContext])
 
     const switchTab = useCallback(async (tabId: string) => {
         if (typeof window === 'undefined') return
@@ -1108,19 +1742,9 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                     : `${planResult.source === 'model' ? 'AI' : '本地'}生成直接回复${planResult.fallbackReason ? ` · ${planResult.fallbackReason}` : ''}`
             )
 
-            if (plan.tabId && !plan.skillId) {
-                updateTask(taskId, taskValue => ({ ...taskValue, status: 'running', targetActionName: 'switchTab' }))
-                const stepId = addStep(taskId, `切换到 ${plan.tabId}`, '通过全局 switchTab 事件打开目标页面')
-                await switchTab(plan.tabId)
-                if (isTaskCancelled(taskId)) return
-                finishStep(taskId, stepId, '页面切换事件已发送')
-                const result = { success: true, summary: plan.response || `已切换到 ${plan.tabId}` }
-                completeTask(taskId, 'completed', result)
-                await streamAssistantMessage(result.summary, taskId, createStreamRequest(result, firstContext))
-                return
-            }
-
-            const attempts = buildActionAttempts(plan)
+            const attempts = plan.tabId && !plan.skillId
+                ? [{ skillId: plan.tabId, actionName: OPEN_PAGE_ACTION_NAME } satisfies AIActionAttempt]
+                : buildActionAttempts(plan)
             if (attempts.length === 0) {
                 if (planResult.configId && planResult.source === 'model' && plan.response === DIRECT_CHAT_RESPONSE) {
                     updateTask(taskId, taskValue => ({
@@ -1153,12 +1777,91 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
             let finalResult: AIActionResult | null = null
             let finalContext: AICompressedContext = firstContext
             let finalPlan: AIPlannedAction = plan
+            const attemptedActionKeys: string[] = []
+
+            const enqueueNextAction = (nextAction: AIReflectionResult['nextAction'], details: string) => {
+                if (!nextAction) return false
+                const nextActionKey = actionAttemptKey(nextAction)
+                const nextActionAlreadyQueued = attempts.some(existingAction => actionAttemptKey(existingAction) === nextActionKey)
+                const nextActionAlreadyAttempted = attemptedActionKeys.includes(nextActionKey)
+                if (nextActionAlreadyQueued || nextActionAlreadyAttempted || attempts.length >= MAX_DYNAMIC_ACTION_ATTEMPTS) return false
+                attempts.push(nextAction)
+                const nextStep = addStep(taskId, `继续执行 ${nextAction.skillId}.${nextAction.actionName}`, details)
+                finishStep(taskId, nextStep, '已加入后续动作队列')
+                return true
+            }
 
             for (let index = 0; index < attempts.length && index < MAX_DYNAMIC_ACTION_ATTEMPTS; index += 1) {
                 if (isTaskCancelled(taskId)) return
-                const attempt = attempts[index]
-                const catalogSkill = getSkillCatalog().find(skillItem => skillItem.id === attempt.skillId)
-                const attemptLabel = `${attempt.skillId}.${attempt.actionName}`
+                let attempt = attempts[index]
+                let catalogSkill = getSkillCatalog().find(skillItem => skillItem.id === attempt.skillId)
+                let attemptLabel = `${attempt.skillId}.${attempt.actionName}`
+
+                const preflightStep = addStep(taskId, 'AI 预判执行方案', `候选 ${index + 1}/${attempts.length}: ${attemptLabel}`)
+                const preflightSnapshot = await waitForStableContext()
+                if (isTaskCancelled(taskId)) return
+                const preflightReview = await reviewActionBeforeExecution({
+                    userMessage: message,
+                    proposedAction: attempt,
+                    context: preflightSnapshot.context,
+                    conversation,
+                    skills: getSkillCatalog(),
+                    config: activeConfig,
+                    attemptedActions: attemptedActionKeys,
+                })
+                if (isTaskCancelled(taskId)) return
+                finishStep(taskId, preflightStep, formatActionReviewSummary(preflightReview), !preflightReview.approved && !preflightReview.replacementAction)
+
+                if (!preflightReview.approved) {
+                    if (preflightReview.replacementAction) {
+                        const replacementKey = actionAttemptKey(preflightReview.replacementAction)
+                        const alreadyAttempted = attemptedActionKeys.includes(replacementKey)
+                        if (!alreadyAttempted) {
+                            attempts[index] = preflightReview.replacementAction
+                            attempt = preflightReview.replacementAction
+                            catalogSkill = getSkillCatalog().find(skillItem => skillItem.id === attempt.skillId)
+                            attemptLabel = `${attempt.skillId}.${attempt.actionName}`
+                            const replacementStep = addStep(taskId, `改用 ${preflightReview.replacementAction.skillId}.${preflightReview.replacementAction.actionName}`, '执行前审查认为替代 action 更接近用户目标。')
+                            finishStep(taskId, replacementStep, '已替换当前 action，马上执行')
+                        } else {
+                            finalResult = {
+                                success: false,
+                                summary: `执行前审查未通过：${preflightReview.reason}`,
+                                data: {
+                                    review: {
+                                        approved: preflightReview.approved,
+                                        confidence: preflightReview.confidence,
+                                        reason: preflightReview.reason,
+                                        source: preflightReview.source,
+                                        modelName: preflightReview.modelName,
+                                        fallbackReason: preflightReview.fallbackReason,
+                                        replacementAction: preflightReview.replacementAction,
+                                    },
+                                },
+                            }
+                            continue
+                        }
+                    } else {
+                        finalResult = {
+                            success: false,
+                            summary: `执行前审查未通过：${preflightReview.reason}`,
+                            data: {
+                                review: {
+                                    approved: preflightReview.approved,
+                                    confidence: preflightReview.confidence,
+                                    reason: preflightReview.reason,
+                                    source: preflightReview.source,
+                                    modelName: preflightReview.modelName,
+                                    fallbackReason: preflightReview.fallbackReason,
+                                    replacementAction: preflightReview.replacementAction,
+                                },
+                            },
+                        }
+                        continue
+                    }
+                }
+
+                attemptedActionKeys.push(actionAttemptKey(attempt))
 
                 updateTask(taskId, taskValue => ({
                     ...taskValue,
@@ -1174,19 +1877,58 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                     if (isTaskCancelled(taskId)) return
                     finishStep(taskId, tabStep, `已切换到 ${tabId}`)
 
+                    const expectsPageExecutor = Boolean(catalogSkill?.actions.some(action => action.name !== OPEN_PAGE_ACTION_NAME))
+                    let openedSkill: AISkill | null | undefined = skillsRef.current.get(attempt.skillId)
+                    if (!openedSkill && expectsPageExecutor) {
+                        openedSkill = await waitForSkill(attempt.skillId)
+                        if (isTaskCancelled(taskId)) return
+                    }
+                    const stableStep = addStep(taskId, '等待页面数据稳定', openedSkill?.title || catalogSkill?.title || tabId)
+                    const stableSnapshot = await waitForStableContext(openedSkill)
+                    if (isTaskCancelled(taskId)) return
+                    finishStep(
+                        taskId,
+                        stableStep,
+                        stableSnapshot.timedOut
+                            ? `等待 ${formatDuration(stableSnapshot.waitedMs)} 后页面仍在加载，使用当前上下文。`
+                            : `页面上下文已稳定 · ${formatDuration(stableSnapshot.waitedMs)}`
+                    )
+
                     finalResult = {
                         success: true,
                         summary: `已切换到 ${catalogSkill?.title || tabId}。`,
                         data: { tabId },
                     }
-                    finalContext = await collectContext()
+                    finalContext = stableSnapshot.context
                     finalPlan = {
                         ...plan,
                         skillId: attempt.skillId,
                         actionName: attempt.actionName,
                         params: attempt.params,
                     }
-                    break
+                    const reflectionStep = addStep(taskId, 'AI 验收执行结果', '根据用户目标、执行结果和最新页面上下文确认是否真正完成')
+                    const reflection = await reflectAfterExecution({
+                        userMessage: message,
+                        result: finalResult,
+                        context: finalContext,
+                        plan: finalPlan,
+                        conversation,
+                        skills: getSkillCatalog(),
+                        config: activeConfig,
+                        attemptedActions: attemptedActionKeys,
+                    })
+                    if (isTaskCancelled(taskId)) return
+                    finishStep(taskId, reflectionStep, formatReflectionSummary(reflection), !reflection.completed && !reflection.nextAction)
+                    finalResult = attachReflectionToResult(finalResult, reflection)
+
+                    if (enqueueNextAction(reflection.nextAction, 'AI 验收认为目标尚未完成，继续执行建议动作。')) {
+                        continue
+                    }
+                    if (reflection.completed) {
+                        break
+                    }
+                    finalResult = markResultIncomplete(finalResult, reflection)
+                    continue
                 }
 
                 let skill: AISkill | null | undefined = skillsRef.current.get(attempt.skillId)
@@ -1216,9 +1958,18 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 }
 
                 const contextStep = addStep(taskId, '收集页面压缩上下文', skill.title)
-                const actionContext = await collectContext(skill)
+                const actionSnapshot = await waitForStableContext(skill)
+                const actionContext = actionSnapshot.context
                 if (isTaskCancelled(taskId)) return
-                finishStep(taskId, contextStep, actionContext.page ? '已获取页面状态摘要' : '当前页面没有额外上下文')
+                finishStep(
+                    taskId,
+                    contextStep,
+                    actionContext.page
+                        ? actionSnapshot.timedOut
+                            ? `页面仍在加载，已等待 ${formatDuration(actionSnapshot.waitedMs)} 后继续执行。`
+                            : `已获取稳定页面状态 · ${formatDuration(actionSnapshot.waitedMs)}`
+                        : '当前页面没有额外上下文'
+                )
 
                 if (action.risk === 'destructive') {
                     updateTask(taskId, taskValue => ({ ...taskValue, status: 'waiting_confirmation' }))
@@ -1237,9 +1988,19 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                 const result = await action.run(attempt.params || {}, actionContext)
                 if (isTaskCancelled(taskId)) return
                 finishStep(taskId, actionStep, result.summary, !result.success)
+                const postActionStep = addStep(taskId, '刷新动作后的页面上下文', skill.title)
+                const postActionSnapshot = await waitForStableContext(skill)
+                if (isTaskCancelled(taskId)) return
+                finishStep(
+                    taskId,
+                    postActionStep,
+                    postActionSnapshot.timedOut
+                        ? `等待 ${formatDuration(postActionSnapshot.waitedMs)} 后页面仍在加载，使用当前上下文。`
+                        : `已获取动作后的稳定状态 · ${formatDuration(postActionSnapshot.waitedMs)}`
+                )
 
                 finalResult = result
-                finalContext = actionContext
+                finalContext = postActionSnapshot.context
                 finalPlan = {
                     ...plan,
                     skillId: attempt.skillId,
@@ -1247,20 +2008,29 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
                     params: attempt.params,
                 }
 
-                const nextAction = getNextAction(result)
-                const nextActionAlreadyQueued = nextAction
-                    ? attempts.some(existingAction => actionAttemptKey(existingAction) === actionAttemptKey(nextAction))
-                    : false
-                if (result.success && nextAction && !nextActionAlreadyQueued && attempts.length < MAX_DYNAMIC_ACTION_ATTEMPTS) {
-                    attempts.push(nextAction)
-                    const nextStep = addStep(taskId, `继续执行 ${nextAction.skillId}.${nextAction.actionName}`, '上一动作返回了后续页面动作，继续等待执行结果。')
-                    finishStep(taskId, nextStep, '已加入后续动作队列')
+                const reflectionStep = addStep(taskId, 'AI 验收执行结果', '根据用户目标、执行结果和最新页面上下文确认是否真正完成')
+                const reflection = await reflectAfterExecution({
+                    userMessage: message,
+                    result,
+                    context: finalContext,
+                    plan: finalPlan,
+                    conversation,
+                    skills: getSkillCatalog(),
+                    config: activeConfig,
+                    attemptedActions: attemptedActionKeys,
+                })
+                if (isTaskCancelled(taskId)) return
+                finishStep(taskId, reflectionStep, formatReflectionSummary(reflection), !reflection.completed && !reflection.nextAction)
+                finalResult = attachReflectionToResult(result, reflection)
+
+                if (enqueueNextAction(reflection.nextAction, 'AI 验收或页面 action 返回了后续动作，继续等待执行结果。')) {
                     continue
                 }
 
-                if (result.success) {
+                if (reflection.completed) {
                     break
                 }
+                finalResult = markResultIncomplete(finalResult, reflection)
             }
 
             if (isTaskCancelled(taskId)) return
@@ -1282,7 +2052,7 @@ export function AIRuntimeProvider({ children, userContext, enableModelPlanning =
         } finally {
             taskAbortControllersRef.current.delete(taskId)
         }
-    }, [addStep, collectContext, completeTask, finishStep, getSkillCatalog, isTaskCancelled, streamAssistantMessage, switchTab, updateTask, waitForSkill])
+    }, [addStep, collectContext, completeTask, finishStep, getSkillCatalog, isTaskCancelled, streamAssistantMessage, switchTab, updateTask, waitForSkill, waitForStableContext])
 
     const registerSkill = useCallback((skill: AISkill) => {
         const previousSkill = skillsRef.current.get(skill.id)
