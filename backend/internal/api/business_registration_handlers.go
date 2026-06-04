@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"mailman/internal/models"
+	"mailman/internal/utils"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -50,8 +51,10 @@ type BusinessEmailClaimRequest struct {
 	TTLSeconds int    `json:"ttlSeconds,omitempty"`
 	ClaimedBy  string `json:"claimedBy,omitempty"`
 
-	AccountID    *uint  `json:"accountId,omitempty"`
-	EmailAddress string `json:"emailAddress,omitempty"`
+	AccountID          *uint  `json:"accountId,omitempty"`
+	AliasBaseAccountID *uint  `json:"aliasBaseAccountId,omitempty"`
+	EmailAddress       string `json:"emailAddress,omitempty"`
+	EmailSuffix        string `json:"emailSuffix,omitempty"`
 
 	EmailMode      string `json:"emailMode,omitempty"`
 	UseDomainMail  *bool  `json:"useDomainMail,omitempty"`
@@ -59,6 +62,11 @@ type BusinessEmailClaimRequest struct {
 	UseAlias       bool   `json:"useAlias,omitempty"`
 	AliasType      string `json:"aliasType,omitempty"`
 	AliasLocalPart string `json:"aliasLocalPart,omitempty"`
+	PrefixStrategy string `json:"prefixStrategy,omitempty"`
+	Prefix         string `json:"prefix,omitempty"`
+	PrefixTemplate string `json:"prefixTemplate,omitempty"`
+	BuiltinPrefix  string `json:"builtinPrefix,omitempty"`
+	RandomLength   int    `json:"randomLength,omitempty"`
 
 	TagIDs        []uint   `json:"tagIds,omitempty"`
 	TagFilterMode string   `json:"tagFilterMode,omitempty"`
@@ -597,6 +605,9 @@ func (h *APIHandler) buildBusinessClaimAccountQuery(tx *gorm.DB, orgID uint, mod
 	if req.ProviderID != nil {
 		query = query.Where("mail_provider_id = ?", *req.ProviderID)
 	}
+	if suffix := normalizeEmailSuffix(req.EmailSuffix); suffix != "" {
+		query = applyBusinessEmailSuffixFilter(query, suffix)
+	}
 	if len(req.AuthTypes) > 0 {
 		query = query.Where("auth_type IN ?", normalizeBusinessAuthTypes(req.AuthTypes))
 	}
@@ -650,6 +661,21 @@ func applyBusinessPrimaryClaimAvailabilityFilter(query *gorm.DB, orgID uint, mod
 	return query.Where("NOT EXISTS (SELECT 1 FROM business_accounts ba WHERE ba.module_id = ? AND ba.registration_email IS NOT NULL AND LOWER(ba.registration_email) = LOWER(email_accounts.email_address))", moduleID)
 }
 
+func applyBusinessEmailSuffixFilter(query *gorm.DB, suffix string) *gorm.DB {
+	suffix = normalizeEmailSuffix(suffix)
+	domain := strings.TrimPrefix(suffix, "@")
+	if domain == "" {
+		return query
+	}
+	forwardedLike := "%@" + domain + "%"
+	return query.Where(
+		"(LOWER(email_accounts.email_address) LIKE ? OR LOWER(email_accounts.domain) = ? OR "+businessLowerTextLikeExpr(query, "email_accounts.forwarded_addresses")+")",
+		"%"+suffix,
+		domain,
+		forwardedLike,
+	)
+}
+
 func applyBusinessEmailAccountExclusionFilter(query *gorm.DB, orgID uint, moduleID uint, now time.Time) *gorm.DB {
 	sql := "NOT EXISTS (SELECT 1 FROM business_email_exclusions bee WHERE (bee.module_id IS NULL OR bee.module_id = ?) AND bee.email_account_id = email_accounts.id AND (bee.expires_at IS NULL OR bee.expires_at > ?)"
 	args := []interface{}{moduleID, now}
@@ -663,8 +689,15 @@ func applyBusinessEmailAccountExclusionFilter(query *gorm.DB, orgID uint, module
 
 func (h *APIHandler) resolveBusinessClaimAccount(tx *gorm.DB, orgID uint, req BusinessEmailClaimRequest) (models.EmailAccount, error) {
 	var account models.EmailAccount
-	if req.AccountID != nil {
-		if err := tx.Preload("MailProvider").Preload("Tags").Where("id = ?", *req.AccountID).First(&account).Error; err != nil {
+	accountID := req.AccountID
+	if req.AliasBaseAccountID != nil {
+		if accountID != nil && *accountID != *req.AliasBaseAccountID {
+			return account, fmt.Errorf("accountId and aliasBaseAccountId must match when both are provided")
+		}
+		accountID = req.AliasBaseAccountID
+	}
+	if accountID != nil {
+		if err := tx.Preload("MailProvider").Preload("Tags").Where("id = ?", *accountID).First(&account).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return account, fmt.Errorf("email account not found")
 			}
@@ -686,7 +719,7 @@ func (h *APIHandler) resolveBusinessClaimAccount(tx *gorm.DB, orgID uint, req Bu
 	if orgID > 0 && account.OrgID != orgID {
 		return account, fmt.Errorf("access denied")
 	}
-	if strings.TrimSpace(req.EmailAddress) != "" && req.AccountID != nil {
+	if strings.TrimSpace(req.EmailAddress) != "" && accountID != nil {
 		email := normalizeBusinessEmailAddress(req.EmailAddress)
 		resolved, err := h.EmailAccountRepo.GetByEmailOrAlias(email)
 		if err != nil || resolved.ID != account.ID {
@@ -707,6 +740,9 @@ func (h *APIHandler) validateBusinessClaimAccount(tx *gorm.DB, account models.Em
 		if account.MailProviderID == nil || *account.MailProviderID != *req.ProviderID {
 			return fmt.Errorf("email account provider does not match")
 		}
+	}
+	if suffix := normalizeEmailSuffix(req.EmailSuffix); suffix != "" && !accountMatchesEmailSuffix(account, suffix) {
+		return fmt.Errorf("email account suffix does not match")
 	}
 	if len(req.AuthTypes) > 0 && !stringInSlice(string(account.AuthType), normalizeBusinessAuthTypes(req.AuthTypes)) {
 		return fmt.Errorf("email account auth type does not match")
@@ -752,7 +788,16 @@ func deriveBusinessClaimPlan(account models.EmailAccount, module *models.Busines
 
 	localPart := strings.TrimSpace(req.AliasLocalPart)
 	if localPart == "" {
-		localPart = generateBusinessAliasLocalPart(module.Name)
+		strategy := businessEmailLocalPartStrategy(req)
+		if strategy.IsSet() {
+			generated, err := generateEmailLocalPartForAccount(strategy, account, module.Name, req.ClaimedBy)
+			if err != nil {
+				return businessClaimPlan{}, err
+			}
+			localPart = generated
+		} else {
+			localPart = generateBusinessAliasLocalPart(module.Name)
+		}
 	}
 
 	switch mode {
@@ -1240,7 +1285,7 @@ func normalizeBusinessClaimTTL(value int) int {
 }
 
 func businessClaimRequestTargetsAccount(req BusinessEmailClaimRequest) bool {
-	return req.AccountID != nil || strings.TrimSpace(req.EmailAddress) != ""
+	return req.AccountID != nil || req.AliasBaseAccountID != nil || strings.TrimSpace(req.EmailAddress) != ""
 }
 
 func effectiveBusinessEmailMode(req BusinessEmailClaimRequest) string {
@@ -1280,6 +1325,16 @@ func normalizeBusinessTagFilterMode(value string) string {
 		return "and"
 	}
 	return "or"
+}
+
+func businessEmailLocalPartStrategy(req BusinessEmailClaimRequest) utils.EmailLocalPartStrategy {
+	return utils.EmailLocalPartStrategy{
+		PrefixStrategy: strings.TrimSpace(req.PrefixStrategy),
+		Prefix:         strings.TrimSpace(req.Prefix),
+		PrefixTemplate: strings.TrimSpace(req.PrefixTemplate),
+		BuiltinPrefix:  strings.TrimSpace(req.BuiltinPrefix),
+		RandomLength:   req.RandomLength,
+	}
 }
 
 func shouldRequireBusinessDomainMail(mode string, req BusinessEmailClaimRequest) bool {
@@ -1387,6 +1442,19 @@ func generateBusinessAliasLocalPart(moduleName string) string {
 		prefix = "register"
 	}
 	return prefix + "-" + randomBusinessHex(4)
+}
+
+func businessLowerTextLikeExpr(db *gorm.DB, column string) string {
+	parts := strings.Split(column, ".")
+	stmt := &gorm.Statement{DB: db}
+	for i, part := range parts {
+		parts[i] = stmt.Quote(clause.Column{Name: part})
+	}
+	quoted := strings.Join(parts, ".")
+	if db.Dialector.Name() == "postgres" {
+		return fmt.Sprintf("LOWER(%s::text) LIKE ?", quoted)
+	}
+	return fmt.Sprintf("LOWER(%s) LIKE ?", quoted)
 }
 
 func generateBusinessClaimToken() (string, error) {

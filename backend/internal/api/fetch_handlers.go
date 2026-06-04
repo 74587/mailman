@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mailman/internal/models"
 	"mailman/internal/services"
+	"mailman/internal/utils"
 	"math/big"
 	"net/http"
 	"sort"
@@ -880,6 +881,17 @@ func (h *APIHandler) RandomEmailHandler(w http.ResponseWriter, r *http.Request) 
 
 	allowAlias := aliasParam == "true"
 	allowDomain := domainParam == "true"
+	strategy := parseEmailLocalPartStrategyFromValues(r.URL.Query())
+	accountID, err := parseOptionalUintQueryValue(r.URL.Query(), "accountId", "account_id")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	emailSuffix := normalizeEmailSuffix(firstQueryValue(r.URL.Query(), "emailSuffix", "email_suffix"))
+	if strategy.IsSet() || accountID != nil || emailSuffix != "" {
+		h.randomEmailWithOptions(w, r, allowAlias, allowDomain, strategy, accountID, emailSuffix)
+		return
+	}
 
 	if allowAlias {
 		// Check availability of different account types
@@ -913,6 +925,7 @@ func (h *APIHandler) RandomEmailHandler(w http.ResponseWriter, r *http.Request) 
 			EmailType: "regular",
 			RawEmail:  account.EmailAddress,
 			Email:     account.EmailAddress,
+			AccountID: account.ID,
 			Message:   "Random email account selected",
 		}
 
@@ -953,6 +966,7 @@ func (h *APIHandler) RandomEmailHandler(w http.ResponseWriter, r *http.Request) 
 			EmailType: "alias",
 			RawEmail:  account.EmailAddress,
 			Email:     generatedEmail,
+			AccountID: account.ID,
 			Message:   "Generated random Gmail alias",
 		}
 
@@ -979,6 +993,7 @@ func (h *APIHandler) RandomEmailHandler(w http.ResponseWriter, r *http.Request) 
 			EmailType: "domain",
 			Email:     generatedEmail,
 			RawEmail:  account.EmailAddress,
+			AccountID: account.ID,
 			Message:   "Generated random domain email",
 		}
 
@@ -986,6 +1001,151 @@ func (h *APIHandler) RandomEmailHandler(w http.ResponseWriter, r *http.Request) 
 		json.NewEncoder(w).Encode(response)
 		return
 	}
+}
+
+func (h *APIHandler) randomEmailWithOptions(w http.ResponseWriter, r *http.Request, allowAlias bool, allowDomain bool, strategy utils.EmailLocalPartStrategy, accountID *uint, emailSuffix string) {
+	orgID := GetCurrentOrgID(r)
+	accounts, err := h.EmailAccountRepo.GetAll(orgID)
+	if err != nil {
+		http.Error(w, "Error fetching accounts", http.StatusInternalServerError)
+		return
+	}
+
+	regularCandidates := make([]models.EmailAccount, 0)
+	aliasCandidates := make([]models.EmailAccount, 0)
+	domainCandidates := make([]models.EmailAccount, 0)
+	for _, account := range accounts {
+		if accountID != nil && account.ID != *accountID {
+			continue
+		}
+		if !accountMatchesEmailSuffix(account, emailSuffix) {
+			continue
+		}
+		if !allowAlias && !allowDomain {
+			if emailAddressMatchesSuffix(account.EmailAddress, emailSuffix) {
+				regularCandidates = append(regularCandidates, account)
+			}
+			continue
+		}
+		if allowAlias && isBusinessGmailAddress(account.EmailAddress) && emailAddressMatchesSuffix(account.EmailAddress, emailSuffix) {
+			aliasCandidates = append(aliasCandidates, account)
+		}
+		if allowDomain && account.IsDomainMail && strings.TrimSpace(account.Domain) != "" && domainMatchesEmailSuffix(account.Domain, emailSuffix) {
+			domainCandidates = append(domainCandidates, account)
+		}
+	}
+
+	if !allowAlias && !allowDomain {
+		if strategy.IsSet() {
+			http.Error(w, "prefix strategy requires alias=true or domain=true", http.StatusBadRequest)
+			return
+		}
+		account, err := chooseRandomEmailAccount(regularCandidates)
+		if err != nil {
+			http.Error(w, "No email accounts found", http.StatusNotFound)
+			return
+		}
+		response := RandomEmailResponse{
+			Status:    "success",
+			EmailType: "regular",
+			RawEmail:  account.EmailAddress,
+			Email:     account.EmailAddress,
+			AccountID: account.ID,
+			Message:   "Random email account selected",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	useAlias := false
+	switch {
+	case len(aliasCandidates) > 0 && len(domainCandidates) > 0:
+		choice, err := rand.Int(rand.Reader, big.NewInt(2))
+		if err != nil {
+			http.Error(w, "Error selecting random account", http.StatusInternalServerError)
+			return
+		}
+		useAlias = choice.Int64() == 0
+	case len(aliasCandidates) > 0:
+		useAlias = true
+	case len(domainCandidates) > 0:
+		useAlias = false
+	default:
+		http.Error(w, "No matching alias or domain email accounts found", http.StatusNotFound)
+		return
+	}
+
+	if useAlias {
+		account, err := chooseRandomEmailAccount(aliasCandidates)
+		if err != nil {
+			http.Error(w, "No Gmail accounts found", http.StatusNotFound)
+			return
+		}
+		generatedEmail, err := h.generateGmailAliasWithStrategy(account.EmailAddress, strategy, *account)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		response := RandomEmailResponse{
+			Status:    "success",
+			EmailType: "alias",
+			RawEmail:  account.EmailAddress,
+			Email:     generatedEmail,
+			AccountID: account.ID,
+			Message:   "Generated Gmail alias",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	account, err := chooseRandomEmailAccount(domainCandidates)
+	if err != nil {
+		http.Error(w, "No domain email accounts found", http.StatusNotFound)
+		return
+	}
+	generatedEmail, err := h.generateDomainEmailWithStrategy(account.Domain, strategy, *account)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	response := RandomEmailResponse{
+		Status:    "success",
+		EmailType: "domain",
+		Email:     generatedEmail,
+		RawEmail:  account.EmailAddress,
+		AccountID: account.ID,
+		Message:   "Generated domain email",
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (h *APIHandler) generateGmailAliasWithStrategy(originalEmail string, strategy utils.EmailLocalPartStrategy, account models.EmailAccount) (string, error) {
+	if !strategy.IsSet() {
+		return h.generateGmailAlias(originalEmail)
+	}
+	localPart, domain, ok := splitBusinessEmail(originalEmail)
+	if !ok {
+		return "", fmt.Errorf("invalid email format")
+	}
+	aliasPart, err := generateEmailLocalPartForAccount(strategy, account, "", "")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s+%s@%s", localPart, aliasPart, domain), nil
+}
+
+func (h *APIHandler) generateDomainEmailWithStrategy(domain string, strategy utils.EmailLocalPartStrategy, account models.EmailAccount) (string, error) {
+	if !strategy.IsSet() {
+		return h.generateDomainEmail(domain)
+	}
+	localPart, err := generateEmailLocalPartForAccount(strategy, account, "", "")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s@%s", localPart, strings.ToLower(strings.TrimSpace(domain))), nil
 }
 
 // generateGmailAlias generates a random Gmail alias

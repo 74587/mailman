@@ -91,10 +91,27 @@ export interface WaitEmailResponse {
 // 随机邮件响应
 export interface RandomEmailResponse {
     email: string;
+    status?: string;
+    raw_email?: string;
+    email_type?: 'regular' | 'alias' | 'domain';
+    account_id?: number;
+    message?: string;
     originalEmail?: string;
-    accountId: number;
-    isAlias: boolean;
-    isDomain: boolean;
+    accountId?: number;
+    isAlias?: boolean;
+    isDomain?: boolean;
+}
+
+export interface RandomEmailParams {
+    alias?: boolean;
+    domain?: boolean;
+    accountId?: number;
+    emailSuffix?: string;
+    prefixStrategy?: 'literal' | 'builtin' | 'template' | 'random';
+    prefix?: string;
+    prefixTemplate?: string;
+    builtinPrefix?: string;
+    randomLength?: number;
 }
 
 // 同步请求
@@ -196,13 +213,19 @@ class EmailService {
     }
 
     // 获取随机邮件账户
-    async getRandomEmail(params: { alias?: boolean; domain?: boolean } = {}): Promise<RandomEmailResponse> {
+    async getRandomEmail(params: RandomEmailParams = {}): Promise<RandomEmailResponse> {
         const queryParams = new URLSearchParams()
         if (params.alias) queryParams.append('alias', 'true')
         if (params.domain) queryParams.append('domain', 'true')
+        if (params.accountId) queryParams.append('accountId', String(params.accountId))
+        if (params.emailSuffix) queryParams.append('emailSuffix', params.emailSuffix)
+        if (params.prefixStrategy) queryParams.append('prefixStrategy', params.prefixStrategy)
+        if (params.prefix) queryParams.append('prefix', params.prefix)
+        if (params.prefixTemplate) queryParams.append('prefixTemplate', params.prefixTemplate)
+        if (params.builtinPrefix) queryParams.append('builtinPrefix', params.builtinPrefix)
+        if (params.randomLength) queryParams.append('randomLength', String(params.randomLength))
 
-        const response = await apiClient.get(`/random-email?${queryParams}`)
-        return response.data
+        return apiClient.get<RandomEmailResponse>(`/random-email?${queryParams}`)
     }
 
     // 同步账户邮件

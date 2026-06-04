@@ -236,6 +236,7 @@ func (h *APIHandler) DeleteBusinessModuleHandler(w http.ResponseWriter, r *http.
 // @Param moduleId query int false "Business module ID"
 // @Param emailAccountId query int false "Email account ID"
 // @Param emailLinked query bool false "Filter by whether the business account is linked to an email account"
+// @Param registrationEmailSuffix query string false "Filter by registration email suffix"
 // @Success 200 {object} BusinessAccountsListResponse
 // @Router /api/business-accounts [get]
 func (h *APIHandler) ListBusinessAccountsHandler(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +270,9 @@ func (h *APIHandler) ListBusinessAccountsHandler(w http.ResponseWriter, r *http.
 		} else {
 			db = db.Where("business_accounts.email_account_id IS NULL")
 		}
+	}
+	if suffix := normalizeEmailSuffix(r.URL.Query().Get("registrationEmailSuffix")); suffix != "" {
+		db = db.Where("LOWER(business_accounts.registration_email) LIKE ?", "%"+suffix)
 	}
 
 	var total int64

@@ -87,6 +87,7 @@ export interface BusinessAccountListParams {
     moduleId?: number
     emailAccountId?: number
     emailLinked?: boolean | ''
+    registrationEmailSuffix?: string
 }
 
 export interface BusinessAccountPayload {
@@ -111,6 +112,66 @@ export interface BusinessAccountPayload {
     extraData?: Record<string, any>
     remoteCreatedAt?: string
     lastLoginAt?: string
+}
+
+export interface BusinessEmailClaimPayload {
+    ttlSeconds?: number
+    claimedBy?: string
+    accountId?: number
+    aliasBaseAccountId?: number
+    emailAddress?: string
+    emailSuffix?: string
+    emailMode?: 'auto' | 'primary' | 'domain' | 'alias' | 'forwarded'
+    useDomainMail?: boolean
+    domain?: string
+    useAlias?: boolean
+    aliasType?: 'gmail_plus' | 'domain_local_part' | 'forwarded'
+    aliasLocalPart?: string
+    prefixStrategy?: 'literal' | 'builtin' | 'template' | 'random'
+    prefix?: string
+    prefixTemplate?: string
+    builtinPrefix?: string
+    randomLength?: number
+    businessAccount?: Partial<BusinessAccountPayload>
+}
+
+export interface BusinessEmailClaimResponse {
+    businessAccountId: number
+    claimToken: string
+    claimExpiresAt: string
+    ttlSeconds: number
+    module: { id: number; name: string }
+    emailAccount: {
+        id: number
+        emailAddress: string
+        authType: string
+        isDomainMail: boolean
+        domain?: string
+        mailProviderId?: number
+        proxyMode?: string
+        proxyId?: number
+        isVerified?: boolean
+        errorStatus?: string
+    }
+    recipient: {
+        emailAddress: string
+        kind: string
+        toQuery: string
+        resolvedBy: string
+        domain?: string
+        localPart?: string
+    }
+    pickup: {
+        account_id: number
+        to_query: string
+    }
+    businessAccount: {
+        id: number
+        status: string
+        emailAccountId?: number
+        moduleId?: number
+        registrationEmail?: string
+    }
 }
 
 export interface BusinessModulePayload {
@@ -158,6 +219,10 @@ class BusinessAccountService {
 
     async createAccount(payload: BusinessAccountPayload): Promise<BusinessAccount> {
         return apiClient.post<BusinessAccount>('/business-accounts', payload)
+    }
+
+    async claimModuleEmailAccount(moduleId: number, payload: BusinessEmailClaimPayload = {}): Promise<BusinessEmailClaimResponse> {
+        return apiClient.post<BusinessEmailClaimResponse>(`/business-modules/${moduleId}/email-accounts/claim`, payload)
     }
 
     async updateAccount(id: number, payload: BusinessAccountPayload): Promise<BusinessAccount> {

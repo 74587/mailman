@@ -560,6 +560,20 @@ type RandomEmailRequest struct {
 	Alias bool `json:"alias,omitempty" form:"alias" example:"true"`
 	// Whether to allow domain emails
 	Domain bool `json:"domain,omitempty" form:"domain" example:"true"`
+	// Optional email account ID to generate from
+	AccountID uint `json:"accountId,omitempty" form:"accountId" example:"1"`
+	// Optional email suffix/domain filter, e.g. @gmail.com or example.com
+	EmailSuffix string `json:"emailSuffix,omitempty" form:"emailSuffix" example:"@gmail.com"`
+	// Optional prefix generation strategy: literal, builtin, template, random
+	PrefixStrategy string `json:"prefixStrategy,omitempty" form:"prefixStrategy" example:"template"`
+	// Optional literal prefix used by literal/template strategies
+	Prefix string `json:"prefix,omitempty" form:"prefix" example:"github"`
+	// Optional local-part template, e.g. {prefix}-{date}-{hex4}
+	PrefixTemplate string `json:"prefixTemplate,omitempty" form:"prefixTemplate" example:"{prefix}-{date}-{hex4}"`
+	// Optional builtin prefix: pickup, signup, verify, register, business, test
+	BuiltinPrefix string `json:"builtinPrefix,omitempty" form:"builtinPrefix" example:"pickup"`
+	// Optional random local-part length for random strategy
+	RandomLength int `json:"randomLength,omitempty" form:"randomLength" example:"8"`
 }
 
 // RandomEmailResponse represents the response for the /random-email endpoint
@@ -573,6 +587,8 @@ type RandomEmailResponse struct {
 	Email string `json:"email,omitempty" example:"john.doe+random123@gmail.com"`
 	// Type of email returned: "regular", "alias", "domain"
 	EmailType string `json:"email_type" example:"alias"`
+	// Source email account ID
+	AccountID uint `json:"account_id,omitempty" example:"1"`
 	// Message explaining the selection
 	Message string `json:"message,omitempty" example:"Generated random Gmail alias"`
 }

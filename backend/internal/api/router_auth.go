@@ -107,6 +107,7 @@ func NewRouterWithAuth(
 	accountRouter.HandleFunc("/accounts/upsert", handler.UpsertAccountHandler).Methods("POST")
 	accountRouter.HandleFunc("/accounts", handler.GetAccountsHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/paginated", handler.GetAccountsPaginatedHandler).Methods("GET")
+	accountRouter.HandleFunc("/accounts/alias-capabilities", handler.ListEmailAliasCapabilitiesHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/forwarded-addresses", handler.ListAccountForwardedAddressesHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/forwarded-addresses", handler.SetAccountForwardedAddressesHandler).Methods("PUT")
 	accountRouter.HandleFunc("/accounts/forwarded-addresses", handler.AddAccountForwardedAddressHandler).Methods("POST")

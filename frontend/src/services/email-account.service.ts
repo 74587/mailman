@@ -109,6 +109,28 @@ export interface AccountProxyConfigResponse extends AccountProxyConfigRequest {
     changed?: boolean;
 }
 
+export interface EmailAliasCapability {
+    type: 'gmail_plus' | 'domain_local_part' | 'forwarded';
+    domain?: string;
+    pattern: string;
+    example: string;
+    toQuery: string;
+}
+
+export interface EmailAliasAccountCapability {
+    accountId: number;
+    emailAddress: string;
+    isDomainMail: boolean;
+    domain?: string;
+    forwardedAddresses?: string[];
+    capabilities: EmailAliasCapability[];
+}
+
+export interface EmailAliasCapabilitiesResponse {
+    data: EmailAliasAccountCapability[];
+    total: number;
+}
+
 export class EmailAccountService {
     private basePath = '/accounts';
 
@@ -130,6 +152,14 @@ export class EmailAccountService {
     async getAccountsPaginated(params?: AccountFilterParams): Promise<PaginatedResponse<EmailAccount>> {
         const response = await apiClient.get<PaginatedResponse<EmailAccount>>(
             `${this.basePath}/paginated`,
+            { params }
+        );
+        return response;
+    }
+
+    async getAliasCapabilities(params?: { type?: string; emailSuffix?: string }): Promise<EmailAliasCapabilitiesResponse> {
+        const response = await apiClient.get<EmailAliasCapabilitiesResponse>(
+            `${this.basePath}/alias-capabilities`,
             { params }
         );
         return response;

@@ -29,6 +29,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	apiRouter.HandleFunc("/accounts", handler.CreateAccountHandler).Methods("POST")
 	apiRouter.HandleFunc("/accounts", handler.GetAccountsHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/paginated", handler.GetAccountsPaginatedHandler).Methods("GET")
+	apiRouter.HandleFunc("/accounts/alias-capabilities", handler.ListEmailAliasCapabilitiesHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/forwarded-addresses", handler.ListAccountForwardedAddressesHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/forwarded-addresses", handler.SetAccountForwardedAddressesHandler).Methods("PUT")
 	apiRouter.HandleFunc("/accounts/forwarded-addresses", handler.AddAccountForwardedAddressHandler).Methods("POST")

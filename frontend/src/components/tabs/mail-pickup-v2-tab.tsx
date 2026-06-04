@@ -64,6 +64,7 @@ interface ListenConfig {
 type ExecutionStatus = 'pending' | 'success' | 'failed' | 'no_match'
 type ExtractMode = 'template' | 'regex' | 'js' | 'gotemplate' | 'none'
 type MatchMode = 'all' | 'first' | 'last' | 'index'
+type PrefixMode = 'default' | 'literal' | 'builtin' | 'template' | 'random'
 
 const EXTRACT_MODE_OPTIONS: { value: ExtractMode; label: string; desc: string }[] = [
     { value: 'template', label: '模板', desc: 'V2 取件模板' },
@@ -129,6 +130,11 @@ export default function MailPickupV2Tab() {
     const [selectedDomain, setSelectedDomain] = useState<string>('')
     const [useAlias, setUseAlias] = useState(false)
     const [useDomain, setUseDomain] = useState(true)
+    const [prefixMode, setPrefixMode] = useState<PrefixMode>('default')
+    const [builtinPrefix, setBuiltinPrefix] = useState('pickup')
+    const [prefixTemplate, setPrefixTemplate] = useState('{prefix}-{date}-{hex4}')
+    const [emailSuffix, setEmailSuffix] = useState('')
+    const [randomLength, setRandomLength] = useState(8)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [viewMode, setViewMode] = useState<'html' | 'text' | 'raw'>('html')
@@ -397,6 +403,29 @@ export default function MailPickupV2Tab() {
             const params = new URLSearchParams()
             if (useAlias) params.append('alias', 'true')
             if (useDomain) params.append('domain', 'true')
+            if (emailSuffix.trim()) params.append('emailSuffix', emailSuffix.trim())
+            if (prefixMode === 'literal') {
+                if (!customPrefix.trim()) {
+                    setError('请输入固定前缀')
+                    return
+                }
+                params.append('prefixStrategy', 'literal')
+                params.append('prefix', customPrefix.trim())
+            } else if (prefixMode === 'builtin') {
+                params.append('prefixStrategy', 'builtin')
+                params.append('builtinPrefix', builtinPrefix)
+            } else if (prefixMode === 'template') {
+                if (!prefixTemplate.trim()) {
+                    setError('请输入前缀模板')
+                    return
+                }
+                params.append('prefixStrategy', 'template')
+                params.append('prefixTemplate', prefixTemplate.trim())
+                if (customPrefix.trim()) params.append('prefix', customPrefix.trim())
+            } else if (prefixMode === 'random') {
+                params.append('prefixStrategy', 'random')
+                params.append('randomLength', String(randomLength))
+            }
             const data = await apiClient.get<{ status: string; email: string; message?: string }>(`/random-email?${params}`)
             if (data.status === 'success') {
                 addMonitoredEmail(data.email)
@@ -798,6 +827,73 @@ export default function MailPickupV2Tab() {
                                     </div>
                                 </div>
                             )}
+
+                            <div>
+                                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">
+                                    生成策略
+                                </label>
+                                <div className="grid grid-cols-1 sm:grid-cols-[120px_1fr] gap-1.5">
+                                    <select
+                                        value={prefixMode}
+                                        onChange={(e) => setPrefixMode(e.target.value as PrefixMode)}
+                                        className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                                    >
+                                        <option value="default">默认</option>
+                                        <option value="literal">固定</option>
+                                        <option value="builtin">内置</option>
+                                        <option value="template">模板</option>
+                                        <option value="random">随机</option>
+                                    </select>
+
+                                    {prefixMode === 'builtin' ? (
+                                        <select
+                                            value={builtinPrefix}
+                                            onChange={(e) => setBuiltinPrefix(e.target.value)}
+                                            className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-2 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 font-mono transition-all"
+                                        >
+                                            <option value="pickup">pickup</option>
+                                            <option value="signup">signup</option>
+                                            <option value="verify">verify</option>
+                                            <option value="register">register</option>
+                                            <option value="business">business</option>
+                                            <option value="test">test</option>
+                                        </select>
+                                    ) : prefixMode === 'template' ? (
+                                        <input
+                                            type="text"
+                                            value={prefixTemplate}
+                                            onChange={(e) => setPrefixTemplate(e.target.value)}
+                                            placeholder="{prefix}-{date}-{hex4}"
+                                            className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 font-mono transition-all"
+                                        />
+                                    ) : prefixMode === 'random' ? (
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            max={32}
+                                            value={randomLength}
+                                            onChange={(e) => setRandomLength(Math.max(1, Math.min(32, Number(e.target.value) || 8)))}
+                                            className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 font-mono transition-all"
+                                        />
+                                    ) : (
+                                        <input
+                                            type="text"
+                                            value={customPrefix}
+                                            onChange={(e) => setCustomPrefix(e.target.value)}
+                                            placeholder={prefixMode === 'literal' ? '固定前缀' : '模板变量 prefix'}
+                                            disabled={prefixMode === 'default'}
+                                            className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 font-mono transition-all disabled:opacity-50"
+                                        />
+                                    )}
+                                </div>
+                                <input
+                                    type="text"
+                                    value={emailSuffix}
+                                    onChange={(e) => setEmailSuffix(e.target.value)}
+                                    placeholder="邮箱后缀，如 @gmail.com"
+                                    className="mt-1.5 w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 font-mono transition-all"
+                                />
+                            </div>
 
                             {/* Random email */}
                             <div className="flex items-center gap-3">
