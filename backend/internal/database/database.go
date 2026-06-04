@@ -87,6 +87,7 @@ func Migrate() error {
 		&models.EmailAccount{},
 		&models.BusinessModule{},
 		&models.BusinessAccount{},
+		&models.BusinessEmailExclusion{},
 		&models.Email{},
 		&models.Attachment{},
 		&models.Mailbox{},

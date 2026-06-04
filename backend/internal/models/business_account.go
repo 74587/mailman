@@ -6,12 +6,16 @@ import (
 )
 
 type BusinessAccountStatus string
+type BusinessEmailExclusionType string
 
 const (
 	BusinessAccountStatusActive   BusinessAccountStatus = "active"
 	BusinessAccountStatusPending  BusinessAccountStatus = "pending"
 	BusinessAccountStatusDisabled BusinessAccountStatus = "disabled"
 	BusinessAccountStatusArchived BusinessAccountStatus = "archived"
+
+	BusinessEmailExclusionTypeCooldown  BusinessEmailExclusionType = "cooldown"
+	BusinessEmailExclusionTypeBlacklist BusinessEmailExclusionType = "blacklist"
 )
 
 type BusinessModule struct {
@@ -67,12 +71,36 @@ type BusinessAccount struct {
 	DeletedAt         DeletedAt             `gorm:"index" json:"deletedAt,omitempty"`
 }
 
+type BusinessEmailExclusion struct {
+	ID                      uint                       `gorm:"primaryKey" json:"id"`
+	OrgID                   uint                       `gorm:"not null;index;default:1" json:"orgId"`
+	ModuleID                *uint                      `gorm:"index" json:"moduleId,omitempty"`
+	Module                  *BusinessModule            `gorm:"foreignKey:ModuleID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"module,omitempty"`
+	EmailAccountID          *uint                      `gorm:"index" json:"emailAccountId,omitempty"`
+	EmailAccount            *EmailAccount              `gorm:"foreignKey:EmailAccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"emailAccount,omitempty"`
+	RegistrationEmail       string                     `gorm:"type:varchar(255);index" json:"registrationEmail,omitempty"`
+	Type                    BusinessEmailExclusionType `gorm:"type:varchar(32);not null;default:'cooldown';index" json:"type"`
+	Scope                   string                     `gorm:"type:varchar(32);not null;default:'module';index" json:"scope"`
+	Target                  string                     `gorm:"type:varchar(64);not null;index" json:"target"`
+	Reason                  string                     `gorm:"type:varchar(255)" json:"reason,omitempty"`
+	Message                 string                     `gorm:"type:text" json:"message,omitempty"`
+	SourceBusinessAccountID *uint                      `gorm:"index" json:"sourceBusinessAccountId,omitempty"`
+	CreatedBy               string                     `gorm:"type:varchar(255)" json:"createdBy,omitempty"`
+	ExpiresAt               *time.Time                 `gorm:"index" json:"expiresAt,omitempty"`
+	CreatedAt               time.Time                  `json:"createdAt"`
+	UpdatedAt               time.Time                  `json:"updatedAt"`
+}
+
 func (BusinessModule) TableName() string {
 	return "business_modules"
 }
 
 func (BusinessAccount) TableName() string {
 	return "business_accounts"
+}
+
+func (BusinessEmailExclusion) TableName() string {
+	return "business_email_exclusions"
 }
 
 func NormalizeBusinessAccountStatus(status BusinessAccountStatus) BusinessAccountStatus {
@@ -84,5 +112,15 @@ func NormalizeBusinessAccountStatus(status BusinessAccountStatus) BusinessAccoun
 		return BusinessAccountStatusActive
 	default:
 		return trimmed
+	}
+}
+
+func NormalizeBusinessEmailExclusionType(value BusinessEmailExclusionType) BusinessEmailExclusionType {
+	trimmed := BusinessEmailExclusionType(strings.ToLower(strings.TrimSpace(string(value))))
+	switch trimmed {
+	case BusinessEmailExclusionTypeBlacklist:
+		return BusinessEmailExclusionTypeBlacklist
+	default:
+		return BusinessEmailExclusionTypeCooldown
 	}
 }

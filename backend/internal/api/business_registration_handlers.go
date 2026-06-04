@@ -33,6 +33,17 @@ const (
 	businessAliasTypeForwarded  = "forwarded"
 
 	businessClaimAccountOrder = "last_sync_at IS NOT NULL ASC, last_sync_at ASC, id ASC"
+
+	defaultBusinessExclusionCooldownSeconds = 1800
+	minBusinessExclusionCooldownSeconds     = 60
+	maxBusinessExclusionCooldownSeconds     = 30 * 24 * 3600
+
+	businessEmailExclusionScopeModule = "module"
+	businessEmailExclusionScopeGlobal = "global"
+
+	businessEmailExclusionTargetEmailAccount      = "email_account"
+	businessEmailExclusionTargetRegistrationEmail = "registration_email"
+	businessEmailExclusionTargetBoth              = "both"
 )
 
 type BusinessEmailClaimRequest struct {
@@ -141,10 +152,23 @@ type CompleteRegistrationRequest struct {
 }
 
 type ReleaseRegistrationClaimRequest struct {
-	ClaimToken           string `json:"claimToken"`
-	Reason               string `json:"reason,omitempty"`
-	Message              string `json:"message,omitempty"`
-	DeletePendingAccount bool   `json:"deletePendingAccount,omitempty"`
+	ClaimToken           string                                 `json:"claimToken"`
+	Reason               string                                 `json:"reason,omitempty"`
+	Message              string                                 `json:"message,omitempty"`
+	DeletePendingAccount bool                                   `json:"deletePendingAccount,omitempty"`
+	Exclusion            *BusinessEmailExclusionReleaseRequest  `json:"exclusion,omitempty"`
+	Exclusions           []BusinessEmailExclusionReleaseRequest `json:"exclusions,omitempty"`
+}
+
+type BusinessEmailExclusionReleaseRequest struct {
+	Type              models.BusinessEmailExclusionType `json:"type,omitempty"`
+	Scope             string                            `json:"scope,omitempty"`
+	Target            string                            `json:"target,omitempty"`
+	DurationSeconds   int                               `json:"durationSeconds,omitempty"`
+	Reason            string                            `json:"reason,omitempty"`
+	Message           string                            `json:"message,omitempty"`
+	EmailAccountID    *uint                             `json:"emailAccountId,omitempty"`
+	RegistrationEmail string                            `json:"registrationEmail,omitempty"`
 }
 
 type RenewRegistrationClaimRequest struct {
@@ -258,17 +282,27 @@ func (h *APIHandler) ReleaseBusinessRegistrationClaimHandler(w http.ResponseWrit
 	}
 
 	db := h.EmailAccountRepo.GetDB()
+	now := time.Now().UTC()
+	exclusions, err := buildBusinessEmailExclusionsForRelease(account, req, now)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if req.DeletePendingAccount {
-		if err := db.Model(account).Updates(map[string]interface{}{
-			"registration_email": nil,
-			"claim_expires_at":   nil,
-			"claimed_by":         "",
-			"status":             models.BusinessAccountStatusArchived,
-		}).Error; err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := db.Delete(account).Error; err != nil {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := createBusinessEmailExclusions(tx, exclusions); err != nil {
+				return err
+			}
+			if err := tx.Model(account).Updates(map[string]interface{}{
+				"registration_email": nil,
+				"claim_expires_at":   nil,
+				"claimed_by":         "",
+				"status":             models.BusinessAccountStatusArchived,
+			}).Error; err != nil {
+				return err
+			}
+			return tx.Delete(account).Error
+		}); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -280,19 +314,22 @@ func (h *APIHandler) ReleaseBusinessRegistrationClaimHandler(w http.ResponseWrit
 		return
 	}
 
-	now := time.Now().UTC()
-	account.Status = models.BusinessAccountStatusArchived
-	account.RegistrationEmail = nil
-	account.ClaimExpiresAt = nil
-	account.ClaimedBy = ""
-	account.ExtraData = mergeBusinessJSONMap(account.ExtraData, models.JSONMapInterface{
-		"registrationState": "released",
-		"releaseReason":     strings.TrimSpace(req.Reason),
-		"releaseMessage":    strings.TrimSpace(req.Message),
-		"releasedAt":        now.Format(time.RFC3339),
-	})
-
-	if err := db.Save(account).Error; err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := createBusinessEmailExclusions(tx, exclusions); err != nil {
+			return err
+		}
+		account.Status = models.BusinessAccountStatusArchived
+		account.RegistrationEmail = nil
+		account.ClaimExpiresAt = nil
+		account.ClaimedBy = ""
+		account.ExtraData = mergeBusinessJSONMap(account.ExtraData, models.JSONMapInterface{
+			"registrationState": "released",
+			"releaseReason":     strings.TrimSpace(req.Reason),
+			"releaseMessage":    strings.TrimSpace(req.Message),
+			"releasedAt":        now.Format(time.RFC3339),
+		})
+		return tx.Save(account).Error
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -399,7 +436,7 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 
 		cursor := businessClaimAccountCursor{}
 		for {
-			plans, nextCursor, hasMore, err := h.buildBusinessClaimPlanBatch(tx, orgID, module, req, cursor, businessClaimCandidateBatchSize)
+			plans, nextCursor, hasMore, err := h.buildBusinessClaimPlanBatch(tx, orgID, module, req, cursor, now, businessClaimCandidateBatchSize)
 			if err != nil {
 				return err
 			}
@@ -429,6 +466,14 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 }
 
 func createBusinessRegistrationClaimForPlan(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest, plan businessClaimPlan, token string, expiresAt time.Time, now time.Time) (*models.BusinessAccount, bool, error) {
+	excluded, err := businessClaimPlanExcluded(tx, orgID, module.ID, plan, now)
+	if err != nil {
+		return nil, false, err
+	}
+	if excluded {
+		return nil, false, nil
+	}
+
 	available, err := businessRegistrationEmailAvailable(tx, orgID, module.ID, plan.registrationEmail)
 	if err != nil {
 		return nil, false, err
@@ -510,12 +555,12 @@ func (h *APIHandler) buildBusinessClaimPlans(tx *gorm.DB, orgID uint, module *mo
 	return []businessClaimPlan{plan}, nil
 }
 
-func (h *APIHandler) buildBusinessClaimPlanBatch(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest, cursor businessClaimAccountCursor, limit int) ([]businessClaimPlan, businessClaimAccountCursor, bool, error) {
+func (h *APIHandler) buildBusinessClaimPlanBatch(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest, cursor businessClaimAccountCursor, now time.Time, limit int) ([]businessClaimPlan, businessClaimAccountCursor, bool, error) {
 	if limit <= 0 {
 		limit = businessClaimCandidateBatchSize
 	}
 	var accounts []models.EmailAccount
-	query := h.buildBusinessClaimAccountQuery(tx, orgID, module, req)
+	query := h.buildBusinessClaimAccountQuery(tx, orgID, module, req, now)
 	query = applyBusinessClaimAccountCursor(query, cursor)
 
 	if err := query.Order(businessClaimAccountOrder).Limit(limit).Find(&accounts).Error; err != nil {
@@ -542,11 +587,12 @@ func (h *APIHandler) buildBusinessClaimPlanBatch(tx *gorm.DB, orgID uint, module
 	return plans, nextCursor, len(accounts) == limit, nil
 }
 
-func (h *APIHandler) buildBusinessClaimAccountQuery(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest) *gorm.DB {
+func (h *APIHandler) buildBusinessClaimAccountQuery(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest, now time.Time) *gorm.DB {
 	query := tx.Preload("MailProvider").Preload("Tags").
 		Where("org_id = ?", orgID).
 		Where("is_verified = ?", true).
 		Where("error_status = ? OR error_status = ''", models.ErrorStatusNormal)
+	query = applyBusinessEmailAccountExclusionFilter(query, orgID, module.ID, now)
 
 	if req.ProviderID != nil {
 		query = query.Where("mail_provider_id = ?", *req.ProviderID)
@@ -602,6 +648,17 @@ func applyBusinessPrimaryClaimAvailabilityFilter(query *gorm.DB, orgID uint, mod
 		return query.Where("NOT EXISTS (SELECT 1 FROM business_accounts ba WHERE ba.org_id = ? AND ba.module_id = ? AND ba.registration_email IS NOT NULL AND LOWER(ba.registration_email) = LOWER(email_accounts.email_address))", orgID, moduleID)
 	}
 	return query.Where("NOT EXISTS (SELECT 1 FROM business_accounts ba WHERE ba.module_id = ? AND ba.registration_email IS NOT NULL AND LOWER(ba.registration_email) = LOWER(email_accounts.email_address))", moduleID)
+}
+
+func applyBusinessEmailAccountExclusionFilter(query *gorm.DB, orgID uint, moduleID uint, now time.Time) *gorm.DB {
+	sql := "NOT EXISTS (SELECT 1 FROM business_email_exclusions bee WHERE (bee.module_id IS NULL OR bee.module_id = ?) AND bee.email_account_id = email_accounts.id AND (bee.expires_at IS NULL OR bee.expires_at > ?)"
+	args := []interface{}{moduleID, now}
+	if orgID > 0 {
+		sql += " AND bee.org_id = ?"
+		args = append(args, orgID)
+	}
+	sql += ")"
+	return query.Where(sql, args...)
 }
 
 func (h *APIHandler) resolveBusinessClaimAccount(tx *gorm.DB, orgID uint, req BusinessEmailClaimRequest) (models.EmailAccount, error) {
@@ -945,6 +1002,185 @@ func clearExpiredBusinessRegistrationClaims(tx *gorm.DB, orgID uint, moduleID ui
 		"claimed_by":         "",
 		"status":             models.BusinessAccountStatusArchived,
 	}).Error
+}
+
+func buildBusinessEmailExclusionsForRelease(account *models.BusinessAccount, req ReleaseRegistrationClaimRequest, now time.Time) ([]models.BusinessEmailExclusion, error) {
+	specs := make([]BusinessEmailExclusionReleaseRequest, 0, 1+len(req.Exclusions))
+	if req.Exclusion != nil {
+		specs = append(specs, *req.Exclusion)
+	}
+	specs = append(specs, req.Exclusions...)
+	if len(specs) == 0 {
+		return nil, nil
+	}
+
+	exclusions := make([]models.BusinessEmailExclusion, 0, len(specs))
+	for _, spec := range specs {
+		exclusion, err := buildBusinessEmailExclusionForRelease(account, req, spec, now)
+		if err != nil {
+			return nil, err
+		}
+		exclusions = append(exclusions, exclusion)
+	}
+	return exclusions, nil
+}
+
+func buildBusinessEmailExclusionForRelease(account *models.BusinessAccount, req ReleaseRegistrationClaimRequest, spec BusinessEmailExclusionReleaseRequest, now time.Time) (models.BusinessEmailExclusion, error) {
+	exclusionType, err := normalizeBusinessEmailExclusionRequestType(spec.Type)
+	if err != nil {
+		return models.BusinessEmailExclusion{}, err
+	}
+	scope, err := normalizeBusinessEmailExclusionScope(spec.Scope)
+	if err != nil {
+		return models.BusinessEmailExclusion{}, err
+	}
+	target, err := normalizeBusinessEmailExclusionTarget(spec.Target)
+	if err != nil {
+		return models.BusinessEmailExclusion{}, err
+	}
+	expiresAt := businessEmailExclusionExpiresAt(exclusionType, spec.DurationSeconds, now)
+
+	var moduleID *uint
+	if scope == businessEmailExclusionScopeModule {
+		if account.ModuleID == nil {
+			return models.BusinessEmailExclusion{}, fmt.Errorf("module-scoped exclusion requires moduleId")
+		}
+		moduleID = account.ModuleID
+	}
+
+	var emailAccountID *uint
+	if target == businessEmailExclusionTargetEmailAccount || target == businessEmailExclusionTargetBoth {
+		if spec.EmailAccountID != nil {
+			emailAccountID = spec.EmailAccountID
+		} else {
+			emailAccountID = account.EmailAccountID
+		}
+		if emailAccountID == nil {
+			return models.BusinessEmailExclusion{}, fmt.Errorf("email_account exclusion requires emailAccountId")
+		}
+	}
+
+	registrationEmail := ""
+	if target == businessEmailExclusionTargetRegistrationEmail || target == businessEmailExclusionTargetBoth {
+		registrationEmail = normalizeBusinessEmailAddress(spec.RegistrationEmail)
+		if registrationEmail == "" && account.RegistrationEmail != nil {
+			registrationEmail = normalizeBusinessEmailAddress(*account.RegistrationEmail)
+		}
+		if registrationEmail == "" {
+			return models.BusinessEmailExclusion{}, fmt.Errorf("registration_email exclusion requires registrationEmail")
+		}
+	}
+
+	reason := strings.TrimSpace(spec.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(req.Reason)
+	}
+	message := strings.TrimSpace(spec.Message)
+	if message == "" {
+		message = strings.TrimSpace(req.Message)
+	}
+	sourceBusinessAccountID := account.ID
+
+	return models.BusinessEmailExclusion{
+		OrgID:                   account.OrgID,
+		ModuleID:                moduleID,
+		EmailAccountID:          emailAccountID,
+		RegistrationEmail:       registrationEmail,
+		Type:                    exclusionType,
+		Scope:                   scope,
+		Target:                  target,
+		Reason:                  reason,
+		Message:                 message,
+		SourceBusinessAccountID: &sourceBusinessAccountID,
+		CreatedBy:               strings.TrimSpace(account.ClaimedBy),
+		ExpiresAt:               expiresAt,
+	}, nil
+}
+
+func createBusinessEmailExclusions(tx *gorm.DB, exclusions []models.BusinessEmailExclusion) error {
+	if len(exclusions) == 0 {
+		return nil
+	}
+	return tx.Create(&exclusions).Error
+}
+
+func businessClaimPlanExcluded(tx *gorm.DB, orgID uint, moduleID uint, plan businessClaimPlan, now time.Time) (bool, error) {
+	email := normalizeBusinessEmailAddress(plan.registrationEmail)
+	query := tx.Model(&models.BusinessEmailExclusion{}).
+		Where("(module_id IS NULL OR module_id = ?)", moduleID).
+		Where("(expires_at IS NULL OR expires_at > ?)", now)
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	if email != "" {
+		query = query.Where("(email_account_id = ? OR LOWER(registration_email) = ?)", plan.account.ID, email)
+	} else {
+		query = query.Where("email_account_id = ?", plan.account.ID)
+	}
+
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func normalizeBusinessEmailExclusionRequestType(value models.BusinessEmailExclusionType) (models.BusinessEmailExclusionType, error) {
+	trimmed := models.BusinessEmailExclusionType(strings.ToLower(strings.TrimSpace(string(value))))
+	switch trimmed {
+	case "", models.BusinessEmailExclusionTypeCooldown:
+		return models.BusinessEmailExclusionTypeCooldown, nil
+	case models.BusinessEmailExclusionTypeBlacklist:
+		return models.BusinessEmailExclusionTypeBlacklist, nil
+	default:
+		return "", fmt.Errorf("unsupported exclusion type: %s", value)
+	}
+}
+
+func normalizeBusinessEmailExclusionScope(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", businessEmailExclusionScopeModule:
+		return businessEmailExclusionScopeModule, nil
+	case businessEmailExclusionScopeGlobal:
+		return businessEmailExclusionScopeGlobal, nil
+	default:
+		return "", fmt.Errorf("unsupported exclusion scope: %s", value)
+	}
+}
+
+func normalizeBusinessEmailExclusionTarget(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", businessEmailExclusionTargetEmailAccount, "account", "emailaccount", "email_account_id":
+		return businessEmailExclusionTargetEmailAccount, nil
+	case businessEmailExclusionTargetRegistrationEmail, "registrationemail", "email", "email_address":
+		return businessEmailExclusionTargetRegistrationEmail, nil
+	case businessEmailExclusionTargetBoth, "all":
+		return businessEmailExclusionTargetBoth, nil
+	default:
+		return "", fmt.Errorf("unsupported exclusion target: %s", value)
+	}
+}
+
+func businessEmailExclusionExpiresAt(exclusionType models.BusinessEmailExclusionType, durationSeconds int, now time.Time) *time.Time {
+	if exclusionType == models.BusinessEmailExclusionTypeBlacklist {
+		return nil
+	}
+	seconds := normalizeBusinessEmailExclusionCooldown(durationSeconds)
+	expiresAt := now.Add(time.Duration(seconds) * time.Second)
+	return &expiresAt
+}
+
+func normalizeBusinessEmailExclusionCooldown(value int) int {
+	if value <= 0 {
+		return defaultBusinessExclusionCooldownSeconds
+	}
+	if value < minBusinessExclusionCooldownSeconds {
+		return minBusinessExclusionCooldownSeconds
+	}
+	if value > maxBusinessExclusionCooldownSeconds {
+		return maxBusinessExclusionCooldownSeconds
+	}
+	return value
 }
 
 func businessRegistrationEmailAvailable(tx *gorm.DB, orgID uint, moduleID uint, registrationEmail string) (bool, error) {

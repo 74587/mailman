@@ -27,6 +27,7 @@ func newBusinessRegistrationTestHandler(t *testing.T) (*APIHandler, *gorm.DB) {
 		&models.EmailAccount{},
 		&models.BusinessModule{},
 		&models.BusinessAccount{},
+		&models.BusinessEmailExclusion{},
 		&models.TagGroup{},
 		&models.Tag{},
 		&models.EmailAccountTag{},
@@ -404,5 +405,150 @@ func TestReleaseBusinessRegistrationClaimFreesRegistrationEmail(t *testing.T) {
 	handler.ClaimBusinessModuleEmailAccountHandler(claimRec3, claimReq3)
 	if claimRec3.Code != http.StatusCreated {
 		t.Fatalf("third claim status = %d, body = %s", claimRec3.Code, claimRec3.Body.String())
+	}
+}
+
+func TestReleaseBusinessRegistrationClaimCanCooldownEmailAccount(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{OrgID: 1, Name: "Dia"}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{
+			OrgID:        1,
+			EmailAddress: "slow-outlook@example.com",
+			AuthType:     models.AuthTypeOAuth2,
+			IsVerified:   true,
+			ErrorStatus:  string(models.ErrorStatusNormal),
+		},
+		{
+			OrgID:        1,
+			EmailAddress: "next-gmail@example.com",
+			AuthType:     models.AuthTypeOAuth2,
+			IsVerified:   true,
+			ErrorStatus:  string(models.ErrorStatusNormal),
+		},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create email accounts: %v", err)
+	}
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"emailMode":"primary","ttlSeconds":600}`))
+	claimReq = mux.SetURLVars(claimReq, map[string]string{"id": "1"})
+	claimRec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(claimRec, claimReq)
+	if claimRec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", claimRec.Code, claimRec.Body.String())
+	}
+	var claim BusinessEmailClaimResponse
+	if err := json.NewDecoder(claimRec.Body).Decode(&claim); err != nil {
+		t.Fatalf("failed to decode claim: %v", err)
+	}
+	if claim.EmailAccount.ID != accounts[0].ID {
+		t.Fatalf("first claim should use first account, got %+v", claim.EmailAccount)
+	}
+
+	releaseBody := fmt.Sprintf(`{"claimToken":%q,"reason":"verification_timeout","message":"no code","exclusion":{"type":"cooldown","target":"email_account","scope":"module","durationSeconds":600}}`, claim.ClaimToken)
+	releaseReq := httptest.NewRequest(http.MethodPost, "/api/business-accounts/1/release-registration-claim", bytes.NewBufferString(releaseBody))
+	releaseReq = mux.SetURLVars(releaseReq, map[string]string{"id": fmt.Sprintf("%d", claim.BusinessAccountID)})
+	releaseRec := httptest.NewRecorder()
+	handler.ReleaseBusinessRegistrationClaimHandler(releaseRec, releaseReq)
+	if releaseRec.Code != http.StatusOK {
+		t.Fatalf("release status = %d, body = %s", releaseRec.Code, releaseRec.Body.String())
+	}
+
+	var exclusion models.BusinessEmailExclusion
+	if err := db.First(&exclusion).Error; err != nil {
+		t.Fatalf("failed to load exclusion: %v", err)
+	}
+	if exclusion.EmailAccountID == nil || *exclusion.EmailAccountID != accounts[0].ID || exclusion.Type != models.BusinessEmailExclusionTypeCooldown || exclusion.ExpiresAt == nil {
+		t.Fatalf("unexpected exclusion: %+v", exclusion)
+	}
+
+	nextReq := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"emailMode":"primary","ttlSeconds":600}`))
+	nextReq = mux.SetURLVars(nextReq, map[string]string{"id": "1"})
+	nextRec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(nextRec, nextReq)
+	if nextRec.Code != http.StatusCreated {
+		t.Fatalf("next claim status = %d, body = %s", nextRec.Code, nextRec.Body.String())
+	}
+	var nextClaim BusinessEmailClaimResponse
+	if err := json.NewDecoder(nextRec.Body).Decode(&nextClaim); err != nil {
+		t.Fatalf("failed to decode next claim: %v", err)
+	}
+	if nextClaim.EmailAccount.ID != accounts[1].ID {
+		t.Fatalf("expected cooldown to skip first account, got %+v", nextClaim.EmailAccount)
+	}
+}
+
+func TestReleaseBusinessRegistrationClaimCanBlacklistRegistrationEmail(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{OrgID: 1, Name: "Dia"}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{
+			OrgID:        1,
+			EmailAddress: "registered@example.com",
+			AuthType:     models.AuthTypePassword,
+			IsVerified:   true,
+			ErrorStatus:  string(models.ErrorStatusNormal),
+		},
+		{
+			OrgID:        1,
+			EmailAddress: "fresh@example.com",
+			AuthType:     models.AuthTypePassword,
+			IsVerified:   true,
+			ErrorStatus:  string(models.ErrorStatusNormal),
+		},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create email accounts: %v", err)
+	}
+
+	claimReq := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"emailMode":"primary"}`))
+	claimReq = mux.SetURLVars(claimReq, map[string]string{"id": "1"})
+	claimRec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(claimRec, claimReq)
+	if claimRec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", claimRec.Code, claimRec.Body.String())
+	}
+	var claim BusinessEmailClaimResponse
+	if err := json.NewDecoder(claimRec.Body).Decode(&claim); err != nil {
+		t.Fatalf("failed to decode claim: %v", err)
+	}
+
+	releaseBody := fmt.Sprintf(`{"claimToken":%q,"reason":"already_registered","exclusion":{"type":"blacklist","target":"registration_email","scope":"module"}}`, claim.ClaimToken)
+	releaseReq := httptest.NewRequest(http.MethodPost, "/api/business-accounts/1/release-registration-claim", bytes.NewBufferString(releaseBody))
+	releaseReq = mux.SetURLVars(releaseReq, map[string]string{"id": fmt.Sprintf("%d", claim.BusinessAccountID)})
+	releaseRec := httptest.NewRecorder()
+	handler.ReleaseBusinessRegistrationClaimHandler(releaseRec, releaseReq)
+	if releaseRec.Code != http.StatusOK {
+		t.Fatalf("release status = %d, body = %s", releaseRec.Code, releaseRec.Body.String())
+	}
+
+	var exclusion models.BusinessEmailExclusion
+	if err := db.First(&exclusion).Error; err != nil {
+		t.Fatalf("failed to load exclusion: %v", err)
+	}
+	if exclusion.RegistrationEmail != "registered@example.com" || exclusion.Type != models.BusinessEmailExclusionTypeBlacklist || exclusion.ExpiresAt != nil {
+		t.Fatalf("unexpected exclusion: %+v", exclusion)
+	}
+
+	nextReq := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"emailMode":"primary"}`))
+	nextReq = mux.SetURLVars(nextReq, map[string]string{"id": "1"})
+	nextRec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(nextRec, nextReq)
+	if nextRec.Code != http.StatusCreated {
+		t.Fatalf("next claim status = %d, body = %s", nextRec.Code, nextRec.Body.String())
+	}
+	var nextClaim BusinessEmailClaimResponse
+	if err := json.NewDecoder(nextRec.Body).Decode(&nextClaim); err != nil {
+		t.Fatalf("failed to decode next claim: %v", err)
+	}
+	if nextClaim.Recipient.EmailAddress != "fresh@example.com" {
+		t.Fatalf("expected blacklist to skip first registration email, got %+v", nextClaim.Recipient)
 	}
 }

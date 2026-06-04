@@ -379,9 +379,27 @@
   "claimToken": "claim_3c6d9a9f1d0b6f8c2a7e4d10b0cc64a9f2d3",
   "reason": "captcha_timeout",
   "message": "no verification email after 180 seconds",
-  "deletePendingAccount": false
+  "deletePendingAccount": false,
+  "exclusion": {
+    "type": "cooldown",
+    "scope": "module",
+    "target": "email_account",
+    "durationSeconds": 1800
+  }
 }</code></pre>
       </div>
+      <p class="muted">release 可选写入邮箱排除规则。<code>type=cooldown</code> 会按 <code>durationSeconds</code> 临时排除；<code>type=blacklist</code> 没有过期时间。<code>scope=module</code> 只影响当前业务模块，<code>scope=global</code> 影响当前组织所有业务模块；<code>target</code> 可选 <code>email_account</code>、<code>registration_email</code> 或 <code>both</code>。</p>
+      <pre><code>{
+  "claimToken": "claim_3c6d9a9f1d0b6f8c2a7e4d10b0cc64a9f2d3",
+  "reason": "already_registered",
+  "exclusions": [
+    {
+      "type": "blacklist",
+      "scope": "module",
+      "target": "registration_email"
+    }
+  ]
+}</code></pre>
       <div class="callout warning">
         如果 worker 崩溃没有 release，claim 会在过期后被下一次 claim 自动清理并释放注册邮箱。仍然建议业务侧在失败路径主动 release，因为这样可以留下明确的失败原因。
       </div>
