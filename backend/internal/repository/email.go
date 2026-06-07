@@ -589,6 +589,7 @@ func (r *EmailRepository) CheckDuplicate(messageID string, accountID uint) (bool
 type EmailSearchOptions struct {
 	AccountID          uint
 	OrgID              uint // Filter emails by organization (via account)
+	AnchorID           uint
 	Limit              int
 	Offset             int
 	SortBy             string
@@ -605,6 +606,189 @@ type EmailSearchOptions struct {
 	Direction          string // "received", "sent", or "" for all
 	PreloadAttachments bool   // Whether to preload attachments (default false for performance)
 	Pagination         KeysetPagination
+}
+
+type EmailAnchorWindow struct {
+	Emails           []models.Email
+	TotalCount       int64
+	HasPrev          bool
+	HasNext          bool
+	AnchorIndex      int
+	WindowStartIndex int
+	WindowEndIndex   int
+}
+
+func (r *EmailRepository) applyEmailKeysetCondition(query *gorm.DB, sortBy string, cursor *KeysetCursor, before bool) (*gorm.DB, error) {
+	column, direction := primaryEmailSort(sortBy)
+	cursorValue, err := parseEmailCursorValue(column, cursor.Value)
+	if err != nil {
+		return nil, err
+	}
+
+	ascending := strings.EqualFold(direction, "ASC")
+	lessThan := (!ascending && !before) || (ascending && before)
+	operator := ">"
+	if lessThan {
+		operator = "<"
+	}
+
+	quotedColumn := quoteColumn(r.db, column)
+	quotedID := quoteColumn(r.db, "id")
+	return query.Where(
+		fmt.Sprintf("(%s %s ? OR (%s = ? AND %s %s ?))", quotedColumn, operator, quotedColumn, quotedID, operator),
+		cursorValue,
+		cursorValue,
+		cursor.ID,
+	), nil
+}
+
+func (r *EmailRepository) searchEmailsFromCursor(options EmailSearchOptions, cursor *KeysetCursor, before bool, limit int) ([]models.Email, error) {
+	var emails []models.Email
+
+	query := r.buildEmailSearchQuery(options)
+	if options.PreloadAttachments {
+		query = query.Preload("Attachments")
+	}
+
+	var err error
+	query, err = r.applyEmailKeysetCondition(query, options.SortBy, cursor, before)
+	if err != nil {
+		return nil, err
+	}
+
+	query = query.Order(buildEmailCursorOrderClause(r.db, options.SortBy, before))
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	if err := query.Find(&emails).Error; err != nil {
+		return nil, err
+	}
+	return emails, nil
+}
+
+func reverseEmails(emails []models.Email) {
+	for i, j := 0, len(emails)-1; i < j; i, j = i+1, j-1 {
+		emails[i], emails[j] = emails[j], emails[i]
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// SearchEmailsAroundAnchor returns a stable keyset window containing the anchor email.
+// The returned metadata describes where that window sits in the full filtered result.
+func (r *EmailRepository) SearchEmailsAroundAnchor(options EmailSearchOptions) (EmailAnchorWindow, error) {
+	if options.AnchorID == 0 {
+		emails, total, err := r.SearchEmails(options)
+		if err != nil {
+			return EmailAnchorWindow{}, err
+		}
+
+		windowStartIndex := 0
+		windowEndIndex := 0
+		if len(emails) > 0 {
+			windowStartIndex = options.Offset + 1
+			windowEndIndex = options.Offset + len(emails)
+		}
+
+		return EmailAnchorWindow{
+			Emails:           emails,
+			TotalCount:       total,
+			HasPrev:          options.Offset > 0,
+			HasNext:          options.Offset+len(emails) < int(total),
+			WindowStartIndex: windowStartIndex,
+			WindowEndIndex:   windowEndIndex,
+		}, nil
+	}
+
+	limit := options.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	var totalCount int64
+	if err := r.buildEmailSearchQuery(options).Count(&totalCount).Error; err != nil {
+		return EmailAnchorWindow{}, err
+	}
+
+	var anchor models.Email
+	anchorQuery := r.buildEmailSearchQuery(options)
+	if options.PreloadAttachments {
+		anchorQuery = anchorQuery.Preload("Attachments")
+	}
+	if err := anchorQuery.Where("id = ?", options.AnchorID).First(&anchor).Error; err != nil {
+		return EmailAnchorWindow{TotalCount: totalCount}, err
+	}
+
+	anchorCursor := &KeysetCursor{
+		Value: EmailCursorValue(anchor, options.SortBy),
+		ID:    anchor.ID,
+	}
+
+	beforeCountQuery := r.buildEmailSearchQuery(options)
+	beforeCountQuery, err := r.applyEmailKeysetCondition(beforeCountQuery, options.SortBy, anchorCursor, true)
+	if err != nil {
+		return EmailAnchorWindow{TotalCount: totalCount}, err
+	}
+	var rowsBeforeAnchor int64
+	if err := beforeCountQuery.Count(&rowsBeforeAnchor).Error; err != nil {
+		return EmailAnchorWindow{TotalCount: totalCount}, err
+	}
+	anchorIndex := int(rowsBeforeAnchor) + 1
+
+	probeLimit := limit + 1
+	beforeProbe, err := r.searchEmailsFromCursor(options, anchorCursor, true, probeLimit)
+	if err != nil {
+		return EmailAnchorWindow{TotalCount: totalCount}, err
+	}
+	afterProbe, err := r.searchEmailsFromCursor(options, anchorCursor, false, probeLimit)
+	if err != nil {
+		return EmailAnchorWindow{TotalCount: totalCount}, err
+	}
+
+	beforeWant := (limit - 1) / 2
+	afterWant := limit - 1 - beforeWant
+	beforeCount := minInt(len(beforeProbe), beforeWant)
+	afterCount := minInt(len(afterProbe), afterWant)
+
+	remaining := limit - 1 - beforeCount - afterCount
+	if remaining > 0 && len(afterProbe) > afterCount {
+		added := minInt(remaining, len(afterProbe)-afterCount)
+		afterCount += added
+		remaining -= added
+	}
+	if remaining > 0 && len(beforeProbe) > beforeCount {
+		beforeCount += minInt(remaining, len(beforeProbe)-beforeCount)
+	}
+
+	hasPrev := len(beforeProbe) > beforeCount
+	hasNext := len(afterProbe) > afterCount
+
+	beforeEmails := append([]models.Email(nil), beforeProbe[:beforeCount]...)
+	reverseEmails(beforeEmails)
+
+	emails := make([]models.Email, 0, len(beforeEmails)+1+afterCount)
+	emails = append(emails, beforeEmails...)
+	emails = append(emails, anchor)
+	emails = append(emails, afterProbe[:afterCount]...)
+
+	windowStartIndex := anchorIndex - beforeCount
+	windowEndIndex := windowStartIndex + len(emails) - 1
+
+	return EmailAnchorWindow{
+		Emails:           emails,
+		TotalCount:       totalCount,
+		HasPrev:          hasPrev,
+		HasNext:          hasNext,
+		AnchorIndex:      anchorIndex,
+		WindowStartIndex: windowStartIndex,
+		WindowEndIndex:   windowEndIndex,
+	}, nil
 }
 
 func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gorm.DB {

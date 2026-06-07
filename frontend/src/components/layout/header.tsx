@@ -1,6 +1,6 @@
 'use client'
 
-import { Bell, User, LogOut, ChevronDown, Upload, Camera, UserCircle, Building2, Check } from 'lucide-react'
+import { Bell, BellOff, User, LogOut, ChevronDown, Upload, Camera, UserCircle, Building2, Check } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { toast } from 'sonner'
 import { useAuth } from '@/context/auth-context'
@@ -16,7 +16,7 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
-import { getUnreadCount, subscribeToNotifications } from '@/lib/notification-store'
+import { getNotificationMuteUntil, getUnreadCount, subscribeToNotifications } from '@/lib/notification-store'
 import { NotificationDrawer } from '@/components/notifications/notification-drawer'
 
 // 添加全局样式
@@ -56,19 +56,32 @@ export function Header() {
     // 通知相关状态
     const [showNotificationDrawer, setShowNotificationDrawer] = useState(false)
     const [unreadCount, setUnreadCount] = useState(0)
+    const [notificationMuteUntil, setNotificationMuteUntil] = useState<number | null>(null)
 
     // 订阅通知变化
     useEffect(() => {
         // 初始加载未读数量
         setUnreadCount(getUnreadCount())
+        setNotificationMuteUntil(getNotificationMuteUntil())
 
         // 订阅变化
         const unsubscribe = subscribeToNotifications(() => {
             setUnreadCount(getUnreadCount())
+            setNotificationMuteUntil(getNotificationMuteUntil())
         })
 
         return unsubscribe
     }, [])
+
+    useEffect(() => {
+        if (!notificationMuteUntil) return
+
+        const timeout = setTimeout(() => {
+            setNotificationMuteUntil(getNotificationMuteUntil())
+        }, Math.max(0, notificationMuteUntil - Date.now()) + 1000)
+
+        return () => clearTimeout(timeout)
+    }, [notificationMuteUntil])
 
     useEffect(() => {
         const openNotificationDrawer = () => setShowNotificationDrawer(true)
@@ -252,8 +265,13 @@ export function Header() {
                     <button
                         onClick={() => setShowNotificationDrawer(true)}
                         className="relative rounded-lg p-2 text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                        title={notificationMuteUntil ? '弹窗通知已暂停' : '打开通知'}
                     >
-                        <Bell className="h-5 w-5" />
+                        {notificationMuteUntil ? (
+                            <BellOff className="h-5 w-5 text-amber-500" />
+                        ) : (
+                            <Bell className="h-5 w-5" />
+                        )}
                         {unreadCount > 0 && (
                             <span className="absolute -right-1 -top-1 min-w-[18px] h-[18px] flex items-center justify-center px-1 text-[10px] font-medium bg-red-500 text-white rounded-full">
                                 {unreadCount > 99 ? '99+' : unreadCount}

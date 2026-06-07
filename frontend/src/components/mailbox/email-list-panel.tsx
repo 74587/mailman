@@ -28,6 +28,10 @@ interface EmailListPanelProps {
     isRefreshing: boolean
     // 分页相关
     totalCount: number
+    loadedStartIndex?: number
+    hasPrevious?: boolean
+    onLoadPrevious?: () => Promise<void>
+    loadingPrevious?: boolean
     hasMore: boolean
     onLoadMore: () => Promise<void>
     loadingMore: boolean
@@ -48,6 +52,10 @@ export default function EmailListPanel({
     onToggleAutoSync,
     isRefreshing,
     totalCount,
+    loadedStartIndex = 0,
+    hasPrevious = false,
+    onLoadPrevious,
+    loadingPrevious = false,
     hasMore,
     onLoadMore,
     loadingMore,
@@ -60,6 +68,8 @@ export default function EmailListPanel({
     const [triggeringEmailId, setTriggeringEmailId] = useState<number | null>(null)
     const [syncingAttachmentsEmailId, setSyncingAttachmentsEmailId] = useState<number | null>(null)
     const listContainerRef = React.useRef<HTMLDivElement>(null)
+    const previousScrollHeightRef = React.useRef<number | null>(null)
+    const loadingPreviousRequestRef = React.useRef(false)
 
     // 右键菜单弹出状态
     const [dropdownOpenEmailId, setDropdownOpenEmailId] = useState<number | null>(null)
@@ -104,21 +114,24 @@ export default function EmailListPanel({
         }
     }
 
-    // 计算当前选中邮件的序号
-    const selectedEmailIndex = selectedEmailId !== null
-        ? emails.findIndex(e => e.ID === selectedEmailId) + 1
+    // 计算当前选中邮件在全量结果中的自然序号
+    const selectedEmailLoadedIndex = selectedEmailId !== null
+        ? emails.findIndex(e => e.ID === selectedEmailId)
+        : -1
+    const selectedEmailPosition = selectedEmailLoadedIndex >= 0
+        ? (loadedStartIndex > 0 ? loadedStartIndex + selectedEmailLoadedIndex : selectedEmailLoadedIndex + 1)
         : 0
 
     // 定位到选中的邮件
-    const scrollToSelectedEmail = () => {
+    const scrollToSelectedEmail = React.useCallback((behavior: ScrollBehavior = 'smooth') => {
         if (selectedEmailId === null || !listContainerRef.current) return
         const emailElement = listContainerRef.current.querySelector(
             `[data-email-id="${selectedEmailId}"]`
         )
         if (emailElement) {
-            emailElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            emailElement.scrollIntoView({ behavior, block: 'center' })
         }
-    }
+    }, [selectedEmailId])
 
     // 处理搜索
     const handleSearch = (e: React.FormEvent) => {
@@ -157,8 +170,18 @@ export default function EmailListPanel({
         const handleScroll = () => {
             // 检查是否滚动到底部（距离底部 100px 时触发）
             const { scrollTop, scrollHeight, clientHeight } = container
+            const isNearTop = scrollTop <= 80
             const isNearBottom = scrollTop + clientHeight >= scrollHeight - 100
 
+            if (isNearTop && hasPrevious && !loadingPrevious && !loading && !loadingPreviousRequestRef.current && onLoadPrevious) {
+                loadingPreviousRequestRef.current = true
+                previousScrollHeightRef.current = scrollHeight
+                onLoadPrevious()
+                    .catch(() => undefined)
+                    .finally(() => {
+                        loadingPreviousRequestRef.current = false
+                    })
+            }
             if (isNearBottom && hasMore && !loadingMore && !loading) {
                 onLoadMore()
             }
@@ -166,7 +189,13 @@ export default function EmailListPanel({
 
         container.addEventListener('scroll', handleScroll)
         return () => container.removeEventListener('scroll', handleScroll)
-    }, [hasMore, loadingMore, loading, onLoadMore])
+    }, [hasMore, hasPrevious, loadingMore, loadingPrevious, loading, onLoadMore, onLoadPrevious])
+
+    useEffect(() => {
+        if (!loadingPrevious) {
+            loadingPreviousRequestRef.current = false
+        }
+    }, [loadingPrevious])
 
     // 排序邮件
     const sortedEmails = [...emails].sort((a, b) => {
@@ -189,6 +218,27 @@ export default function EmailListPanel({
         return sortOrder === 'desc' ? -comparison : comparison
     })
 
+    React.useLayoutEffect(() => {
+        const previousScrollHeight = previousScrollHeightRef.current
+        const container = listContainerRef.current
+        if (previousScrollHeight === null || !container || loadingPrevious) return
+
+        previousScrollHeightRef.current = null
+        const heightDelta = container.scrollHeight - previousScrollHeight
+        if (heightDelta > 0) {
+            container.scrollTop += heightDelta
+        }
+    }, [emails.length, loadingPrevious])
+
+    useEffect(() => {
+        if (selectedEmailId === null || loading) return
+
+        const frame = requestAnimationFrame(() => {
+            scrollToSelectedEmail('auto')
+        })
+        return () => cancelAnimationFrame(frame)
+    }, [loading, scrollToSelectedEmail, selectedEmailId])
+
     return (
         <div className="h-full flex flex-col">
             {/* 顶部工具栏 */}
@@ -209,7 +259,7 @@ export default function EmailListPanel({
                         {/* 定位按钮 */}
                         {selectedEmailId !== null && (
                             <button
-                                onClick={scrollToSelectedEmail}
+                                onClick={() => scrollToSelectedEmail()}
                                 className="p-1 rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                                 title="定位到选中邮件"
                             >
@@ -439,6 +489,13 @@ export default function EmailListPanel({
                     </div>
                 ) : (
                     <div className="divide-y divide-gray-200 dark:divide-gray-700">
+                        {loadingPrevious && (
+                            <div className="flex items-center justify-center py-3">
+                                <RefreshCw className="h-4 w-4 animate-spin text-gray-400 mr-2" />
+                                <span className="text-xs text-gray-500 dark:text-gray-400">加载较新的邮件...</span>
+                            </div>
+                        )}
+
                         {sortedEmails.map((email) => (
                             <div
                                 key={email.ID}
@@ -604,7 +661,7 @@ export default function EmailListPanel({
                         )}
 
                         {/* 已加载全部提示 */}
-                        {!hasMore && emails.length > 0 && !loadingMore && (
+                        {!hasPrevious && !hasMore && emails.length > 0 && !loadingPrevious && !loadingMore && (
                             <div className="text-center py-4 text-xs text-gray-400 dark:text-gray-500">
                                 已加载全部 {emails.length} 封邮件
                             </div>
@@ -620,10 +677,10 @@ export default function EmailListPanel({
                         {selectedAccount && `当前: ${selectedAccount.emailAddress}`}
                     </span>
                     <span className="flex items-center gap-2">
-                        {selectedEmailIndex > 0 && (
+                        {selectedEmailPosition > 0 && (
                             <>
                                 <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded">
-                                    第 {selectedEmailIndex} 封
+                                    第 {selectedEmailPosition} 封
                                 </span>
                                 <span className="text-gray-300 dark:text-gray-600">|</span>
                             </>

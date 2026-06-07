@@ -2,10 +2,10 @@
 import { logger } from '@/lib/logger';
 
 import React, { useState, useEffect, useRef } from 'react'
-import { X, Mail, Inbox, ChevronLeft, ChevronRight, Eye, ExternalLink, Loader2, AlertCircle } from 'lucide-react'
+import { X, Mail, Inbox, ChevronLeft, ChevronRight, Eye, ExternalLink } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { addNotification, isProcessed, markAsRead } from '@/lib/notification-store'
-import EmailPreviewPanel from '@/components/mailbox/email-preview-panel'
+import { addNotification, getNotificationMuteUntil, isNotificationMuted, isProcessed, markAsRead, subscribeToNotifications } from '@/lib/notification-store'
+import EmailQuickPreview from '@/components/notifications/email-quick-preview'
 import { emailService } from '@/services/email.service'
 import { Email } from '@/types'
 
@@ -186,84 +186,6 @@ function NotificationCarousel({
     )
 }
 
-function EmailQuickPreview({
-    email,
-    loading,
-    error,
-    accountId,
-    accountEmail,
-    onClose,
-    onOpenFull,
-}: {
-    email: Email | null
-    loading: boolean
-    error: string | null
-    accountId?: number | null
-    accountEmail?: string
-    onClose: () => void
-    onOpenFull: () => void
-}) {
-    return (
-        <div className="pointer-events-auto h-[min(680px,calc(100vh-5.5rem))] w-[min(620px,calc(100vw-31rem))] min-w-[460px] overflow-hidden rounded-2xl border border-gray-200/90 bg-white shadow-2xl shadow-gray-900/10 dark:border-gray-700 dark:bg-gray-800 max-[980px]:fixed max-[980px]:left-4 max-[980px]:right-4 max-[980px]:top-20 max-[980px]:h-[calc(100vh-7rem)] max-[980px]:w-auto max-[980px]:min-w-0">
-            <div className="flex h-12 items-center justify-between border-b border-gray-100 px-4 dark:border-gray-700/70">
-                <div className="min-w-0">
-                    <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">邮件快速预览</div>
-                    {accountEmail && (
-                        <div className="truncate text-xs text-gray-500 dark:text-gray-400">{accountEmail}</div>
-                    )}
-                </div>
-                <div className="flex items-center gap-1.5">
-                    <button
-                        type="button"
-                        onClick={onOpenFull}
-                        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-900/30"
-                    >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        打开邮件
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-                        title="关闭预览"
-                    >
-                        <X className="h-4 w-4" />
-                    </button>
-                </div>
-            </div>
-            <div className="h-[calc(100%-3rem)]">
-                {error ? (
-                    <div className="flex h-full items-center justify-center p-6">
-                        <div className="max-w-sm text-center">
-                            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-50 text-red-500 dark:bg-red-900/20 dark:text-red-300">
-                                <AlertCircle className="h-6 w-6" />
-                            </div>
-                            <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">预览加载失败</div>
-                            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">{error}</p>
-                            <button
-                                type="button"
-                                onClick={onOpenFull}
-                                className="mt-4 rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-blue-700"
-                            >
-                                打开完整邮件
-                            </button>
-                        </div>
-                    </div>
-                ) : loading ? (
-                    <div className="flex h-full items-center justify-center">
-                        <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-                            <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-                            正在加载邮件内容...
-                        </div>
-                    </div>
-                ) : (
-                    <EmailPreviewPanel email={email} loading={false} accountId={accountId} />
-                )}
-            </div>
-        </div>
-    )
-}
-
 // 通知容器组件属性
 interface EmailNotificationToastProps {
     onNotificationClick?: (accountId: number, accountEmail: string) => void
@@ -280,6 +202,7 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
     const previewRequestRef = useRef(0)
     const wsRef = useRef<WebSocket | null>(null)
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+    const [muteUntil, setMuteUntil] = useState<number | null>(null)
     const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
 
     // WebSocket连接管理
@@ -334,6 +257,11 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
 
                         // 只有成功添加（非重复）才显示 toast
                         if (stored) {
+                            if (isNotificationMuted()) {
+                                logger.debug('[EmailNotificationToast] Notification muted, stored without toast')
+                                return
+                            }
+
                             setNotifications(prev => {
                                 const newNotifications = [{ ...notification, storeId: stored.id }, ...prev.slice(0, 9)]
                                 return newNotifications
@@ -473,6 +401,30 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
             disconnect()
         }
     }, [])
+
+    useEffect(() => {
+        const updateMuteState = () => setMuteUntil(getNotificationMuteUntil())
+        updateMuteState()
+
+        const unsubscribe = subscribeToNotifications(updateMuteState)
+        return unsubscribe
+    }, [])
+
+    useEffect(() => {
+        if (!muteUntil) return
+
+        setPreviewNotification(null)
+        setPreviewEmail(null)
+        setPreviewError(null)
+        setNotifications([])
+
+        const remainingMs = Math.max(0, muteUntil - Date.now())
+        const timeout = setTimeout(() => {
+            setMuteUntil(getNotificationMuteUntil())
+        }, remainingMs + 1000)
+
+        return () => clearTimeout(timeout)
+    }, [muteUntil])
 
     useEffect(() => {
         setCurrentIndex(prev => Math.min(prev, Math.max(0, notifications.length - 1)))

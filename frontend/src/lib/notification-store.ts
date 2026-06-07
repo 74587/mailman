@@ -24,6 +24,11 @@ export interface StoredNotification {
 
 interface NotificationStore {
     notifications: StoredNotification[]
+    mutedUntil?: number | null
+}
+
+function createEmptyStore(): NotificationStore {
+    return { notifications: [], mutedUntil: null }
 }
 
 // 生成通知 ID
@@ -35,19 +40,23 @@ function generateNotificationId(notification: Omit<StoredNotification, 'id' | 'r
 // 获取存储数据
 function getStore(): NotificationStore {
     if (typeof window === 'undefined') {
-        return { notifications: [] }
+        return createEmptyStore()
     }
 
     try {
         const data = localStorage.getItem(STORAGE_KEY)
         if (data) {
-            return JSON.parse(data)
+            const parsed = JSON.parse(data)
+            return {
+                notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
+                mutedUntil: typeof parsed.mutedUntil === 'number' ? parsed.mutedUntil : null,
+            }
         }
     } catch (error) {
         console.error('[NotificationStore] Failed to parse storage:', error)
     }
 
-    return { notifications: [] }
+    return createEmptyStore()
 }
 
 // 保存存储数据
@@ -75,6 +84,42 @@ export function getUnreadNotifications(): StoredNotification[] {
 // 获取未读数量
 export function getUnreadCount(): number {
     return getUnreadNotifications().length
+}
+
+export function getNotificationMuteUntil(): number | null {
+    const mutedUntil = getStore().mutedUntil
+    if (!mutedUntil || mutedUntil <= Date.now()) {
+        return null
+    }
+    return mutedUntil
+}
+
+export function isNotificationMuted(): boolean {
+    return getNotificationMuteUntil() !== null
+}
+
+export function muteNotifications(minutes: number): number {
+    const normalizedMinutes = Math.min(1440, Math.max(1, Math.round(minutes)))
+    const store = getStore()
+    const mutedUntil = Date.now() + normalizedMinutes * 60 * 1000
+    store.mutedUntil = mutedUntil
+    saveStore(store)
+
+    if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('notification-updated'))
+    }
+
+    return mutedUntil
+}
+
+export function unmuteNotifications(): void {
+    const store = getStore()
+    store.mutedUntil = null
+    saveStore(store)
+
+    if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('notification-updated'))
+    }
 }
 
 // 检查通知是否已处理过（去重）
@@ -171,7 +216,9 @@ export function removeNotification(id: string): void {
 
 // 清除所有通知
 export function clearAll(): void {
-    saveStore({ notifications: [] })
+    const store = getStore()
+    store.notifications = []
+    saveStore(store)
 
     if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('notification-updated'))

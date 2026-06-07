@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mailman/internal/database"
 	"mailman/internal/models"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"gorm.io/gorm"
 )
 
 func parseEmailKeysetPagination(r *http.Request, sortBy string) (repository.KeysetPagination, error) {
@@ -31,6 +33,22 @@ func parseEmailKeysetPagination(r *http.Request, sortBy string) (repository.Keys
 		After:   afterCursor,
 		Before:  beforeCursor,
 	}, nil
+}
+
+func parseEmailAnchorID(r *http.Request) (uint, error) {
+	rawAnchorID := r.URL.Query().Get("anchor_email_id")
+	if rawAnchorID == "" {
+		rawAnchorID = r.URL.Query().Get("anchor_id")
+	}
+	if rawAnchorID == "" {
+		return 0, nil
+	}
+
+	anchorID, err := strconv.ParseUint(rawAnchorID, 10, 32)
+	if err != nil || anchorID == 0 {
+		return 0, fmt.Errorf("invalid anchor_email_id")
+	}
+	return uint(anchorID), nil
 }
 
 func trimEmailCursorPage(emails []models.Email, limit int, pagination repository.KeysetPagination) ([]models.Email, bool) {
@@ -287,10 +305,23 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 	options.Keyword = r.URL.Query().Get("keyword")
 	options.MailboxName = r.URL.Query().Get("mailbox")
 	options.Direction = r.URL.Query().Get("direction")
+	if anchorID, err := parseEmailAnchorID(r); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else {
+		options.AnchorID = anchorID
+	}
 	pagination, err := parseEmailKeysetPagination(r, options.SortBy)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if options.AnchorID > 0 && (pagination.After != nil || pagination.Before != nil) {
+		http.Error(w, "anchor_email_id cannot be combined with after_cursor or before_cursor", http.StatusBadRequest)
+		return
+	}
+	if options.AnchorID > 0 {
+		pagination.Enabled = true
 	}
 	options.Pagination = pagination
 
@@ -304,15 +335,39 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Perform search
-	emails, totalCount, err := h.EmailRepo.SearchEmails(options)
+	anchorMode := options.AnchorID > 0
+	var emails []models.Email
+	var totalCount int64
+	var anchorHasPrev bool
+	var anchorHasNext bool
+	var anchorIndex int
+	var windowStartIndex int
+	var windowEndIndex int
+	if anchorMode {
+		anchorWindow, anchorErr := h.EmailRepo.SearchEmailsAroundAnchor(options)
+		err = anchorErr
+		emails = anchorWindow.Emails
+		totalCount = anchorWindow.TotalCount
+		anchorHasPrev = anchorWindow.HasPrev
+		anchorHasNext = anchorWindow.HasNext
+		anchorIndex = anchorWindow.AnchorIndex
+		windowStartIndex = anchorWindow.WindowStartIndex
+		windowEndIndex = anchorWindow.WindowEndIndex
+	} else {
+		emails, totalCount, err = h.EmailRepo.SearchEmails(options)
+	}
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "anchor email not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	cursorMode := options.Pagination.IsCursorMode()
 	cursorHasMore := false
-	if cursorMode {
+	if cursorMode && !anchorMode {
 		emails, cursorHasMore = trimEmailCursorPage(emails, options.Limit, options.Pagination)
 	}
 
@@ -324,7 +379,10 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 	nextCursor, prevCursor := "", ""
 	if cursorMode {
 		nextCursor, prevCursor = emailPageCursors(emails, options.SortBy)
-		if options.Pagination.Before != nil {
+		if anchorMode {
+			hasPrev = anchorHasPrev
+			hasNext = anchorHasNext
+		} else if options.Pagination.Before != nil {
 			hasPrev = cursorHasMore
 			hasNext = true
 		} else {
@@ -333,19 +391,28 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !anchorMode && len(emails) > 0 && (!cursorMode || (options.Pagination.After == nil && options.Pagination.Before == nil)) {
+		windowStartIndex = options.Offset + 1
+		windowEndIndex = options.Offset + len(emails)
+	}
+
 	response := map[string]interface{}{
 		"emails": emails,
 		"pagination": map[string]interface{}{
-			"total":        totalCount,
-			"total_pages":  totalPages,
-			"current_page": currentPage,
-			"limit":        options.Limit,
-			"offset":       options.Offset,
-			"has_next":     hasNext,
-			"has_prev":     hasPrev,
-			"cursor_mode":  cursorMode,
-			"next_cursor":  nextCursor,
-			"prev_cursor":  prevCursor,
+			"total":              totalCount,
+			"total_pages":        totalPages,
+			"current_page":       currentPage,
+			"limit":              options.Limit,
+			"offset":             options.Offset,
+			"has_next":           hasNext,
+			"has_prev":           hasPrev,
+			"cursor_mode":        cursorMode,
+			"next_cursor":        nextCursor,
+			"prev_cursor":        prevCursor,
+			"anchor_id":          options.AnchorID,
+			"anchor_index":       anchorIndex,
+			"window_start_index": windowStartIndex,
+			"window_end_index":   windowEndIndex,
 		},
 		"search_criteria": map[string]interface{}{
 			"account_id":    options.AccountID,
@@ -458,10 +525,23 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 	options.Keyword = r.URL.Query().Get("keyword")
 	options.MailboxName = r.URL.Query().Get("mailbox")
 	options.Direction = r.URL.Query().Get("direction")
+	if anchorID, err := parseEmailAnchorID(r); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else {
+		options.AnchorID = anchorID
+	}
 	pagination, err := parseEmailKeysetPagination(r, options.SortBy)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if options.AnchorID > 0 && (pagination.After != nil || pagination.Before != nil) {
+		http.Error(w, "anchor_email_id cannot be combined with after_cursor or before_cursor", http.StatusBadRequest)
+		return
+	}
+	if options.AnchorID > 0 {
+		pagination.Enabled = true
 	}
 	options.Pagination = pagination
 
@@ -472,15 +552,39 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Perform search
-	emails, totalCount, err := h.EmailRepo.SearchEmails(options)
+	anchorMode := options.AnchorID > 0
+	var emails []models.Email
+	var totalCount int64
+	var anchorHasPrev bool
+	var anchorHasNext bool
+	var anchorIndex int
+	var windowStartIndex int
+	var windowEndIndex int
+	if anchorMode {
+		anchorWindow, anchorErr := h.EmailRepo.SearchEmailsAroundAnchor(options)
+		err = anchorErr
+		emails = anchorWindow.Emails
+		totalCount = anchorWindow.TotalCount
+		anchorHasPrev = anchorWindow.HasPrev
+		anchorHasNext = anchorWindow.HasNext
+		anchorIndex = anchorWindow.AnchorIndex
+		windowStartIndex = anchorWindow.WindowStartIndex
+		windowEndIndex = anchorWindow.WindowEndIndex
+	} else {
+		emails, totalCount, err = h.EmailRepo.SearchEmails(options)
+	}
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "anchor email not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	cursorMode := options.Pagination.IsCursorMode()
 	cursorHasMore := false
-	if cursorMode {
+	if cursorMode && !anchorMode {
 		emails, cursorHasMore = trimEmailCursorPage(emails, options.Limit, options.Pagination)
 	}
 
@@ -492,7 +596,10 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 	nextCursor, prevCursor := "", ""
 	if cursorMode {
 		nextCursor, prevCursor = emailPageCursors(emails, options.SortBy)
-		if options.Pagination.Before != nil {
+		if anchorMode {
+			hasPrev = anchorHasPrev
+			hasNext = anchorHasNext
+		} else if options.Pagination.Before != nil {
 			hasPrev = cursorHasMore
 			hasNext = true
 		} else {
@@ -501,19 +608,28 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	if !anchorMode && len(emails) > 0 && (!cursorMode || (options.Pagination.After == nil && options.Pagination.Before == nil)) {
+		windowStartIndex = options.Offset + 1
+		windowEndIndex = options.Offset + len(emails)
+	}
+
 	response := map[string]interface{}{
 		"emails": emails,
 		"pagination": map[string]interface{}{
-			"total":        totalCount,
-			"total_pages":  totalPages,
-			"current_page": currentPage,
-			"limit":        options.Limit,
-			"offset":       options.Offset,
-			"has_next":     hasNext,
-			"has_prev":     hasPrev,
-			"cursor_mode":  cursorMode,
-			"next_cursor":  nextCursor,
-			"prev_cursor":  prevCursor,
+			"total":              totalCount,
+			"total_pages":        totalPages,
+			"current_page":       currentPage,
+			"limit":              options.Limit,
+			"offset":             options.Offset,
+			"has_next":           hasNext,
+			"has_prev":           hasPrev,
+			"cursor_mode":        cursorMode,
+			"next_cursor":        nextCursor,
+			"prev_cursor":        prevCursor,
+			"anchor_id":          options.AnchorID,
+			"anchor_index":       anchorIndex,
+			"window_start_index": windowStartIndex,
+			"window_end_index":   windowEndIndex,
 		},
 		"search_criteria": map[string]interface{}{
 			"account_id":    options.AccountID,

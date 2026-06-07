@@ -126,3 +126,113 @@ func TestEmailKeysetPaginationIgnoresNewerInsert(t *testing.T) {
 		t.Fatalf("unexpected second page after newer insert: %v", secondPage)
 	}
 }
+
+func TestEmailAnchorWindowReturnsNaturalPage(t *testing.T) {
+	db := newCursorTestDB(t)
+	repo := NewEmailRepository(db)
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+
+	emails := []models.Email{
+		{AccountID: 1, Subject: "very-new", Date: base.Add(7 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "newer-2", Date: base.Add(6 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "newer-1", Date: base.Add(5 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "anchor", Date: base.Add(4 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "older-1", Date: base.Add(3 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "older-2", Date: base.Add(2 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "very-old", Date: base.Add(time.Minute), Direction: models.EmailDirectionReceived},
+	}
+	if err := db.Create(&emails).Error; err != nil {
+		t.Fatalf("failed to create emails: %v", err)
+	}
+
+	window, err := repo.SearchEmailsAroundAnchor(EmailSearchOptions{
+		AccountID: 1,
+		AnchorID:  emails[3].ID,
+		Limit:     5,
+		SortBy:    "date DESC",
+	})
+	if err != nil {
+		t.Fatalf("anchor page failed: %v", err)
+	}
+	page := window.Emails
+	total := window.TotalCount
+	if total != int64(len(emails)) {
+		t.Fatalf("total = %d, want %d", total, len(emails))
+	}
+	if !window.HasPrev || !window.HasNext {
+		t.Fatalf("hasPrev=%v hasNext=%v, want both true", window.HasPrev, window.HasNext)
+	}
+	if window.AnchorIndex != 4 {
+		t.Fatalf("anchor index = %d, want 4", window.AnchorIndex)
+	}
+	if window.WindowStartIndex != 2 || window.WindowEndIndex != 6 {
+		t.Fatalf("window indexes = %d..%d, want 2..6", window.WindowStartIndex, window.WindowEndIndex)
+	}
+
+	subjects := make([]string, 0, len(page))
+	for _, email := range page {
+		subjects = append(subjects, email.Subject)
+	}
+	want := []string{"newer-2", "newer-1", "anchor", "older-1", "older-2"}
+	for i := range want {
+		if subjects[i] != want[i] {
+			t.Fatalf("subjects = %v, want %v", subjects, want)
+		}
+	}
+}
+
+func TestEmailAnchorWindowNextCursorIgnoresNewerInsert(t *testing.T) {
+	db := newCursorTestDB(t)
+	repo := NewEmailRepository(db)
+	base := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+
+	emails := []models.Email{
+		{AccountID: 1, Subject: "very-new", Date: base.Add(7 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "newer-2", Date: base.Add(6 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "newer-1", Date: base.Add(5 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "anchor", Date: base.Add(4 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "older-1", Date: base.Add(3 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "older-2", Date: base.Add(2 * time.Minute), Direction: models.EmailDirectionReceived},
+		{AccountID: 1, Subject: "very-old", Date: base.Add(time.Minute), Direction: models.EmailDirectionReceived},
+	}
+	if err := db.Create(&emails).Error; err != nil {
+		t.Fatalf("failed to create emails: %v", err)
+	}
+
+	window, err := repo.SearchEmailsAroundAnchor(EmailSearchOptions{
+		AccountID: 1,
+		AnchorID:  emails[3].ID,
+		Limit:     5,
+		SortBy:    "date DESC",
+	})
+	if err != nil {
+		t.Fatalf("anchor page failed: %v", err)
+	}
+	page := window.Emails
+	last := page[len(page)-1]
+
+	if err := db.Create(&models.Email{
+		AccountID: 1,
+		Subject:   "inserted-newer",
+		Date:      base.Add(8 * time.Minute),
+		Direction: models.EmailDirectionReceived,
+	}).Error; err != nil {
+		t.Fatalf("failed to insert newer email: %v", err)
+	}
+
+	nextPage, _, err := repo.SearchEmails(EmailSearchOptions{
+		AccountID: 1,
+		Limit:     5,
+		SortBy:    "date DESC",
+		Pagination: KeysetPagination{Enabled: true, After: &KeysetCursor{
+			Value: EmailCursorValue(last, "date DESC"),
+			ID:    last.ID,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("next page failed: %v", err)
+	}
+	if len(nextPage) != 1 || nextPage[0].Subject != "very-old" {
+		t.Fatalf("unexpected next page after newer insert: %v", nextPage)
+	}
+}

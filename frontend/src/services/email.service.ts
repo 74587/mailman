@@ -10,6 +10,7 @@ export interface EmailSearchParams {
     cursor?: boolean
     after_cursor?: string
     before_cursor?: string
+    anchor_email_id?: number
     start_date?: string
     end_date?: string
     from_query?: string

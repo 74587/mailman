@@ -2,6 +2,7 @@
 import { logger } from '@/lib/logger';
 
 import React, { useState, useMemo, useEffect } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
     ChevronLeft,
     ChevronRight,
@@ -60,6 +61,7 @@ interface EnhancedMailboxSidebarProps {
     onAccountSortChange?: (sortBy: MailboxAccountSortBy, sortOrder: MailboxAccountSortOrder) => void
     accountVerifiedFilter?: MailboxAccountVerifiedFilter
     onAccountVerifiedFilterChange?: (filter: MailboxAccountVerifiedFilter) => void
+    accountScrollRequest?: { accountId: number; requestId: number } | null
 }
 
 export type MailboxAccountSortBy = 'name' | 'provider' | 'recent'
@@ -153,20 +155,22 @@ export default function EnhancedMailboxSidebar({
     accountSortOrder,
     onAccountSortChange,
     accountVerifiedFilter,
-    onAccountVerifiedFilterChange
+    onAccountVerifiedFilterChange,
+    accountScrollRequest
 }: EnhancedMailboxSidebarProps) {
     // 滚动容器引用
     const listContainerRef = React.useRef<HTMLDivElement>(null)
     // 搜索框引用
     const searchInputRef = React.useRef<HTMLInputElement>(null)
     const statusViewportFrameRef = React.useRef<number | null>(null)
+    const accountScrollFrameRef = React.useRef<number | null>(null)
+    const accountScrollRetryTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+    const handledAccountScrollRequestRef = React.useRef<number | null>(null)
     const accountListResetKeyRef = React.useRef<string | null>(null)
 
     // 同步状态
     const [syncStatuses, setSyncStatuses] = useState<Map<number, AccountSyncStatus>>(new Map())
     const [statusAccountIds, setStatusAccountIds] = useState<number[]>([])
-    const [visibleAccountRange, setVisibleAccountRange] = useState({ start: 0, end: 50 })
-
     // 右键菜单和同步配置模态框状态
     const [contextMenuAccount, setContextMenuAccount] = useState<EmailAccount | null>(null)
     const [showSyncConfigModal, setShowSyncConfigModal] = useState(false)
@@ -215,6 +219,12 @@ export default function EnhancedMailboxSidebar({
         return () => {
             if (statusViewportFrameRef.current !== null) {
                 cancelAnimationFrame(statusViewportFrameRef.current)
+            }
+            if (accountScrollFrameRef.current !== null) {
+                cancelAnimationFrame(accountScrollFrameRef.current)
+            }
+            if (accountScrollRetryTimeoutRef.current !== null) {
+                clearTimeout(accountScrollRetryTimeoutRef.current)
             }
         }
     }, [])
@@ -457,52 +467,22 @@ export default function EnhancedMailboxSidebar({
         return result
     }, [accounts, searchQuery, sortBy, sortOrder, filterVerified, remoteSearchEnabled, remoteFilterEnabled])
 
-    const updateVisibleAccountRange = React.useCallback((scrollTop?: number, clientHeight?: number) => {
-        const total = filteredAndSortedAccounts.length
-        if (total === 0) {
-            setVisibleAccountRange(current => (
-                current.start === 0 && current.end === 0 ? current : { start: 0, end: 0 }
-            ))
-            return
-        }
-
-        const container = listContainerRef.current
-        const top = scrollTop ?? container?.scrollTop ?? 0
-        const height = clientHeight ?? container?.clientHeight ?? 640
-        const start = Math.max(0, Math.floor(top / ACCOUNT_ROW_HEIGHT) - ACCOUNT_LIST_OVERSCAN_ROWS)
-        const visibleRows = Math.ceil(height / ACCOUNT_ROW_HEIGHT) + ACCOUNT_LIST_OVERSCAN_ROWS * 2
-        const end = Math.min(total, start + visibleRows)
-
-        setVisibleAccountRange(current => (
-            current.start === start && current.end === end ? current : { start, end }
-        ))
-    }, [filteredAndSortedAccounts.length])
-
-    const visibleAccounts = useMemo(() => {
-        return filteredAndSortedAccounts.slice(visibleAccountRange.start, visibleAccountRange.end)
-    }, [filteredAndSortedAccounts, visibleAccountRange])
+    const accountVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+        count: filteredAndSortedAccounts.length,
+        getScrollElement: () => listContainerRef.current,
+        estimateSize: () => ACCOUNT_ROW_HEIGHT,
+        overscan: ACCOUNT_LIST_OVERSCAN_ROWS,
+        getItemKey: index => filteredAndSortedAccounts[index]?.id ?? index,
+    })
+    const virtualAccountItems = accountVirtualizer.getVirtualItems()
 
     const updateStatusAccountIdsForViewport = React.useCallback(() => {
-        const container = listContainerRef.current
-        if (!container) {
-            setStatusAccountIds(filteredAndSortedAccounts.slice(0, 50).map(account => account.id))
-            return
-        }
-
-        const containerRect = container.getBoundingClientRect()
-        const overscan = 700
         const nextIds: number[] = []
         const seen = new Set<number>()
 
-        container.querySelectorAll<HTMLElement>('[data-account-id]').forEach((element) => {
-            const rawId = element.dataset.accountId
-            const id = Number(rawId)
+        virtualAccountItems.forEach((item) => {
+            const id = filteredAndSortedAccounts[item.index]?.id
             if (!Number.isFinite(id) || id <= 0 || seen.has(id)) return
-
-            const rect = element.getBoundingClientRect()
-            const isNearViewport = rect.bottom >= containerRect.top - overscan && rect.top <= containerRect.bottom + overscan
-            if (!isNearViewport) return
-
             seen.add(id)
             nextIds.push(id)
         })
@@ -521,7 +501,7 @@ export default function EnhancedMailboxSidebar({
             }
             return fallbackIds
         })
-    }, [filteredAndSortedAccounts, selectedAccount])
+    }, [filteredAndSortedAccounts, selectedAccount, virtualAccountItems])
 
     const scheduleStatusViewportUpdate = React.useCallback(() => {
         if (statusViewportFrameRef.current !== null) {
@@ -534,9 +514,8 @@ export default function EnhancedMailboxSidebar({
     }, [updateStatusAccountIdsForViewport])
 
     React.useEffect(() => {
-        updateVisibleAccountRange()
         scheduleStatusViewportUpdate()
-    }, [updateVisibleAccountRange, scheduleStatusViewportUpdate])
+    }, [scheduleStatusViewportUpdate, virtualAccountItems])
 
     React.useEffect(() => {
         const container = listContainerRef.current
@@ -546,42 +525,89 @@ export default function EnhancedMailboxSidebar({
         accountListResetKeyRef.current = accountListResetKey
 
         if (previousResetKey === null) {
-            updateVisibleAccountRange(container.scrollTop, container.clientHeight)
             scheduleStatusViewportUpdate()
             return
         }
 
         if (previousResetKey !== accountListResetKey) {
-            container.scrollTop = 0
-            updateVisibleAccountRange(0, container.clientHeight)
+            accountVirtualizer.scrollToOffset(0, { behavior: 'auto' })
             scheduleStatusViewportUpdate()
         }
-    }, [accountListResetKey, updateVisibleAccountRange, scheduleStatusViewportUpdate])
+    }, [accountListResetKey, accountVirtualizer, scheduleStatusViewportUpdate])
 
-    // 定位到选中的账户。虚拟列表下目标节点可能尚未渲染，先按索引滚动再尝试居中。
-    const scrollToSelectedAccount = () => {
-        if (!selectedAccount || !listContainerRef.current) return
-
+    // 定位到指定账户。由 TanStack Virtual 维护窗口和偏移，避免手写 range 与 DOM 滚动互相打架。
+    const scrollToAccountId = React.useCallback((accountId: number) => {
         const container = listContainerRef.current
-        const accountElement = container.querySelector(
-            `[data-account-id="${selectedAccount.id}"]`
-        )
-        if (accountElement) {
-            accountElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            scheduleStatusViewportUpdate()
-            return
+        if (!container || container.clientHeight <= 0) return false
+
+        const selectedIndex = filteredAndSortedAccounts.findIndex(account => account.id === accountId)
+        if (selectedIndex < 0) return false
+
+        accountVirtualizer.measure()
+        accountVirtualizer.scrollToIndex(selectedIndex, { align: 'center', behavior: 'auto' })
+        scheduleStatusViewportUpdate()
+
+        return true
+    }, [accountVirtualizer, filteredAndSortedAccounts, scheduleStatusViewportUpdate])
+
+    const isAccountRowFullyVisible = React.useCallback((accountId: number) => {
+        const container = listContainerRef.current
+        if (!container || container.clientHeight <= 0) return false
+
+        const accountElement = container.querySelector<HTMLElement>(`[data-account-id="${accountId}"]`)
+        if (!accountElement) return false
+
+        const containerRect = container.getBoundingClientRect()
+        const accountRect = accountElement.getBoundingClientRect()
+        return accountRect.top >= containerRect.top && accountRect.bottom <= containerRect.bottom
+    }, [])
+
+    const scheduleAccountScrollAttempt = React.useCallback((
+        request: { accountId: number; requestId: number },
+        attempt = 0
+    ) => {
+        if (handledAccountScrollRequestRef.current === request.requestId) return
+
+        if (accountScrollRetryTimeoutRef.current !== null) {
+            clearTimeout(accountScrollRetryTimeoutRef.current)
+            accountScrollRetryTimeoutRef.current = null
+        }
+        if (accountScrollFrameRef.current !== null) {
+            cancelAnimationFrame(accountScrollFrameRef.current)
+            accountScrollFrameRef.current = null
         }
 
-        const selectedIndex = filteredAndSortedAccounts.findIndex(account => account.id === selectedAccount.id)
-        if (selectedIndex < 0) return
+        scrollToAccountId(request.accountId)
 
-        const targetTop = Math.max(
-            0,
-            selectedIndex * ACCOUNT_ROW_HEIGHT - Math.max(0, (container.clientHeight - ACCOUNT_ROW_HEIGHT) / 2)
-        )
-        container.scrollTo({ top: targetTop, behavior: 'smooth' })
-        updateVisibleAccountRange(targetTop, container.clientHeight)
-        scheduleStatusViewportUpdate()
+        accountScrollFrameRef.current = requestAnimationFrame(() => {
+            accountScrollFrameRef.current = null
+
+            if (isAccountRowFullyVisible(request.accountId)) {
+                handledAccountScrollRequestRef.current = request.requestId
+                scheduleStatusViewportUpdate()
+                return
+            }
+
+            if (attempt >= 12) return
+
+            accountScrollRetryTimeoutRef.current = setTimeout(() => {
+                accountScrollRetryTimeoutRef.current = null
+                scheduleAccountScrollAttempt(request, attempt + 1)
+            }, attempt < 3 ? 50 : 120)
+        })
+    }, [isAccountRowFullyVisible, scheduleStatusViewportUpdate, scrollToAccountId])
+
+    // 外部打开邮件时，父组件会发一次明确的账户滚动请求；目标账户稍后插入、tab 切换动画、虚拟列表测量都可能需要重试。
+    React.useEffect(() => {
+        if (!accountScrollRequest) return
+        if (handledAccountScrollRequestRef.current === accountScrollRequest.requestId) return
+
+        scheduleAccountScrollAttempt(accountScrollRequest)
+    }, [accountScrollRequest, filteredAndSortedAccounts.length, scheduleAccountScrollAttempt])
+
+    const scrollToSelectedAccount = () => {
+        if (!selectedAccount) return
+        scrollToAccountId(selectedAccount.id)
     }
 
     // 获取邮箱提供商图标和颜色
@@ -646,7 +672,6 @@ export default function EnhancedMailboxSidebar({
 
     const handleAccountListScroll = (event: React.UIEvent<HTMLDivElement>) => {
         const target = event.currentTarget
-        updateVisibleAccountRange(target.scrollTop, target.clientHeight)
         scheduleStatusViewportUpdate()
         if (!onLoadMoreAccounts || !hasMoreAccounts || loadingMoreAccounts || loading) return
         const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight
@@ -875,22 +900,26 @@ export default function EnhancedMailboxSidebar({
 
                             <div
                                 className="relative"
-                                style={{ height: filteredAndSortedAccounts.length * ACCOUNT_ROW_HEIGHT }}
+                                style={{ height: accountVirtualizer.getTotalSize() }}
                             >
-                                <div
-                                    className="absolute left-0 right-0 top-0"
-                                    style={{ transform: `translateY(${visibleAccountRange.start * ACCOUNT_ROW_HEIGHT}px)` }}
-                                >
-                                    {visibleAccounts.map((account, virtualIndex) => {
+                                {virtualAccountItems.map((virtualItem) => {
+                                    const account = filteredAndSortedAccounts[virtualItem.index]
+                                    if (!account) return null
+
+                                    return (
+                                        <div
+                                            key={virtualItem.key}
+                                            className="absolute left-0 top-0 w-full pb-2"
+                                            style={{
+                                                height: virtualItem.size,
+                                                transform: `translateY(${virtualItem.start}px)`,
+                                            }}
+                                        >
+                                            {(() => {
                                         const providerInfo = getProviderInfo(account.mailProvider?.type || 'custom')
                                         const isSelected = selectedAccount?.id === account.id
 
                                         return (
-                                            <div
-                                                key={account.id}
-                                                className="pb-2"
-                                                style={{ height: ACCOUNT_ROW_HEIGHT }}
-                                            >
                                                 <div
                                                     data-account-id={account.id}
                                                     role="button"
@@ -912,7 +941,7 @@ export default function EnhancedMailboxSidebar({
                                                             : "border border-transparent hover:bg-gray-50 dark:hover:bg-gray-700/50"
                                                     )}
                                                     style={{
-                                                        animationDelay: `${Math.min(virtualIndex, 12) * 20}ms`,
+                                                        animationDelay: `${Math.min(virtualItem.index, 12) * 20}ms`,
                                                     }}
                                                 >
                                                     <div className="flex h-full items-center gap-3">
@@ -1058,10 +1087,11 @@ export default function EnhancedMailboxSidebar({
                                                         )}
                                                     </div>
                                                 </div>
-                                            </div>
                                         )
-                                    })}
-                                </div>
+                                            })()}
+                                        </div>
+                                    )
+                                })}
                             </div>
 
                             {!collapsed && (hasMoreAccounts || loadingMoreAccounts) && (
