@@ -7,6 +7,9 @@ export interface EmailSearchParams {
     limit?: number
     offset?: number
     sort_by?: string
+    cursor?: boolean
+    after_cursor?: string
+    before_cursor?: string
     start_date?: string
     end_date?: string
     from_query?: string

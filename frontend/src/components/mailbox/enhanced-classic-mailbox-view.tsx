@@ -19,7 +19,11 @@ import { EmailAccount, Email } from '@/types'
 import { emailAccountService } from '@/services/email-account.service'
 import { emailService, EmailSearchParams } from '@/services/email.service'
 import { syncConfigService, SyncConfig } from '@/services/sync-config.service'
-import EnhancedMailboxSidebar from './enhanced-mailbox-sidebar'
+import EnhancedMailboxSidebar, {
+    type MailboxAccountSortBy,
+    type MailboxAccountSortOrder,
+    type MailboxAccountVerifiedFilter,
+} from './enhanced-mailbox-sidebar'
 import EmailListPanel from './email-list-panel'
 import EmailPreviewPanel from './email-preview-panel'
 import TemporarySyncPromptModal from '@/components/modals/temporary-sync-prompt-modal'
@@ -56,6 +60,8 @@ const SYNC_WARNING_INTERVAL_SECONDS = 30
 const DEFAULT_TEMP_SYNC_FOLDERS = ['INBOX']
 const AI_EMAIL_CONTEXT_PREVIEW_LIMIT = 1600
 const AI_EMAIL_ACTION_BODY_LIMIT = 6000
+const ACCOUNT_PAGE_SIZE = 50
+const ACCOUNT_SEARCH_DEBOUNCE_MS = 250
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
@@ -182,6 +188,24 @@ const formatSyncInterval = (seconds?: number) => {
     return `${seconds}秒`
 }
 
+const accountSortField = (sortBy: MailboxAccountSortBy) => {
+    switch (sortBy) {
+        case 'recent':
+            return 'created_at'
+        case 'provider':
+            return 'mail_provider_id'
+        case 'name':
+        default:
+            return 'email_address'
+    }
+}
+
+const accountVerifiedParam = (filter: MailboxAccountVerifiedFilter) => {
+    if (filter === 'verified') return true
+    if (filter === 'unverified') return false
+    return undefined
+}
+
 const isRecipientLikeSearch = (query?: string) => {
     const trimmed = query?.trim()
     if (!trimmed) return false
@@ -199,7 +223,7 @@ const buildEmailSearchParams = (
     const params: EmailSearchParams = {
         limit,
         offset,
-        sort_by: 'date',
+        sort_by: 'date_desc',
         direction
     }
 
@@ -256,6 +280,14 @@ type PendingSyncAction = {
 export default function EnhancedClassicMailboxView() {
     // 状态管理
     const [accounts, setAccounts] = useState<EmailAccount[]>([])
+    const [accountsTotal, setAccountsTotal] = useState(0)
+    const [hasMoreAccounts, setHasMoreAccounts] = useState(false)
+    const [loadingMoreAccounts, setLoadingMoreAccounts] = useState(false)
+    const [accountSearchQuery, setAccountSearchQuery] = useState('')
+    const [debouncedAccountSearchQuery, setDebouncedAccountSearchQuery] = useState('')
+    const [accountSortBy, setAccountSortBy] = useState<MailboxAccountSortBy>('name')
+    const [accountSortOrder, setAccountSortOrder] = useState<MailboxAccountSortOrder>('asc')
+    const [accountVerifiedFilter, setAccountVerifiedFilter] = useState<MailboxAccountVerifiedFilter>('all')
     const [selectedAccount, setSelectedAccount] = useState<EmailAccount | null>(null)
     const [emails, setEmails] = useState<Email[]>([])
     // 使用ID跟踪选中状态，而非完整对象引用，避免增量刷新时不必要的重新渲染
@@ -307,6 +339,12 @@ export default function EnhancedClassicMailboxView() {
     const isRefreshingRef = useRef<boolean>(false)
     const emailSearchQueryRef = useRef('')
     const pendingSyncActionRef = useRef<PendingSyncAction | null>(null)
+    const accountsRequestSeqRef = useRef(0)
+    const accountsPageRef = useRef(1)
+    const accountsNextCursorRef = useRef<string | null>(null)
+    const hasMoreAccountsRef = useRef(false)
+    const loadingMoreAccountsRef = useRef(false)
+    const emailNextCursorRef = useRef<string | null>(null)
     const containerRef = useRef<HTMLDivElement>(null)
     const layoutMenuRef = useRef<HTMLDivElement>(null)
 
@@ -537,22 +575,109 @@ export default function EnhancedClassicMailboxView() {
         }
     }
 
-    // 加载所有邮箱账户
-    const loadAccounts = async () => {
-        try {
-            setLoading(true)
-            const accountsData = await emailAccountService.getAccounts()
-            setAccounts(accountsData)
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedAccountSearchQuery(accountSearchQuery.trim())
+        }, ACCOUNT_SEARCH_DEBOUNCE_MS)
 
-            if (accountsData.length > 0 && !selectedAccount) {
-                setSelectedAccount(accountsData[0])
+        return () => clearTimeout(timer)
+    }, [accountSearchQuery])
+
+    // 加载邮箱账户（经典管理器侧边栏使用滚动分页，避免一次性拉取全部账户）
+    const loadAccounts = useCallback(async ({ reset = true }: { reset?: boolean } = {}) => {
+        if (!reset && (!hasMoreAccountsRef.current || loadingMoreAccountsRef.current)) {
+            return
+        }
+        if (!reset && !accountsNextCursorRef.current) {
+            return
+        }
+
+        const requestSeq = ++accountsRequestSeqRef.current
+        const pageToLoad = reset ? 1 : accountsPageRef.current + 1
+        const afterCursor = reset ? undefined : accountsNextCursorRef.current || undefined
+
+        try {
+            if (reset) {
+                setLoading(true)
+                setLoadingMoreAccounts(false)
+                loadingMoreAccountsRef.current = false
+                accountsNextCursorRef.current = null
+            } else {
+                setLoadingMoreAccounts(true)
+                loadingMoreAccountsRef.current = true
+            }
+
+            const response = await emailAccountService.getAccountsPaginated({
+                page: 1,
+                limit: ACCOUNT_PAGE_SIZE,
+                cursor: true,
+                after_cursor: afterCursor,
+                sort_by: accountSortField(accountSortBy),
+                sort_order: accountSortOrder,
+                search: debouncedAccountSearchQuery || undefined,
+                is_verified: accountVerifiedParam(accountVerifiedFilter),
+            })
+
+            if (requestSeq !== accountsRequestSeqRef.current) {
+                return
+            }
+
+            const nextAccounts = response.data || []
+            const responsePage = response.page || pageToLoad
+            const responseTotal = response.total || 0
+            const totalPages = response.total_pages || Math.ceil(responseTotal / ACCOUNT_PAGE_SIZE)
+            const moreAvailable = response.has_next ?? responsePage < totalPages
+
+            setAccounts(prev => {
+                if (reset) return nextAccounts
+                const seen = new Set(prev.map(account => account.id))
+                return [
+                    ...prev,
+                    ...nextAccounts.filter(account => !seen.has(account.id)),
+                ]
+            })
+            setAccountsTotal(responseTotal)
+            setHasMoreAccounts(moreAvailable)
+            accountsNextCursorRef.current = response.next_cursor || null
+            accountsPageRef.current = reset ? 1 : accountsPageRef.current + 1
+            hasMoreAccountsRef.current = moreAvailable
+
+            if (reset) {
+                const normalizedSearch = debouncedAccountSearchQuery.trim().toLowerCase()
+                const exactSearchMatch = normalizedSearch
+                    ? nextAccounts.find(account => account.emailAddress.toLowerCase() === normalizedSearch)
+                    : undefined
+                const searchTarget = exactSearchMatch || (normalizedSearch && nextAccounts.length === 1 ? nextAccounts[0] : undefined)
+
+                if (searchTarget) {
+                    setSelectedEmailId(null)
+                    setSelectedAccount(searchTarget)
+                } else {
+                    setSelectedAccount(current => current || nextAccounts[0] || null)
+                }
             }
         } catch (error) {
             console.error('Failed to load accounts:', error)
         } finally {
-            setLoading(false)
+            if (requestSeq === accountsRequestSeqRef.current) {
+                if (reset) {
+                    setLoading(false)
+                } else {
+                    setLoadingMoreAccounts(false)
+                    loadingMoreAccountsRef.current = false
+                }
+            }
         }
-    }
+    }, [accountSortBy, accountSortOrder, accountVerifiedFilter, debouncedAccountSearchQuery])
+
+    const loadMoreAccounts = useCallback(() => {
+        loadAccounts({ reset: false })
+    }, [loadAccounts])
+
+    const handleAccountSortChange = useCallback((sortBy: MailboxAccountSortBy, sortOrder: MailboxAccountSortOrder) => {
+        setAccountSortBy(sortBy)
+        setAccountSortOrder(sortOrder)
+    }, [])
 
     // 深度比较邮件
     const deepCompareEmails = (email1: Email, email2: Email): boolean => {
@@ -606,6 +731,10 @@ export default function EnhancedClassicMailboxView() {
             setEmails([])
             setTotalCount(0)
             setHasMore(false)
+            emailNextCursorRef.current = null
+            return
+        }
+        if (appendMode && !emailNextCursorRef.current) {
             return
         }
 
@@ -613,6 +742,7 @@ export default function EnhancedClassicMailboxView() {
             if (!isAutoSync && !appendMode) {
                 setLoadingEmails(true)
                 setCurrentOffset(0)
+                emailNextCursorRef.current = null
             }
             if (appendMode) {
                 setLoadingMore(true)
@@ -620,29 +750,44 @@ export default function EnhancedClassicMailboxView() {
             loadingEmailsRef.current = true
 
             const offset = appendMode ? currentOffset + PAGE_SIZE : 0
-            const searchParams = buildEmailSearchParams(searchQuery, directionFilter, PAGE_SIZE, offset, account)
+            const searchParams = {
+                ...buildEmailSearchParams(searchQuery, directionFilter, PAGE_SIZE, offset, account),
+                cursor: true,
+                after_cursor: appendMode ? emailNextCursorRef.current || undefined : undefined,
+            }
             const emailsData = await emailService.searchEmails(searchParams, account.id)
 
             // 解析响应数据
-            const emailList = Array.isArray(emailsData) ? emailsData : (emailsData.emails || [])
+            const emailList: Email[] = Array.isArray(emailsData) ? emailsData : (emailsData.emails || [])
             const pagination = (emailsData as any).pagination || {}
             const total = pagination.total || emailList.length
             const moreAvailable = pagination.has_next || false
+            const nextCursor = pagination.next_cursor || null
 
             if (isAutoSync) {
                 updateEmailsIncremental(emailList)
             } else if (appendMode) {
                 // 追加模式：合并新邮件
-                setEmails(prev => [...prev, ...emailList])
-                setCurrentOffset(offset)
+                setEmails(prev => {
+                    const seen = new Set(prev.map(email => email.ID))
+                    return [
+                        ...prev,
+                        ...emailList.filter(email => !seen.has(email.ID)),
+                    ]
+                })
+                setCurrentOffset(current => current + emailList.length)
+                emailNextCursorRef.current = nextCursor
             } else {
                 // 首次加载：替换邮件列表
                 setEmails(emailList)
                 setCurrentOffset(0)
+                emailNextCursorRef.current = nextCursor
             }
 
             setTotalCount(total)
-            setHasMore(moreAvailable)
+            if (!isAutoSync) {
+                setHasMore(moreAvailable)
+            }
 
             if (selectedEmailId !== null && selectedAccount?.id !== account.id) {
                 setSelectedEmailId(null)
@@ -912,8 +1057,8 @@ export default function EnhancedClassicMailboxView() {
 
     // 初始加载
     useEffect(() => {
-        loadAccounts()
-    }, [])
+        loadAccounts({ reset: true })
+    }, [loadAccounts])
 
     useEffect(() => {
         if (selectedAccount) {
@@ -937,12 +1082,14 @@ export default function EnhancedClassicMailboxView() {
         // 找到对应的账户
         let targetAccount = accounts.find(acc => acc.id === accountId)
 
-        // 如果账户还没加载，重新加载
+        // 如果账户还没加载，只拉取目标账户，避免回退到全量账户列表
         if (!targetAccount) {
             try {
-                const accountsData = await emailAccountService.getAccounts()
-                setAccounts(accountsData)
-                targetAccount = accountsData.find((acc: EmailAccount) => acc.id === accountId)
+                targetAccount = await emailAccountService.getAccount(accountId)
+                setAccounts(prev => {
+                    if (!targetAccount || prev.some(account => account.id === targetAccount?.id)) return prev
+                    return [targetAccount, ...prev]
+                })
             } catch (error) {
                 console.error('加载账户失败:', error)
                 return
@@ -1049,7 +1196,8 @@ export default function EnhancedClassicMailboxView() {
             isLoadingMore: loadingMore,
             isRefreshing,
             isDataSettled: !loading && !loadingEmails && !loadingMore && !isRefreshing,
-            accountsCount: accounts.length,
+            accountsCount: accountsTotal,
+            loadedAccountsCount: accounts.length,
             loadedEmailsCount: emails.length,
             totalCount,
             hasMore,
@@ -1091,6 +1239,18 @@ export default function EnhancedClassicMailboxView() {
                             : query
                                 ? accounts.find(account => account.emailAddress.toLowerCase().startsWith(query))
                                 : undefined
+
+                    if (!targetAccount && accountId) {
+                        try {
+                            targetAccount = await emailAccountService.getAccount(accountId)
+                            setAccounts(prev => prev.some(account => account.id === targetAccount?.id) || !targetAccount
+                                ? prev
+                                : [targetAccount, ...prev]
+                            )
+                        } catch (error) {
+                            console.warn('Failed to fetch account by id:', error)
+                        }
+                    }
 
                     if (!targetAccount && query) {
                         const response = await emailAccountService.getAccountsPaginated({
@@ -1153,18 +1313,13 @@ export default function EnhancedClassicMailboxView() {
                 description: '定位最近创建的邮箱账户，加载其最新邮件，并打开最新一封邮件详情。',
                 risk: 'navigation',
                 run: async () => {
-                    let targetAccount = [...accounts]
-                        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]
-
-                    if (!targetAccount) {
-                        const accountsResponse = await emailAccountService.getAccountsPaginated({
-                            page: 1,
-                            limit: 1,
-                            sort_by: 'created_at',
-                            sort_order: 'desc',
-                        })
-                        targetAccount = accountsResponse.data[0]
-                    }
+                    const accountsResponse = await emailAccountService.getAccountsPaginated({
+                        page: 1,
+                        limit: 1,
+                        sort_by: 'created_at',
+                        sort_order: 'desc',
+                    })
+                    const targetAccount = accountsResponse.data[0]
 
                     if (!targetAccount) {
                         return {
@@ -1286,6 +1441,7 @@ export default function EnhancedClassicMailboxView() {
     }), [
         activePanel,
         accounts,
+        accountsTotal,
         currentOffset,
         directionFilter,
         emailSearchQuery,
@@ -1345,6 +1501,17 @@ export default function EnhancedClassicMailboxView() {
                             collapsed={false}
                             onToggleCollapse={() => { }}
                             loading={loading}
+                            accountsTotal={accountsTotal}
+                            hasMoreAccounts={hasMoreAccounts}
+                            loadingMoreAccounts={loadingMoreAccounts}
+                            onLoadMoreAccounts={loadMoreAccounts}
+                            accountSearchQuery={accountSearchQuery}
+                            onAccountSearchQueryChange={setAccountSearchQuery}
+                            accountSortBy={accountSortBy}
+                            accountSortOrder={accountSortOrder}
+                            onAccountSortChange={handleAccountSortChange}
+                            accountVerifiedFilter={accountVerifiedFilter}
+                            onAccountVerifiedFilterChange={setAccountVerifiedFilter}
                         />
                     )}
                     {activePanel === 'list' && (
@@ -1413,6 +1580,17 @@ export default function EnhancedClassicMailboxView() {
                         collapsed={sidebarCollapsed}
                         onToggleCollapse={toggleSidebar}
                         loading={loading}
+                        accountsTotal={accountsTotal}
+                        hasMoreAccounts={hasMoreAccounts}
+                        loadingMoreAccounts={loadingMoreAccounts}
+                        onLoadMoreAccounts={loadMoreAccounts}
+                        accountSearchQuery={accountSearchQuery}
+                        onAccountSearchQueryChange={setAccountSearchQuery}
+                        accountSortBy={accountSortBy}
+                        accountSortOrder={accountSortOrder}
+                        onAccountSortChange={handleAccountSortChange}
+                        accountVerifiedFilter={accountVerifiedFilter}
+                        onAccountVerifiedFilterChange={setAccountVerifiedFilter}
                     />
                 </div>
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"mailman/internal/models"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,79 @@ type AccountFilterParams struct {
 	CreatedBefore  *time.Time // 创建时间结束
 	LastSyncAfter  *time.Time // 最后同步时间起始
 	LastSyncBefore *time.Time // 最后同步时间结束
+}
+
+func accountSortColumn(sortBy string) string {
+	if mapped, ok := emailAccountSortColumns[sortBy]; ok {
+		return mapped
+	}
+	return "created_at"
+}
+
+func accountSortDirection(sortOrder string) string {
+	if strings.EqualFold(sortOrder, "asc") {
+		return "ASC"
+	}
+	return "DESC"
+}
+
+func reverseSortDirection(direction string) string {
+	if strings.EqualFold(direction, "ASC") {
+		return "DESC"
+	}
+	return "ASC"
+}
+
+func buildAccountOrderClause(db *gorm.DB, sortBy, sortOrder string, reverse bool) string {
+	column := accountSortColumn(sortBy)
+	direction := accountSortDirection(sortOrder)
+	if reverse {
+		direction = reverseSortDirection(direction)
+	}
+
+	return fmt.Sprintf("%s %s, %s %s", quoteColumn(db, column), direction, quoteColumn(db, "id"), direction)
+}
+
+func parseAccountCursorValue(column, value string) (interface{}, error) {
+	switch column {
+	case "created_at", "updated_at", "last_sync_at":
+		return time.Parse(time.RFC3339Nano, value)
+	case "mail_provider_id":
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		return uint(parsed), err
+	case "is_verified":
+		return strconv.ParseBool(value)
+	default:
+		return value, nil
+	}
+}
+
+// AccountCursorValue returns the serialized primary sort value for a cursor.
+func AccountCursorValue(account models.EmailAccount, sortBy string) string {
+	switch accountSortColumn(sortBy) {
+	case "created_at":
+		return account.CreatedAt.UTC().Format(time.RFC3339Nano)
+	case "updated_at":
+		return account.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	case "last_sync_at":
+		if account.LastSyncAt == nil {
+			return time.Time{}.UTC().Format(time.RFC3339Nano)
+		}
+		return account.LastSyncAt.UTC().Format(time.RFC3339Nano)
+	case "mail_provider_id":
+		if account.MailProviderID == nil {
+			return "0"
+		}
+		return strconv.FormatUint(uint64(*account.MailProviderID), 10)
+	case "is_verified":
+		return strconv.FormatBool(account.IsVerified)
+	case "error_status":
+		return account.ErrorStatus
+	case "email_address":
+		return account.EmailAddress
+	default:
+		return account.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
 }
 
 // NewEmailAccountRepository creates a new EmailAccountRepository
@@ -191,6 +265,20 @@ func (r *EmailAccountRepository) GetAll(orgID uint) ([]models.EmailAccount, erro
 	return accounts, err
 }
 
+func (r *EmailAccountRepository) GetByIDs(orgID uint, ids []uint) ([]models.EmailAccount, error) {
+	if len(ids) == 0 {
+		return []models.EmailAccount{}, nil
+	}
+
+	var accounts []models.EmailAccount
+	query := r.db.Preload("MailProvider").Where("id IN ?", ids)
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+	err := query.Find(&accounts).Error
+	return accounts, err
+}
+
 func (r *EmailAccountRepository) GetDashboardStats(orgID uint) (AccountDashboardStats, error) {
 	var stats AccountDashboardStats
 	query := r.db.Model(&models.EmailAccount{}).Select(
@@ -206,6 +294,60 @@ func (r *EmailAccountRepository) GetDashboardStats(orgID uint) (AccountDashboard
 
 	err := query.Scan(&stats).Error
 	return stats, err
+}
+
+func (r *EmailAccountRepository) applyAccountFilters(query *gorm.DB, orgID uint, filters AccountFilterParams) *gorm.DB {
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+
+	if filters.Search != "" {
+		searchTerm := "%" + filters.Search + "%"
+		query = query.Where(r.accountSearchCondition(), searchTerm, searchTerm, searchTerm, searchTerm)
+	}
+	if filters.ProviderID != nil {
+		query = query.Where("mail_provider_id = ?", *filters.ProviderID)
+	}
+	if filters.IsVerified != nil {
+		query = query.Where("is_verified = ?", *filters.IsVerified)
+	}
+	if filters.ErrorStatus != "" {
+		query = query.Where("error_status = ?", filters.ErrorStatus)
+	}
+	if filters.CreatedAfter != nil {
+		query = query.Where("created_at >= ?", *filters.CreatedAfter)
+	}
+	if filters.CreatedBefore != nil {
+		query = query.Where("created_at <= ?", *filters.CreatedBefore)
+	}
+	if filters.LastSyncAfter != nil {
+		query = query.Where("last_sync_at >= ?", *filters.LastSyncAfter)
+	}
+	if filters.LastSyncBefore != nil {
+		query = query.Where("last_sync_at <= ?", *filters.LastSyncBefore)
+	}
+	if len(filters.TagIDs) > 0 {
+		tagFilterMode := filters.TagFilterMode
+		if tagFilterMode != "and" && tagFilterMode != "or" {
+			tagFilterMode = "or"
+		}
+
+		if tagFilterMode == "or" {
+			query = query.Where("id IN (?)",
+				r.db.Table("email_account_tags").
+					Select("email_account_id").
+					Where("tag_id IN ?", filters.TagIDs))
+		} else {
+			for _, tagID := range filters.TagIDs {
+				query = query.Where("id IN (?)",
+					r.db.Table("email_account_tags").
+						Select("email_account_id").
+						Where("tag_id = ?", tagID))
+			}
+		}
+	}
+
+	return query
 }
 
 // GetAllPaginated retrieves email accounts with pagination
@@ -410,6 +552,76 @@ func (r *EmailAccountRepository) GetAllPaginatedFiltered(orgID uint, page, limit
 		Find(&accounts).Error
 
 	return accounts, total, err
+}
+
+// GetAllPaginatedFilteredKeyset retrieves email accounts with cursor pagination.
+// It returns at most limit accounts and reports whether more rows exist in the requested direction.
+func (r *EmailAccountRepository) GetAllPaginatedFilteredKeyset(orgID uint, limit int, sortBy, sortOrder string, filters AccountFilterParams, pagination KeysetPagination) ([]models.EmailAccount, int64, bool, error) {
+	var accounts []models.EmailAccount
+	var total int64
+
+	if limit < 1 {
+		limit = 10
+	}
+
+	countQuery := r.applyAccountFilters(r.db.Model(&models.EmailAccount{}), orgID, filters)
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, 0, false, err
+	}
+
+	column := accountSortColumn(sortBy)
+	query := r.applyAccountFilters(
+		r.db.Preload("MailProvider").Preload("Tags").Preload("Tags.Group"),
+		orgID,
+		filters,
+	)
+
+	reverseForBefore := false
+	if pagination.After != nil || pagination.Before != nil {
+		cursor := pagination.After
+		if pagination.Before != nil {
+			cursor = pagination.Before
+			reverseForBefore = true
+		}
+
+		cursorValue, err := parseAccountCursorValue(column, cursor.Value)
+		if err != nil {
+			return nil, 0, false, err
+		}
+
+		ascending := strings.EqualFold(accountSortDirection(sortOrder), "ASC")
+		lessThan := (!ascending && pagination.After != nil) || (ascending && pagination.Before != nil)
+		operator := ">"
+		if lessThan {
+			operator = "<"
+		}
+
+		quotedColumn := quoteColumn(r.db, column)
+		quotedID := quoteColumn(r.db, "id")
+		query = query.Where(
+			fmt.Sprintf("(%s %s ? OR (%s = ? AND %s %s ?))", quotedColumn, operator, quotedColumn, quotedID, operator),
+			cursorValue,
+			cursorValue,
+			cursor.ID,
+		)
+	}
+
+	query = query.Order(buildAccountOrderClause(r.db, sortBy, sortOrder, reverseForBefore)).Limit(limit + 1)
+	if err := query.Find(&accounts).Error; err != nil {
+		return nil, 0, false, err
+	}
+
+	hasMore := len(accounts) > limit
+	if hasMore {
+		accounts = accounts[:limit]
+	}
+	if reverseForBefore {
+		for i, j := 0, len(accounts)-1; i < j; i, j = i+1, j-1 {
+			accounts[i], accounts[j] = accounts[j], accounts[i]
+		}
+	}
+
+	return accounts, total, hasMore, nil
 }
 
 // GetAllPaginatedWithTags retrieves email accounts with pagination and tag filtering

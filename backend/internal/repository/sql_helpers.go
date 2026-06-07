@@ -27,6 +27,14 @@ func textLikeExpr(db *gorm.DB, column string) string {
 	return fmt.Sprintf("%s LIKE ?", quoted)
 }
 
+func textNotLikeExpr(db *gorm.DB, column string) string {
+	quoted := quoteColumn(db, column)
+	if db.Dialector.Name() == "postgres" {
+		return fmt.Sprintf("%s::text NOT LIKE ?", quoted)
+	}
+	return fmt.Sprintf("%s NOT LIKE ?", quoted)
+}
+
 func buildOrderClause(db *gorm.DB, sortBy, sortOrder string, allowedColumns map[string]string, defaultColumn string) string {
 	column := defaultColumn
 	if mapped, ok := allowedColumns[sortBy]; ok {

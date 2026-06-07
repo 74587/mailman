@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"mailman/internal/models"
+	"strconv"
 	"strings"
 	"time"
 
@@ -135,6 +136,77 @@ func buildEmailOrderClause(db *gorm.DB, sortBy string, includeID bool) string {
 	}
 
 	return strings.Join(clauses, ", ")
+}
+
+func primaryEmailSort(sortBy string) (column string, direction string) {
+	for _, part := range strings.Split(sortBy, ",") {
+		column, direction = parseEmailSortPart(part)
+		if column == "" {
+			continue
+		}
+		if mappedColumn, ok := emailSortColumns[column]; ok {
+			return mappedColumn, direction
+		}
+	}
+	return "date", "DESC"
+}
+
+func buildEmailCursorOrderClause(db *gorm.DB, sortBy string, reverse bool) string {
+	column, direction := primaryEmailSort(sortBy)
+	if reverse {
+		direction = reverseSortDirection(direction)
+	}
+	return fmt.Sprintf("%s %s, %s %s", quoteColumn(db, column), direction, quoteColumn(db, "id"), direction)
+}
+
+func parseEmailCursorValue(column, value string) (interface{}, error) {
+	switch column {
+	case "date", "received_at", "created_at", "updated_at":
+		return time.Parse(time.RFC3339Nano, value)
+	case "id", "account_id":
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		return uint(parsed), err
+	case "size":
+		return strconv.ParseInt(value, 10, 64)
+	case "has_attachments":
+		return strconv.ParseBool(value)
+	default:
+		return value, nil
+	}
+}
+
+// EmailCursorValue returns the serialized primary sort value for a cursor.
+func EmailCursorValue(email models.Email, sortBy string) string {
+	switch column, _ := primaryEmailSort(sortBy); column {
+	case "date":
+		return email.Date.UTC().Format(time.RFC3339Nano)
+	case "received_at":
+		return email.ReceivedAt.UTC().Format(time.RFC3339Nano)
+	case "created_at":
+		return email.CreatedAt.UTC().Format(time.RFC3339Nano)
+	case "updated_at":
+		return email.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	case "id":
+		return strconv.FormatUint(uint64(email.ID), 10)
+	case "account_id":
+		return strconv.FormatUint(uint64(email.AccountID), 10)
+	case "size":
+		return strconv.FormatInt(email.Size, 10)
+	case "has_attachments":
+		return strconv.FormatBool(email.HasAttachments)
+	case "message_id":
+		return email.MessageID
+	case "subject":
+		return email.Subject
+	case "from_address":
+		return email.FromAddress
+	case "mailbox_name":
+		return email.MailboxName
+	case "direction":
+		return string(email.Direction)
+	default:
+		return email.Date.UTC().Format(time.RFC3339Nano)
+	}
 }
 
 func emailRecipientLikeExprs(db *gorm.DB) []string {
@@ -467,16 +539,24 @@ func (r *EmailRepository) GetEmailCountUntilNow(orgID uint) (int64, error) {
 	return r.GetTotalCount(orgID)
 }
 
-func (r *EmailRepository) GetDashboardStats(orgID uint, today, tomorrow time.Time) (EmailDashboardStats, error) {
+func (r *EmailRepository) buildDashboardStatsQuery(orgID uint, today, tomorrow time.Time) *gorm.DB {
 	yesterday := today.AddDate(0, 0, -1)
+	dateExpr := quoteColumn(r.db, "date")
+	flagsNotSeenExpr := textNotLikeExpr(r.db, "flags")
 
-	var stats EmailDashboardStats
 	query := r.db.Model(&models.Email{}).Select(
-		`COUNT(*) AS total_emails,
-		COALESCE(SUM(CASE WHEN flags NOT LIKE ? THEN 1 ELSE 0 END), 0) AS unread_emails,
-		COALESCE(SUM(CASE WHEN date >= ? AND date < ? THEN 1 ELSE 0 END), 0) AS today_emails,
-		COALESCE(SUM(CASE WHEN date >= ? AND date < ? THEN 1 ELSE 0 END), 0) AS yesterday_emails,
-		COALESCE(SUM(CASE WHEN date < ? THEN 1 ELSE 0 END), 0) AS emails_until_yesterday`,
+		fmt.Sprintf(`COUNT(*) AS total_emails,
+		COALESCE(SUM(CASE WHEN %s THEN 1 ELSE 0 END), 0) AS unread_emails,
+		COALESCE(SUM(CASE WHEN %s >= ? AND %s < ? THEN 1 ELSE 0 END), 0) AS today_emails,
+		COALESCE(SUM(CASE WHEN %s >= ? AND %s < ? THEN 1 ELSE 0 END), 0) AS yesterday_emails,
+		COALESCE(SUM(CASE WHEN %s < ? THEN 1 ELSE 0 END), 0) AS emails_until_yesterday`,
+			flagsNotSeenExpr,
+			dateExpr,
+			dateExpr,
+			dateExpr,
+			dateExpr,
+			dateExpr,
+		),
 		"%\"\\\\Seen\"%",
 		today,
 		tomorrow,
@@ -488,6 +568,12 @@ func (r *EmailRepository) GetDashboardStats(orgID uint, today, tomorrow time.Tim
 		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", orgID))
 	}
 
+	return query
+}
+
+func (r *EmailRepository) GetDashboardStats(orgID uint, today, tomorrow time.Time) (EmailDashboardStats, error) {
+	var stats EmailDashboardStats
+	query := r.buildDashboardStatsQuery(orgID, today, tomorrow)
 	err := query.Scan(&stats).Error
 	return stats, err
 }
@@ -518,6 +604,7 @@ type EmailSearchOptions struct {
 	MailboxName        string
 	Direction          string // "received", "sent", or "" for all
 	PreloadAttachments bool   // Whether to preload attachments (default false for performance)
+	Pagination         KeysetPagination
 }
 
 func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gorm.DB {
@@ -623,19 +710,64 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 		return nil, 0, err
 	}
 
+	// Apply cursor condition before sorting/pagination.
+	reverseForBefore := false
+	if options.Pagination.After != nil || options.Pagination.Before != nil {
+		cursor := options.Pagination.After
+		if options.Pagination.Before != nil {
+			cursor = options.Pagination.Before
+			reverseForBefore = true
+		}
+
+		column, direction := primaryEmailSort(options.SortBy)
+		cursorValue, err := parseEmailCursorValue(column, cursor.Value)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		ascending := strings.EqualFold(direction, "ASC")
+		lessThan := (!ascending && options.Pagination.After != nil) || (ascending && options.Pagination.Before != nil)
+		operator := ">"
+		if lessThan {
+			operator = "<"
+		}
+
+		quotedColumn := quoteColumn(r.db, column)
+		quotedID := quoteColumn(r.db, "id")
+		query = query.Where(
+			fmt.Sprintf("(%s %s ? OR (%s = ? AND %s %s ?))", quotedColumn, operator, quotedColumn, quotedID, operator),
+			cursorValue,
+			cursorValue,
+			cursor.ID,
+		)
+	}
+
 	// Apply sorting
-	query = query.Order(buildEmailOrderClause(r.db, options.SortBy, false))
+	if options.Pagination.IsCursorMode() {
+		query = query.Order(buildEmailCursorOrderClause(r.db, options.SortBy, reverseForBefore))
+	} else {
+		query = query.Order(buildEmailOrderClause(r.db, options.SortBy, false))
+	}
 
 	// Apply pagination
 	if options.Limit > 0 {
-		query = query.Limit(options.Limit)
+		limit := options.Limit
+		if options.Pagination.IsCursorMode() {
+			limit++
+		}
+		query = query.Limit(limit)
 	}
-	if options.Offset > 0 {
+	if options.Offset > 0 && !options.Pagination.IsCursorMode() {
 		query = query.Offset(options.Offset)
 	}
 
 	// Execute the query
 	err = query.Find(&emails).Error
+	if err == nil && reverseForBefore {
+		for i, j := 0, len(emails)-1; i < j; i, j = i+1, j-1 {
+			emails[i], emails[j] = emails[j], emails[i]
+		}
+	}
 	return emails, totalCount, err
 }
 

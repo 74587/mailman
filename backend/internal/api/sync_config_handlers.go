@@ -13,6 +13,12 @@ import (
 	"github.com/gorilla/mux"
 )
 
+const (
+	bulkSyncMatchAll     = "all"
+	bulkSyncMatchInclude = "include"
+	bulkSyncMatchExclude = "exclude"
+)
+
 // SyncHandlers holds handlers for sync configuration management
 type SyncHandlers struct {
 	syncConfigRepo        *repository.SyncConfigRepository
@@ -580,4 +586,120 @@ func (h *SyncHandlers) BatchCreateOrUpdateAccountSyncConfig(w http.ResponseWrite
 		"error_count":   len(errors),
 		"errors":        errors,
 	})
+}
+
+// BulkApplyAccountSyncConfig applies sync settings to accounts resolved by a matching rule.
+func (h *SyncHandlers) BulkApplyAccountSyncConfig(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+
+	var req struct {
+		MatchType      string   `json:"match_type"`
+		AccountIDs     []uint   `json:"account_ids"`
+		EnableAutoSync bool     `json:"enable_auto_sync"`
+		SyncInterval   int      `json:"sync_interval"`
+		SyncFolders    []string `json:"sync_folders"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.MatchType == "" {
+		req.MatchType = bulkSyncMatchAll
+	}
+	if req.MatchType != bulkSyncMatchAll && req.MatchType != bulkSyncMatchInclude && req.MatchType != bulkSyncMatchExclude {
+		http.Error(w, "Invalid match_type", http.StatusBadRequest)
+		return
+	}
+	if req.MatchType == bulkSyncMatchInclude && len(req.AccountIDs) == 0 {
+		http.Error(w, "account_ids is required for include match_type", http.StatusBadRequest)
+		return
+	}
+	if req.SyncInterval <= 0 {
+		req.SyncInterval = 300
+	}
+	if len(req.SyncFolders) == 0 {
+		req.SyncFolders = []string{"INBOX"}
+	}
+
+	accounts, err := h.resolveBulkSyncAccounts(orgID, req.MatchType, req.AccountIDs)
+	if err != nil {
+		h.logger.Error("Failed to resolve bulk sync accounts: %v", err)
+		http.Error(w, "Failed to resolve accounts", http.StatusInternalServerError)
+		return
+	}
+
+	successCount := 0
+	errors := make([]map[string]interface{}, 0)
+	for _, account := range accounts {
+		config := &models.EmailAccountSyncConfig{
+			AccountID:      account.ID,
+			EnableAutoSync: req.EnableAutoSync,
+			SyncInterval:   req.SyncInterval,
+			SyncFolders:    req.SyncFolders,
+			SyncStatus:     models.SyncStatusIdle,
+		}
+		if err := h.syncConfigRepo.CreateOrUpdateSettings(config); err != nil {
+			errors = append(errors, map[string]interface{}{
+				"account_id":       account.ID,
+				"email_address":    account.EmailAddress,
+				"error":            err.Error(),
+				"enable_auto_sync": req.EnableAutoSync,
+				"sync_interval":    req.SyncInterval,
+			})
+			continue
+		}
+		successCount++
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"match_type":    req.MatchType,
+		"target_count":  len(accounts),
+		"success_count": successCount,
+		"error_count":   len(errors),
+		"errors":        errors,
+	})
+}
+
+func (h *SyncHandlers) resolveBulkSyncAccounts(orgID uint, matchType string, accountIDs []uint) ([]models.EmailAccount, error) {
+	db := h.emailAccountRepo.GetDB()
+	query := db.Model(&models.EmailAccount{})
+	if orgID > 0 {
+		query = query.Where("org_id = ?", orgID)
+	}
+
+	ids := uniqueUintIDs(accountIDs)
+	switch matchType {
+	case bulkSyncMatchInclude:
+		query = query.Where("id IN ?", ids)
+	case bulkSyncMatchExclude:
+		if len(ids) > 0 {
+			query = query.Where("id NOT IN ?", ids)
+		}
+	}
+
+	var accounts []models.EmailAccount
+	err := query.Order("email_address ASC").Find(&accounts).Error
+	return accounts, err
+}
+
+func uniqueUintIDs(ids []uint) []uint {
+	if len(ids) == 0 {
+		return []uint{}
+	}
+
+	seen := make(map[uint]struct{}, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
 }

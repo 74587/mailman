@@ -14,6 +14,52 @@ import (
 	"github.com/gorilla/mux"
 )
 
+func parseEmailKeysetPagination(r *http.Request, sortBy string) (repository.KeysetPagination, error) {
+	afterCursor, err := decodeKeysetCursor(r.URL.Query().Get("after_cursor"), sortBy, "")
+	if err != nil {
+		return repository.KeysetPagination{}, err
+	}
+	beforeCursor, err := decodeKeysetCursor(r.URL.Query().Get("before_cursor"), sortBy, "")
+	if err != nil {
+		return repository.KeysetPagination{}, err
+	}
+	if afterCursor != nil && beforeCursor != nil {
+		return repository.KeysetPagination{}, fmt.Errorf("after_cursor and before_cursor cannot be used together")
+	}
+	return repository.KeysetPagination{
+		Enabled: r.URL.Query().Get("cursor") == "true" || afterCursor != nil || beforeCursor != nil,
+		After:   afterCursor,
+		Before:  beforeCursor,
+	}, nil
+}
+
+func trimEmailCursorPage(emails []models.Email, limit int, pagination repository.KeysetPagination) ([]models.Email, bool) {
+	if !pagination.IsCursorMode() || limit <= 0 || len(emails) <= limit {
+		return emails, false
+	}
+
+	if pagination.Before != nil {
+		return emails[1:], true
+	}
+	return emails[:limit], true
+}
+
+func emailPageCursors(emails []models.Email, sortBy string) (nextCursor string, prevCursor string) {
+	if len(emails) == 0 {
+		return "", ""
+	}
+
+	first := emails[0]
+	last := emails[len(emails)-1]
+	if cursor, err := encodeKeysetCursor(sortBy, "", repository.EmailCursorValue(last, sortBy), last.ID); err == nil {
+		nextCursor = cursor
+	}
+	if cursor, err := encodeKeysetCursor(sortBy, "", repository.EmailCursorValue(first, sortBy), first.ID); err == nil {
+		prevCursor = cursor
+	}
+	return nextCursor, prevCursor
+}
+
 // processSingleMailbox handles the sync process for a single mailbox
 func (h *APIHandler) processSingleMailbox(
 	account models.EmailAccount,
@@ -241,6 +287,12 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 	options.Keyword = r.URL.Query().Get("keyword")
 	options.MailboxName = r.URL.Query().Get("mailbox")
 	options.Direction = r.URL.Query().Get("direction")
+	pagination, err := parseEmailKeysetPagination(r, options.SortBy)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	options.Pagination = pagination
 
 	// 如果有to_query参数，先尝试立即同步对应账户的邮件
 	if options.ToQuery != "" {
@@ -258,11 +310,28 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cursorMode := options.Pagination.IsCursorMode()
+	cursorHasMore := false
+	if cursorMode {
+		emails, cursorHasMore = trimEmailCursorPage(emails, options.Limit, options.Pagination)
+	}
+
 	// Calculate pagination info
 	totalPages := int((totalCount + int64(options.Limit) - 1) / int64(options.Limit))
 	currentPage := (options.Offset / options.Limit) + 1
 	hasNext := options.Offset+options.Limit < int(totalCount)
 	hasPrev := options.Offset > 0
+	nextCursor, prevCursor := "", ""
+	if cursorMode {
+		nextCursor, prevCursor = emailPageCursors(emails, options.SortBy)
+		if options.Pagination.Before != nil {
+			hasPrev = cursorHasMore
+			hasNext = true
+		} else {
+			hasPrev = options.Pagination.After != nil
+			hasNext = cursorHasMore
+		}
+	}
 
 	response := map[string]interface{}{
 		"emails": emails,
@@ -274,6 +343,9 @@ func (h *APIHandler) GetEmailsHandler(w http.ResponseWriter, r *http.Request) {
 			"offset":       options.Offset,
 			"has_next":     hasNext,
 			"has_prev":     hasPrev,
+			"cursor_mode":  cursorMode,
+			"next_cursor":  nextCursor,
+			"prev_cursor":  prevCursor,
 		},
 		"search_criteria": map[string]interface{}{
 			"account_id":    options.AccountID,
@@ -386,6 +458,12 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 	options.Keyword = r.URL.Query().Get("keyword")
 	options.MailboxName = r.URL.Query().Get("mailbox")
 	options.Direction = r.URL.Query().Get("direction")
+	pagination, err := parseEmailKeysetPagination(r, options.SortBy)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	options.Pagination = pagination
 
 	if options.ToQuery != "" {
 		if err := h.syncEmailsForToQuery(options.ToQuery); err != nil {
@@ -400,11 +478,28 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	cursorMode := options.Pagination.IsCursorMode()
+	cursorHasMore := false
+	if cursorMode {
+		emails, cursorHasMore = trimEmailCursorPage(emails, options.Limit, options.Pagination)
+	}
+
 	// Calculate pagination info
 	totalPages := int((totalCount + int64(options.Limit) - 1) / int64(options.Limit))
 	currentPage := (options.Offset / options.Limit) + 1
 	hasNext := options.Offset+options.Limit < int(totalCount)
 	hasPrev := options.Offset > 0
+	nextCursor, prevCursor := "", ""
+	if cursorMode {
+		nextCursor, prevCursor = emailPageCursors(emails, options.SortBy)
+		if options.Pagination.Before != nil {
+			hasPrev = cursorHasMore
+			hasNext = true
+		} else {
+			hasPrev = options.Pagination.After != nil
+			hasNext = cursorHasMore
+		}
+	}
 
 	response := map[string]interface{}{
 		"emails": emails,
@@ -416,6 +511,9 @@ func (h *APIHandler) SearchEmailsHandler(w http.ResponseWriter, r *http.Request)
 			"offset":       options.Offset,
 			"has_next":     hasNext,
 			"has_prev":     hasPrev,
+			"cursor_mode":  cursorMode,
+			"next_cursor":  nextCursor,
+			"prev_cursor":  prevCursor,
 		},
 		"search_criteria": map[string]interface{}{
 			"account_id":    options.AccountID,
@@ -948,6 +1046,8 @@ func (h *APIHandler) GetEmailStatsHandler(w http.ResponseWriter, r *http.Request
 		totalAccounts = accountStats.TotalAccounts
 		verifiedAccounts = accountStats.VerifiedAccounts
 		errorAccounts = accountStats.ErrorAccounts
+	} else if h.logger != nil {
+		h.logger.Error("Failed to get dashboard account stats for org %d: %v", orgID, err)
 	}
 
 	// 同步中的账户数：通过 PerAccountSyncManager 获取
@@ -969,6 +1069,8 @@ func (h *APIHandler) GetEmailStatsHandler(w http.ResponseWriter, r *http.Request
 		todayEmails = emailStats.TodayEmails
 		yesterdayEmails = emailStats.YesterdayEmails
 		emailsUntilYesterday = emailStats.EmailsUntilYesterday
+	} else if h.logger != nil {
+		h.logger.Error("Failed to get dashboard email stats for org %d: %v", orgID, err)
 	}
 
 	// 计算总邮件增长率

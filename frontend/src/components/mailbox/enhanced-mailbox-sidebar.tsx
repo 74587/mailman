@@ -49,7 +49,25 @@ interface EnhancedMailboxSidebarProps {
     collapsed: boolean
     onToggleCollapse: () => void
     loading: boolean
+    accountsTotal?: number
+    hasMoreAccounts?: boolean
+    loadingMoreAccounts?: boolean
+    onLoadMoreAccounts?: () => void
+    accountSearchQuery?: string
+    onAccountSearchQueryChange?: (query: string) => void
+    accountSortBy?: MailboxAccountSortBy
+    accountSortOrder?: MailboxAccountSortOrder
+    onAccountSortChange?: (sortBy: MailboxAccountSortBy, sortOrder: MailboxAccountSortOrder) => void
+    accountVerifiedFilter?: MailboxAccountVerifiedFilter
+    onAccountVerifiedFilterChange?: (filter: MailboxAccountVerifiedFilter) => void
 }
+
+export type MailboxAccountSortBy = 'name' | 'provider' | 'recent'
+export type MailboxAccountSortOrder = 'asc' | 'desc'
+export type MailboxAccountVerifiedFilter = 'all' | 'verified' | 'unverified'
+
+const ACCOUNT_ROW_HEIGHT = 96
+const ACCOUNT_LIST_OVERSCAN_ROWS = 8
 
 const formatSyncInterval = (seconds?: number) => {
     if (!seconds || seconds <= 0) return '未设置'
@@ -124,15 +142,30 @@ export default function EnhancedMailboxSidebar({
     onSelectAccount,
     collapsed,
     onToggleCollapse,
-    loading
+    loading,
+    accountsTotal = accounts.length,
+    hasMoreAccounts = false,
+    loadingMoreAccounts = false,
+    onLoadMoreAccounts,
+    accountSearchQuery,
+    onAccountSearchQueryChange,
+    accountSortBy,
+    accountSortOrder,
+    onAccountSortChange,
+    accountVerifiedFilter,
+    onAccountVerifiedFilterChange
 }: EnhancedMailboxSidebarProps) {
     // 滚动容器引用
     const listContainerRef = React.useRef<HTMLDivElement>(null)
     // 搜索框引用
     const searchInputRef = React.useRef<HTMLInputElement>(null)
+    const statusViewportFrameRef = React.useRef<number | null>(null)
+    const accountListResetKeyRef = React.useRef<string | null>(null)
 
     // 同步状态
     const [syncStatuses, setSyncStatuses] = useState<Map<number, AccountSyncStatus>>(new Map())
+    const [statusAccountIds, setStatusAccountIds] = useState<number[]>([])
+    const [visibleAccountRange, setVisibleAccountRange] = useState({ start: 0, end: 50 })
 
     // 右键菜单和同步配置模态框状态
     const [contextMenuAccount, setContextMenuAccount] = useState<EmailAccount | null>(null)
@@ -149,10 +182,15 @@ export default function EnhancedMailboxSidebar({
     const [syncModalAccount, setSyncModalAccount] = useState<EmailAccount | null>(null)
 
     // 获取同步状态（使用服务层获取数据库配置）
-    const fetchSyncStatuses = async () => {
+    const fetchSyncStatuses = React.useCallback(async () => {
         try {
+            if (statusAccountIds.length === 0) {
+                setSyncStatuses(new Map())
+                return
+            }
+
             setLoadingSyncStatus(true)
-            const statuses = await syncConfigService.getAllAccountSyncStatuses()
+            const statuses = await syncConfigService.getAccountSyncStatuses(statusAccountIds)
             logger.debug('[EnhancedMailboxSidebar] Fetched sync statuses:', statuses.length, 'accounts')
             const statusMap = new Map<number, AccountSyncStatus>()
             statuses.forEach((status: AccountSyncStatus) => {
@@ -164,25 +202,22 @@ export default function EnhancedMailboxSidebar({
         } finally {
             setLoadingSyncStatus(false)
         }
-    }
+    }, [statusAccountIds])
 
     // 初始化加载和定时刷新同步状态
     useEffect(() => {
         fetchSyncStatuses()
         const interval = setInterval(fetchSyncStatuses, 10000)
         return () => clearInterval(interval)
-    }, [])
+    }, [fetchSyncStatuses])
 
-    // 定位到选中的账户
-    const scrollToSelectedAccount = () => {
-        if (!selectedAccount || !listContainerRef.current) return
-        const accountElement = listContainerRef.current.querySelector(
-            `[data-account-id="${selectedAccount.id}"]`
-        )
-        if (accountElement) {
-            accountElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    React.useEffect(() => {
+        return () => {
+            if (statusViewportFrameRef.current !== null) {
+                cancelAnimationFrame(statusViewportFrameRef.current)
+            }
         }
-    }
+    }, [])
 
     // 获取同步状态显示信息（简化为：正常/禁用/异常 + 最后同步时间）
     const getSyncStatusInfo = (accountId: number) => {
@@ -349,8 +384,10 @@ export default function EnhancedMailboxSidebar({
         logger.debug('[EnhancedMailboxSidebar] Sync config saved, status set to confirming, waiting for next poll...')
     }
     // 搜索状态
-    const [searchQuery, setSearchQuery] = useState('')
+    const [localSearchQuery, setLocalSearchQuery] = useState('')
     const [showSearch, setShowSearch] = useState(false)
+    const searchQuery = accountSearchQuery ?? localSearchQuery
+    const setSearchQuery = onAccountSearchQueryChange ?? setLocalSearchQuery
 
     // 当显示搜索框时自动获取焦点
     React.useEffect(() => {
@@ -363,25 +400,35 @@ export default function EnhancedMailboxSidebar({
     }, [showSearch])
 
     // 排序状态
-    const [sortBy, setSortBy] = useState<'name' | 'provider' | 'recent'>('name')
-    const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc')
+    const [localSortBy, setLocalSortBy] = useState<MailboxAccountSortBy>('name')
+    const [localSortOrder, setLocalSortOrder] = useState<MailboxAccountSortOrder>('asc')
+    const sortBy = accountSortBy ?? localSortBy
+    const sortOrder = accountSortOrder ?? localSortOrder
 
     // 过滤状态
-    const [filterVerified, setFilterVerified] = useState<'all' | 'verified' | 'unverified'>('all')
+    const [localFilterVerified, setLocalFilterVerified] = useState<MailboxAccountVerifiedFilter>('all')
+    const filterVerified = accountVerifiedFilter ?? localFilterVerified
+    const setFilterVerified = onAccountVerifiedFilterChange ?? setLocalFilterVerified
+    const remoteSearchEnabled = Boolean(onAccountSearchQueryChange)
+    const remoteFilterEnabled = Boolean(onAccountVerifiedFilterChange)
+    const hasActiveAccountFilter = Boolean(searchQuery.trim()) || filterVerified !== 'all'
+    const accountListResetKey = useMemo(() => (
+        [searchQuery, filterVerified, sortBy, sortOrder].join('\u0000')
+    ), [searchQuery, filterVerified, sortBy, sortOrder])
 
     // 过滤和排序账户
     const filteredAndSortedAccounts = useMemo(() => {
         let result = [...accounts]
 
         // 搜索过滤
-        if (searchQuery.trim()) {
+        if (!remoteSearchEnabled && searchQuery.trim()) {
             result = result.filter(account => accountMatchesSearch(account, searchQuery))
         }
 
         // 验证状态过滤
-        if (filterVerified === 'verified') {
+        if (!remoteFilterEnabled && filterVerified === 'verified') {
             result = result.filter(account => account.isVerified)
-        } else if (filterVerified === 'unverified') {
+        } else if (!remoteFilterEnabled && filterVerified === 'unverified') {
             result = result.filter(account => !account.isVerified)
         }
 
@@ -397,8 +444,10 @@ export default function EnhancedMailboxSidebar({
                     comparison = (a.mailProvider?.type || '').localeCompare(b.mailProvider?.type || '')
                     break
                 case 'recent':
-                    // 假设有 lastAccessedAt 字段，否则使用 id 作为后备
-                    comparison = (b.id || 0) - (a.id || 0)
+                    comparison = new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+                    if (comparison === 0) {
+                        comparison = (a.id || 0) - (b.id || 0)
+                    }
                     break
             }
 
@@ -406,7 +455,134 @@ export default function EnhancedMailboxSidebar({
         })
 
         return result
-    }, [accounts, searchQuery, sortBy, sortOrder, filterVerified])
+    }, [accounts, searchQuery, sortBy, sortOrder, filterVerified, remoteSearchEnabled, remoteFilterEnabled])
+
+    const updateVisibleAccountRange = React.useCallback((scrollTop?: number, clientHeight?: number) => {
+        const total = filteredAndSortedAccounts.length
+        if (total === 0) {
+            setVisibleAccountRange(current => (
+                current.start === 0 && current.end === 0 ? current : { start: 0, end: 0 }
+            ))
+            return
+        }
+
+        const container = listContainerRef.current
+        const top = scrollTop ?? container?.scrollTop ?? 0
+        const height = clientHeight ?? container?.clientHeight ?? 640
+        const start = Math.max(0, Math.floor(top / ACCOUNT_ROW_HEIGHT) - ACCOUNT_LIST_OVERSCAN_ROWS)
+        const visibleRows = Math.ceil(height / ACCOUNT_ROW_HEIGHT) + ACCOUNT_LIST_OVERSCAN_ROWS * 2
+        const end = Math.min(total, start + visibleRows)
+
+        setVisibleAccountRange(current => (
+            current.start === start && current.end === end ? current : { start, end }
+        ))
+    }, [filteredAndSortedAccounts.length])
+
+    const visibleAccounts = useMemo(() => {
+        return filteredAndSortedAccounts.slice(visibleAccountRange.start, visibleAccountRange.end)
+    }, [filteredAndSortedAccounts, visibleAccountRange])
+
+    const updateStatusAccountIdsForViewport = React.useCallback(() => {
+        const container = listContainerRef.current
+        if (!container) {
+            setStatusAccountIds(filteredAndSortedAccounts.slice(0, 50).map(account => account.id))
+            return
+        }
+
+        const containerRect = container.getBoundingClientRect()
+        const overscan = 700
+        const nextIds: number[] = []
+        const seen = new Set<number>()
+
+        container.querySelectorAll<HTMLElement>('[data-account-id]').forEach((element) => {
+            const rawId = element.dataset.accountId
+            const id = Number(rawId)
+            if (!Number.isFinite(id) || id <= 0 || seen.has(id)) return
+
+            const rect = element.getBoundingClientRect()
+            const isNearViewport = rect.bottom >= containerRect.top - overscan && rect.top <= containerRect.bottom + overscan
+            if (!isNearViewport) return
+
+            seen.add(id)
+            nextIds.push(id)
+        })
+
+        if (selectedAccount && !seen.has(selectedAccount.id)) {
+            nextIds.push(selectedAccount.id)
+        }
+
+        const fallbackIds = nextIds.length > 0
+            ? nextIds
+            : filteredAndSortedAccounts.slice(0, 50).map(account => account.id)
+
+        setStatusAccountIds(current => {
+            if (current.length === fallbackIds.length && current.every((id, index) => id === fallbackIds[index])) {
+                return current
+            }
+            return fallbackIds
+        })
+    }, [filteredAndSortedAccounts, selectedAccount])
+
+    const scheduleStatusViewportUpdate = React.useCallback(() => {
+        if (statusViewportFrameRef.current !== null) {
+            cancelAnimationFrame(statusViewportFrameRef.current)
+        }
+        statusViewportFrameRef.current = requestAnimationFrame(() => {
+            statusViewportFrameRef.current = null
+            updateStatusAccountIdsForViewport()
+        })
+    }, [updateStatusAccountIdsForViewport])
+
+    React.useEffect(() => {
+        updateVisibleAccountRange()
+        scheduleStatusViewportUpdate()
+    }, [updateVisibleAccountRange, scheduleStatusViewportUpdate])
+
+    React.useEffect(() => {
+        const container = listContainerRef.current
+        if (!container) return
+
+        const previousResetKey = accountListResetKeyRef.current
+        accountListResetKeyRef.current = accountListResetKey
+
+        if (previousResetKey === null) {
+            updateVisibleAccountRange(container.scrollTop, container.clientHeight)
+            scheduleStatusViewportUpdate()
+            return
+        }
+
+        if (previousResetKey !== accountListResetKey) {
+            container.scrollTop = 0
+            updateVisibleAccountRange(0, container.clientHeight)
+            scheduleStatusViewportUpdate()
+        }
+    }, [accountListResetKey, updateVisibleAccountRange, scheduleStatusViewportUpdate])
+
+    // 定位到选中的账户。虚拟列表下目标节点可能尚未渲染，先按索引滚动再尝试居中。
+    const scrollToSelectedAccount = () => {
+        if (!selectedAccount || !listContainerRef.current) return
+
+        const container = listContainerRef.current
+        const accountElement = container.querySelector(
+            `[data-account-id="${selectedAccount.id}"]`
+        )
+        if (accountElement) {
+            accountElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            scheduleStatusViewportUpdate()
+            return
+        }
+
+        const selectedIndex = filteredAndSortedAccounts.findIndex(account => account.id === selectedAccount.id)
+        if (selectedIndex < 0) return
+
+        const targetTop = Math.max(
+            0,
+            selectedIndex * ACCOUNT_ROW_HEIGHT - Math.max(0, (container.clientHeight - ACCOUNT_ROW_HEIGHT) / 2)
+        )
+        container.scrollTo({ top: targetTop, behavior: 'smooth' })
+        updateVisibleAccountRange(targetTop, container.clientHeight)
+        scheduleStatusViewportUpdate()
+    }
 
     // 获取邮箱提供商图标和颜色
     const getProviderInfo = (provider: string) => {
@@ -443,12 +619,20 @@ export default function EnhancedMailboxSidebar({
     }
 
     // 切换排序
-    const toggleSort = (field: 'name' | 'provider' | 'recent') => {
-        if (sortBy === field) {
-            setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')
+    const updateSort = (nextSortBy: MailboxAccountSortBy, nextSortOrder: MailboxAccountSortOrder) => {
+        if (onAccountSortChange) {
+            onAccountSortChange(nextSortBy, nextSortOrder)
         } else {
-            setSortBy(field)
-            setSortOrder('asc')
+            setLocalSortBy(nextSortBy)
+            setLocalSortOrder(nextSortOrder)
+        }
+    }
+
+    const toggleSort = (field: MailboxAccountSortBy) => {
+        if (sortBy === field) {
+            updateSort(field, sortOrder === 'asc' ? 'desc' : 'asc')
+        } else {
+            updateSort(field, field === 'recent' ? 'desc' : 'asc')
         }
     }
 
@@ -457,6 +641,17 @@ export default function EnhancedMailboxSidebar({
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
             onSelectAccount(account)
+        }
+    }
+
+    const handleAccountListScroll = (event: React.UIEvent<HTMLDivElement>) => {
+        const target = event.currentTarget
+        updateVisibleAccountRange(target.scrollTop, target.clientHeight)
+        scheduleStatusViewportUpdate()
+        if (!onLoadMoreAccounts || !hasMoreAccounts || loadingMoreAccounts || loading) return
+        const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight
+        if (distanceToBottom < 240) {
+            onLoadMoreAccounts()
         }
     }
 
@@ -604,7 +799,7 @@ export default function EnhancedMailboxSidebar({
                                         供应
                                     </button>
                                     <button
-                                        onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+                                        onClick={() => updateSort(sortBy, sortOrder === 'asc' ? 'desc' : 'asc')}
                                         className={cn(
                                             "p-0.5 rounded-full transition-all duration-200",
                                             "text-gray-500 dark:text-gray-400 hover:text-blue-600 hover:bg-white dark:hover:bg-gray-600"
@@ -620,7 +815,7 @@ export default function EnhancedMailboxSidebar({
                 )}
 
                 {/* 邮箱列表 */}
-                <div ref={listContainerRef} className="flex-1 overflow-y-auto min-h-0">
+                <div ref={listContainerRef} onScroll={handleAccountListScroll} className="flex-1 overflow-y-auto min-h-0">
                     {loading ? (
                         <div className="p-4 text-center">
                             <div className="inline-flex items-center gap-2 text-gray-500 dark:text-gray-400">
@@ -628,7 +823,7 @@ export default function EnhancedMailboxSidebar({
                                 {!collapsed && <span className="text-sm">加载中...</span>}
                             </div>
                         </div>
-                    ) : accounts.length === 0 ? (
+                    ) : accounts.length === 0 && !hasActiveAccountFilter ? (
                         <div className="p-4 text-center">
                             <div className="text-gray-500 dark:text-gray-400">
                                 <Inbox className="h-8 w-8 mx-auto mb-2 opacity-50" />
@@ -664,7 +859,7 @@ export default function EnhancedMailboxSidebar({
                             {(searchQuery || filterVerified !== 'all') && !collapsed && (
                                 <div className="mb-2 px-2 py-1 text-xs text-gray-500 dark:text-gray-400 flex items-center justify-between">
                                     <span>
-                                        找到 {filteredAndSortedAccounts.length} 个结果
+                                        找到 {remoteSearchEnabled || remoteFilterEnabled ? accountsTotal : filteredAndSortedAccounts.length} 个结果
                                     </span>
                                     <button
                                         onClick={() => {
@@ -678,181 +873,215 @@ export default function EnhancedMailboxSidebar({
                                 </div>
                             )}
 
-                            {filteredAndSortedAccounts.map((account, index) => {
-                                const providerInfo = getProviderInfo(account.mailProvider?.type || 'custom')
-                                const isSelected = selectedAccount?.id === account.id
+                            <div
+                                className="relative"
+                                style={{ height: filteredAndSortedAccounts.length * ACCOUNT_ROW_HEIGHT }}
+                            >
+                                <div
+                                    className="absolute left-0 right-0 top-0"
+                                    style={{ transform: `translateY(${visibleAccountRange.start * ACCOUNT_ROW_HEIGHT}px)` }}
+                                >
+                                    {visibleAccounts.map((account, virtualIndex) => {
+                                        const providerInfo = getProviderInfo(account.mailProvider?.type || 'custom')
+                                        const isSelected = selectedAccount?.id === account.id
 
-                                return (
-                                    <div
-                                        key={account.id}
-                                        data-account-id={account.id}
-                                        role="button"
-                                        tabIndex={0}
-                                        onClick={() => onSelectAccount(account)}
-                                        onKeyDown={(e) => handleKeyDown(e, account)}
-                                        onContextMenu={(e) => {
-                                            e.preventDefault()
-                                            e.stopPropagation()
-                                            // 打开该账户的右键菜单
-                                            setDropdownOpenAccountId(account.id)
-                                        }}
-                                        className={cn(
-                                            "group rounded-xl p-3 mb-2 cursor-pointer transition-all duration-200",
-                                            "focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800",
-                                            "hover:shadow-md hover:-translate-y-0.5",
-                                            isSelected
-                                                ? cn("border-2 shadow-md", providerInfo.bgColor, providerInfo.borderColor)
-                                                : "border border-transparent hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                                        )}
-                                        style={{
-                                            animationDelay: `${index * 50}ms`,
-                                        }}
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            {/* 提供商图标 */}
-                                            <div className={cn(
-                                                "w-10 h-10 rounded-lg flex items-center justify-center text-xl shrink-0 transition-transform duration-200",
-                                                isSelected ? "scale-110" : "scale-100",
-                                                providerInfo.bgColor
-                                            )}>
-                                                {providerInfo.icon}
-                                            </div>
-
-                                            {!collapsed && (
-                                                <div className="flex-1 min-w-0">
-                                                    {/* 邮箱地址 */}
-                                                    <p className={cn(
-                                                        "font-medium text-sm truncate transition-colors",
+                                        return (
+                                            <div
+                                                key={account.id}
+                                                className="pb-2"
+                                                style={{ height: ACCOUNT_ROW_HEIGHT }}
+                                            >
+                                                <div
+                                                    data-account-id={account.id}
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={() => onSelectAccount(account)}
+                                                    onKeyDown={(e) => handleKeyDown(e, account)}
+                                                    onContextMenu={(e) => {
+                                                        e.preventDefault()
+                                                        e.stopPropagation()
+                                                        // 打开该账户的右键菜单
+                                                        setDropdownOpenAccountId(account.id)
+                                                    }}
+                                                    className={cn(
+                                                        "group h-full rounded-xl p-3 cursor-pointer transition-all duration-200",
+                                                        "focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-gray-800",
+                                                        "hover:shadow-md hover:-translate-y-0.5",
                                                         isSelected
-                                                            ? "text-gray-900 dark:text-white"
-                                                            : "text-gray-700 dark:text-gray-200"
-                                                    )}>
-                                                        {account.emailAddress}
-                                                    </p>
-
-                                                    {/* 提供商和状态 */}
-                                                    <div className="flex flex-wrap items-center gap-2 mt-1">
-                                                        <span className={cn(
-                                                            "text-xs font-medium px-1.5 py-0.5 rounded",
-                                                            providerInfo.bgColor,
-                                                            providerInfo.color
-                                                        )}>
-                                                            {account.mailProvider?.type?.toUpperCase() || 'CUSTOM'}
-                                                        </span>
-
-                                                        {/* 验证状态 */}
-                                                        <div className="flex items-center gap-1">
-                                                            {account.isVerified ? (
-                                                                <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
-                                                            ) : (
-                                                                <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
-                                                            )}
-                                                        </div>
-
-                                                        {/* 同步状态指示器 */}
-                                                        {(() => {
-                                                            const syncInfo = getSyncStatusInfo(account.id)
-                                                            // 根据状态选择背景色
-                                                            const bgColor = syncInfo.status === 'normal'
-                                                                ? 'bg-green-100 dark:bg-green-900/30'
-                                                                : syncInfo.status === 'error'
-                                                                    ? 'bg-red-100 dark:bg-red-900/30'
-                                                                    : syncInfo.status === 'confirming'
-                                                                        ? 'bg-blue-100 dark:bg-blue-900/30'
-                                                                        : 'bg-gray-100 dark:bg-gray-700'
-                                                            return (
-                                                                <div
-                                                                    className={cn(
-                                                                        "flex items-center gap-1 px-1.5 py-0.5 rounded-full",
-                                                                        bgColor
-                                                                    )}
-                                                                    title={syncInfo.tooltip}
-                                                                >
-                                                                    <span className={syncInfo.statusColor}>
-                                                                        {syncInfo.statusIcon}
-                                                                    </span>
-                                                                    <span className={cn("text-[10px] whitespace-nowrap", syncInfo.statusColor)}>
-                                                                        {syncInfo.configText}
-                                                                    </span>
-                                                                    {syncInfo.timeText && (
-                                                                        <span className="text-[10px] whitespace-nowrap text-gray-500 dark:text-gray-400">
-                                                                            · {syncInfo.timeText}
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                            )
-                                                        })()}
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {/* 右键菜单按钮 */}
-                                            {!collapsed && (
-                                                <DropdownMenu
-                                                    open={dropdownOpenAccountId === account.id}
-                                                    onOpenChange={(open) => {
-                                                        if (!open) {
-                                                            setDropdownOpenAccountId(null)
-                                                        }
+                                                            ? cn("border-2 shadow-md", providerInfo.bgColor, providerInfo.borderColor)
+                                                            : "border border-transparent hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                                                    )}
+                                                    style={{
+                                                        animationDelay: `${Math.min(virtualIndex, 12) * 20}ms`,
                                                     }}
                                                 >
-                                                    <DropdownMenuTrigger asChild>
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.stopPropagation()
-                                                                setDropdownOpenAccountId(account.id)
-                                                            }}
-                                                            className={cn(
-                                                                "p-1.5 rounded-md transition-colors shrink-0",
-                                                                dropdownOpenAccountId === account.id
-                                                                    ? "opacity-100 bg-gray-200 dark:bg-gray-600"
-                                                                    : "opacity-0 group-hover:opacity-100 focus:opacity-100",
-                                                                "hover:bg-gray-200 dark:hover:bg-gray-600",
-                                                                "focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                                            )}
-                                                            title="更多操作（右键也可触发）"
-                                                        >
-                                                            <MoreHorizontal className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-                                                        </button>
-                                                    </DropdownMenuTrigger>
-                                                    <DropdownMenuContent align="end" className="w-48">
-                                                        <DropdownMenuItem
-                                                            onClick={(e) => {
-                                                                e.stopPropagation()
-                                                                openSyncConfigModal(account)
-                                                            }}
-                                                            className="cursor-pointer"
-                                                        >
-                                                            <Settings className="w-4 h-4 mr-2" />
-                                                            同步配置
-                                                        </DropdownMenuItem>
-                                                        <DropdownMenuSeparator />
-                                                        <DropdownMenuItem
-                                                            onClick={(e) => {
-                                                                e.stopPropagation()
-                                                                setDropdownOpenAccountId(null)
-                                                                setSyncModalAccount(account)
-                                                                setShowSyncModal(true)
-                                                            }}
-                                                            className="cursor-pointer"
-                                                        >
-                                                            <RefreshCcw className="w-4 h-4 mr-2" />
-                                                            立即同步
-                                                        </DropdownMenuItem>
-                                                    </DropdownMenuContent>
-                                                </DropdownMenu>
-                                            )}
+                                                    <div className="flex h-full items-center gap-3">
+                                                        {/* 提供商图标 */}
+                                                        <div className={cn(
+                                                            "w-10 h-10 rounded-lg flex items-center justify-center text-xl shrink-0 transition-transform duration-200",
+                                                            isSelected ? "scale-110" : "scale-100",
+                                                            providerInfo.bgColor
+                                                        )}>
+                                                            {providerInfo.icon}
+                                                        </div>
 
-                                            {/* 选中指示器 */}
-                                            {!collapsed && isSelected && (
-                                                <div className="shrink-0">
-                                                    <div className="w-2 h-8 bg-blue-500 rounded-full" />
+                                                        {!collapsed && (
+                                                            <div className="flex-1 min-w-0">
+                                                                {/* 邮箱地址 */}
+                                                                <p className={cn(
+                                                                    "font-medium text-sm truncate transition-colors",
+                                                                    isSelected
+                                                                        ? "text-gray-900 dark:text-white"
+                                                                        : "text-gray-700 dark:text-gray-200"
+                                                                )}>
+                                                                    {account.emailAddress}
+                                                                </p>
+
+                                                                {/* 提供商和状态 */}
+                                                                <div className="flex flex-wrap items-center gap-2 mt-1">
+                                                                    <span className={cn(
+                                                                        "text-xs font-medium px-1.5 py-0.5 rounded",
+                                                                        providerInfo.bgColor,
+                                                                        providerInfo.color
+                                                                    )}>
+                                                                        {account.mailProvider?.type?.toUpperCase() || 'CUSTOM'}
+                                                                    </span>
+
+                                                                    {/* 验证状态 */}
+                                                                    <div className="flex items-center gap-1">
+                                                                        {account.isVerified ? (
+                                                                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                                                                        ) : (
+                                                                            <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                                                                        )}
+                                                                    </div>
+
+                                                                    {/* 同步状态指示器 */}
+                                                                    {(() => {
+                                                                        const syncInfo = getSyncStatusInfo(account.id)
+                                                                        // 根据状态选择背景色
+                                                                        const bgColor = syncInfo.status === 'normal'
+                                                                            ? 'bg-green-100 dark:bg-green-900/30'
+                                                                            : syncInfo.status === 'error'
+                                                                                ? 'bg-red-100 dark:bg-red-900/30'
+                                                                                : syncInfo.status === 'confirming'
+                                                                                    ? 'bg-blue-100 dark:bg-blue-900/30'
+                                                                                    : 'bg-gray-100 dark:bg-gray-700'
+                                                                        return (
+                                                                            <div
+                                                                                className={cn(
+                                                                                    "flex items-center gap-1 px-1.5 py-0.5 rounded-full",
+                                                                                    bgColor
+                                                                                )}
+                                                                                title={syncInfo.tooltip}
+                                                                            >
+                                                                                <span className={syncInfo.statusColor}>
+                                                                                    {syncInfo.statusIcon}
+                                                                                </span>
+                                                                                <span className={cn("text-[10px] whitespace-nowrap", syncInfo.statusColor)}>
+                                                                                    {syncInfo.configText}
+                                                                                </span>
+                                                                                {syncInfo.timeText && (
+                                                                                    <span className="text-[10px] whitespace-nowrap text-gray-500 dark:text-gray-400">
+                                                                                        · {syncInfo.timeText}
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                        )
+                                                                    })()}
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* 右键菜单按钮 */}
+                                                        {!collapsed && (
+                                                            <DropdownMenu
+                                                                open={dropdownOpenAccountId === account.id}
+                                                                onOpenChange={(open) => {
+                                                                    if (!open) {
+                                                                        setDropdownOpenAccountId(null)
+                                                                    }
+                                                                }}
+                                                            >
+                                                                <DropdownMenuTrigger asChild>
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation()
+                                                                            setDropdownOpenAccountId(account.id)
+                                                                        }}
+                                                                        className={cn(
+                                                                            "p-1.5 rounded-md transition-colors shrink-0",
+                                                                            dropdownOpenAccountId === account.id
+                                                                                ? "opacity-100 bg-gray-200 dark:bg-gray-600"
+                                                                                : "opacity-0 group-hover:opacity-100 focus:opacity-100",
+                                                                            "hover:bg-gray-200 dark:hover:bg-gray-600",
+                                                                            "focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                                        )}
+                                                                        title="更多操作（右键也可触发）"
+                                                                    >
+                                                                        <MoreHorizontal className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+                                                                    </button>
+                                                                </DropdownMenuTrigger>
+                                                                <DropdownMenuContent align="end" className="w-48">
+                                                                    <DropdownMenuItem
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation()
+                                                                            openSyncConfigModal(account)
+                                                                        }}
+                                                                        className="cursor-pointer"
+                                                                    >
+                                                                        <Settings className="w-4 h-4 mr-2" />
+                                                                        同步配置
+                                                                    </DropdownMenuItem>
+                                                                    <DropdownMenuSeparator />
+                                                                    <DropdownMenuItem
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation()
+                                                                            setDropdownOpenAccountId(null)
+                                                                            setSyncModalAccount(account)
+                                                                            setShowSyncModal(true)
+                                                                        }}
+                                                                        className="cursor-pointer"
+                                                                    >
+                                                                        <RefreshCcw className="w-4 h-4 mr-2" />
+                                                                        立即同步
+                                                                    </DropdownMenuItem>
+                                                                </DropdownMenuContent>
+                                                            </DropdownMenu>
+                                                        )}
+
+                                                        {/* 选中指示器 */}
+                                                        {!collapsed && isSelected && (
+                                                            <div className="shrink-0">
+                                                                <div className="w-2 h-8 bg-blue-500 rounded-full" />
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 </div>
-                                            )}
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            </div>
+
+                            {!collapsed && (hasMoreAccounts || loadingMoreAccounts) && (
+                                <div className="py-3 text-center">
+                                    {loadingMoreAccounts ? (
+                                        <div className="inline-flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                            <span>加载更多账户...</span>
                                         </div>
-                                    </div>
-                                )
-                            })}
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={onLoadMoreAccounts}
+                                            className="rounded-md px-3 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/30"
+                                        >
+                                            加载更多
+                                        </button>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -862,8 +1091,8 @@ export default function EnhancedMailboxSidebar({
                     <div className="flex-shrink-0 p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
                         <div className="flex items-center justify-between text-xs">
                             <div className="text-gray-500 dark:text-gray-400">
-                                共 {accounts.length} 个邮箱
-                                {filteredAndSortedAccounts.length !== accounts.length && (
+                                已加载 {accounts.length} / 共 {accountsTotal} 个邮箱
+                                {!remoteSearchEnabled && !remoteFilterEnabled && filteredAndSortedAccounts.length !== accounts.length && (
                                     <span className="ml-1 text-blue-600 dark:text-blue-400">
                                         (显示 {filteredAndSortedAccounts.length})
                                     </span>

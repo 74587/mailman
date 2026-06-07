@@ -101,6 +101,57 @@ func (h *APIHandler) GetAccountsHandler(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(accounts)
 }
 
+// AccountExistsHandler checks whether an email account already exists.
+// @Summary Check whether an email account exists
+// @Description Check by email account name/address without loading the full account list. This is useful before OAuth2 onboarding, which updates an existing account by default.
+// @Tags accounts
+// @Accept json
+// @Produce json
+// @Param email query string false "Email account address"
+// @Param emailAddress query string false "Email account address"
+// @Success 200 {object} AccountExistsResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 403 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Router /api/accounts/exists [get]
+func (h *APIHandler) AccountExistsHandler(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+	email := strings.TrimSpace(r.URL.Query().Get("email"))
+	if email == "" {
+		email = strings.TrimSpace(r.URL.Query().Get("emailAddress"))
+	}
+	if email == "" {
+		email = strings.TrimSpace(r.URL.Query().Get("email_address"))
+	}
+	if email == "" {
+		http.Error(w, "email is required", http.StatusBadRequest)
+		return
+	}
+	email = strings.ToLower(email)
+
+	account, err := h.EmailAccountRepo.GetByEmailWithProvider(email)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if account != nil && orgID > 0 && account.OrgID != orgID {
+		http.Error(w, "Access denied", http.StatusForbidden)
+		return
+	}
+
+	response := AccountExistsResponse{
+		Exists:       account != nil,
+		EmailAddress: email,
+	}
+	if account != nil {
+		response.AccountID = account.ID
+		response.Account = account
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 // GetAccountsPaginatedHandler retrieves email accounts with pagination
 // @Summary Get email accounts with pagination
 // @Description Get email accounts with pagination support and comprehensive filtering
@@ -220,6 +271,74 @@ func (h *APIHandler) GetAccountsPaginatedHandler(w http.ResponseWriter, r *http.
 		filters.Search, filters.TagIDs, filters.ProviderID, filters.IsVerified, filters.ErrorStatus)
 
 	// 使用支持完整过滤的分页查询
+	useCursor := r.URL.Query().Get("cursor") == "true" ||
+		r.URL.Query().Get("after_cursor") != "" ||
+		r.URL.Query().Get("before_cursor") != ""
+	if useCursor {
+		afterCursor, err := decodeKeysetCursor(r.URL.Query().Get("after_cursor"), sortBy, sortOrder)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		beforeCursor, err := decodeKeysetCursor(r.URL.Query().Get("before_cursor"), sortBy, sortOrder)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if afterCursor != nil && beforeCursor != nil {
+			http.Error(w, "after_cursor and before_cursor cannot be used together", http.StatusBadRequest)
+			return
+		}
+
+		accounts, total, hasMore, err := h.EmailAccountRepo.GetAllPaginatedFilteredKeyset(
+			orgID,
+			limit,
+			sortBy,
+			sortOrder,
+			filters,
+			repository.KeysetPagination{Enabled: true, After: afterCursor, Before: beforeCursor},
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		totalPages := int(total) / limit
+		if int(total)%limit > 0 {
+			totalPages++
+		}
+
+		response := PaginatedAccountsResponse{
+			Data:       accounts,
+			Total:      total,
+			Page:       page,
+			Limit:      limit,
+			TotalPages: totalPages,
+			CursorMode: true,
+		}
+		if len(accounts) > 0 {
+			first := accounts[0]
+			last := accounts[len(accounts)-1]
+			if cursor, err := encodeKeysetCursor(sortBy, sortOrder, repository.AccountCursorValue(last, sortBy), last.ID); err == nil {
+				response.NextCursor = cursor
+			}
+			if cursor, err := encodeKeysetCursor(sortBy, sortOrder, repository.AccountCursorValue(first, sortBy), first.ID); err == nil {
+				response.PrevCursor = cursor
+			}
+		}
+		if beforeCursor != nil {
+			response.HasPrev = hasMore
+			response.HasNext = true
+		} else {
+			response.HasPrev = afterCursor != nil
+			response.HasNext = hasMore
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
 	accounts, total, err := h.EmailAccountRepo.GetAllPaginatedFiltered(orgID, page, limit, sortBy, sortOrder, filters)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

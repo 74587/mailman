@@ -1,7 +1,7 @@
 'use client'
 import { logger } from '@/lib/logger';
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { Mail, Users, Activity, TrendingUp, Calendar, Clock, CheckCircle, AlertCircle, UserPlus, RefreshCw, Send, Trash2, UserCheck, UserX, Play, XCircle, Bell, BellOff, Cpu, FileText, LogIn, LogOut, Settings, Zap, ChevronRight } from 'lucide-react'
 import { emailAccountService } from '@/services/email-account.service'
 import { emailService, EmailStatsResponse } from '@/services/email.service'
@@ -9,6 +9,8 @@ import { activityService, ActivityLog } from '@/services/activity.service'
 import { formatDate } from '@/lib/utils'
 import { useAuth } from '@/context/auth-context'
 import { registerRefreshCallback, unregisterRefreshCallback } from '@/lib/tab-utils'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { toast } from 'sonner'
 
 // 图标映射
@@ -32,6 +34,38 @@ const iconMap: Record<string, any> = {
     Settings,
     Activity,
     AlertCircle
+}
+
+const DASHBOARD_REFRESH_STORAGE_KEY = 'mailman-dashboard-refresh-settings'
+const DASHBOARD_REFRESH_INTERVAL_OPTIONS = [
+    { value: 15, label: '15秒' },
+    { value: 30, label: '30秒' },
+    { value: 60, label: '1分钟' },
+    { value: 300, label: '5分钟' }
+]
+
+function readDashboardRefreshSettings() {
+    const fallback = { enabled: false, intervalSeconds: 30 }
+
+    if (typeof window === 'undefined') {
+        return fallback
+    }
+
+    try {
+        const raw = window.localStorage.getItem(DASHBOARD_REFRESH_STORAGE_KEY)
+        if (!raw) return fallback
+
+        const parsed = JSON.parse(raw)
+        const intervalSeconds = Number(parsed.intervalSeconds)
+        const validInterval = DASHBOARD_REFRESH_INTERVAL_OPTIONS.some(option => option.value === intervalSeconds)
+
+        return {
+            enabled: Boolean(parsed.enabled),
+            intervalSeconds: validInterval ? intervalSeconds : fallback.intervalSeconds
+        }
+    } catch {
+        return fallback
+    }
 }
 
 // 统计卡片组件 - 精致现代设计
@@ -212,6 +246,10 @@ function ActivityItem({
 
 export default function DashboardTab() {
     const [loading, setLoading] = useState(true)
+    const [refreshing, setRefreshing] = useState(false)
+    const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(() => readDashboardRefreshSettings().enabled)
+    const [autoRefreshIntervalSeconds, setAutoRefreshIntervalSeconds] = useState(() => readDashboardRefreshSettings().intervalSeconds)
+    const refreshInFlightRef = useRef(false)
     const [stats, setStats] = useState({
         // 账户统计
         totalAccounts: 0,
@@ -230,11 +268,22 @@ export default function DashboardTab() {
         lastSyncTime: null as string | null
     })
     const [recentActivities, setRecentActivities] = useState<any[]>([])
-    const { isAuthenticated, user } = useAuth()
+    const { isAuthenticated } = useAuth()
 
-    const loadDashboardData = useCallback(async () => {
+    const loadDashboardData = useCallback(async (options?: { silent?: boolean }) => {
+        if (refreshInFlightRef.current) {
+            return
+        }
+
+        const silent = options?.silent ?? false
+        refreshInFlightRef.current = true
+
         try {
-            setLoading(true)
+            if (silent) {
+                setRefreshing(true)
+            } else {
+                setLoading(true)
+            }
 
             // 加载统计数据（使用真实的API）
             let emailStats: EmailStatsResponse = {
@@ -317,7 +366,7 @@ export default function DashboardTab() {
                 console.error('获取活动数据失败:', error)
 
                 // 如果是认证错误，显示提示
-                if (error.response?.status === 401) {
+                if (!silent && error.response?.status === 401) {
                     toast.error('请先登录以查看活动记录')
                 }
 
@@ -326,9 +375,16 @@ export default function DashboardTab() {
             }
         } catch (error) {
             console.error('加载仪表板数据失败:', error)
-            toast.error('加载数据失败，请刷新重试')
+            if (!silent) {
+                toast.error('加载数据失败，请刷新重试')
+            }
         } finally {
-            setLoading(false)
+            refreshInFlightRef.current = false
+            if (silent) {
+                setRefreshing(false)
+            } else {
+                setLoading(false)
+            }
         }
     }, [isAuthenticated])
 
@@ -336,6 +392,25 @@ export default function DashboardTab() {
     useEffect(() => {
         loadDashboardData()
     }, [loadDashboardData])
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return
+
+        window.localStorage.setItem(DASHBOARD_REFRESH_STORAGE_KEY, JSON.stringify({
+            enabled: autoRefreshEnabled,
+            intervalSeconds: autoRefreshIntervalSeconds
+        }))
+    }, [autoRefreshEnabled, autoRefreshIntervalSeconds])
+
+    useEffect(() => {
+        if (!autoRefreshEnabled) return
+
+        const timer = window.setInterval(() => {
+            loadDashboardData({ silent: true })
+        }, autoRefreshIntervalSeconds * 1000)
+
+        return () => window.clearInterval(timer)
+    }, [autoRefreshEnabled, autoRefreshIntervalSeconds, loadDashboardData])
 
     // 注册刷新回调
     useEffect(() => {
@@ -363,13 +438,41 @@ export default function DashboardTab() {
 
     return (
         <div className="space-y-6 p-6">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white">仪表板</h2>
-                {stats.lastSyncTime && (
-                    <p className="text-sm text-gray-600 dark:text-gray-400">
-                        最后同步: {stats.lastSyncTime}
-                    </p>
-                )}
+                <div className="flex flex-wrap items-center gap-3">
+                    {stats.lastSyncTime && (
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                            最后同步: {stats.lastSyncTime}
+                        </p>
+                    )}
+                    <div className="flex items-center gap-2 rounded-xl border border-gray-100 bg-white px-3 py-2 shadow-sm dark:border-gray-700/50 dark:bg-gray-800/80">
+                        <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin text-primary-600 dark:text-primary-400' : 'text-gray-400 dark:text-gray-500'}`} />
+                        <span className="text-sm font-medium text-gray-700 dark:text-gray-200">自动刷新</span>
+                        <Switch
+                            checked={autoRefreshEnabled}
+                            onCheckedChange={setAutoRefreshEnabled}
+                            aria-label="自动刷新"
+                            className="scale-90"
+                        />
+                        <Select
+                            value={String(autoRefreshIntervalSeconds)}
+                            onValueChange={value => setAutoRefreshIntervalSeconds(Number(value))}
+                            disabled={!autoRefreshEnabled}
+                        >
+                            <SelectTrigger className="h-8 w-[92px] rounded-lg border-gray-200 bg-white text-xs dark:border-gray-700 dark:bg-gray-900">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {DASHBOARD_REFRESH_INTERVAL_OPTIONS.map(option => (
+                                    <SelectItem key={option.value} value={String(option.value)}>
+                                        {option.label}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    </div>
+                </div>
             </div>
 
             {/* 统计卡片 - 第一行：账户统计 */}

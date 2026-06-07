@@ -109,6 +109,13 @@ export interface AccountProxyConfigResponse extends AccountProxyConfigRequest {
     changed?: boolean;
 }
 
+export interface AccountExistsResponse {
+    exists: boolean;
+    emailAddress: string;
+    account?: EmailAccount;
+    accountId?: number;
+}
+
 export interface EmailAliasCapability {
     type: 'gmail_plus' | 'domain_local_part' | 'forwarded';
     domain?: string;
@@ -153,6 +160,14 @@ export class EmailAccountService {
         const response = await apiClient.get<PaginatedResponse<EmailAccount>>(
             `${this.basePath}/paginated`,
             { params }
+        );
+        return response;
+    }
+
+    async accountExists(email: string): Promise<AccountExistsResponse> {
+        const response = await apiClient.get<AccountExistsResponse>(
+            `${this.basePath}/exists`,
+            { params: { email } }
         );
         return response;
     }

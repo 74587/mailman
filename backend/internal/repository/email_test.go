@@ -4,6 +4,7 @@ import (
 	"mailman/internal/models"
 	"strings"
 	"testing"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -34,6 +35,35 @@ func TestEmailRepositoryTextLikeExprQuotesReservedColumns(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := textLikeExpr(tt.db, "to"); got != tt.expected {
 				t.Fatalf("textLikeExpr() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEmailRepositoryTextNotLikeExprQuotesReservedColumns(t *testing.T) {
+	tests := []struct {
+		name     string
+		db       *gorm.DB
+		expected string
+	}{
+		{
+			name: "postgres",
+			db: mustOpenTestDB(t, postgres.Open(
+				"host=localhost user=test password=test dbname=test port=5432 sslmode=disable",
+			)),
+			expected: `"flags"::text NOT LIKE ?`,
+		},
+		{
+			name:     "sqlite",
+			db:       mustOpenTestDB(t, sqlite.Open(":memory:")),
+			expected: "`flags` NOT LIKE ?",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := textNotLikeExpr(tt.db, "flags"); got != tt.expected {
+				t.Fatalf("textNotLikeExpr() = %q, want %q", got, tt.expected)
 			}
 		})
 	}
@@ -81,6 +111,40 @@ func TestBuildOrderClauseAllowsOnlyMappedColumns(t *testing.T) {
 				t.Fatalf("buildOrderClause() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestEmailDashboardStatsQueryPostgresQuotesDateAndCastsFlags(t *testing.T) {
+	db := mustOpenTestDB(t, postgres.Open(
+		"host=localhost user=test password=test dbname=test port=5432 sslmode=disable",
+	))
+	repo := NewEmailRepository(db)
+	today := time.Date(2026, time.June, 7, 0, 0, 0, 0, time.UTC)
+
+	var stats EmailDashboardStats
+	stmt := repo.buildDashboardStatsQuery(7, today, today.AddDate(0, 0, 1)).
+		Scan(&stats).
+		Statement
+	sql := stmt.SQL.String()
+
+	for _, fragment := range []string{
+		`"flags"::text NOT LIKE`,
+		`"date" >=`,
+		`"date" <`,
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("generated SQL %q does not contain %q", sql, fragment)
+		}
+	}
+
+	for _, unsafeFragment := range []string{
+		` flags NOT LIKE`,
+		` date >=`,
+		` date <`,
+	} {
+		if strings.Contains(sql, unsafeFragment) {
+			t.Fatalf("generated SQL %q contains unsafe fragment %q", sql, unsafeFragment)
+		}
 	}
 }
 

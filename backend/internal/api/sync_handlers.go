@@ -6,6 +6,7 @@ import (
 	"mailman/internal/services"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 )
@@ -221,6 +222,127 @@ func (h *APIHandler) buildAccountSyncStatusPayload(account models.EmailAccount, 
 	return payload
 }
 
+const maxAccountStatusBatchSize = 500
+
+func parseAccountIDList(raw string) ([]uint, error) {
+	parts := strings.Split(raw, ",")
+	ids := make([]uint, 0, len(parts))
+	seen := make(map[uint]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseUint(part, 10, 32)
+		if err != nil || id == 0 {
+			if err != nil {
+				return nil, err
+			}
+			return nil, strconv.ErrSyntax
+		}
+		value := uint(id)
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		ids = append(ids, value)
+		if len(ids) > maxAccountStatusBatchSize {
+			return nil, strconv.ErrSyntax
+		}
+	}
+	return ids, nil
+}
+
+func normalizeAccountIDBatch(ids []uint) ([]uint, error) {
+	normalized := make([]uint, 0, len(ids))
+	seen := make(map[uint]struct{}, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			return nil, strconv.ErrSyntax
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+		if len(normalized) > maxAccountStatusBatchSize {
+			return nil, strconv.ErrSyntax
+		}
+	}
+	return normalized, nil
+}
+
+func (h *APIHandler) writeAccountSyncStatusesForIDs(w http.ResponseWriter, orgID uint, accountIDs []uint, includeConfig bool) {
+	accounts, err := h.EmailAccountRepo.GetByIDs(orgID, accountIDs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	allStatuses := h.perAccountSyncManager.GetAllAccountSyncerStatuses()
+	statusByAccountID := make(map[uint]*services.AccountSyncerStatus, len(allStatuses))
+	for i := range allStatuses {
+		statusByAccountID[allStatuses[i].AccountID] = &allStatuses[i]
+	}
+
+	accountByID := make(map[uint]models.EmailAccount, len(accounts))
+	for _, account := range accounts {
+		accountByID[account.ID] = account
+	}
+
+	filteredStatuses := make([]interface{}, 0, len(accounts))
+	for _, id := range accountIDs {
+		account, ok := accountByID[id]
+		if !ok {
+			continue
+		}
+		if includeConfig {
+			filteredStatuses = append(filteredStatuses, h.buildAccountSyncStatusPayload(account, statusByAccountID[id]))
+		} else if status := statusByAccountID[id]; status != nil {
+			filteredStatuses = append(filteredStatuses, *status)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]interface{}{
+		"success": true,
+		"data":    filteredStatuses,
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+type AccountSyncStatusBatchRequest struct {
+	AccountIDs    []uint `json:"account_ids"`
+	IncludeConfig bool   `json:"include_config"`
+}
+
+// GetAccountSyncStatusBatchHandler 获取一组账户同步状态
+func (h *APIHandler) GetAccountSyncStatusBatchHandler(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+	if h.perAccountSyncManager == nil {
+		http.Error(w, "Per-account sync manager not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	var req AccountSyncStatusBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	accountIDs, err := normalizeAccountIDBatch(req.AccountIDs)
+	if err != nil {
+		http.Error(w, "Invalid account IDs", http.StatusBadRequest)
+		return
+	}
+	if len(accountIDs) == 0 {
+		http.Error(w, "account_ids is required", http.StatusBadRequest)
+		return
+	}
+
+	h.writeAccountSyncStatusesForIDs(w, orgID, accountIDs, req.IncludeConfig)
+}
+
 // GetAccountSyncStatusHandler 获取账户同步状态
 func (h *APIHandler) GetAccountSyncStatusHandler(w http.ResponseWriter, r *http.Request) {
 	orgID := GetCurrentOrgID(r)
@@ -231,6 +353,7 @@ func (h *APIHandler) GetAccountSyncStatusHandler(w http.ResponseWriter, r *http.
 
 	// 获取查询参数
 	accountIDStr := r.URL.Query().Get("account_id")
+	accountIDsStr := r.URL.Query().Get("account_ids")
 	includeConfig := r.URL.Query().Get("include_config") == "true"
 
 	if accountIDStr != "" {
@@ -270,6 +393,14 @@ func (h *APIHandler) GetAccountSyncStatusHandler(w http.ResponseWriter, r *http.
 			"data":    data,
 		}
 		json.NewEncoder(w).Encode(response)
+	} else if accountIDsStr != "" {
+		accountIDs, err := parseAccountIDList(accountIDsStr)
+		if err != nil {
+			http.Error(w, "Invalid account IDs", http.StatusBadRequest)
+			return
+		}
+
+		h.writeAccountSyncStatusesForIDs(w, orgID, accountIDs, includeConfig)
 	} else {
 		// 获取所有账户状态，按组织过滤
 		allStatuses := h.perAccountSyncManager.GetAllAccountSyncerStatuses()

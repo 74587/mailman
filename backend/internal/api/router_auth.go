@@ -107,6 +107,7 @@ func NewRouterWithAuth(
 	accountRouter.HandleFunc("/accounts/upsert", handler.UpsertAccountHandler).Methods("POST")
 	accountRouter.HandleFunc("/accounts", handler.GetAccountsHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/paginated", handler.GetAccountsPaginatedHandler).Methods("GET")
+	accountRouter.HandleFunc("/accounts/exists", handler.AccountExistsHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/alias-capabilities", handler.ListEmailAliasCapabilitiesHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/forwarded-addresses", handler.ListAccountForwardedAddressesHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/forwarded-addresses", handler.SetAccountForwardedAddressesHandler).Methods("PUT")
@@ -299,10 +300,12 @@ func NewRouterWithAuth(
 	syncRouter.HandleFunc("/sync/global-config", syncHandlers.GetGlobalSyncConfig).Methods("GET")
 	syncRouter.HandleFunc("/sync/global-config", syncHandlers.UpdateGlobalSyncConfig).Methods("PUT")
 	syncRouter.HandleFunc("/sync/batch-config", syncHandlers.BatchCreateOrUpdateAccountSyncConfig).Methods("POST")
+	syncRouter.HandleFunc("/sync/bulk-account-config", syncHandlers.BulkApplyAccountSyncConfig).Methods("POST")
 
 	// 同步监控相关端点 (sync resource)
 	syncRouter.HandleFunc("/sync/queue-metrics", handler.GetQueueMetricsHandler).Methods("GET")
 	syncRouter.HandleFunc("/sync/account-status", handler.GetAccountSyncStatusHandler).Methods("GET")
+	syncRouter.HandleFunc("/sync/account-status/batch", handler.GetAccountSyncStatusBatchHandler).Methods("POST")
 	syncRouter.HandleFunc("/sync/manager-stats", handler.GetSyncManagerStatsHandler).Methods("GET")
 
 	// --- System Config resources ---

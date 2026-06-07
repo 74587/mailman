@@ -55,6 +55,8 @@ export interface BatchSyncConfigRequest {
 }
 
 export interface BatchSyncConfigResponse {
+    match_type?: 'all' | 'include' | 'exclude'
+    target_count?: number
     success_count: number
     error_count: number
     errors: Array<{
@@ -62,6 +64,11 @@ export interface BatchSyncConfigResponse {
         email_address: string
         error: string
     }>
+}
+
+export interface BulkAccountSyncConfigRequest extends BatchSyncConfigRequest {
+    match_type: 'all' | 'include' | 'exclude'
+    account_ids?: number[]
 }
 
 export const syncConfigService = {
@@ -144,9 +151,27 @@ export const syncConfigService = {
         return response
     },
 
+    // 按匹配规则批量创建或更新账户同步配置
+    async bulkApplyAccountSyncConfig(data: BulkAccountSyncConfigRequest): Promise<BatchSyncConfigResponse> {
+        const response = await apiClient.post<BatchSyncConfigResponse>('/sync/bulk-account-config', data)
+        return response
+    },
+
     // 获取所有账户的同步状态（包含配置信息）
     async getAllAccountSyncStatuses(): Promise<AccountSyncStatus[]> {
         const response = await apiClient.get<{ success: boolean; data: AccountSyncStatus[] }>('/sync/account-status?include_config=true')
+        return response.data || []
+    },
+
+    // 获取一组账户的同步状态（经典邮箱侧边栏滚动分页时使用，避免拉取全量账户状态）
+    async getAccountSyncStatuses(accountIds: number[]): Promise<AccountSyncStatus[]> {
+        const ids = Array.from(new Set(accountIds.filter(id => Number.isFinite(id) && id > 0))).slice(0, 500)
+        if (ids.length === 0) return []
+
+        const response = await apiClient.post<{ success: boolean; data: AccountSyncStatus[] }>(
+            '/sync/account-status/batch',
+            { account_ids: ids, include_config: true }
+        )
         return response.data || []
     },
 

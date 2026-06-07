@@ -446,9 +446,9 @@ export default function EnhancedAddAccountModal({
                 if (createError.message?.includes('already exists') || createError.message?.includes('重复') || createError.message?.includes('duplicate')) {
                     logger.debug('Account exists, attempting to update...')
 
-                    // 获取所有账户，查找匹配的邮箱
-                    const existingAccounts = await emailAccountService.getAccounts()
-                    const existingAccount = existingAccounts.find(acc => acc.emailAddress === accountForm.email)
+                    const existingAccount = await emailAccountService
+                        .accountExists(accountForm.email)
+                        .then(response => response.account)
 
                     if (existingAccount) {
                         // 更新现有账户

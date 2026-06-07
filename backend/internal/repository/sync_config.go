@@ -420,7 +420,16 @@ func (r *SyncConfigRepository) CreateOrUpdateSettings(config *models.EmailAccoun
 		if config.SyncStatus == "" {
 			config.SyncStatus = models.SyncStatusIdle
 		}
-		return r.db.Create(config).Error
+		now := time.Now()
+		return r.db.Model(&models.EmailAccountSyncConfig{}).Create(map[string]interface{}{
+			"account_id":       config.AccountID,
+			"enable_auto_sync": config.EnableAutoSync,
+			"sync_interval":    config.SyncInterval,
+			"sync_folders":     config.SyncFolders,
+			"sync_status":      config.SyncStatus,
+			"created_at":       now,
+			"updated_at":       now,
+		}).Error
 	}
 	if err != nil {
 		return err

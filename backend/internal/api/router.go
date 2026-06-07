@@ -29,6 +29,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	apiRouter.HandleFunc("/accounts", handler.CreateAccountHandler).Methods("POST")
 	apiRouter.HandleFunc("/accounts", handler.GetAccountsHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/paginated", handler.GetAccountsPaginatedHandler).Methods("GET")
+	apiRouter.HandleFunc("/accounts/exists", handler.AccountExistsHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/alias-capabilities", handler.ListEmailAliasCapabilitiesHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/forwarded-addresses", handler.ListAccountForwardedAddressesHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/forwarded-addresses", handler.SetAccountForwardedAddressesHandler).Methods("PUT")
@@ -180,6 +181,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	// 同步监控相关端点
 	apiRouter.HandleFunc("/sync/queue-metrics", handler.GetQueueMetricsHandler).Methods("GET")
 	apiRouter.HandleFunc("/sync/account-status", handler.GetAccountSyncStatusHandler).Methods("GET")
+	apiRouter.HandleFunc("/sync/account-status/batch", handler.GetAccountSyncStatusBatchHandler).Methods("POST")
 	apiRouter.HandleFunc("/sync/manager-stats", handler.GetSyncManagerStatsHandler).Methods("GET")
 
 	// Sync configuration endpoints
@@ -200,6 +202,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 
 	// Batch sync configuration
 	apiRouter.HandleFunc("/sync/batch-config", syncHandlers.BatchCreateOrUpdateAccountSyncConfig).Methods("POST")
+	apiRouter.HandleFunc("/sync/bulk-account-config", syncHandlers.BulkApplyAccountSyncConfig).Methods("POST")
 
 	// Pickup poll endpoint
 	apiRouter.HandleFunc("/pickup/poll", pickupHandler.PollHandler).Methods("POST")

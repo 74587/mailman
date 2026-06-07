@@ -12,6 +12,7 @@ import { toast } from 'sonner'
 import { apiClient } from '@/lib/api-client'
 import SyncConfigModal from '@/components/modals/sync-config-modal'
 import BatchSyncConfigModal from '@/components/modals/batch-sync-config-modal'
+import SyncConfigBulkOperationModal from '@/components/modals/sync-config-bulk-operation-modal'
 import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 import {
     Search,
@@ -235,6 +236,7 @@ export default function SyncConfigTab() {
     // 批量操作状态
     const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
     const [batchModalOpen, setBatchModalOpen] = useState(false)
+    const [bulkOperationOpen, setBulkOperationOpen] = useState(false)
     const [expandedAccountId, setExpandedAccountId] = useState<number | null>(null)
     const [diagnosticsByAccount, setDiagnosticsByAccount] = useState<Record<number, SyncDiagnostics>>({})
     const [loadingDiagnostics, setLoadingDiagnostics] = useState<Set<number>>(new Set())
@@ -824,6 +826,10 @@ export default function SyncConfigTab() {
 
                     {/* 右侧操作按钮组 */}
                     <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => setBulkOperationOpen(true)} className="text-gray-600 dark:text-gray-300">
+                            <SlidersHorizontal className="w-4 h-4 mr-1.5" />
+                            批量操作
+                        </Button>
                         <Button variant="outline" size="sm" onClick={() => openModal('global')} className="text-gray-600 dark:text-gray-300">
                             <Settings className="w-4 h-4 mr-1.5" />
                             全局设置
@@ -1174,6 +1180,12 @@ export default function SyncConfigTab() {
                         loadData()
                     }}
                     selectedAccounts={selectedAccounts}
+                />
+
+                <SyncConfigBulkOperationModal
+                    isOpen={bulkOperationOpen}
+                    onClose={() => setBulkOperationOpen(false)}
+                    onSuccess={loadData}
                 />
             </div>
         </TooltipProvider>

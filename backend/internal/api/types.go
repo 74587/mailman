@@ -171,6 +171,15 @@ type CreateOAuth2AccountOnboardingResponse struct {
 	Message      string                         `json:"message,omitempty"`
 }
 
+// AccountExistsResponse reports whether an email account already exists.
+// @Description Existence check result for an email account name/address
+type AccountExistsResponse struct {
+	Exists       bool                 `json:"exists" example:"true"`
+	EmailAddress string               `json:"emailAddress" example:"user@gmail.com"`
+	AccountID    uint                 `json:"accountId,omitempty" example:"1"`
+	Account      *models.EmailAccount `json:"account,omitempty"`
+}
+
 // AccountForwardedAddressesRequest represents a full forwarded recipient list update.
 // @Description Request body for replacing an account's forwarded recipient address list
 type AccountForwardedAddressesRequest struct {
@@ -457,6 +466,11 @@ type PaginatedAccountsResponse struct {
 	Page       int                   `json:"page"`
 	Limit      int                   `json:"limit"`
 	TotalPages int                   `json:"total_pages"`
+	HasNext    bool                  `json:"has_next,omitempty"`
+	HasPrev    bool                  `json:"has_prev,omitempty"`
+	NextCursor string                `json:"next_cursor,omitempty"`
+	PrevCursor string                `json:"prev_cursor,omitempty"`
+	CursorMode bool                  `json:"cursor_mode,omitempty"`
 }
 
 // ExtractEmailsResponse represents the response for the /extract-emails endpoint

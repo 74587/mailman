@@ -337,6 +337,9 @@ export interface PaginationParams {
     sort_order?: 'asc' | 'desc';
     search?: string;  // 添加搜索字段，用于邮箱地址模糊查询
     status?: string;  // 添加状态字段，用于状态过滤
+    cursor?: boolean;
+    after_cursor?: string;
+    before_cursor?: string;
 }
 
 // 账户过滤参数 (扩展后端支持的所有参数)
@@ -358,6 +361,11 @@ export interface PaginatedResponse<T> {
     page: number;
     limit: number;
     total_pages: number;
+    has_next?: boolean;
+    has_prev?: boolean;
+    next_cursor?: string;
+    prev_cursor?: string;
+    cursor_mode?: boolean;
 }
 
 // 转换函数：将API响应转换为前端显示格式
