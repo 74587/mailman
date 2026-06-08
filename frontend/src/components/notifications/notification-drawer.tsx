@@ -279,17 +279,12 @@ export function NotificationDrawer({ isOpen, onClose }: NotificationDrawerProps)
             >
                 {/* 头部 */}
                 <div className="flex items-center justify-between gap-3 p-4 border-b border-gray-200 dark:border-gray-700">
-                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                        <Bell className="h-5 w-5 text-gray-600 dark:text-gray-400" />
-                        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                        <Bell className="h-5 w-5 shrink-0 text-gray-600 dark:text-gray-400" />
+                        <h2 className="shrink-0 text-lg font-semibold text-gray-900 dark:text-white">
                             通知
                         </h2>
-                        {unreadCount > 0 && (
-                            <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 rounded-full">
-                                {unreadCount} 未读
-                            </span>
-                        )}
-                        <div className="flex items-center gap-2">
+                        <div className="flex shrink-0 items-center gap-2">
                             {muted && muteUntil ? (
                                 <div className="flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-amber-700 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-300">
                                     <BellOff className="h-3.5 w-3.5 text-amber-500" />
@@ -384,19 +379,26 @@ export function NotificationDrawer({ isOpen, onClose }: NotificationDrawerProps)
                 {/* 操作栏 */}
                 {notifications.length > 0 && (
                     <div className="flex items-center justify-between px-4 py-2 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-200 dark:border-gray-700">
-                        <button
-                            onClick={handleMarkAllAsRead}
-                            disabled={unreadCount === 0}
-                            className={cn(
-                                "flex items-center gap-1 px-3 py-1.5 text-sm rounded-lg transition-colors",
-                                unreadCount > 0
-                                    ? "text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20"
-                                    : "text-gray-400 cursor-not-allowed"
+                        <div className="flex min-w-0 items-center gap-2">
+                            <button
+                                onClick={handleMarkAllAsRead}
+                                disabled={unreadCount === 0}
+                                className={cn(
+                                    "flex items-center gap-1 px-3 py-1.5 text-sm rounded-lg transition-colors",
+                                    unreadCount > 0
+                                        ? "text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20"
+                                        : "text-gray-400 cursor-not-allowed"
+                                )}
+                            >
+                                <CheckCheck className="h-4 w-4" />
+                                全部已读
+                            </button>
+                            {unreadCount > 0 && (
+                                <span className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium whitespace-nowrap text-red-600 dark:bg-red-900/30 dark:text-red-400">
+                                    {unreadCount} 未读
+                                </span>
                             )}
-                        >
-                            <CheckCheck className="h-4 w-4" />
-                            全部已读
-                        </button>
+                        </div>
                         <button
                             onClick={handleClearAll}
                             className="flex items-center gap-1 px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20 rounded-lg transition-colors"
