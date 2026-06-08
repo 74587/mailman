@@ -340,6 +340,7 @@ export interface PaginationParams {
     cursor?: boolean;
     after_cursor?: string;
     before_cursor?: string;
+    anchor_account_id?: number;
 }
 
 // 账户过滤参数 (扩展后端支持的所有参数)
@@ -366,6 +367,9 @@ export interface PaginatedResponse<T> {
     next_cursor?: string;
     prev_cursor?: string;
     cursor_mode?: boolean;
+    anchor_index?: number;
+    window_start_index?: number;
+    window_end_index?: number;
 }
 
 // 转换函数：将API响应转换为前端显示格式

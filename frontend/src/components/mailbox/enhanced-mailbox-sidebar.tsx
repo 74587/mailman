@@ -51,9 +51,14 @@ interface EnhancedMailboxSidebarProps {
     onToggleCollapse: () => void
     loading: boolean
     accountsTotal?: number
+    loadedStartIndex?: number
     hasMoreAccounts?: boolean
+    hasPreviousAccounts?: boolean
     loadingMoreAccounts?: boolean
+    loadingPreviousAccounts?: boolean
     onLoadMoreAccounts?: () => void
+    onLoadPreviousAccounts?: () => void
+    prependAdjustment?: { seq: number; rows: number } | null
     accountSearchQuery?: string
     onAccountSearchQueryChange?: (query: string) => void
     accountSortBy?: MailboxAccountSortBy
@@ -146,9 +151,14 @@ export default function EnhancedMailboxSidebar({
     onToggleCollapse,
     loading,
     accountsTotal = accounts.length,
+    loadedStartIndex = accounts.length > 0 ? 1 : 0,
     hasMoreAccounts = false,
+    hasPreviousAccounts = false,
     loadingMoreAccounts = false,
+    loadingPreviousAccounts = false,
     onLoadMoreAccounts,
+    onLoadPreviousAccounts,
+    prependAdjustment,
     accountSearchQuery,
     onAccountSearchQueryChange,
     accountSortBy,
@@ -168,6 +178,7 @@ export default function EnhancedMailboxSidebar({
     const handledAccountScrollRequestRef = React.useRef<number | null>(null)
     const manualAccountScrollRequestSeqRef = React.useRef(0)
     const accountListResetKeyRef = React.useRef<string | null>(null)
+    const handledPrependAdjustmentSeqRef = React.useRef<number | null>(null)
 
     // 同步状态
     const [syncStatuses, setSyncStatuses] = useState<Map<number, AccountSyncStatus>>(new Map())
@@ -476,6 +487,18 @@ export default function EnhancedMailboxSidebar({
         getItemKey: index => filteredAndSortedAccounts[index]?.id ?? index,
     })
     const virtualAccountItems = accountVirtualizer.getVirtualItems()
+    const normalizedLoadedStartIndex = filteredAndSortedAccounts.length > 0
+        ? Math.max(1, loadedStartIndex || 1)
+        : 0
+    const loadedEndIndex = normalizedLoadedStartIndex > 0
+        ? normalizedLoadedStartIndex + filteredAndSortedAccounts.length - 1
+        : 0
+    const selectedAccountLoadedIndex = selectedAccount
+        ? filteredAndSortedAccounts.findIndex(account => account.id === selectedAccount.id)
+        : -1
+    const selectedAccountGlobalIndex = selectedAccountLoadedIndex >= 0 && normalizedLoadedStartIndex > 0
+        ? normalizedLoadedStartIndex + selectedAccountLoadedIndex
+        : 0
 
     const updateStatusAccountIdsForViewport = React.useCallback(() => {
         const nextIds: number[] = []
@@ -513,6 +536,19 @@ export default function EnhancedMailboxSidebar({
             updateStatusAccountIdsForViewport()
         })
     }, [updateStatusAccountIdsForViewport])
+
+    React.useLayoutEffect(() => {
+        if (!prependAdjustment || prependAdjustment.rows <= 0) return
+        if (handledPrependAdjustmentSeqRef.current === prependAdjustment.seq) return
+
+        handledPrependAdjustmentSeqRef.current = prependAdjustment.seq
+        const container = listContainerRef.current
+        if (!container) return
+
+        const nextOffset = container.scrollTop + (prependAdjustment.rows * ACCOUNT_ROW_HEIGHT)
+        accountVirtualizer.scrollToOffset(nextOffset, { behavior: 'auto' })
+        scheduleStatusViewportUpdate()
+    }, [accountVirtualizer, prependAdjustment, scheduleStatusViewportUpdate])
 
     React.useEffect(() => {
         scheduleStatusViewportUpdate()
@@ -584,17 +620,15 @@ export default function EnhancedMailboxSidebar({
             accountScrollFrameRef.current = null
 
             const isFullyVisible = isAccountRowFullyVisible(request.accountId)
-            if (isFullyVisible && attempt >= 2) {
+            if (isFullyVisible) {
                 handledAccountScrollRequestRef.current = request.requestId
                 scheduleStatusViewportUpdate()
                 return
             }
 
             if (attempt >= 12) {
-                if (isFullyVisible) {
-                    handledAccountScrollRequestRef.current = request.requestId
-                    scheduleStatusViewportUpdate()
-                }
+                handledAccountScrollRequestRef.current = request.requestId
+                scheduleStatusViewportUpdate()
                 return
             }
 
@@ -685,7 +719,19 @@ export default function EnhancedMailboxSidebar({
     const handleAccountListScroll = (event: React.UIEvent<HTMLDivElement>) => {
         const target = event.currentTarget
         scheduleStatusViewportUpdate()
-        if (!onLoadMoreAccounts || !hasMoreAccounts || loadingMoreAccounts || loading) return
+        if (
+            onLoadPreviousAccounts &&
+            hasPreviousAccounts &&
+            !loadingPreviousAccounts &&
+            !loadingMoreAccounts &&
+            !loading
+        ) {
+            if (target.scrollTop < 180) {
+                onLoadPreviousAccounts()
+            }
+        }
+
+        if (!onLoadMoreAccounts || !hasMoreAccounts || loadingMoreAccounts || loadingPreviousAccounts || loading) return
         const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight
         if (distanceToBottom < 240) {
             onLoadMoreAccounts()
@@ -910,6 +956,25 @@ export default function EnhancedMailboxSidebar({
                                 </div>
                             )}
 
+                            {!collapsed && (hasPreviousAccounts || loadingPreviousAccounts) && (
+                                <div className="pb-2 text-center">
+                                    {loadingPreviousAccounts ? (
+                                        <div className="inline-flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                                            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                            <span>加载上一页账户...</span>
+                                        </div>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={onLoadPreviousAccounts}
+                                            className="rounded-md px-3 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/30"
+                                        >
+                                            加载上一页
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+
                             <div
                                 className="relative"
                                 style={{ height: accountVirtualizer.getTotalSize() }}
@@ -1122,6 +1187,23 @@ export default function EnhancedMailboxSidebar({
                                             加载更多
                                         </button>
                                     )}
+                                </div>
+                            )}
+
+                            {!collapsed && accountsTotal > 0 && (
+                                <div className="border-t border-gray-100 px-2 py-2 text-[11px] text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="truncate">
+                                            {selectedAccountGlobalIndex > 0
+                                                ? `已选第 ${selectedAccountGlobalIndex} 个`
+                                                : normalizedLoadedStartIndex > 0
+                                                    ? `第 ${normalizedLoadedStartIndex}-${loadedEndIndex} 个`
+                                                    : '第 0 个'}
+                                            <span className="mx-1 text-gray-300 dark:text-gray-600">|</span>
+                                            共 {accountsTotal} 个
+                                        </span>
+                                        <span className="shrink-0">已加载 {filteredAndSortedAccounts.length} 个</span>
+                                    </div>
                                 </div>
                             )}
                         </div>

@@ -461,16 +461,19 @@ type ExtractorResult struct {
 // PaginatedAccountsResponse represents a paginated response for email accounts
 // @Description Paginated response for email accounts
 type PaginatedAccountsResponse struct {
-	Data       []models.EmailAccount `json:"data"`
-	Total      int64                 `json:"total"`
-	Page       int                   `json:"page"`
-	Limit      int                   `json:"limit"`
-	TotalPages int                   `json:"total_pages"`
-	HasNext    bool                  `json:"has_next,omitempty"`
-	HasPrev    bool                  `json:"has_prev,omitempty"`
-	NextCursor string                `json:"next_cursor,omitempty"`
-	PrevCursor string                `json:"prev_cursor,omitempty"`
-	CursorMode bool                  `json:"cursor_mode,omitempty"`
+	Data             []models.EmailAccount `json:"data"`
+	Total            int64                 `json:"total"`
+	Page             int                   `json:"page"`
+	Limit            int                   `json:"limit"`
+	TotalPages       int                   `json:"total_pages"`
+	HasNext          bool                  `json:"has_next,omitempty"`
+	HasPrev          bool                  `json:"has_prev,omitempty"`
+	NextCursor       string                `json:"next_cursor,omitempty"`
+	PrevCursor       string                `json:"prev_cursor,omitempty"`
+	CursorMode       bool                  `json:"cursor_mode,omitempty"`
+	AnchorIndex      int                   `json:"anchor_index,omitempty"`
+	WindowStartIndex int                   `json:"window_start_index,omitempty"`
+	WindowEndIndex   int                   `json:"window_end_index,omitempty"`
 }
 
 // ExtractEmailsResponse represents the response for the /extract-emails endpoint

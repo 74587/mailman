@@ -287,7 +287,11 @@ export default function EnhancedClassicMailboxView() {
     const [accounts, setAccounts] = useState<EmailAccount[]>([])
     const [accountsTotal, setAccountsTotal] = useState(0)
     const [hasMoreAccounts, setHasMoreAccounts] = useState(false)
+    const [hasPreviousAccounts, setHasPreviousAccounts] = useState(false)
     const [loadingMoreAccounts, setLoadingMoreAccounts] = useState(false)
+    const [loadingPreviousAccounts, setLoadingPreviousAccounts] = useState(false)
+    const [accountWindowStartIndex, setAccountWindowStartIndex] = useState(0)
+    const [accountPrependAdjustment, setAccountPrependAdjustment] = useState<{ seq: number; rows: number } | null>(null)
     const [accountSearchQuery, setAccountSearchQuery] = useState('')
     const [debouncedAccountSearchQuery, setDebouncedAccountSearchQuery] = useState('')
     const [accountSortBy, setAccountSortBy] = useState<MailboxAccountSortBy>('name')
@@ -351,15 +355,19 @@ export default function EnhancedClassicMailboxView() {
     const accountsRequestSeqRef = useRef(0)
     const accountsPageRef = useRef(1)
     const accountsNextCursorRef = useRef<string | null>(null)
+    const accountsPrevCursorRef = useRef<string | null>(null)
     const hasMoreAccountsRef = useRef(false)
+    const hasPreviousAccountsRef = useRef(false)
     const loadingMoreAccountsRef = useRef(false)
+    const loadingPreviousAccountsRef = useRef(false)
     const loadingAccountsRef = useRef(false)
     const emailLoadRequestSeqRef = useRef(0)
     const accountScrollRequestSeqRef = useRef(0)
-    const pinnedAccountRef = useRef<EmailAccount | null>(null)
+    const accountPrependAdjustmentSeqRef = useRef(0)
     const suppressNextSelectedAccountLoadRef = useRef(false)
     const emailNextCursorRef = useRef<string | null>(null)
     const emailPrevCursorRef = useRef<string | null>(null)
+    const accountsRef = useRef<EmailAccount[]>([])
     const emailsRef = useRef<Email[]>([])
     const containerRef = useRef<HTMLDivElement>(null)
     const layoutMenuRef = useRef<HTMLDivElement>(null)
@@ -369,6 +377,10 @@ export default function EnhancedClassicMailboxView() {
         if (selectedEmailId === null) return null
         return emails.find(email => email.ID === selectedEmailId) || null
     }, [emails, selectedEmailId])
+
+    useEffect(() => {
+        accountsRef.current = accounts
+    }, [accounts])
 
     useEffect(() => {
         emailsRef.current = emails
@@ -611,19 +623,9 @@ export default function EnhancedClassicMailboxView() {
         })
     }, [])
 
-    const addAccountToLoadedList = useCallback((account: EmailAccount, options: { pin?: boolean } = {}) => {
-        if (options.pin) {
-            pinnedAccountRef.current = account
-        }
-        setAccounts(prev => {
-            if (prev.some(existing => existing.id === account.id)) return prev
-            return [account, ...prev]
-        })
-    }, [])
-
     // 加载邮箱账户（经典管理器侧边栏使用滚动分页，避免一次性拉取全部账户）
     const loadAccounts = useCallback(async ({ reset = true }: { reset?: boolean } = {}) => {
-        if (!reset && (!hasMoreAccountsRef.current || loadingMoreAccountsRef.current)) {
+        if (!reset && (!hasMoreAccountsRef.current || loadingMoreAccountsRef.current || loadingPreviousAccountsRef.current || loadingAccountsRef.current)) {
             return
         }
         if (!reset && !accountsNextCursorRef.current) {
@@ -639,8 +641,14 @@ export default function EnhancedClassicMailboxView() {
                 setLoading(true)
                 loadingAccountsRef.current = true
                 setLoadingMoreAccounts(false)
+                setLoadingPreviousAccounts(false)
                 loadingMoreAccountsRef.current = false
+                loadingPreviousAccountsRef.current = false
                 accountsNextCursorRef.current = null
+                accountsPrevCursorRef.current = null
+                setHasPreviousAccounts(false)
+                hasPreviousAccountsRef.current = false
+                setAccountWindowStartIndex(0)
             } else {
                 setLoadingMoreAccounts(true)
                 loadingMoreAccountsRef.current = true
@@ -666,30 +674,32 @@ export default function EnhancedClassicMailboxView() {
             const responseTotal = response.total || 0
             const totalPages = response.total_pages || Math.ceil(responseTotal / ACCOUNT_PAGE_SIZE)
             const moreAvailable = response.has_next ?? responsePage < totalPages
-            const pinnedAccount = pinnedAccountRef.current
+            const previousAvailable = reset ? Boolean(response.has_prev) : hasPreviousAccountsRef.current
+            const responseWindowStartIndex = readPositiveInteger(response.window_start_index)
 
             setAccounts(prev => {
-                const mergedAccounts = reset
+                const nextLoadedAccounts = reset
                     ? nextAccounts
                     : [
                         ...prev,
                         ...nextAccounts.filter(account => !prev.some(existing => existing.id === account.id)),
                     ]
-
-                if (pinnedAccount && !mergedAccounts.some(account => account.id === pinnedAccount.id)) {
-                    return [pinnedAccount, ...mergedAccounts]
-                }
-
-                return mergedAccounts
+                accountsRef.current = nextLoadedAccounts
+                return nextLoadedAccounts
             })
             setAccountsTotal(responseTotal)
             setHasMoreAccounts(moreAvailable)
+            setHasPreviousAccounts(previousAvailable)
+            if (reset) {
+                setAccountWindowStartIndex(nextAccounts.length > 0 ? responseWindowStartIndex || 1 : 0)
+            }
             accountsNextCursorRef.current = response.next_cursor || null
+            if (reset) {
+                accountsPrevCursorRef.current = response.prev_cursor || null
+            }
             accountsPageRef.current = reset ? 1 : accountsPageRef.current + 1
             hasMoreAccountsRef.current = moreAvailable
-            if (reset && pinnedAccount && pinnedAccountRef.current?.id === pinnedAccount.id) {
-                pinnedAccountRef.current = null
-            }
+            hasPreviousAccountsRef.current = previousAvailable
 
             if (reset) {
                 const normalizedSearch = debouncedAccountSearchQuery.trim().toLowerCase()
@@ -729,6 +739,140 @@ export default function EnhancedClassicMailboxView() {
     const loadMoreAccounts = useCallback(() => {
         loadAccounts({ reset: false })
     }, [loadAccounts])
+
+    const loadPreviousAccounts = useCallback(async () => {
+        if (!hasPreviousAccountsRef.current || loadingPreviousAccountsRef.current || loadingMoreAccountsRef.current || loadingAccountsRef.current) {
+            return
+        }
+        if (!accountsPrevCursorRef.current) {
+            return
+        }
+
+        const requestSeq = ++accountsRequestSeqRef.current
+        const beforeCursor = accountsPrevCursorRef.current
+
+        try {
+            setLoadingPreviousAccounts(true)
+            loadingPreviousAccountsRef.current = true
+
+            const response = await emailAccountService.getAccountsPaginated({
+                page: 1,
+                limit: ACCOUNT_PAGE_SIZE,
+                cursor: true,
+                before_cursor: beforeCursor,
+                sort_by: accountSortField(accountSortBy),
+                sort_order: accountSortOrder,
+                search: debouncedAccountSearchQuery || undefined,
+                is_verified: accountVerifiedParam(accountVerifiedFilter),
+            })
+
+            if (requestSeq !== accountsRequestSeqRef.current) {
+                return
+            }
+
+            const previousPageAccounts = response.data || []
+            const responseTotal = response.total || accountsTotal
+            const previousAvailable = Boolean(response.has_prev)
+            const currentAccounts = accountsRef.current
+            const seen = new Set(currentAccounts.map(account => account.id))
+            const accountsToPrepend = previousPageAccounts.filter(account => !seen.has(account.id))
+
+            if (accountsToPrepend.length > 0) {
+                const nextAccounts = [
+                    ...accountsToPrepend,
+                    ...currentAccounts,
+                ]
+                accountsRef.current = nextAccounts
+                setAccounts(nextAccounts)
+                setAccountWindowStartIndex(current => (
+                    current > 0 ? Math.max(1, current - accountsToPrepend.length) : 1
+                ))
+                accountPrependAdjustmentSeqRef.current += 1
+                setAccountPrependAdjustment({
+                    seq: accountPrependAdjustmentSeqRef.current,
+                    rows: accountsToPrepend.length,
+                })
+            }
+
+            setAccountsTotal(responseTotal)
+            setHasPreviousAccounts(previousAvailable)
+            accountsPrevCursorRef.current = response.prev_cursor || null
+            hasPreviousAccountsRef.current = previousAvailable
+        } catch (error) {
+            console.error('加载上一页账户失败:', error)
+        } finally {
+            if (requestSeq === accountsRequestSeqRef.current) {
+                setLoadingPreviousAccounts(false)
+                loadingPreviousAccountsRef.current = false
+            }
+        }
+    }, [accountSortBy, accountSortOrder, accountVerifiedFilter, accountsTotal, debouncedAccountSearchQuery])
+
+    const loadAccountAnchorWindow = useCallback(async (accountId: number) => {
+        const requestSeq = ++accountsRequestSeqRef.current
+
+        try {
+            setLoading(true)
+            loadingAccountsRef.current = true
+            setLoadingMoreAccounts(false)
+            setLoadingPreviousAccounts(false)
+            loadingMoreAccountsRef.current = false
+            loadingPreviousAccountsRef.current = false
+
+            const response = await emailAccountService.getAccountsPaginated({
+                page: 1,
+                limit: ACCOUNT_PAGE_SIZE,
+                cursor: true,
+                anchor_account_id: accountId,
+                sort_by: accountSortField(accountSortBy),
+                sort_order: accountSortOrder,
+                search: debouncedAccountSearchQuery || undefined,
+                is_verified: accountVerifiedParam(accountVerifiedFilter),
+            })
+
+            if (requestSeq !== accountsRequestSeqRef.current) {
+                return null
+            }
+
+            const nextAccounts = response.data || []
+            const targetAccount = nextAccounts.find(account => account.id === accountId) || null
+            if (!targetAccount) {
+                console.warn('账户锚点窗口中未找到目标账户:', accountId)
+                return null
+            }
+
+            const responseTotal = response.total || nextAccounts.length
+            const windowStartIndex = readPositiveInteger(response.window_start_index)
+            const moreAvailable = Boolean(response.has_next)
+            const previousAvailable = Boolean(response.has_prev)
+
+            setAccounts(nextAccounts)
+            accountsRef.current = nextAccounts
+            setAccountsTotal(responseTotal)
+            setHasMoreAccounts(moreAvailable)
+            setHasPreviousAccounts(previousAvailable)
+            setAccountWindowStartIndex(nextAccounts.length > 0 ? windowStartIndex || 1 : 0)
+            accountsNextCursorRef.current = response.next_cursor || null
+            accountsPrevCursorRef.current = response.prev_cursor || null
+            accountsPageRef.current = response.page || (windowStartIndex > 0 ? Math.ceil(windowStartIndex / ACCOUNT_PAGE_SIZE) : 1)
+            hasMoreAccountsRef.current = moreAvailable
+            hasPreviousAccountsRef.current = previousAvailable
+
+            return targetAccount
+        } catch (error) {
+            console.error('加载账户锚点窗口失败:', error)
+            return null
+        } finally {
+            if (requestSeq === accountsRequestSeqRef.current) {
+                setLoading(false)
+                loadingAccountsRef.current = false
+                setLoadingMoreAccounts(false)
+                setLoadingPreviousAccounts(false)
+                loadingMoreAccountsRef.current = false
+                loadingPreviousAccountsRef.current = false
+            }
+        }
+    }, [accountSortBy, accountSortOrder, accountVerifiedFilter, debouncedAccountSearchQuery])
 
     const handleAccountSortChange = useCallback((sortBy: MailboxAccountSortBy, sortOrder: MailboxAccountSortOrder) => {
         setAccountSortBy(sortBy)
@@ -941,7 +1085,6 @@ export default function EnhancedClassicMailboxView() {
 
     // 选择账户
     const handleSelectAccount = (account: EmailAccount) => {
-        pinnedAccountRef.current = null
         selectedAccountRef.current = account
         setSelectedAccount(account)
         setSelectedEmailId(null)
@@ -1211,20 +1354,8 @@ export default function EnhancedClassicMailboxView() {
 
         logger.debug('[EnhancedClassicMailboxView] 收到定位邮件请求:', { accountId: targetAccountId, emailId: targetEmailId })
 
-        // 找到对应的账户
-        let targetAccount = accounts.find(acc => acc.id === targetAccountId)
-
-        // 如果账户还没加载，只拉取目标账户，避免回退到全量账户列表
-        const shouldPinLocatedAccount = () => loadingAccountsRef.current
-        if (!targetAccount) {
-            try {
-                targetAccount = await emailAccountService.getAccount(targetAccountId)
-                addAccountToLoadedList(targetAccount, { pin: shouldPinLocatedAccount() })
-            } catch (error) {
-                console.error('加载账户失败:', error)
-                return
-            }
-        }
+        const targetAccount = await loadAccountAnchorWindow(targetAccountId)
+            || accounts.find(acc => acc.id === targetAccountId)
 
         if (!targetAccount) {
             console.warn('未找到账户:', targetAccountId)
@@ -1243,7 +1374,6 @@ export default function EnhancedClassicMailboxView() {
         if (shouldResetDirectionForNotification) {
             setDirectionFilter('received')
         }
-        addAccountToLoadedList(targetAccountForSelection, { pin: shouldPinLocatedAccount() })
         requestAccountScroll(targetAccountForSelection.id)
 
         // 如果没有提供 emailId，只选中账户即可（账户的邮件会自动加载）
@@ -1314,7 +1444,7 @@ export default function EnhancedClassicMailboxView() {
                 loadingEmailsRef.current = false
             }
         }
-    }, [accounts, addAccountToLoadedList, directionFilter, isMobileView, requestAccountScroll])
+    }, [accounts, directionFilter, isMobileView, loadAccountAnchorWindow, requestAccountScroll])
 
     // 注册 Tab 回调以接收定位邮件请求
     useEffect(() => {
@@ -1671,9 +1801,14 @@ export default function EnhancedClassicMailboxView() {
                             onToggleCollapse={() => { }}
                             loading={loading}
                             accountsTotal={accountsTotal}
+                            loadedStartIndex={accountWindowStartIndex}
                             hasMoreAccounts={hasMoreAccounts}
+                            hasPreviousAccounts={hasPreviousAccounts}
                             loadingMoreAccounts={loadingMoreAccounts}
+                            loadingPreviousAccounts={loadingPreviousAccounts}
                             onLoadMoreAccounts={loadMoreAccounts}
+                            onLoadPreviousAccounts={loadPreviousAccounts}
+                            prependAdjustment={accountPrependAdjustment}
                             accountSearchQuery={accountSearchQuery}
                             onAccountSearchQueryChange={setAccountSearchQuery}
                             accountSortBy={accountSortBy}
@@ -1755,9 +1890,14 @@ export default function EnhancedClassicMailboxView() {
                         onToggleCollapse={toggleSidebar}
                         loading={loading}
                         accountsTotal={accountsTotal}
+                        loadedStartIndex={accountWindowStartIndex}
                         hasMoreAccounts={hasMoreAccounts}
+                        hasPreviousAccounts={hasPreviousAccounts}
                         loadingMoreAccounts={loadingMoreAccounts}
+                        loadingPreviousAccounts={loadingPreviousAccounts}
                         onLoadMoreAccounts={loadMoreAccounts}
+                        onLoadPreviousAccounts={loadPreviousAccounts}
+                        prependAdjustment={accountPrependAdjustment}
                         accountSearchQuery={accountSearchQuery}
                         onAccountSearchQueryChange={setAccountSearchQuery}
                         accountSortBy={accountSortBy}

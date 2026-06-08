@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mailman/internal/models"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"gorm.io/gorm"
 )
 
 // CreateAccountHandler creates a new email account
@@ -172,6 +174,7 @@ func (h *APIHandler) AccountExistsHandler(w http.ResponseWriter, r *http.Request
 // @Param created_before query string false "Filter by creation time end (RFC3339)"
 // @Param last_sync_after query string false "Filter by last sync time start (RFC3339)"
 // @Param last_sync_before query string false "Filter by last sync time end (RFC3339)"
+// @Param anchor_account_id query int false "Return a cursor window containing this account ID"
 // @Success 200 {object} PaginatedAccountsResponse
 // @Router /api/accounts/paginated [get]
 func (h *APIHandler) GetAccountsPaginatedHandler(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +203,16 @@ func (h *APIHandler) GetAccountsPaginatedHandler(w http.ResponseWriter, r *http.
 
 	if o := r.URL.Query().Get("sort_order"); o == "asc" || o == "desc" {
 		sortOrder = o
+	}
+
+	var anchorAccountID uint
+	if rawAnchorID := strings.TrimSpace(r.URL.Query().Get("anchor_account_id")); rawAnchorID != "" {
+		parsed, err := strconv.ParseUint(rawAnchorID, 10, 32)
+		if err != nil || parsed == 0 {
+			http.Error(w, "invalid anchor_account_id", http.StatusBadRequest)
+			return
+		}
+		anchorAccountID = uint(parsed)
 	}
 
 	// 构建过滤参数
@@ -273,7 +286,8 @@ func (h *APIHandler) GetAccountsPaginatedHandler(w http.ResponseWriter, r *http.
 	// 使用支持完整过滤的分页查询
 	useCursor := r.URL.Query().Get("cursor") == "true" ||
 		r.URL.Query().Get("after_cursor") != "" ||
-		r.URL.Query().Get("before_cursor") != ""
+		r.URL.Query().Get("before_cursor") != "" ||
+		anchorAccountID > 0
 	if useCursor {
 		afterCursor, err := decodeKeysetCursor(r.URL.Query().Get("after_cursor"), sortBy, sortOrder)
 		if err != nil {
@@ -287,6 +301,66 @@ func (h *APIHandler) GetAccountsPaginatedHandler(w http.ResponseWriter, r *http.
 		}
 		if afterCursor != nil && beforeCursor != nil {
 			http.Error(w, "after_cursor and before_cursor cannot be used together", http.StatusBadRequest)
+			return
+		}
+		if anchorAccountID > 0 && (afterCursor != nil || beforeCursor != nil) {
+			http.Error(w, "anchor_account_id cannot be combined with after_cursor or before_cursor", http.StatusBadRequest)
+			return
+		}
+
+		if anchorAccountID > 0 {
+			window, err := h.EmailAccountRepo.SearchAccountsAroundAnchor(
+				orgID,
+				anchorAccountID,
+				limit,
+				sortBy,
+				sortOrder,
+				filters,
+			)
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					http.Error(w, "anchor account not found in current account list", http.StatusNotFound)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			totalPages := int(window.TotalCount) / limit
+			if int(window.TotalCount)%limit > 0 {
+				totalPages++
+			}
+			responsePage := 1
+			if window.WindowStartIndex > 0 {
+				responsePage = ((window.WindowStartIndex - 1) / limit) + 1
+			}
+
+			response := PaginatedAccountsResponse{
+				Data:             window.Accounts,
+				Total:            window.TotalCount,
+				Page:             responsePage,
+				Limit:            limit,
+				TotalPages:       totalPages,
+				HasNext:          window.HasNext,
+				HasPrev:          window.HasPrev,
+				CursorMode:       true,
+				AnchorIndex:      window.AnchorIndex,
+				WindowStartIndex: window.WindowStartIndex,
+				WindowEndIndex:   window.WindowEndIndex,
+			}
+			if len(window.Accounts) > 0 {
+				first := window.Accounts[0]
+				last := window.Accounts[len(window.Accounts)-1]
+				if cursor, err := encodeKeysetCursor(sortBy, sortOrder, repository.AccountCursorValue(last, sortBy), last.ID); err == nil {
+					response.NextCursor = cursor
+				}
+				if cursor, err := encodeKeysetCursor(sortBy, sortOrder, repository.AccountCursorValue(first, sortBy), first.ID); err == nil {
+					response.PrevCursor = cursor
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
 			return
 		}
 

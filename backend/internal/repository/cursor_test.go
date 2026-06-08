@@ -73,6 +73,98 @@ func TestAccountKeysetPaginationIgnoresInsertBeforeCursor(t *testing.T) {
 	}
 }
 
+func TestAccountAnchorWindowReturnsNaturalPage(t *testing.T) {
+	db := newCursorTestDB(t)
+	repo := NewEmailAccountRepository(db)
+
+	accounts := []models.EmailAccount{
+		{OrgID: 1, EmailAddress: "a@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "b@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "c@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "d@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "e@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "f@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "g@example.com", AuthType: models.AuthTypePassword},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create accounts: %v", err)
+	}
+
+	window, err := repo.SearchAccountsAroundAnchor(1, accounts[3].ID, 5, "email_address", "asc", AccountFilterParams{})
+	if err != nil {
+		t.Fatalf("anchor page failed: %v", err)
+	}
+	if window.TotalCount != int64(len(accounts)) {
+		t.Fatalf("total = %d, want %d", window.TotalCount, len(accounts))
+	}
+	if !window.HasPrev || !window.HasNext {
+		t.Fatalf("hasPrev=%v hasNext=%v, want both true", window.HasPrev, window.HasNext)
+	}
+	if window.AnchorIndex != 4 {
+		t.Fatalf("anchor index = %d, want 4", window.AnchorIndex)
+	}
+	if window.WindowStartIndex != 2 || window.WindowEndIndex != 6 {
+		t.Fatalf("window indexes = %d..%d, want 2..6", window.WindowStartIndex, window.WindowEndIndex)
+	}
+
+	got := make([]string, 0, len(window.Accounts))
+	for _, account := range window.Accounts {
+		got = append(got, account.EmailAddress)
+	}
+	want := []string{"b@example.com", "c@example.com", "d@example.com", "e@example.com", "f@example.com"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("accounts = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestAccountAnchorWindowNextCursorIgnoresEarlierInsert(t *testing.T) {
+	db := newCursorTestDB(t)
+	repo := NewEmailAccountRepository(db)
+
+	accounts := []models.EmailAccount{
+		{OrgID: 1, EmailAddress: "a@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "b@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "c@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "d@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "e@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "f@example.com", AuthType: models.AuthTypePassword},
+		{OrgID: 1, EmailAddress: "g@example.com", AuthType: models.AuthTypePassword},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create accounts: %v", err)
+	}
+
+	window, err := repo.SearchAccountsAroundAnchor(1, accounts[3].ID, 5, "email_address", "asc", AccountFilterParams{})
+	if err != nil {
+		t.Fatalf("anchor page failed: %v", err)
+	}
+	last := window.Accounts[len(window.Accounts)-1]
+
+	if err := db.Create(&models.EmailAccount{OrgID: 1, EmailAddress: "aa@example.com", AuthType: models.AuthTypePassword}).Error; err != nil {
+		t.Fatalf("failed to insert account before cursor: %v", err)
+	}
+
+	nextPage, _, _, err := repo.GetAllPaginatedFilteredKeyset(
+		1,
+		2,
+		"email_address",
+		"asc",
+		AccountFilterParams{},
+		KeysetPagination{Enabled: true, After: &KeysetCursor{
+			Value: AccountCursorValue(last, "email_address"),
+			ID:    last.ID,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("next page failed: %v", err)
+	}
+	if len(nextPage) != 1 || nextPage[0].EmailAddress != "g@example.com" {
+		t.Fatalf("unexpected next page after earlier insert: %v", nextPage)
+	}
+}
+
 func TestEmailKeysetPaginationIgnoresNewerInsert(t *testing.T) {
 	db := newCursorTestDB(t)
 	repo := NewEmailRepository(db)

@@ -22,6 +22,16 @@ type AccountDashboardStats struct {
 	ErrorAccounts    int64
 }
 
+type AccountAnchorWindow struct {
+	Accounts         []models.EmailAccount
+	TotalCount       int64
+	HasPrev          bool
+	HasNext          bool
+	AnchorIndex      int
+	WindowStartIndex int
+	WindowEndIndex   int
+}
+
 var emailAccountSortColumns = map[string]string{
 	"emailAddress":     "email_address",
 	"email_address":    "email_address",
@@ -350,6 +360,61 @@ func (r *EmailAccountRepository) applyAccountFilters(query *gorm.DB, orgID uint,
 	return query
 }
 
+func (r *EmailAccountRepository) applyAccountKeysetCondition(query *gorm.DB, sortBy, sortOrder string, cursor *KeysetCursor, before bool) (*gorm.DB, error) {
+	column := accountSortColumn(sortBy)
+	cursorValue, err := parseAccountCursorValue(column, cursor.Value)
+	if err != nil {
+		return nil, err
+	}
+
+	ascending := strings.EqualFold(accountSortDirection(sortOrder), "ASC")
+	lessThan := (!ascending && !before) || (ascending && before)
+	operator := ">"
+	if lessThan {
+		operator = "<"
+	}
+
+	quotedColumn := quoteColumn(r.db, column)
+	quotedID := quoteColumn(r.db, "id")
+	return query.Where(
+		fmt.Sprintf("(%s %s ? OR (%s = ? AND %s %s ?))", quotedColumn, operator, quotedColumn, quotedID, operator),
+		cursorValue,
+		cursorValue,
+		cursor.ID,
+	), nil
+}
+
+func reverseAccounts(accounts []models.EmailAccount) {
+	for i, j := 0, len(accounts)-1; i < j; i, j = i+1, j-1 {
+		accounts[i], accounts[j] = accounts[j], accounts[i]
+	}
+}
+
+func (r *EmailAccountRepository) searchAccountsFromCursor(orgID uint, sortBy, sortOrder string, filters AccountFilterParams, cursor *KeysetCursor, before bool, limit int) ([]models.EmailAccount, error) {
+	var accounts []models.EmailAccount
+
+	query := r.applyAccountFilters(
+		r.db.Preload("MailProvider").Preload("Tags").Preload("Tags.Group"),
+		orgID,
+		filters,
+	)
+	var err error
+	query, err = r.applyAccountKeysetCondition(query, sortBy, sortOrder, cursor, before)
+	if err != nil {
+		return nil, err
+	}
+
+	query = query.Order(buildAccountOrderClause(r.db, sortBy, sortOrder, before))
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	if err := query.Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+	return accounts, nil
+}
+
 // GetAllPaginated retrieves email accounts with pagination
 func (r *EmailAccountRepository) GetAllPaginated(orgID uint, page, limit int, sortBy, sortOrder string, search string) ([]models.EmailAccount, int64, error) {
 	var accounts []models.EmailAccount
@@ -569,12 +634,12 @@ func (r *EmailAccountRepository) GetAllPaginatedFilteredKeyset(orgID uint, limit
 		return nil, 0, false, err
 	}
 
-	column := accountSortColumn(sortBy)
 	query := r.applyAccountFilters(
 		r.db.Preload("MailProvider").Preload("Tags").Preload("Tags.Group"),
 		orgID,
 		filters,
 	)
+	var err error
 
 	reverseForBefore := false
 	if pagination.After != nil || pagination.Before != nil {
@@ -584,26 +649,10 @@ func (r *EmailAccountRepository) GetAllPaginatedFilteredKeyset(orgID uint, limit
 			reverseForBefore = true
 		}
 
-		cursorValue, err := parseAccountCursorValue(column, cursor.Value)
+		query, err = r.applyAccountKeysetCondition(query, sortBy, sortOrder, cursor, reverseForBefore)
 		if err != nil {
 			return nil, 0, false, err
 		}
-
-		ascending := strings.EqualFold(accountSortDirection(sortOrder), "ASC")
-		lessThan := (!ascending && pagination.After != nil) || (ascending && pagination.Before != nil)
-		operator := ">"
-		if lessThan {
-			operator = "<"
-		}
-
-		quotedColumn := quoteColumn(r.db, column)
-		quotedID := quoteColumn(r.db, "id")
-		query = query.Where(
-			fmt.Sprintf("(%s %s ? OR (%s = ? AND %s %s ?))", quotedColumn, operator, quotedColumn, quotedID, operator),
-			cursorValue,
-			cursorValue,
-			cursor.ID,
-		)
 	}
 
 	query = query.Order(buildAccountOrderClause(r.db, sortBy, sortOrder, reverseForBefore)).Limit(limit + 1)
@@ -622,6 +671,95 @@ func (r *EmailAccountRepository) GetAllPaginatedFilteredKeyset(orgID uint, limit
 	}
 
 	return accounts, total, hasMore, nil
+}
+
+// SearchAccountsAroundAnchor returns a stable keyset window containing the anchor account.
+// The returned metadata describes where that window sits in the full filtered account list.
+func (r *EmailAccountRepository) SearchAccountsAroundAnchor(orgID uint, anchorAccountID uint, limit int, sortBy, sortOrder string, filters AccountFilterParams) (AccountAnchorWindow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	var totalCount int64
+	countQuery := r.applyAccountFilters(r.db.Model(&models.EmailAccount{}), orgID, filters)
+	if err := countQuery.Count(&totalCount).Error; err != nil {
+		return AccountAnchorWindow{}, err
+	}
+
+	var anchor models.EmailAccount
+	anchorQuery := r.applyAccountFilters(
+		r.db.Preload("MailProvider").Preload("Tags").Preload("Tags.Group"),
+		orgID,
+		filters,
+	)
+	if err := anchorQuery.Where("id = ?", anchorAccountID).First(&anchor).Error; err != nil {
+		return AccountAnchorWindow{TotalCount: totalCount}, err
+	}
+
+	anchorCursor := &KeysetCursor{
+		Value: AccountCursorValue(anchor, sortBy),
+		ID:    anchor.ID,
+	}
+
+	beforeCountQuery := r.applyAccountFilters(r.db.Model(&models.EmailAccount{}), orgID, filters)
+	beforeCountQuery, err := r.applyAccountKeysetCondition(beforeCountQuery, sortBy, sortOrder, anchorCursor, true)
+	if err != nil {
+		return AccountAnchorWindow{TotalCount: totalCount}, err
+	}
+	var rowsBeforeAnchor int64
+	if err := beforeCountQuery.Count(&rowsBeforeAnchor).Error; err != nil {
+		return AccountAnchorWindow{TotalCount: totalCount}, err
+	}
+	anchorIndex := int(rowsBeforeAnchor) + 1
+
+	probeLimit := limit + 1
+	beforeProbe, err := r.searchAccountsFromCursor(orgID, sortBy, sortOrder, filters, anchorCursor, true, probeLimit)
+	if err != nil {
+		return AccountAnchorWindow{TotalCount: totalCount}, err
+	}
+	afterProbe, err := r.searchAccountsFromCursor(orgID, sortBy, sortOrder, filters, anchorCursor, false, probeLimit)
+	if err != nil {
+		return AccountAnchorWindow{TotalCount: totalCount}, err
+	}
+
+	beforeWant := (limit - 1) / 2
+	afterWant := limit - 1 - beforeWant
+	beforeCount := minInt(len(beforeProbe), beforeWant)
+	afterCount := minInt(len(afterProbe), afterWant)
+
+	remaining := limit - 1 - beforeCount - afterCount
+	if remaining > 0 && len(afterProbe) > afterCount {
+		added := minInt(remaining, len(afterProbe)-afterCount)
+		afterCount += added
+		remaining -= added
+	}
+	if remaining > 0 && len(beforeProbe) > beforeCount {
+		beforeCount += minInt(remaining, len(beforeProbe)-beforeCount)
+	}
+
+	hasPrev := len(beforeProbe) > beforeCount
+	hasNext := len(afterProbe) > afterCount
+
+	beforeAccounts := append([]models.EmailAccount(nil), beforeProbe[:beforeCount]...)
+	reverseAccounts(beforeAccounts)
+
+	accounts := make([]models.EmailAccount, 0, len(beforeAccounts)+1+afterCount)
+	accounts = append(accounts, beforeAccounts...)
+	accounts = append(accounts, anchor)
+	accounts = append(accounts, afterProbe[:afterCount]...)
+
+	windowStartIndex := anchorIndex - beforeCount
+	windowEndIndex := windowStartIndex + len(accounts) - 1
+
+	return AccountAnchorWindow{
+		Accounts:         accounts,
+		TotalCount:       totalCount,
+		HasPrev:          hasPrev,
+		HasNext:          hasNext,
+		AnchorIndex:      anchorIndex,
+		WindowStartIndex: windowStartIndex,
+		WindowEndIndex:   windowEndIndex,
+	}, nil
 }
 
 // GetAllPaginatedWithTags retrieves email accounts with pagination and tag filtering
