@@ -1496,14 +1496,21 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                     <td className="px-4 py-3 text-gray-500">{formatTime(item.createdAt)}</td>
                                     <td className="px-4 py-3">
                                         <div>{item.username || '-'}</div>
-                                        {(item.requestedUsername || item.routeStrategyFlagNo) && (
+                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo) && (
                                             <div className="mt-1 flex flex-wrap gap-1 text-xs text-gray-500">
                                                 {item.requestedUsername && <span>{item.requestedUsername}</span>}
+                                                {item.clientIp && (
+                                                    <span>
+                                                        来源 {item.clientIp}{item.clientPort ? `:${item.clientPort}` : ''}
+                                                    </span>
+                                                )}
                                                 {item.routeStrategyFlagNo ? <Badge tone="blue">#{item.routeStrategyFlagNo}</Badge> : null}
                                             </div>
                                         )}
                                     </td>
-                                    <td className="px-4 py-3">{item.targetHost}:{item.targetPort}</td>
+                                    <td className="px-4 py-3">
+                                        {item.targetHost ? `${item.targetHost}:${item.targetPort || ''}` : '-'}
+                                    </td>
                                     <td className="px-4 py-3">{item.upstreamProxyId ? `#${item.upstreamProxyId}` : '直连/无'}</td>
                                     <td className="px-4 py-3"><Badge tone={item.status === 'success' ? 'green' : item.status === 'denied' ? 'red' : 'amber'}>{item.status}</Badge></td>
                                     <td className="px-4 py-3">{item.durationMs}ms</td>

@@ -166,6 +166,7 @@ export default function EnhancedMailboxSidebar({
     const accountScrollFrameRef = React.useRef<number | null>(null)
     const accountScrollRetryTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
     const handledAccountScrollRequestRef = React.useRef<number | null>(null)
+    const manualAccountScrollRequestSeqRef = React.useRef(0)
     const accountListResetKeyRef = React.useRef<string | null>(null)
 
     // 同步状态
@@ -582,18 +583,25 @@ export default function EnhancedMailboxSidebar({
         accountScrollFrameRef.current = requestAnimationFrame(() => {
             accountScrollFrameRef.current = null
 
-            if (isAccountRowFullyVisible(request.accountId)) {
+            const isFullyVisible = isAccountRowFullyVisible(request.accountId)
+            if (isFullyVisible && attempt >= 2) {
                 handledAccountScrollRequestRef.current = request.requestId
                 scheduleStatusViewportUpdate()
                 return
             }
 
-            if (attempt >= 12) return
+            if (attempt >= 12) {
+                if (isFullyVisible) {
+                    handledAccountScrollRequestRef.current = request.requestId
+                    scheduleStatusViewportUpdate()
+                }
+                return
+            }
 
             accountScrollRetryTimeoutRef.current = setTimeout(() => {
                 accountScrollRetryTimeoutRef.current = null
                 scheduleAccountScrollAttempt(request, attempt + 1)
-            }, attempt < 3 ? 50 : 120)
+            }, isFullyVisible ? 80 : attempt < 3 ? 50 : 120)
         })
     }, [isAccountRowFullyVisible, scheduleStatusViewportUpdate, scrollToAccountId])
 
@@ -607,7 +615,11 @@ export default function EnhancedMailboxSidebar({
 
     const scrollToSelectedAccount = () => {
         if (!selectedAccount) return
-        scrollToAccountId(selectedAccount.id)
+        manualAccountScrollRequestSeqRef.current -= 1
+        scheduleAccountScrollAttempt({
+            accountId: selectedAccount.id,
+            requestId: manualAccountScrollRequestSeqRef.current,
+        })
     }
 
     // 获取邮箱提供商图标和颜色
