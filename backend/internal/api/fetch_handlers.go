@@ -752,6 +752,7 @@ func (h *APIHandler) PollEmailHandler(w http.ResponseWriter, r *http.Request) {
 		FetchFromServer: true,
 		IncludeBody:     true,
 		SortBy:          "date_desc",
+		Source:          services.EmailIngestSourcePickup,
 	}
 
 	h.logger.Debug("[PollEmail] Fetching emails for %s from %s", account.EmailAddress, filterStartTime.Format(time.RFC3339))

@@ -72,6 +72,7 @@ const tabNameMap: { [key: string]: string } = {
     'plugins': '插件管理[plugins]',
     'interceptors': '拦截器管理[interceptors]',
     'interceptor-logs': '拦截器日志[interceptor-logs]',
+    'runtime-status': '运行状态[runtime-status]',
     'system-config': '系统配置[system-config]',
     'component-test': '组件测试[component-test]',
     'extractor-v2-list': '取件模板V2[extractor-v2-list]',
@@ -278,6 +279,10 @@ export default function MainPage() {
                         break
                     case 'plugins':
                         content = <PluginsTab key={tabId} />
+                        break
+                    case 'runtime-status':
+                        const RuntimeStatusTab = require('@/components/tabs/runtime-status-tab').default
+                        content = guard('system_config', 'read', <RuntimeStatusTab key={tabId} />)
                         break
                     case 'system-config':
                         content = guard('system_config', 'read', <SystemConfigTab key={tabId} />)

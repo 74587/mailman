@@ -92,6 +92,12 @@ func NewPickupService(
 
 // Poll 执行一次取件轮询
 func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error) {
+	recordPoll := RuntimeMetrics().BeginPickupPoll()
+	var pollErr error
+	defer func() {
+		recordPoll(pollErr)
+	}()
+
 	// 1. 设置默认值
 	if req.SyncInterval <= 0 {
 		req.SyncInterval = 5
@@ -106,6 +112,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	requestedAccountID := req.AccountID
 	resolvedAccountID, resolvedBy, err := s.resolvePickupAccountID(req.AccountID, req.ToQuery)
 	if err != nil {
+		pollErr = err
 		return nil, err
 	}
 	req.AccountID = resolvedAccountID
@@ -132,7 +139,8 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	if req.Since != "" {
 		parsed, err := time.Parse(time.RFC3339, req.Since)
 		if err != nil {
-			return nil, fmt.Errorf("invalid since time format (expected RFC3339): %w", err)
+			pollErr = fmt.Errorf("invalid since time format (expected RFC3339): %w", err)
+			return nil, pollErr
 		}
 		startDate = &parsed
 	}
@@ -148,7 +156,8 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 
 	emails, _, err := s.emailRepo.SearchEmails(searchOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to search emails: %w", err)
+		pollErr = fmt.Errorf("failed to search emails: %w", err)
+		return nil, pollErr
 	}
 
 	s.logger.Debug("Pickup poll for account %d: found %d emails", req.AccountID, len(emails))

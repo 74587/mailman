@@ -12,6 +12,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -85,6 +86,7 @@ func Migrate() error {
 	if err := DB.AutoMigrate(
 		&models.MailProvider{},
 		&models.EmailAccount{},
+		&models.EmailRoutingAddress{},
 		&models.BusinessModule{},
 		&models.BusinessAccount{},
 		&models.BusinessEmailExclusion{},
@@ -146,6 +148,10 @@ func Migrate() error {
 		return fmt.Errorf("failed to migrate tables: %w", err)
 	}
 
+	if err := backfillEmailRoutingAddresses(); err != nil {
+		return fmt.Errorf("failed to backfill email routing addresses: %w", err)
+	}
+
 	// 单独处理OAuth2GlobalConfig的迁移
 	if err := migrateOAuth2GlobalConfig(); err != nil {
 		return fmt.Errorf("failed to migrate OAuth2GlobalConfig: %w", err)
@@ -157,6 +163,40 @@ func Migrate() error {
 	}
 
 	return nil
+}
+
+func backfillEmailRoutingAddresses() error {
+	var routeCount int64
+	if err := DB.Model(&models.EmailRoutingAddress{}).
+		Where("kind = ?", models.EmailRoutingAddressKindForwarded).
+		Count(&routeCount).Error; err != nil {
+		return err
+	}
+	if routeCount > 0 {
+		return nil
+	}
+
+	accounts := make([]models.EmailAccount, 0, 1000)
+	return DB.Model(&models.EmailAccount{}).
+		Order("id ASC").
+		FindInBatches(&accounts, 1000, func(tx *gorm.DB, batch int) error {
+			routes := make([]models.EmailRoutingAddress, 0)
+			for i := range accounts {
+				addresses := models.NormalizeEmailRoutingAddresses(accounts[i].ForwardedAddresses)
+				for _, address := range addresses {
+					routes = append(routes, models.EmailRoutingAddress{
+						AccountID:         accounts[i].ID,
+						Address:           address,
+						NormalizedAddress: address,
+						Kind:              models.EmailRoutingAddressKindForwarded,
+					})
+				}
+			}
+			if len(routes) == 0 {
+				return nil
+			}
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&routes).Error
+		}).Error
 }
 
 // migrateOAuth2GlobalConfig 处理OAuth2GlobalConfig的完整迁移

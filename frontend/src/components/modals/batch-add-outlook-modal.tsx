@@ -57,8 +57,8 @@ const TEMPLATE_VARS = [
 
 const LARGE_BATCH_VERIFY_THRESHOLD = 200
 const DEFAULT_CREATE_CONCURRENCY = 10
-const DEFAULT_VERIFY_CONCURRENCY = 4
-const DEFAULT_SYNC_CONCURRENCY = 2
+const DEFAULT_VERIFY_CONCURRENCY = 1
+const DEFAULT_SYNC_CONCURRENCY = 1
 const MAX_CREATE_CONCURRENCY = 30
 const MAX_VERIFY_CONCURRENCY = 12
 const MAX_SYNC_CONCURRENCY = 6
@@ -125,15 +125,15 @@ export default function BatchAddOutlookModal({
 
     // Sync configuration (for initial sync in syncSettings stage)
     const [defaultSyncConfig, setDefaultSyncConfig] = useState({
-        enableAutoSync: true,
+        enableAutoSync: false,
         syncInterval: 300,
         syncMode: 'incremental' as 'incremental' | 'full',
-        maxEmails: 1000
+        maxEmails: 50
     })
 
     // Global sync config (loaded from backend, editable in memory for autoSyncConfig stage)
     const [globalSyncConfig, setGlobalSyncConfig] = useState({
-        enableAutoSync: true,
+        enableAutoSync: false,
         syncInterval: 300,
         syncFolders: [] as string[]
     })
@@ -886,11 +886,11 @@ export default function BatchAddOutlookModal({
                                                     <span className="text-gray-500 dark:text-gray-400">每箱上限</span>
                                                     <input
                                                         type="number"
-                                                        min={100}
+                                                        min={1}
                                                         max={10000}
-                                                        step={100}
+                                                        step={50}
                                                         value={defaultSyncConfig.maxEmails}
-                                                        onChange={(e) => setDefaultSyncConfig(prev => ({ ...prev, maxEmails: parseInt(e.target.value) || 1000 }))}
+                                                        onChange={(e) => setDefaultSyncConfig(prev => ({ ...prev, maxEmails: parseInt(e.target.value) || 50 }))}
                                                         className="h-8 w-full rounded border border-gray-300 px-2 text-xs dark:border-gray-600 dark:bg-gray-700"
                                                     />
                                                 </label>
@@ -928,7 +928,7 @@ export default function BatchAddOutlookModal({
                                                     onCheckedChange={(checked) => setDefaultSyncConfig(prev => ({ ...prev, enableAutoSync: checked }))}
                                                     className="scale-75"
                                                 />
-                                                <span>创建账户同步配置</span>
+                                                <span>启用自动同步</span>
                                             </label>
                                         </div>
                                     )}
@@ -1083,10 +1083,10 @@ export default function BatchAddOutlookModal({
                                     <input
                                         type="number"
                                         value={defaultSyncConfig.maxEmails}
-                                        onChange={(e) => setDefaultSyncConfig(prev => ({ ...prev, maxEmails: parseInt(e.target.value) || 1000 }))}
-                                        min="100"
+                                        onChange={(e) => setDefaultSyncConfig(prev => ({ ...prev, maxEmails: parseInt(e.target.value) || 50 }))}
+                                        min="1"
                                         max="10000"
-                                        step="100"
+                                        step="50"
                                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
                                     />
                                 </div>

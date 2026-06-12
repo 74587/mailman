@@ -123,7 +123,7 @@ func TestPickupSimpleExtractMatchSelection(t *testing.T) {
 
 func TestPickupResolveAccountIDUsesRecipientAddress(t *testing.T) {
 	db := mustOpenIngestTestDB(t)
-	if err := db.AutoMigrate(&models.MailProvider{}, &models.EmailAccount{}); err != nil {
+	if err := db.AutoMigrate(&models.MailProvider{}, &models.EmailAccount{}, &models.EmailRoutingAddress{}); err != nil {
 		t.Fatalf("failed to migrate test db: %v", err)
 	}
 
@@ -159,9 +159,13 @@ func TestPickupResolveAccountIDUsesRecipientAddress(t *testing.T) {
 			t.Fatalf("failed to create account %s: %v", account.EmailAddress, err)
 		}
 	}
+	accountRepo := repository.NewEmailAccountRepository(db)
+	if err := accountRepo.BackfillEmailRoutingAddresses(); err != nil {
+		t.Fatalf("failed to backfill forwarded routes: %v", err)
+	}
 
 	service := &PickupService{
-		accountRepo: repository.NewEmailAccountRepository(db),
+		accountRepo: accountRepo,
 	}
 
 	tests := []struct {

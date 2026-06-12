@@ -352,6 +352,7 @@ func NewRouterWithAuth(
 
 	// Dashboard statistics endpoint (protected)
 	authRouter.HandleFunc("/dashboard/stats", handler.GetEmailStatsHandler).Methods("GET")
+	authRouter.HandleFunc("/observability/runtime", handler.GetRuntimeObservabilityHandler).Methods("GET")
 
 	// WebSocket和通知相关端点 (protected)
 	authRouter.HandleFunc("/notifications/stats", webSocketHandler.HandleNotificationStats).Methods("GET")

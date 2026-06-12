@@ -88,7 +88,32 @@ func (h *APIHandler) processSingleMailbox(
 	maxEmails int,
 	includeBody bool,
 ) MailboxSyncResult {
+	return h.processSingleMailboxWithSource(
+		account,
+		mailboxName,
+		syncMode,
+		defaultStartDate,
+		endDate,
+		maxEmails,
+		includeBody,
+		services.EmailIngestSourceManualSync,
+	)
+}
+
+func (h *APIHandler) processSingleMailboxWithSource(
+	account models.EmailAccount,
+	mailboxName string,
+	syncMode string,
+	defaultStartDate *time.Time,
+	endDate *time.Time,
+	maxEmails int,
+	includeBody bool,
+	source services.EmailIngestSource,
+) MailboxSyncResult {
 	syncStartTime := time.Now()
+	if source == "" {
+		source = services.EmailIngestSourceManualSync
+	}
 
 	result := MailboxSyncResult{
 		MailboxName:   mailboxName,
@@ -126,6 +151,7 @@ func (h *APIHandler) processSingleMailbox(
 		FetchFromServer: true,
 		IncludeBody:     includeBody,
 		SortBy:          "date_desc",
+		Source:          source,
 	}
 
 	// Fetch emails from server
@@ -141,7 +167,7 @@ func (h *APIHandler) processSingleMailbox(
 	var newEmails []models.Email
 	if h.EmailIngestService != nil {
 		newEmails, err = h.EmailIngestService.IngestEmails(emails, services.EmailIngestOptions{
-			Source:       services.EmailIngestSourceManualSync,
+			Source:       source,
 			AccountEmail: account.EmailAddress,
 			Metadata: map[string]interface{}{
 				"entrypoint": "process_single_mailbox",

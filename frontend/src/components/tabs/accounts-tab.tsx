@@ -316,7 +316,13 @@ export default function AccountsTab() {
 
     const loadSyncStatuses = async () => {
         try {
-            const statuses = await syncConfigService.getAllAccountSyncStatuses()
+            const accountIds = accounts.map(account => account.id).filter(id => Number.isFinite(id) && id > 0)
+            if (accountIds.length === 0) {
+                setSyncStatuses(new Map())
+                return
+            }
+
+            const statuses = await syncConfigService.getAccountSyncStatuses(accountIds)
             const statusMap = new Map<number, AccountSyncStatus>()
             statuses.forEach((status) => {
                 statusMap.set(status.account_id, status)

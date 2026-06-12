@@ -210,6 +210,7 @@ func (w *MailboxWorker) performFetch() {
 		FetchFromServer: true,
 		IncludeBody:     true,
 		Folders:         strategy.Folders, // 使用策略中的文件夹列表
+		Source:          EmailIngestSourceAutoSync,
 	}
 
 	emails, err := w.scheduler.fetcherService.FetchEmailsFromMultipleMailboxes(*w.Account, options)

@@ -469,6 +469,7 @@ func (m *OptimizedIncrementalSyncManager) fetchEmails(ctx context.Context, req F
 		Folders:         folders,
 		FetchFromServer: true, // 关键修复：从邮件服务器获取新邮件
 		IncludeBody:     true, // 包含邮件正文
+		Source:          EmailIngestSourceAutoSync,
 	}
 
 	// 检查是否是Gmail账户

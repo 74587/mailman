@@ -342,7 +342,14 @@ func preserveExistingOAuth2OnboardingSettings(account *models.EmailAccount, exis
 }
 
 func (h *APIHandler) runFetchAndStoreForAccount(r *http.Request, account models.EmailAccount, request *FetchAndStoreRequest) (*FetchAndStoreResponse, error) {
+	return h.runFetchAndStoreForAccountWithSource(r, account, request, services.EmailIngestSourceManualSync)
+}
+
+func (h *APIHandler) runFetchAndStoreForAccountWithSource(r *http.Request, account models.EmailAccount, request *FetchAndStoreRequest, source services.EmailIngestSource) (*FetchAndStoreResponse, error) {
 	startTime := time.Now()
+	if source == "" {
+		source = services.EmailIngestSourceManualSync
+	}
 
 	syncRequest := FetchAndStoreRequest{}
 	if request != nil {
@@ -391,7 +398,7 @@ func (h *APIHandler) runFetchAndStoreForAccount(r *http.Request, account models.
 	var messages []string
 
 	for _, mailboxName := range syncRequest.Mailboxes {
-		result := h.processSingleMailbox(
+		result := h.processSingleMailboxWithSource(
 			account,
 			mailboxName,
 			syncRequest.SyncMode,
@@ -399,6 +406,7 @@ func (h *APIHandler) runFetchAndStoreForAccount(r *http.Request, account models.
 			endDate,
 			syncRequest.MaxEmailsPerMailbox,
 			syncRequest.IncludeBody,
+			source,
 		)
 
 		mailboxResults = append(mailboxResults, result)

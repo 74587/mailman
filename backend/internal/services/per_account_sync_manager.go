@@ -788,11 +788,13 @@ func (as *AccountSyncer) performSync() {
 func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (syncedEmails []models.Email, err error) {
 	as.logger.Debug("Executing doSync")
 	source = normalizeEmailIngestSource(source)
+	recordSync := RuntimeMetrics().BeginSync(source)
 	syncRun := as.createSyncRun(startTime, source)
 	emailsFetched := 0
 	newEmailCount := 0
 	defer func() {
 		as.finishSyncRun(syncRun, emailsFetched, newEmailCount, err)
+		recordSync(emailsFetched, newEmailCount, err)
 	}()
 
 	// 创建超时上下文（暂时不使用，但保留用于后续扩展）
@@ -845,6 +847,7 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 		EndDate:         &endDate,
 		FetchFromServer: true,
 		IncludeBody:     true,
+		Source:          source,
 	}
 	as.logger.Debug("Fetching emails with options: Folders=%v, StartDate=%v, EndDate=%v", options.Folders, options.StartDate, options.EndDate)
 
@@ -1096,15 +1099,19 @@ func (as *AccountSyncer) acquireSyncSlot(source EmailIngestSource, timeout time.
 		return nil, fmt.Errorf("%s is not initialized", slotName)
 	}
 
+	waitStart := time.Now()
 	select {
 	case slot <- struct{}{}:
+		RuntimeMetrics().RecordSyncSlotWait(source, time.Since(waitStart), nil)
 		as.logger.Debug("%s acquired", slotName)
 		return func() {
 			<-slot
 			as.logger.Debug("%s released", slotName)
 		}, nil
 	case <-time.After(timeout):
-		return nil, fmt.Errorf("failed to acquire %s", slotName)
+		err := fmt.Errorf("failed to acquire %s", slotName)
+		RuntimeMetrics().RecordSyncSlotWait(source, time.Since(waitStart), err)
+		return nil, err
 	}
 }
 

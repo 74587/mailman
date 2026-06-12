@@ -45,6 +45,7 @@ export const menuRegistry: MenuItemConfig[] = [
     { id: 'business-modules', name: '业务模块', group: 'business', defaultVisible: true },
 
     // 系统管理
+    { id: 'runtime-status', name: '运行状态', group: 'admin', defaultVisible: true },
     { id: 'system-config', name: '系统配置', group: 'admin', defaultVisible: true, locked: true },
     { id: 'team-management', name: '团队管理', group: 'admin', defaultVisible: true },
     { id: 'user-management', name: '用户管理', group: 'admin', defaultVisible: true },
@@ -110,6 +111,7 @@ const LEGACY_DEFAULT_MENU_ORDER = [
     'user-management',
     'ai-config',
     'user-sessions',
+    'runtime-status',
     'system-config',
     'triggers',
     'interceptors',

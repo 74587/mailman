@@ -47,6 +47,7 @@ type FetchEmailsOptions struct {
 	IncludeBody     bool
 	SortBy          string
 	Folders         []string // List of folders to fetch from
+	Source          EmailIngestSource
 }
 
 // SetEmailIngestService connects fetch-and-store helpers to the unified ingest pipeline.
@@ -132,7 +133,7 @@ func (s *FetcherService) FetchEmailsFromMultipleMailboxes(account models.EmailAc
 	}
 
 	// 检查是否应该使用Outlook Graph API
-	if s.shouldUseOutlookGraphAPI(account) {
+	if s.shouldUseOutlookGraphAPIWithSource(account, options.Source) {
 		// Outlook账户：使用统一的Graph API同步方法
 		s.logger.Debug("Detected Outlook account, using unified Outlook Graph API sync")
 
@@ -296,7 +297,7 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 	}
 
 	// Check if should use Outlook Graph API instead of IMAP
-	if s.shouldUseOutlookGraphAPI(account) {
+	if s.shouldUseOutlookGraphAPIWithSource(account, options.Source) {
 		s.logger.Debug("Using Outlook Graph API for account %s", account.EmailAddress)
 		return s.fetchEmailsFromOutlookGraphAPI(account, options)
 	}
@@ -1334,6 +1335,11 @@ func convertAddresses(addresses []*imap.Address) models.StringSlice {
 
 // VerifyConnection verifies if an email account can connect successfully
 func (s *FetcherService) VerifyConnection(account *models.EmailAccount) error {
+	return s.VerifyConnectionWithSource(account, EmailIngestSourceManualSync)
+}
+
+// VerifyConnectionWithSource verifies if an email account can connect successfully.
+func (s *FetcherService) VerifyConnectionWithSource(account *models.EmailAccount, source EmailIngestSource) error {
 	DecryptAccountCredentials(&account.Password, &account.Token)
 	s.logger.Info("VerifyConnection called for account %s", account.EmailAddress)
 	if err := s.prepareAccountProxy(account); err != nil {
@@ -1363,7 +1369,7 @@ func (s *FetcherService) VerifyConnection(account *models.EmailAccount) error {
 	// For Outlook OAuth2 accounts, try Graph API/REST API first
 	if account.AuthType == models.AuthTypeOAuth2 && account.MailProvider.Type == models.ProviderTypeOutlook {
 		s.logger.Debug("Using Outlook Graph API verification for OAuth2 account")
-		err := s.verifyOutlookGraphConnection(*account)
+		err := s.verifyOutlookGraphConnectionWithSource(*account, source)
 		if err == nil {
 			s.logger.Info("Outlook verification successful via Graph/REST API")
 			account.CustomSettings["connection_protocol"] = "graph"

@@ -171,6 +171,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 
 	// Dashboard statistics endpoint
 	apiRouter.HandleFunc("/dashboard/stats", handler.GetEmailStatsHandler).Methods("GET")
+	apiRouter.HandleFunc("/observability/runtime", handler.GetRuntimeObservabilityHandler).Methods("GET")
 
 	// Immediate email fetch endpoint
 	apiRouter.HandleFunc("/emails/fetch-now", handler.FetchNowHandler).Methods("POST")

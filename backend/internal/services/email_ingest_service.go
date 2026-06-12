@@ -13,10 +13,11 @@ import (
 type EmailIngestSource string
 
 const (
-	EmailIngestSourceAutoSync   EmailIngestSource = "auto_sync"
-	EmailIngestSourceManualSync EmailIngestSource = "manual_sync"
-	EmailIngestSourcePickup     EmailIngestSource = "pickup"
-	EmailIngestSourceUnknown    EmailIngestSource = "unknown"
+	EmailIngestSourceAutoSync         EmailIngestSource = "auto_sync"
+	EmailIngestSourceManualSync       EmailIngestSource = "manual_sync"
+	EmailIngestSourcePickup           EmailIngestSource = "pickup"
+	EmailIngestSourceBackgroundImport EmailIngestSource = "background_import"
+	EmailIngestSourceUnknown          EmailIngestSource = "unknown"
 )
 
 // EmailIngestOptions controls side effects for a batch of newly discovered emails.
@@ -72,12 +73,19 @@ func (s *EmailIngestService) IngestEmails(emails []models.Email, opts EmailInges
 	source := normalizeEmailIngestSource(opts.Source)
 	newEmails := make([]models.Email, 0, len(emails))
 	var firstErr error
+	duplicateCount := 0
+	errorCount := 0
+	recordIngest := RuntimeMetrics().BeginEmailIngest(source, len(emails))
+	defer func() {
+		recordIngest(len(newEmails), duplicateCount, errorCount, firstErr)
+	}()
 
 	for _, email := range emails {
 		if email.MessageID != "" {
 			exists, err := s.emailRepo.CheckDuplicate(email.MessageID, email.AccountID)
 			if err != nil {
 				s.logger.Error("Error checking duplicate for %s: %v", email.MessageID, err)
+				errorCount++
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -85,12 +93,14 @@ func (s *EmailIngestService) IngestEmails(emails []models.Email, opts EmailInges
 			}
 			if exists {
 				s.logger.Debug("Email already exists: %s", email.MessageID)
+				duplicateCount++
 				continue
 			}
 		}
 
 		if err := s.emailRepo.Create(&email); err != nil {
 			s.logger.Error("Failed to save email %s: %v", email.MessageID, err)
+			errorCount++
 			if firstErr == nil {
 				firstErr = err
 			}

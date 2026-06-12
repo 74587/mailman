@@ -261,6 +261,29 @@ func EmailRoutingAddressMatches(query, configured string) bool {
 	return false
 }
 
+type EmailRoutingAddressKind string
+
+const (
+	EmailRoutingAddressKindForwarded EmailRoutingAddressKind = "forwarded"
+)
+
+// EmailRoutingAddress is the indexed routing projection for recipient-to-account lookups.
+type EmailRoutingAddress struct {
+	ID                uint                    `gorm:"primaryKey" json:"id"`
+	AccountID         uint                    `gorm:"not null;index;uniqueIndex:idx_email_routing_account_address_kind,priority:1" json:"accountId"`
+	Account           EmailAccount            `gorm:"foreignKey:AccountID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"-"`
+	Address           string                  `gorm:"type:varchar(255);not null" json:"address"`
+	NormalizedAddress string                  `gorm:"type:varchar(255);not null;index:idx_email_routing_normalized_kind,priority:1;uniqueIndex:idx_email_routing_account_address_kind,priority:2" json:"normalizedAddress"`
+	Kind              EmailRoutingAddressKind `gorm:"type:varchar(32);not null;default:'forwarded';index:idx_email_routing_normalized_kind,priority:2;uniqueIndex:idx_email_routing_account_address_kind,priority:3" json:"kind"`
+	CreatedAt         time.Time               `json:"createdAt"`
+	UpdatedAt         time.Time               `json:"updatedAt"`
+	DeletedAt         DeletedAt               `gorm:"index" json:"deletedAt,omitempty"`
+}
+
+func (EmailRoutingAddress) TableName() string {
+	return "email_routing_addresses"
+}
+
 // EmailAccount represents a user's email account credentials and settings.
 type EmailAccount struct {
 	ID                   uint                `gorm:"primaryKey" json:"id"`

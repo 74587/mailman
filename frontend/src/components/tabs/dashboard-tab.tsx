@@ -3,10 +3,9 @@ import { logger } from '@/lib/logger';
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { Mail, Users, Activity, TrendingUp, Calendar, Clock, CheckCircle, AlertCircle, UserPlus, RefreshCw, Send, Trash2, UserCheck, UserX, Play, XCircle, Bell, BellOff, Cpu, FileText, LogIn, LogOut, Settings, Zap, ChevronRight } from 'lucide-react'
-import { emailAccountService } from '@/services/email-account.service'
 import { emailService, EmailStatsResponse } from '@/services/email.service'
+import { observabilityService, RuntimeObservabilitySnapshot } from '@/services/observability.service'
 import { activityService, ActivityLog } from '@/services/activity.service'
-import { formatDate } from '@/lib/utils'
 import { useAuth } from '@/context/auth-context'
 import { registerRefreshCallback, unregisterRefreshCallback } from '@/lib/tab-utils'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -244,6 +243,17 @@ function ActivityItem({
     )
 }
 
+function formatRuntimeMS(value?: number) {
+    const ms = value || 0
+    if (ms >= 1000) return `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`
+    if (ms >= 100) return `${Math.round(ms)}ms`
+    return `${ms.toFixed(ms >= 10 ? 1 : 2)}ms`
+}
+
+function formatRuntimePercent(value?: number) {
+    return `${((value || 0) * 100).toFixed(1)}%`
+}
+
 export default function DashboardTab() {
     const [loading, setLoading] = useState(true)
     const [refreshing, setRefreshing] = useState(false)
@@ -265,8 +275,8 @@ export default function DashboardTab() {
         // 触发器统计
         totalTriggers: 0,
         enabledTriggers: 0,
-        lastSyncTime: null as string | null
     })
+    const [runtimeSnapshot, setRuntimeSnapshot] = useState<RuntimeObservabilitySnapshot | null>(null)
     const [recentActivities, setRecentActivities] = useState<any[]>([])
     const { isAuthenticated } = useAuth()
 
@@ -307,15 +317,11 @@ export default function DashboardTab() {
                 console.warn('[DashboardTab] 获取统计数据失败，使用默认值:', error)
             }
 
-            // 获取最后同步时间
-            let lastSyncTime = null
             try {
-                const accounts = await emailAccountService.getAccounts()
-                if (accounts.length > 0 && accounts[0].lastSync) {
-                    lastSyncTime = formatDate(accounts[0].lastSync)
-                }
+                const runtime = await observabilityService.getRuntimeSnapshot()
+                setRuntimeSnapshot(runtime)
             } catch (error) {
-                console.warn('[DashboardTab] 获取账户列表失败:', error)
+                console.warn('[DashboardTab] 获取运行状态失败:', error)
             }
 
             setStats({
@@ -330,7 +336,6 @@ export default function DashboardTab() {
                 todayGrowthRate: emailStats.todayGrowthRate,
                 totalTriggers: emailStats.totalTriggers,
                 enabledTriggers: emailStats.enabledTriggers,
-                lastSyncTime: lastSyncTime
             })
 
             // 获取真实的活动数据
@@ -436,14 +441,21 @@ export default function DashboardTab() {
         )
     }
 
+    const pickupSource = runtimeSnapshot?.sources?.pickup
+    const backgroundSource = runtimeSnapshot?.sources?.background_import
+    const outlookOperations = Object.values(runtimeSnapshot?.outlook?.operations || {})
+    const outlookErrorRate = outlookOperations.reduce((max, operation) => Math.max(max, operation.total.error_rate || 0), 0)
+    const ingestP95 = Math.max(0, ...Object.values(runtimeSnapshot?.sources || {}).map(source => source.ingest.p95_ms || 0))
+    const totalInserted = Object.values(runtimeSnapshot?.sources || {}).reduce((total, source) => total + (source.ingest.inserted || 0), 0)
+
     return (
         <div className="space-y-6 p-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-white">仪表板</h2>
                 <div className="flex flex-wrap items-center gap-3">
-                    {stats.lastSyncTime && (
+                    {runtimeSnapshot?.generated_at && (
                         <p className="text-sm text-gray-600 dark:text-gray-400">
-                            最后同步: {stats.lastSyncTime}
+                            运行状态: {new Date(runtimeSnapshot.generated_at).toLocaleTimeString()}
                         </p>
                     )}
                     <div className="flex items-center gap-2 rounded-xl border border-gray-100 bg-white px-3 py-2 shadow-sm dark:border-gray-700/50 dark:bg-gray-800/80">
@@ -533,6 +545,51 @@ export default function DashboardTab() {
                     icon={Zap}
                     color="success"
                 />
+            </div>
+
+            {/* 运行状态摘要 */}
+            <div className="rounded-2xl border border-gray-100 bg-white shadow-sm dark:border-gray-700/50 dark:bg-gray-800/80">
+                <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-5 py-4 dark:border-gray-700/50">
+                    <div className="flex items-center gap-2">
+                        <div className="rounded-lg bg-blue-100 p-1.5 dark:bg-blue-900/30">
+                            <Activity className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                        </div>
+                        <h3 className="font-semibold text-gray-900 dark:text-white">运行状态</h3>
+                    </div>
+                    <button
+                        onClick={() => {
+                            window.dispatchEvent(new CustomEvent('switchTab', {
+                                detail: { tab: 'runtime-status' }
+                            }))
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-900/20"
+                    >
+                        查看详情
+                        <ChevronRight className="h-3.5 w-3.5" />
+                    </button>
+                </div>
+                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-xl bg-gray-50 p-3 dark:bg-gray-700/30">
+                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400">取件等待 P95</p>
+                        <p className="mt-1 text-xl font-semibold tabular-nums text-gray-900 dark:text-white">{formatRuntimeMS(pickupSource?.sync_slot_wait.p95_ms)}</p>
+                        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">运行中 {runtimeSnapshot?.sync_concurrency.current_pickup || 0}/{runtimeSnapshot?.sync_concurrency.pickup_limit || 0}</p>
+                    </div>
+                    <div className="rounded-xl bg-gray-50 p-3 dark:bg-gray-700/30">
+                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400">后台导入</p>
+                        <p className="mt-1 text-xl font-semibold tabular-nums text-gray-900 dark:text-white">{runtimeSnapshot?.batch_outlook_import.running_jobs || 0}</p>
+                        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">等待 P95 {formatRuntimeMS(backgroundSource?.sync_slot_wait.p95_ms)}</p>
+                    </div>
+                    <div className="rounded-xl bg-gray-50 p-3 dark:bg-gray-700/30">
+                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Outlook 错误率</p>
+                        <p className="mt-1 text-xl font-semibold tabular-nums text-gray-900 dark:text-white">{formatRuntimePercent(outlookErrorRate)}</p>
+                        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">后台请求 {runtimeSnapshot?.outlook.limiter.active_background || 0}/{runtimeSnapshot?.outlook.limiter.background_limit || 0}</p>
+                    </div>
+                    <div className="rounded-xl bg-gray-50 p-3 dark:bg-gray-700/30">
+                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400">入库延迟 P95</p>
+                        <p className="mt-1 text-xl font-semibold tabular-nums text-gray-900 dark:text-white">{formatRuntimeMS(ingestP95)}</p>
+                        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">插入 {totalInserted.toLocaleString()} 封</p>
+                    </div>
+                </div>
             </div>
 
             {/* 最近活动和快速操作 */}

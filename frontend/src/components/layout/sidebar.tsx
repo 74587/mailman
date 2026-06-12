@@ -103,6 +103,7 @@ const businessNavigation: MenuItem[] = [
 
 // 系统管理菜单组
 const adminNavigation: MenuItem[] = [
+    { name: '运行状态', id: 'runtime-status', icon: BarChart3, description: '取件 · 导入 · Outlook', permission: { resource: 'system_config', action: 'read' } },
     { name: '系统配置', id: 'system-config', icon: Settings, permission: { resource: 'system_config', action: 'read' } },
     { name: '团队管理', id: 'team-management', icon: Building2, description: '组织 · 成员 · 角色', permission: { resource: 'organization', action: 'read' } },
     { name: '用户管理', id: 'user-management', icon: Users, description: '创建和管理系统用户' },

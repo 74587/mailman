@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // EmailAccountRepository handles database operations for EmailAccount
@@ -158,7 +159,13 @@ func (r *EmailAccountRepository) GetDB() *gorm.DB {
 
 // Create creates a new email account
 func (r *EmailAccountRepository) Create(account *models.EmailAccount) error {
-	return r.db.Create(account).Error
+	account.ForwardedAddresses = models.NormalizeEmailRoutingAddresses(account.ForwardedAddresses)
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(account).Error; err != nil {
+			return err
+		}
+		return replaceAccountRoutingAddresses(tx, account)
+	})
 }
 
 // GetByID retrieves an email account by ID
@@ -250,24 +257,116 @@ func (r *EmailAccountRepository) GetByForwardedAddress(email string) (*models.Em
 		return nil, errors.New("email account not found")
 	}
 
-	var accounts []models.EmailAccount
-	err := r.db.Preload("MailProvider").
-		Where(textLikeExpr(r.db, "forwarded_addresses"), "%@%").
-		Order("id ASC").
-		Find(&accounts).Error
-	if err != nil {
+	if account, err := r.getAccountByRoutingAddress(recipient); err == nil {
+		return account, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 
-	for i := range accounts {
-		for _, forwardedAddress := range accounts[i].ForwardedAddresses {
-			if models.EmailRoutingAddressMatches(recipient, forwardedAddress) {
-				return &accounts[i], nil
-			}
+	if wildcard := forwardedRoutingWildcardCandidate(recipient); wildcard != "" && wildcard != recipient {
+		if account, err := r.getAccountByRoutingAddress(wildcard); err == nil {
+			return account, nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
 		}
 	}
 
 	return nil, errors.New("email account not found")
+}
+
+func (r *EmailAccountRepository) getAccountByRoutingAddress(normalizedAddress string) (*models.EmailAccount, error) {
+	var route models.EmailRoutingAddress
+	err := r.db.
+		Where("kind = ? AND normalized_address = ?", models.EmailRoutingAddressKindForwarded, normalizedAddress).
+		Order("account_id ASC").
+		First(&route).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var account models.EmailAccount
+	if err := r.db.Preload("MailProvider").First(&account, route.AccountID).Error; err != nil {
+		return nil, err
+	}
+	return &account, nil
+}
+
+func forwardedRoutingWildcardCandidate(normalizedAddress string) string {
+	if strings.HasPrefix(normalizedAddress, "*@") && len(normalizedAddress) > 2 {
+		return normalizedAddress
+	}
+
+	at := strings.LastIndex(normalizedAddress, "@")
+	if at < 0 || at == len(normalizedAddress)-1 {
+		return ""
+	}
+	return "*@" + normalizedAddress[at+1:]
+}
+
+func buildForwardedRoutingAddresses(account *models.EmailAccount) []models.EmailRoutingAddress {
+	if account == nil || account.ID == 0 {
+		return nil
+	}
+
+	addresses := models.NormalizeEmailRoutingAddresses(account.ForwardedAddresses)
+	account.ForwardedAddresses = addresses
+
+	routes := make([]models.EmailRoutingAddress, 0, len(addresses))
+	for _, address := range addresses {
+		routes = append(routes, models.EmailRoutingAddress{
+			AccountID:         account.ID,
+			Address:           address,
+			NormalizedAddress: address,
+			Kind:              models.EmailRoutingAddressKindForwarded,
+		})
+	}
+	return routes
+}
+
+func replaceAccountRoutingAddresses(tx *gorm.DB, account *models.EmailAccount) error {
+	if account == nil || account.ID == 0 {
+		return nil
+	}
+
+	if err := tx.Unscoped().
+		Where("account_id = ? AND kind = ?", account.ID, models.EmailRoutingAddressKindForwarded).
+		Delete(&models.EmailRoutingAddress{}).Error; err != nil {
+		return err
+	}
+
+	routes := buildForwardedRoutingAddresses(account)
+	if len(routes) == 0 {
+		return nil
+	}
+
+	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&routes).Error
+}
+
+// BackfillEmailRoutingAddresses builds the indexed routing projection for accounts created before the projection existed.
+func (r *EmailAccountRepository) BackfillEmailRoutingAddresses() error {
+	var routeCount int64
+	if err := r.db.Model(&models.EmailRoutingAddress{}).
+		Where("kind = ?", models.EmailRoutingAddressKindForwarded).
+		Count(&routeCount).Error; err != nil {
+		return err
+	}
+	if routeCount > 0 {
+		return nil
+	}
+
+	accounts := make([]models.EmailAccount, 0, 1000)
+	return r.db.Model(&models.EmailAccount{}).
+		Order("id ASC").
+		FindInBatches(&accounts, 1000, func(tx *gorm.DB, batch int) error {
+			routes := make([]models.EmailRoutingAddress, 0)
+			for i := range accounts {
+				routes = append(routes, buildForwardedRoutingAddresses(&accounts[i])...)
+			}
+			if len(routes) == 0 {
+				return nil
+			}
+			return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&routes).Error
+		}).Error
 }
 
 // GetAll retrieves all email accounts
@@ -867,17 +966,37 @@ func (r *EmailAccountRepository) GetByDomain(domain string) ([]models.EmailAccou
 
 // Update updates an email account
 func (r *EmailAccountRepository) Update(account *models.EmailAccount) error {
-	return r.db.Save(account).Error
+	account.ForwardedAddresses = models.NormalizeEmailRoutingAddresses(account.ForwardedAddresses)
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(account).Error; err != nil {
+			return err
+		}
+		return replaceAccountRoutingAddresses(tx, account)
+	})
 }
 
 // Delete soft deletes an email account
 func (r *EmailAccountRepository) Delete(id uint) error {
-	return r.db.Delete(&models.EmailAccount{}, id).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().
+			Where("account_id = ?", id).
+			Delete(&models.EmailRoutingAddress{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&models.EmailAccount{}, id).Error
+	})
 }
 
 // HardDelete permanently deletes an email account
 func (r *EmailAccountRepository) HardDelete(id uint) error {
-	return r.db.Unscoped().Delete(&models.EmailAccount{}, id).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Unscoped().
+			Where("account_id = ?", id).
+			Delete(&models.EmailRoutingAddress{}).Error; err != nil {
+			return err
+		}
+		return tx.Unscoped().Delete(&models.EmailAccount{}, id).Error
+	})
 }
 
 // UpdateLastSync updates the last sync timestamp for an account

@@ -523,6 +523,10 @@ func (h *APIHandler) BatchVerifyAccountsHandler(w http.ResponseWriter, r *http.R
 
 // verifyAccountByID verifies a single account by ID and updates verification status
 func (h *APIHandler) verifyAccountByID(accountID uint) BatchVerifyAccountResult {
+	return h.verifyAccountByIDWithSource(accountID, services.EmailIngestSourceManualSync)
+}
+
+func (h *APIHandler) verifyAccountByIDWithSource(accountID uint, source services.EmailIngestSource) BatchVerifyAccountResult {
 	// Get account from database
 	account, err := h.EmailAccountRepo.GetByID(accountID)
 	if err != nil {
@@ -535,7 +539,7 @@ func (h *APIHandler) verifyAccountByID(accountID uint) BatchVerifyAccountResult 
 	}
 
 	// Verify connection
-	err = h.Fetcher.VerifyConnection(account)
+	err = h.Fetcher.VerifyConnectionWithSource(account, source)
 
 	result := BatchVerifyAccountResult{
 		AccountID:    accountID,

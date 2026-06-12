@@ -9,6 +9,7 @@ import (
 	"mailman/internal/models"
 	"mailman/internal/services"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,8 +20,8 @@ import (
 const (
 	batchOutlookImportMaxAccounts        = 5000
 	batchOutlookImportDefaultCreateLimit = 10
-	batchOutlookImportDefaultVerifyLimit = 4
-	batchOutlookImportDefaultSyncLimit   = 2
+	batchOutlookImportDefaultVerifyLimit = 1
+	batchOutlookImportDefaultSyncLimit   = 1
 	batchOutlookImportMaxCreateLimit     = 30
 	batchOutlookImportMaxVerifyLimit     = 12
 	batchOutlookImportMaxSyncLimit       = 6
@@ -190,6 +191,63 @@ func (s *batchOutlookImportJobStore) get(id string) (*batchOutlookImportJob, boo
 	job, ok := s.jobs[id]
 	s.mu.RUnlock()
 	return job, ok
+}
+
+func (s *batchOutlookImportJobStore) observabilitySnapshot() services.BatchImportObservabilitySnapshot {
+	s.mu.RLock()
+	jobs := make([]*batchOutlookImportJob, 0, len(s.jobs))
+	for _, job := range s.jobs {
+		jobs = append(jobs, job)
+	}
+	s.mu.RUnlock()
+
+	recentJobs := make([]services.BatchImportJobBrief, 0, len(jobs))
+	var snapshot services.BatchImportObservabilitySnapshot
+	for _, job := range jobs {
+		jobSnapshot := job.snapshot()
+		switch jobSnapshot.Status {
+		case batchOutlookStatusQueued:
+			snapshot.QueuedJobs++
+		case batchOutlookStatusRunning:
+			snapshot.RunningJobs++
+		case batchOutlookStatusFailed:
+			snapshot.FailedJobs++
+		case batchOutlookStatusComplete:
+			snapshot.CompletedJobs++
+		}
+
+		errorResults := jobSnapshot.Summary.CreateError +
+			jobSnapshot.Summary.VerifyError +
+			jobSnapshot.Summary.SyncError +
+			jobSnapshot.Summary.ConfigError
+
+		snapshot.TotalAccounts += int64(jobSnapshot.Summary.Total)
+		snapshot.CompletedResults += int64(jobSnapshot.Summary.CompletedResults)
+		snapshot.ErrorResults += int64(errorResults)
+		recentJobs = append(recentJobs, services.BatchImportJobBrief{
+			JobID:            jobSnapshot.JobID,
+			Status:           jobSnapshot.Status,
+			Stage:            jobSnapshot.Stage,
+			Total:            jobSnapshot.Summary.Total,
+			CompletedResults: jobSnapshot.Summary.CompletedResults,
+			CreateErrors:     jobSnapshot.Summary.CreateError,
+			VerifyErrors:     jobSnapshot.Summary.VerifyError,
+			SyncErrors:       jobSnapshot.Summary.SyncError,
+			ConfigErrors:     jobSnapshot.Summary.ConfigError,
+			StartedAt:        jobSnapshot.StartedAt,
+			UpdatedAt:        jobSnapshot.UpdatedAt,
+			FinishedAt:       jobSnapshot.FinishedAt,
+		})
+	}
+
+	sort.Slice(recentJobs, func(i, j int) bool {
+		return recentJobs[i].UpdatedAt.After(recentJobs[j].UpdatedAt)
+	})
+	if len(recentJobs) > 8 {
+		recentJobs = recentJobs[:8]
+	}
+	snapshot.RecentJobs = recentJobs
+	return snapshot
 }
 
 func newBatchOutlookImportJobID() (string, error) {
@@ -510,7 +568,7 @@ func (h *APIHandler) runBatchOutlookImportJob(job *batchOutlookImportJob, accoun
 		job.updateResult(idx, func(result *BatchOutlookImportAccountResult) {
 			result.VerifyStatus = batchOutlookStepRunning
 		})
-		verification := h.verifyAccountByID(snapshot.AccountID)
+		verification := h.verifyAccountByIDWithSource(snapshot.AccountID, services.EmailIngestSourceBackgroundImport)
 		if !verification.Success {
 			job.updateResult(idx, func(result *BatchOutlookImportAccountResult) {
 				result.VerifyStatus = batchOutlookStepError
@@ -569,7 +627,7 @@ func (h *APIHandler) runBatchOutlookImportJob(job *batchOutlookImportJob, accoun
 			})
 			return
 		}
-		syncResponse, err := h.runFetchAndStoreForAccount(r, *account, job.options.InitialSync)
+		syncResponse, err := h.runFetchAndStoreForAccountWithSource(r, *account, job.options.InitialSync, services.EmailIngestSourceBackgroundImport)
 		if err != nil {
 			job.updateResult(idx, func(result *BatchOutlookImportAccountResult) {
 				result.SyncStatus = batchOutlookStepError
