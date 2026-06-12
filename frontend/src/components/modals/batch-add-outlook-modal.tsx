@@ -55,6 +55,44 @@ const TEMPLATE_VARS = [
     { label: '辅助邮箱', value: '${recovery_email}', color: 'bg-pink-100 text-pink-800 dark:bg-pink-900/30 dark:text-pink-300' },
 ]
 
+const LARGE_BATCH_VERIFY_THRESHOLD = 200
+const DEFAULT_CREATE_CONCURRENCY = 10
+const DEFAULT_VERIFY_CONCURRENCY = 4
+const DEFAULT_SYNC_CONCURRENCY = 2
+const MAX_CREATE_CONCURRENCY = 30
+const MAX_VERIFY_CONCURRENCY = 12
+const MAX_SYNC_CONCURRENCY = 6
+
+const clampConcurrency = (value: number, max: number) => {
+    if (!Number.isFinite(value)) return 1
+    return Math.min(Math.max(Math.floor(value), 1), max)
+}
+
+const getErrorMessage = (error: unknown) => {
+    if (error instanceof Error) return error.message
+    if (typeof error === 'string') return error
+    return '未知错误'
+}
+
+async function runWithConcurrency<T>(
+    items: T[],
+    limit: number,
+    worker: (item: T, index: number) => Promise<void>
+) {
+    if (items.length === 0) return
+
+    let cursor = 0
+    const workerCount = Math.min(clampConcurrency(limit, items.length), items.length)
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+        while (true) {
+            const currentIndex = cursor
+            cursor += 1
+            if (currentIndex >= items.length) return
+            await worker(items[currentIndex], currentIndex)
+        }
+    }))
+}
+
 export default function BatchAddOutlookModal({
     isOpen,
     onClose,
@@ -71,6 +109,10 @@ export default function BatchAddOutlookModal({
     const [parsedAccounts, setParsedAccounts] = useState<BatchAccountData[]>([])
     const [showTemplateSettings, setShowTemplateSettings] = useState(true)
     const [hideInvalid, setHideInvalid] = useState(false)
+    const [verifyAfterCreate, setVerifyAfterCreate] = useState(true)
+    const [createConcurrency, setCreateConcurrency] = useState(DEFAULT_CREATE_CONCURRENCY)
+    const [verifyConcurrency, setVerifyConcurrency] = useState(DEFAULT_VERIFY_CONCURRENCY)
+    const [syncConcurrency, setSyncConcurrency] = useState(DEFAULT_SYNC_CONCURRENCY)
 
     // Status tracking for creation/verification
     const [accountStatuses, setAccountStatuses] = useState<AccountStatus[]>([])
@@ -117,6 +159,7 @@ export default function BatchAddOutlookModal({
         if (isOpen) {
             setStage('input')
             setAccountStatuses([])
+            setVerifyAfterCreate(true)
         }
     }, [isOpen])
 
@@ -128,6 +171,7 @@ export default function BatchAddOutlookModal({
             setInputText('')
             setParsedAccounts([])
             setAccountStatuses([])
+            setVerifyAfterCreate(true)
         }, 300)
     }
 
@@ -150,6 +194,13 @@ export default function BatchAddOutlookModal({
             verifyStatus: 'pending'
         }))
         setAccountStatuses(initialStatuses)
+        const statusDrafts: AccountStatus[] = initialStatuses.map(status => ({ ...status }))
+        const patchStatus = (idx: number, patch: Partial<AccountStatus>) => {
+            statusDrafts[idx] = { ...statusDrafts[idx], ...patch }
+            setAccountStatuses(prev => prev.map((status, statusIdx) =>
+                statusIdx === idx ? { ...status, ...patch } : status
+            ))
+        }
 
         // Get Outlook provider
         let providerId = outlookProviderId
@@ -174,15 +225,8 @@ export default function BatchAddOutlookModal({
             }
         }
 
-        // Create accounts one by one
-        for (let i = 0; i < validAccounts.length; i++) {
-            const acc = validAccounts[i]
-
-            // Update status to creating
-            setAccountStatuses(prev => prev.map((s, idx) =>
-                idx === i ? { ...s, createStatus: 'creating' } : s
-            ))
-
+        await runWithConcurrency(validAccounts, createConcurrency, async (acc, idx) => {
+            patchStatus(idx, { createStatus: 'creating' })
             try {
                 const payload = {
                     email_address: acc.email,
@@ -198,50 +242,46 @@ export default function BatchAddOutlookModal({
 
                 const created = await emailAccountService.upsertAccount(payload)
 
-                setAccountStatuses(prev => prev.map((s, idx) =>
-                    idx === i ? { ...s, createStatus: 'success', accountId: created.id } : s
-                ))
-            } catch (err: any) {
-                setAccountStatuses(prev => prev.map((s, idx) =>
-                    idx === i ? { ...s, createStatus: 'error', createError: err.message, verifyStatus: 'skipped' } : s
-                ))
+                patchStatus(idx, { createStatus: 'success', accountId: created.id })
+            } catch (err: unknown) {
+                patchStatus(idx, {
+                    createStatus: 'error',
+                    createError: getErrorMessage(err),
+                    verifyStatus: 'skipped'
+                })
             }
-        }
-
-        // Move to verification stage - verify one by one for real-time feedback
-        setStage('verifying')
-
-        // Get current statuses for verification
-        const statusesAfterCreate = await new Promise<AccountStatus[]>(resolve => {
-            setAccountStatuses(prev => {
-                resolve(prev)
-                return prev
-            })
         })
 
-        // Verify accounts one by one
-        for (let i = 0; i < statusesAfterCreate.length; i++) {
-            const status = statusesAfterCreate[i]
-            if (status.createStatus !== 'success' || !status.accountId) {
-                continue // Skip failed creates
-            }
+        if (!verifyAfterCreate) {
+            statusDrafts.forEach((status, idx) => {
+                if (status.createStatus === 'success') {
+                    statusDrafts[idx] = { ...status, verifyStatus: 'skipped' }
+                }
+            })
+            setAccountStatuses(statusDrafts.map(status => ({ ...status })))
+            setStage('verified')
+            setIsProcessing(false)
+            return
+        }
 
-            // Update to verifying
-            setAccountStatuses(prev => prev.map((s, idx) =>
-                idx === i ? { ...s, verifyStatus: 'verifying' } : s
-            ))
+        setStage('verifying')
 
+        const accountsToVerify = statusDrafts
+            .map((status, idx) => ({ status, idx }))
+            .filter(({ status }) => status.createStatus === 'success' && status.accountId)
+
+        await runWithConcurrency(accountsToVerify, verifyConcurrency, async ({ status, idx }) => {
+            patchStatus(idx, { verifyStatus: 'verifying', verifyError: undefined })
             try {
                 const result = await emailAccountService.verifyAccount({ account_id: status.accountId })
-                setAccountStatuses(prev => prev.map((s, idx) =>
-                    idx === i ? { ...s, verifyStatus: result.success ? 'success' : 'error', verifyError: result.error } : s
-                ))
-            } catch (err: any) {
-                setAccountStatuses(prev => prev.map((s, idx) =>
-                    idx === i ? { ...s, verifyStatus: 'error', verifyError: err.message } : s
-                ))
+                patchStatus(idx, {
+                    verifyStatus: result.success ? 'success' : 'error',
+                    verifyError: result.error
+                })
+            } catch (err: unknown) {
+                patchStatus(idx, { verifyStatus: 'error', verifyError: getErrorMessage(err) })
             }
-        }
+        })
 
         setStage('verified')
         setIsProcessing(false)
@@ -347,30 +387,30 @@ export default function BatchAddOutlookModal({
         setIsProcessing(true)
         setStage('syncing')
 
-        const accountsToSync = accountStatuses.filter(s => s.verifyStatus === 'success' && s.accountId)
-
-        for (let i = 0; i < accountsToSync.length; i++) {
-            const status = accountsToSync[i]
-            const idx = accountStatuses.findIndex(s => s.accountId === status.accountId)
-
-            setAccountStatuses(prev => prev.map((s, j) =>
-                j === idx ? { ...s, syncStatus: 'syncing' } : s
+        const syncDrafts: AccountStatus[] = accountStatuses.map(status => ({ ...status }))
+        const patchStatus = (idx: number, patch: Partial<AccountStatus>) => {
+            syncDrafts[idx] = { ...syncDrafts[idx], ...patch }
+            setAccountStatuses(prev => prev.map((status, statusIdx) =>
+                statusIdx === idx ? { ...status, ...patch } : status
             ))
+        }
 
+        const accountsToSync = syncDrafts
+            .map((status, idx) => ({ status, idx }))
+            .filter(({ status }) => status.verifyStatus === 'success' && status.accountId)
+
+        await runWithConcurrency(accountsToSync, syncConcurrency, async ({ status, idx }) => {
+            patchStatus(idx, { syncStatus: 'syncing', syncError: undefined })
             try {
                 await emailAccountService.syncAccount(status.accountId!, {
                     sync_mode: defaultSyncConfig.syncMode,
                     max_emails_per_mailbox: defaultSyncConfig.maxEmails
                 })
-                setAccountStatuses(prev => prev.map((s, j) =>
-                    j === idx ? { ...s, syncStatus: 'success' } : s
-                ))
-            } catch (err: any) {
-                setAccountStatuses(prev => prev.map((s, j) =>
-                    j === idx ? { ...s, syncStatus: 'error', syncError: err.message } : s
-                ))
+                patchStatus(idx, { syncStatus: 'success' })
+            } catch (err: unknown) {
+                patchStatus(idx, { syncStatus: 'error', syncError: getErrorMessage(err) })
             }
-        }
+        })
         // Load global sync config and initialize per-account configs
         try {
             const globalConfig = await syncConfigService.getGlobalSyncConfig()
@@ -381,7 +421,7 @@ export default function BatchAddOutlookModal({
             })
 
             // Initialize per-account configs based on global config
-            const syncedAccounts = accountStatuses.filter(s => s.syncStatus === 'success' && s.accountId)
+            const syncedAccounts = syncDrafts.filter(s => s.syncStatus === 'success' && s.accountId)
             const initialConfigs: typeof perAccountConfigs = {}
             syncedAccounts.forEach(status => {
                 if (status.accountId) {
@@ -396,7 +436,7 @@ export default function BatchAddOutlookModal({
         } catch (err) {
             console.error('Failed to load global sync config:', err)
             // Fallback to default values
-            const syncedAccounts = accountStatuses.filter(s => s.syncStatus === 'success' && s.accountId)
+            const syncedAccounts = syncDrafts.filter(s => s.syncStatus === 'success' && s.accountId)
             const initialConfigs: typeof perAccountConfigs = {}
             syncedAccounts.forEach(status => {
                 if (status.accountId) {
@@ -420,14 +460,15 @@ export default function BatchAddOutlookModal({
 
         const accountsToConfig = accountStatuses.filter(s => s.syncStatus === 'success' && s.accountId)
 
-        for (const status of accountsToConfig) {
-            if (!status.accountId) continue
-            const config = perAccountConfigs[status.accountId]
-            if (!config) continue
+        await runWithConcurrency(accountsToConfig, createConcurrency, async (status) => {
+            const accountId = status.accountId
+            if (!accountId) return
+            const config = perAccountConfigs[accountId]
+            if (!config) return
 
             try {
                 // Try to create new config first (since accounts are new)
-                await syncConfigService.createAccountSyncConfig(status.accountId, {
+                await syncConfigService.createAccountSyncConfig(accountId, {
                     enable_auto_sync: config.enableAutoSync,
                     sync_interval: config.syncInterval,
                     sync_folders: config.syncFolders
@@ -435,16 +476,16 @@ export default function BatchAddOutlookModal({
             } catch (err: any) {
                 // If create fails, try update (in case config already exists)
                 try {
-                    await syncConfigService.updateAccountSyncConfig(status.accountId, {
+                    await syncConfigService.updateAccountSyncConfig(accountId, {
                         enable_auto_sync: config.enableAutoSync,
                         sync_interval: config.syncInterval,
                         sync_folders: config.syncFolders
                     })
                 } catch (updateErr) {
-                    console.error(`Failed to save sync config for account ${status.accountId}:`, updateErr)
+                    console.error(`Failed to save sync config for account ${accountId}:`, updateErr)
                 }
             }
-        }
+        })
 
         setIsProcessing(false)
         setStage('complete')
@@ -557,6 +598,9 @@ export default function BatchAddOutlookModal({
             })
 
             setParsedAccounts(results)
+            if (results.filter(account => account.isValid).length > LARGE_BATCH_VERIFY_THRESHOLD) {
+                setVerifyAfterCreate(false)
+            }
             setStage('preview')
         } catch (e) {
             console.error('Regex generation failed', e)
@@ -566,6 +610,8 @@ export default function BatchAddOutlookModal({
 
     const validCount = parsedAccounts.filter(a => a.isValid).length
     const invalidCount = parsedAccounts.length - validCount
+    const verificationSuccessCount = accountStatuses.filter(s => s.verifyStatus === 'success').length
+    const verificationSkippedCount = accountStatuses.filter(s => s.verifyStatus === 'skipped').length
 
     return (
         <Modal open={isOpen} onOpenChange={(open) => !open && handleClose()}>
@@ -847,6 +893,20 @@ export default function BatchAddOutlookModal({
                                     />
                                 </div>
 
+                                <div className="space-y-2">
+                                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                        首次同步并发
+                                    </label>
+                                    <input
+                                        type="number"
+                                        value={syncConcurrency}
+                                        onChange={(e) => setSyncConcurrency(clampConcurrency(Number(e.target.value), MAX_SYNC_CONCURRENCY))}
+                                        min="1"
+                                        max={MAX_SYNC_CONCURRENCY}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+                                    />
+                                </div>
+
                                 {/* Auto Sync Config */}
                                 <div className="space-y-3 p-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
                                     <label className="flex items-center gap-3 cursor-pointer">
@@ -1021,7 +1081,7 @@ export default function BatchAddOutlookModal({
                                             {stage === 'verified' && (
                                                 <>
                                                     <CheckCircle className="h-4 w-4 text-green-600" />
-                                                    验证完成
+                                                    {verificationSkippedCount > 0 ? '导入完成' : '验证完成'}
                                                 </>
                                             )}
                                             {stage === 'syncing' && (
@@ -1039,8 +1099,13 @@ export default function BatchAddOutlookModal({
                                         </h3>
                                         <div className="flex gap-3 text-xs">
                                             <span className="text-green-600">
-                                                {accountStatuses.filter(s => s.verifyStatus === 'success').length} 验证成功
+                                                {verificationSuccessCount} 验证成功
                                             </span>
+                                            {verificationSkippedCount > 0 && (
+                                                <span className="text-amber-600">
+                                                    {verificationSkippedCount} 未验证
+                                                </span>
+                                            )}
                                             {accountStatuses.filter(s => s.createStatus === 'error' || s.verifyStatus === 'error').length > 0 && (
                                                 <span className="text-red-600">
                                                     {accountStatuses.filter(s => s.createStatus === 'error' || s.verifyStatus === 'error').length} 失败
@@ -1274,12 +1339,48 @@ export default function BatchAddOutlookModal({
 
                     {stage === 'preview' && (
                         <>
+                            <div className="mr-auto flex flex-wrap items-center gap-3 text-sm text-gray-600 dark:text-gray-300">
+                                <label className="flex items-center gap-2">
+                                    <Switch
+                                        checked={verifyAfterCreate}
+                                        onCheckedChange={setVerifyAfterCreate}
+                                        className="scale-90"
+                                    />
+                                    <span>导入后立即验证</span>
+                                    {validCount > LARGE_BATCH_VERIFY_THRESHOLD && (
+                                        <span className="text-xs text-amber-600 dark:text-amber-400">大批量建议关闭</span>
+                                    )}
+                                </label>
+                                <label className="flex items-center gap-1 text-xs">
+                                    <span>导入并发</span>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        max={MAX_CREATE_CONCURRENCY}
+                                        value={createConcurrency}
+                                        onChange={(event) => setCreateConcurrency(clampConcurrency(Number(event.target.value), MAX_CREATE_CONCURRENCY))}
+                                        className="h-7 w-14 rounded border border-gray-300 px-2 text-xs dark:border-gray-600 dark:bg-gray-700"
+                                    />
+                                </label>
+                                <label className={cn("flex items-center gap-1 text-xs", !verifyAfterCreate && "opacity-50")}>
+                                    <span>验证并发</span>
+                                    <input
+                                        type="number"
+                                        min={1}
+                                        max={MAX_VERIFY_CONCURRENCY}
+                                        value={verifyConcurrency}
+                                        disabled={!verifyAfterCreate}
+                                        onChange={(event) => setVerifyConcurrency(clampConcurrency(Number(event.target.value), MAX_VERIFY_CONCURRENCY))}
+                                        className="h-7 w-14 rounded border border-gray-300 px-2 text-xs disabled:cursor-not-allowed dark:border-gray-600 dark:bg-gray-700"
+                                    />
+                                </label>
+                            </div>
                             <Button variant="secondary" onClick={parseAccounts}>
                                 <Layout className="mr-2 h-4 w-4" />
                                 重新解析
                             </Button>
                             <Button disabled={validCount === 0} onClick={handleConfirmAdd}>
-                                确认添加 ({validCount})
+                                {verifyAfterCreate ? `确认添加并验证 (${validCount})` : `仅导入 (${validCount})`}
                             </Button>
                         </>
                     )}
@@ -1295,9 +1396,9 @@ export default function BatchAddOutlookModal({
                     )}
 
                     {stage === 'verified' && (
-                        <Button onClick={handleGoToSyncSettings} disabled={accountStatuses.filter(s => s.verifyStatus === 'success').length === 0}>
+                        <Button onClick={handleGoToSyncSettings} disabled={verificationSuccessCount === 0}>
                             <Settings2 className="mr-2 h-4 w-4" />
-                            配置同步 ({accountStatuses.filter(s => s.verifyStatus === 'success').length})
+                            配置同步 ({verificationSuccessCount})
                         </Button>
                     )}
 

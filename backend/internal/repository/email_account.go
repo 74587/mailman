@@ -142,7 +142,13 @@ func NewEmailAccountRepository(db *gorm.DB) *EmailAccountRepository {
 }
 
 func (r *EmailAccountRepository) accountSearchCondition() string {
-	return fmt.Sprintf("(email_address LIKE ? OR domain LIKE ? OR note LIKE ? OR %s)", textLikeExpr(r.db, "forwarded_addresses"))
+	return fmt.Sprintf(
+		"(%s OR %s OR %s OR %s)",
+		textCaseInsensitiveLikeExpr(r.db, "email_address"),
+		textCaseInsensitiveLikeExpr(r.db, "domain"),
+		textCaseInsensitiveLikeExpr(r.db, "note"),
+		textCaseInsensitiveLikeExpr(r.db, "forwarded_addresses"),
+	)
 }
 
 // GetDB returns the database connection

@@ -211,9 +211,9 @@ func EmailCursorValue(email models.Email, sortBy string) string {
 
 func emailRecipientLikeExprs(db *gorm.DB) []string {
 	return []string{
-		textLikeExpr(db, "to_addresses"),
-		textLikeExpr(db, "to"),
-		textLikeExpr(db, "headers"),
+		textCaseInsensitiveLikeExpr(db, "to_addresses"),
+		textCaseInsensitiveLikeExpr(db, "to"),
+		textCaseInsensitiveLikeExpr(db, "headers"),
 	}
 }
 
@@ -415,7 +415,11 @@ func (r *EmailRepository) Search(accountID uint, query string) ([]models.Email, 
 	var emails []models.Email
 	searchPattern := "%" + query + "%"
 	err := r.db.Where(
-		fmt.Sprintf("account_id = ? AND (subject LIKE ? OR %s)", textLikeExpr(r.db, "from")),
+		fmt.Sprintf(
+			"account_id = ? AND (%s OR %s)",
+			textCaseInsensitiveLikeExpr(r.db, "subject"),
+			textCaseInsensitiveLikeExpr(r.db, "from"),
+		),
 		accountID,
 		searchPattern,
 		searchPattern,
@@ -837,10 +841,13 @@ func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gor
 		queryArgs = append(queryArgs, keywordPattern, keywordPattern, keywordPattern)
 		query = query.Where(
 			fmt.Sprintf(
-				"subject LIKE ? OR %s OR %s OR %s OR body LIKE ? OR html_body LIKE ?",
-				textLikeExpr(r.db, "from"),
+				"%s OR %s OR %s OR %s OR %s OR %s",
+				textCaseInsensitiveLikeExpr(r.db, "subject"),
+				textCaseInsensitiveLikeExpr(r.db, "from"),
 				recipientSearchExpr,
-				textLikeExpr(r.db, "cc"),
+				textCaseInsensitiveLikeExpr(r.db, "cc"),
+				textCaseInsensitiveLikeExpr(r.db, "body"),
+				textCaseInsensitiveLikeExpr(r.db, "html_body"),
 			),
 			queryArgs...,
 		)
@@ -848,7 +855,7 @@ func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gor
 		// Individual field searches
 		if options.FromQuery != "" {
 			fromPattern := "%" + options.FromQuery + "%"
-			query = query.Where(textLikeExpr(r.db, "from"), fromPattern)
+			query = query.Where(textCaseInsensitiveLikeExpr(r.db, "from"), fromPattern)
 		}
 		if options.ToQuery != "" {
 			recipientSearchExpr, recipientSearchArgs := emailRecipientSearchExpr(r.db, options.ToQuery)
@@ -856,19 +863,19 @@ func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gor
 		}
 		if options.CcQuery != "" {
 			ccPattern := "%" + options.CcQuery + "%"
-			query = query.Where(textLikeExpr(r.db, "cc"), ccPattern)
+			query = query.Where(textCaseInsensitiveLikeExpr(r.db, "cc"), ccPattern)
 		}
 		if options.SubjectQuery != "" {
 			subjectPattern := "%" + options.SubjectQuery + "%"
-			query = query.Where("subject LIKE ?", subjectPattern)
+			query = query.Where(textCaseInsensitiveLikeExpr(r.db, "subject"), subjectPattern)
 		}
 		if options.BodyQuery != "" {
 			bodyPattern := "%" + options.BodyQuery + "%"
-			query = query.Where("body LIKE ?", bodyPattern)
+			query = query.Where(textCaseInsensitiveLikeExpr(r.db, "body"), bodyPattern)
 		}
 		if options.HTMLQuery != "" {
 			htmlPattern := "%" + options.HTMLQuery + "%"
-			query = query.Where("html_body LIKE ?", htmlPattern)
+			query = query.Where(textCaseInsensitiveLikeExpr(r.db, "html_body"), htmlPattern)
 		}
 	}
 

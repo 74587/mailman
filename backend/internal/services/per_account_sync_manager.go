@@ -45,7 +45,8 @@ type PerAccountSyncManager struct {
 	wg     sync.WaitGroup
 
 	// 并发控制
-	semaphore chan struct{} // 控制并发网络请求数量
+	semaphore       chan struct{} // 控制后台/手动同步网络请求数量
+	pickupSemaphore chan struct{} // 取件轮询专用并发位，避免被后台批量同步饿死
 
 	// 服务依赖
 	syncConfigRepo   *repository.SyncConfigRepository
@@ -104,7 +105,9 @@ type PerAccountSyncStats struct {
 	TotalSyncs        int64     `json:"total_syncs"`
 	TotalErrors       int64     `json:"total_errors"`
 	ConcurrentLimit   int       `json:"concurrent_limit"`
+	PickupLimit       int       `json:"pickup_limit"`
 	CurrentConcurrent int64     `json:"current_concurrent"`
+	CurrentPickup     int64     `json:"current_pickup"`
 	StartTime         time.Time `json:"start_time"`
 }
 
@@ -123,6 +126,7 @@ func NewPerAccountSyncManager(
 
 	// 根据系统资源计算并发限制
 	concurrentLimit := calculateConcurrentLimit()
+	pickupLimit := calculatePickupConcurrentLimit(concurrentLimit)
 
 	manager := &PerAccountSyncManager{
 		accountSyncers:      make(map[uint]*AccountSyncer),
@@ -130,6 +134,7 @@ func NewPerAccountSyncManager(
 		ctx:                 ctx,
 		cancel:              cancel,
 		semaphore:           make(chan struct{}, concurrentLimit),
+		pickupSemaphore:     make(chan struct{}, pickupLimit),
 		syncConfigRepo:      syncConfigRepo,
 		emailRepo:           emailRepo,
 		mailboxRepo:         mailboxRepo,
@@ -143,6 +148,7 @@ func NewPerAccountSyncManager(
 		stats: PerAccountSyncStats{
 			StartTime:       time.Now(),
 			ConcurrentLimit: concurrentLimit,
+			PickupLimit:     pickupLimit,
 		},
 	}
 
@@ -175,6 +181,19 @@ func calculateConcurrentLimit() int {
 	}
 
 	log.Printf("[PerAccountSyncManager] Calculated concurrent limit: %d (CPU cores: %d)", limit, cpuCount)
+	return limit
+}
+
+func calculatePickupConcurrentLimit(backgroundLimit int) int {
+	limit := backgroundLimit / 4
+	if limit < 5 {
+		limit = 5
+	}
+	if limit > 20 {
+		limit = 20
+	}
+
+	log.Printf("[PerAccountSyncManager] Reserved pickup concurrent limit: %d", limit)
 	return limit
 }
 
@@ -418,7 +437,16 @@ func (m *PerAccountSyncManager) updateStatsRoutine() {
 
 // updateStats 更新统计信息
 func (m *PerAccountSyncManager) updateStats() {
-	atomic.StoreInt64(&m.stats.CurrentConcurrent, int64(len(m.semaphore)))
+	backgroundConcurrent := 0
+	if m.semaphore != nil {
+		backgroundConcurrent = len(m.semaphore)
+	}
+	pickupConcurrent := 0
+	if m.pickupSemaphore != nil {
+		pickupConcurrent = len(m.pickupSemaphore)
+	}
+	atomic.StoreInt64(&m.stats.CurrentConcurrent, int64(backgroundConcurrent+pickupConcurrent))
+	atomic.StoreInt64(&m.stats.CurrentPickup, int64(pickupConcurrent))
 
 	// 计算总同步次数和错误次数
 	var totalSyncs, totalErrors int64
@@ -522,7 +550,9 @@ func (m *PerAccountSyncManager) GetStats() PerAccountSyncStats {
 		TotalSyncs:        atomic.LoadInt64(&m.stats.TotalSyncs),
 		TotalErrors:       atomic.LoadInt64(&m.stats.TotalErrors),
 		ConcurrentLimit:   m.stats.ConcurrentLimit,
+		PickupLimit:       m.stats.PickupLimit,
 		CurrentConcurrent: atomic.LoadInt64(&m.stats.CurrentConcurrent),
+		CurrentPickup:     atomic.LoadInt64(&m.stats.CurrentPickup),
 		StartTime:         m.stats.StartTime,
 	}
 }
@@ -719,19 +749,12 @@ func (as *AccountSyncer) performSync() {
 		return
 	}
 
-	// 获取并发许可
-	select {
-	case as.manager.semaphore <- struct{}{}:
-		as.logger.Debug("Semaphore acquired")
-		defer func() {
-			<-as.manager.semaphore
-			as.logger.Debug("Semaphore released")
-		}()
-	case <-time.After(5 * time.Second):
-		// 并发许可获取超时，跳过本次同步
-		as.logger.Warn("Failed to acquire semaphore for sync, skipping this cycle")
+	releaseSlot, err := as.acquireSyncSlot(EmailIngestSourceAutoSync, 5*time.Second)
+	if err != nil {
+		as.logger.Warn("%v, skipping this cycle", err)
 		return
 	}
+	defer releaseSlot()
 
 	atomic.AddInt64(&as.syncCount, 1)
 	atomic.AddInt64(&as.manager.stats.TotalSyncs, 1)
@@ -739,7 +762,7 @@ func (as *AccountSyncer) performSync() {
 	as.logger.Debug("Starting sync cycle")
 
 	// 执行实际同步
-	_, err := as.doSync(start, EmailIngestSourceAutoSync)
+	_, err = as.doSync(start, EmailIngestSourceAutoSync)
 
 	as.mu.Lock()
 	as.LastSyncTime = time.Now()
@@ -1061,29 +1084,51 @@ func (as *AccountSyncer) Stop() {
 	as.timerMu.Unlock()
 }
 
+func (as *AccountSyncer) acquireSyncSlot(source EmailIngestSource, timeout time.Duration) (func(), error) {
+	source = normalizeEmailIngestSource(source)
+	slotName := "sync semaphore"
+	slot := as.manager.semaphore
+	if source == EmailIngestSourcePickup && as.manager.pickupSemaphore != nil {
+		slotName = "pickup semaphore"
+		slot = as.manager.pickupSemaphore
+	}
+	if slot == nil {
+		return nil, fmt.Errorf("%s is not initialized", slotName)
+	}
+
+	select {
+	case slot <- struct{}{}:
+		as.logger.Debug("%s acquired", slotName)
+		return func() {
+			<-slot
+			as.logger.Debug("%s released", slotName)
+		}, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("failed to acquire %s", slotName)
+	}
+}
+
 // SyncNow 立即同步
 func (as *AccountSyncer) SyncNow(source EmailIngestSource) (*SyncResult, error) {
 	start := time.Now()
+	source = normalizeEmailIngestSource(source)
 
 	as.syncMu.Lock()
 	defer as.syncMu.Unlock()
 
-	// 获取并发许可
-	select {
-	case as.manager.semaphore <- struct{}{}:
-		as.logger.Debug("Semaphore acquired for immediate sync")
-		defer func() {
-			<-as.manager.semaphore
-			as.logger.Debug("Semaphore released for immediate sync")
-		}()
-	case <-time.After(5 * time.Second):
-		err := fmt.Errorf("failed to acquire semaphore for immediate sync")
+	slotTimeout := 5 * time.Second
+	if source == EmailIngestSourcePickup {
+		slotTimeout = 10 * time.Second
+	}
+	releaseSlot, err := as.acquireSyncSlot(source, slotTimeout)
+	if err != nil {
 		as.logger.Warn(err.Error())
 		return &SyncResult{
 			Duration: time.Since(start),
 			Error:    err,
 		}, err
 	}
+	defer releaseSlot()
 
 	atomic.AddInt64(&as.syncCount, 1)
 	atomic.AddInt64(&as.manager.stats.TotalSyncs, 1)

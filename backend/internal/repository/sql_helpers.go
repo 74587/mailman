@@ -27,6 +27,18 @@ func textLikeExpr(db *gorm.DB, column string) string {
 	return fmt.Sprintf("%s LIKE ?", quoted)
 }
 
+func textCaseInsensitiveLikeExpr(db *gorm.DB, column string) string {
+	quoted := quoteColumn(db, column)
+	switch db.Dialector.Name() {
+	case "postgres":
+		return fmt.Sprintf("%s::text ILIKE ?", quoted)
+	case "mysql":
+		return fmt.Sprintf("LOWER(CAST(%s AS CHAR)) LIKE LOWER(?)", quoted)
+	default:
+		return fmt.Sprintf("LOWER(%s) LIKE LOWER(?)", quoted)
+	}
+}
+
 func textNotLikeExpr(db *gorm.DB, column string) string {
 	quoted := quoteColumn(db, column)
 	if db.Dialector.Name() == "postgres" {

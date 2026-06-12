@@ -40,6 +40,35 @@ func TestEmailRepositoryTextLikeExprQuotesReservedColumns(t *testing.T) {
 	}
 }
 
+func TestEmailRepositoryTextCaseInsensitiveLikeExpr(t *testing.T) {
+	tests := []struct {
+		name     string
+		db       *gorm.DB
+		expected string
+	}{
+		{
+			name: "postgres",
+			db: mustOpenTestDB(t, postgres.Open(
+				"host=localhost user=test password=test dbname=test port=5432 sslmode=disable",
+			)),
+			expected: `"to"::text ILIKE ?`,
+		},
+		{
+			name:     "sqlite",
+			db:       mustOpenTestDB(t, sqlite.Open(":memory:")),
+			expected: "LOWER(`to`) LIKE LOWER(?)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := textCaseInsensitiveLikeExpr(tt.db, "to"); got != tt.expected {
+				t.Fatalf("textCaseInsensitiveLikeExpr() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestEmailRepositoryTextNotLikeExprQuotesReservedColumns(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -215,9 +244,9 @@ func TestEmailSearchQueryPostgresQuotesRecipientFields(t *testing.T) {
 	sql := stmt.SQL.String()
 
 	for _, fragment := range []string{
-		`"to_addresses"::text LIKE`,
-		`"to"::text LIKE`,
-		`"headers"::text LIKE`,
+		`"to_addresses"::text ILIKE`,
+		`"to"::text ILIKE`,
+		`"headers"::text ILIKE`,
 		`ORDER BY "to" DESC`,
 	} {
 		if !strings.Contains(sql, fragment) {
