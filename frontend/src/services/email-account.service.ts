@@ -66,6 +66,87 @@ export interface OAuth2AccountOnboardingResponse {
     sync_config?: SyncConfig;
 }
 
+export interface BatchOutlookImportAccountRequest {
+    line_number: number;
+    email: string;
+    password?: string;
+    client_id: string;
+    access_token?: string;
+    refresh_token: string;
+    recovery_email?: string;
+    recovery_password?: string;
+}
+
+export interface BatchOutlookImportOptions {
+    verify?: boolean;
+    run_initial_sync?: boolean;
+    create_sync_config?: boolean;
+    update_existing?: boolean;
+    create_concurrency?: number;
+    verify_concurrency?: number;
+    sync_concurrency?: number;
+    config_concurrency?: number;
+    initial_sync?: FetchAndStoreRequest;
+    sync_config?: {
+        enable_auto_sync?: boolean;
+        sync_interval?: number;
+        sync_folders?: string[];
+    };
+}
+
+export interface BatchOutlookImportRequest {
+    accounts: BatchOutlookImportAccountRequest[];
+    options?: BatchOutlookImportOptions;
+}
+
+export interface BatchOutlookImportAccountResult {
+    line_number: number;
+    email: string;
+    account_id?: number;
+    created?: boolean;
+    updated?: boolean;
+    create_status: 'pending' | 'running' | 'success' | 'error' | 'skipped';
+    create_error?: string;
+    verify_status: 'pending' | 'running' | 'success' | 'error' | 'skipped';
+    verify_error?: string;
+    sync_status: 'pending' | 'running' | 'success' | 'error' | 'skipped';
+    sync_error?: string;
+    sync_new_emails?: number;
+    config_status: 'pending' | 'running' | 'success' | 'error' | 'skipped';
+    config_error?: string;
+}
+
+export interface BatchOutlookImportSummary {
+    total: number;
+    create_success: number;
+    create_error: number;
+    verify_success: number;
+    verify_error: number;
+    verify_skipped: number;
+    sync_success: number;
+    sync_error: number;
+    sync_skipped: number;
+    config_success: number;
+    config_error: number;
+    config_skipped: number;
+    total_new_emails: number;
+    completed_results: number;
+}
+
+export interface BatchOutlookImportJob {
+    job_id: string;
+    status: 'queued' | 'running' | 'complete' | 'failed';
+    stage: string;
+    org_id?: number;
+    started_at: string;
+    updated_at: string;
+    finished_at?: string;
+    message?: string;
+    options: BatchOutlookImportOptions;
+    summary: BatchOutlookImportSummary;
+    results: BatchOutlookImportAccountResult[];
+}
+
 export interface AccountForwardedAddressesResponse {
     accountId: number;
     emailAddress: string;
@@ -315,6 +396,25 @@ export class EmailAccountService {
         return apiClient.post<OAuth2AccountOnboardingResponse>(
             `${this.basePath}/oauth2/onboard`,
             payload
+        );
+    }
+
+    /**
+     * 启动后台 Outlook 批量导入任务：创建/更新、验证、首次同步、同步配置都由后端继续执行
+     */
+    async startBatchOutlookImport(data: BatchOutlookImportRequest): Promise<BatchOutlookImportJob> {
+        return apiClient.post<BatchOutlookImportJob>(
+            `${this.basePath}/batch-outlook-import`,
+            data
+        );
+    }
+
+    /**
+     * 查询后台 Outlook 批量导入任务进度
+     */
+    async getBatchOutlookImportJob(jobId: string): Promise<BatchOutlookImportJob> {
+        return apiClient.get<BatchOutlookImportJob>(
+            `${this.basePath}/batch-outlook-import/${encodeURIComponent(jobId)}`
         );
     }
 

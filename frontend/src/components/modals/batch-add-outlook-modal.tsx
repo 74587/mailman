@@ -7,7 +7,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { AlertCircle, Check, Settings2, Layout, Maximize2, Minimize2, RotateCcw, Loader2, CheckCircle, XCircle, Edit3, RotateCw, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { emailAccountService } from '@/services/email-account.service'
+import { emailAccountService, type BatchOutlookImportAccountResult, type BatchOutlookImportJob } from '@/services/email-account.service'
 import { syncConfigService } from '@/services/sync-config.service'
 
 interface BatchAddOutlookModalProps {
@@ -100,7 +100,7 @@ export default function BatchAddOutlookModal({
     onError
 }: BatchAddOutlookModalProps) {
     // Stage: input -> preview -> creating -> verifying -> verified -> syncSettings -> syncing -> autoSyncConfig -> complete
-    const [stage, setStage] = useState<'input' | 'preview' | 'creating' | 'verifying' | 'verified' | 'syncSettings' | 'syncing' | 'autoSyncConfig' | 'complete'>('input')
+    const [stage, setStage] = useState<'input' | 'preview' | 'creating' | 'verifying' | 'verified' | 'syncSettings' | 'syncing' | 'autoSyncConfig' | 'background' | 'complete'>('input')
     const [template, setTemplate] = useState('${email}----${password}----${client_id}----${refresh_token}')
     const DEFAULT_TEMPLATE = '${email}----${password}----${client_id}----${refresh_token}'
     const [separator, setSeparator] = useState('----')
@@ -117,6 +117,8 @@ export default function BatchAddOutlookModal({
     // Status tracking for creation/verification
     const [accountStatuses, setAccountStatuses] = useState<AccountStatus[]>([])
     const [isProcessing, setIsProcessing] = useState(false)
+    const [backgroundJob, setBackgroundJob] = useState<BatchOutlookImportJob | null>(null)
+    const [backgroundSuccessNotified, setBackgroundSuccessNotified] = useState(false)
 
     // Outlook provider ID cache
     const [outlookProviderId, setOutlookProviderId] = useState<number | null>(null)
@@ -160,6 +162,8 @@ export default function BatchAddOutlookModal({
             setStage('input')
             setAccountStatuses([])
             setVerifyAfterCreate(true)
+            setBackgroundJob(null)
+            setBackgroundSuccessNotified(false)
         }
     }, [isOpen])
 
@@ -172,6 +176,8 @@ export default function BatchAddOutlookModal({
             setParsedAccounts([])
             setAccountStatuses([])
             setVerifyAfterCreate(true)
+            setBackgroundJob(null)
+            setBackgroundSuccessNotified(false)
         }, 300)
     }
 
@@ -286,6 +292,82 @@ export default function BatchAddOutlookModal({
         setStage('verified')
         setIsProcessing(false)
     }
+
+    const refreshBackgroundJob = async (jobId?: string) => {
+        const targetJobId = jobId || backgroundJob?.job_id
+        if (!targetJobId) return
+        const nextJob = await emailAccountService.getBatchOutlookImportJob(targetJobId)
+        setBackgroundJob(nextJob)
+    }
+
+    const handleStartBackgroundImport = async () => {
+        const validAccounts = parsedAccounts.filter(a => a.isValid)
+        if (validAccounts.length === 0) return
+
+        setIsProcessing(true)
+        setBackgroundSuccessNotified(false)
+        try {
+            const job = await emailAccountService.startBatchOutlookImport({
+                accounts: validAccounts.map(account => ({
+                    line_number: account.lineNumber,
+                    email: account.email,
+                    password: account.password || undefined,
+                    client_id: account.clientId,
+                    access_token: account.accessToken || undefined,
+                    refresh_token: account.refreshToken,
+                    recovery_email: account.recoveryEmail || undefined,
+                    recovery_password: account.recoveryPassword || undefined
+                })),
+                options: {
+                    verify: true,
+                    run_initial_sync: true,
+                    create_sync_config: true,
+                    update_existing: true,
+                    create_concurrency: createConcurrency,
+                    verify_concurrency: verifyConcurrency,
+                    sync_concurrency: syncConcurrency,
+                    config_concurrency: createConcurrency,
+                    initial_sync: {
+                        sync_mode: defaultSyncConfig.syncMode,
+                        mailboxes: ['INBOX'],
+                        max_emails_per_mailbox: defaultSyncConfig.maxEmails,
+                        include_body: true
+                    },
+                    sync_config: {
+                        enable_auto_sync: defaultSyncConfig.enableAutoSync,
+                        sync_interval: defaultSyncConfig.syncInterval,
+                        sync_folders: ['INBOX']
+                    }
+                }
+            })
+            setBackgroundJob(job)
+            setStage('background')
+        } catch (err: unknown) {
+            onError?.(`启动后台导入失败: ${getErrorMessage(err)}`)
+        } finally {
+            setIsProcessing(false)
+        }
+    }
+
+    useEffect(() => {
+        if (!isOpen || stage !== 'background' || !backgroundJob?.job_id) return
+        if (backgroundJob.status === 'complete' || backgroundJob.status === 'failed') return
+
+        const timer = window.setInterval(() => {
+            refreshBackgroundJob(backgroundJob.job_id).catch((err: unknown) => {
+                onError?.(`刷新后台导入进度失败: ${getErrorMessage(err)}`)
+            })
+        }, 2000)
+
+        return () => window.clearInterval(timer)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen, stage, backgroundJob?.job_id, backgroundJob?.status])
+
+    useEffect(() => {
+        if (stage !== 'background' || backgroundJob?.status !== 'complete' || backgroundSuccessNotified) return
+        setBackgroundSuccessNotified(true)
+        onSuccess?.()
+    }, [backgroundJob?.status, backgroundSuccessNotified, onSuccess, stage])
 
     // Retry verification for a single account
     const handleRetryVerify = async (idx: number) => {
@@ -612,6 +694,50 @@ export default function BatchAddOutlookModal({
     const invalidCount = parsedAccounts.length - validCount
     const verificationSuccessCount = accountStatuses.filter(s => s.verifyStatus === 'success').length
     const verificationSkippedCount = accountStatuses.filter(s => s.verifyStatus === 'skipped').length
+    const backgroundFinished = backgroundJob?.status === 'complete' || backgroundJob?.status === 'failed'
+    const backgroundProgress = backgroundJob?.summary.total
+        ? Math.round((backgroundJob.summary.completed_results / backgroundJob.summary.total) * 100)
+        : 0
+
+    const getBackgroundStageLabel = (job?: BatchOutlookImportJob | null) => {
+        if (!job) return '等待启动'
+        if (job.status === 'queued') return '已排队'
+        if (job.status === 'complete') return '已完成'
+        if (job.status === 'failed') return '失败'
+        if (job.stage === 'creating') return '正在导入'
+        if (job.stage === 'verifying') return '正在验证'
+        if (job.stage === 'syncing') return '正在首次同步'
+        if (job.stage === 'configuring') return '正在配置同步'
+        return '运行中'
+    }
+
+    const renderBackgroundStep = (
+        status: BatchOutlookImportAccountResult['create_status'],
+        error?: string,
+        successText?: string
+    ) => {
+        if (status === 'pending') return <span className="text-gray-400">-</span>
+        if (status === 'running') return <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600 mx-auto" />
+        if (status === 'success') {
+            return (
+                <span className="inline-flex items-center justify-center gap-1 text-green-600">
+                    <CheckCircle className="h-3.5 w-3.5" />
+                    {successText && <span>{successText}</span>}
+                </span>
+            )
+        }
+        if (status === 'skipped') return <span className="text-gray-400">跳过</span>
+        return (
+            <Tooltip>
+                <TooltipTrigger>
+                    <XCircle className="h-3.5 w-3.5 text-red-600 mx-auto cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs text-xs break-words">
+                    {error || '失败'}
+                </TooltipContent>
+            </Tooltip>
+        )
+    }
 
     return (
         <Modal open={isOpen} onOpenChange={(open) => !open && handleClose()}>
@@ -620,7 +746,7 @@ export default function BatchAddOutlookModal({
                 className={cn(
                     "transition-all duration-500 ease-in-out flex flex-col max-h-[90vh]",
                     stage === 'preview' ? "max-w-5xl" :
-                        (stage === 'verified' || stage === 'syncSettings' || stage === 'syncing' || stage === 'autoSyncConfig' || stage === 'complete') ? "max-w-3xl" : "max-w-xl"
+                        (stage === 'verified' || stage === 'syncSettings' || stage === 'syncing' || stage === 'autoSyncConfig' || stage === 'background' || stage === 'complete') ? "max-w-3xl" : "max-w-xl"
                 )}
             >
                 <ModalHeader>
@@ -734,6 +860,78 @@ export default function BatchAddOutlookModal({
                                             </div>
                                         )}
                                     </div>
+
+                                    {stage === 'preview' && (
+                                        <div className="space-y-3 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+                                            <div className="flex items-center justify-between">
+                                                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                                                    <Settings2 className="h-4 w-4" />
+                                                    后台完整流程参数
+                                                </label>
+                                                <span className="text-xs text-gray-500 dark:text-gray-400">验证 / 首次同步 / 自动同步</span>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-3 text-xs">
+                                                <label className="space-y-1">
+                                                    <span className="text-gray-500 dark:text-gray-400">同步模式</span>
+                                                    <select
+                                                        value={defaultSyncConfig.syncMode}
+                                                        onChange={(e) => setDefaultSyncConfig(prev => ({ ...prev, syncMode: e.target.value as 'incremental' | 'full' }))}
+                                                        className="h-8 w-full rounded border border-gray-300 px-2 text-xs dark:border-gray-600 dark:bg-gray-700"
+                                                    >
+                                                        <option value="incremental">增量</option>
+                                                        <option value="full">全量</option>
+                                                    </select>
+                                                </label>
+                                                <label className="space-y-1">
+                                                    <span className="text-gray-500 dark:text-gray-400">每箱上限</span>
+                                                    <input
+                                                        type="number"
+                                                        min={100}
+                                                        max={10000}
+                                                        step={100}
+                                                        value={defaultSyncConfig.maxEmails}
+                                                        onChange={(e) => setDefaultSyncConfig(prev => ({ ...prev, maxEmails: parseInt(e.target.value) || 1000 }))}
+                                                        className="h-8 w-full rounded border border-gray-300 px-2 text-xs dark:border-gray-600 dark:bg-gray-700"
+                                                    />
+                                                </label>
+                                                <label className="space-y-1">
+                                                    <span className="text-gray-500 dark:text-gray-400">同步并发</span>
+                                                    <input
+                                                        type="number"
+                                                        min={1}
+                                                        max={MAX_SYNC_CONCURRENCY}
+                                                        value={syncConcurrency}
+                                                        onChange={(e) => setSyncConcurrency(clampConcurrency(Number(e.target.value), MAX_SYNC_CONCURRENCY))}
+                                                        className="h-8 w-full rounded border border-gray-300 px-2 text-xs dark:border-gray-600 dark:bg-gray-700"
+                                                    />
+                                                </label>
+                                                <label className="space-y-1">
+                                                    <span className="text-gray-500 dark:text-gray-400">同步间隔</span>
+                                                    <select
+                                                        value={defaultSyncConfig.syncInterval}
+                                                        disabled={!defaultSyncConfig.enableAutoSync}
+                                                        onChange={(e) => setDefaultSyncConfig(prev => ({ ...prev, syncInterval: parseInt(e.target.value) }))}
+                                                        className="h-8 w-full rounded border border-gray-300 px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-700"
+                                                    >
+                                                        <option value={60}>1分钟</option>
+                                                        <option value={300}>5分钟</option>
+                                                        <option value={600}>10分钟</option>
+                                                        <option value={900}>15分钟</option>
+                                                        <option value={1800}>30分钟</option>
+                                                        <option value={3600}>1小时</option>
+                                                    </select>
+                                                </label>
+                                            </div>
+                                            <label className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-300">
+                                                <Switch
+                                                    checked={defaultSyncConfig.enableAutoSync}
+                                                    onCheckedChange={(checked) => setDefaultSyncConfig(prev => ({ ...prev, enableAutoSync: checked }))}
+                                                    className="scale-75"
+                                                />
+                                                <span>创建账户同步配置</span>
+                                            </label>
+                                        </div>
+                                    )}
 
                                     <div className="flex-1 flex flex-col min-h-0">
                                         <label className="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -1060,6 +1258,103 @@ export default function BatchAddOutlookModal({
                             </div>
                         )}
 
+                        {stage === 'background' && (
+                            <TooltipProvider>
+                                <div className="w-full p-6 space-y-4">
+                                    <div className="flex items-start justify-between gap-4">
+                                        <div>
+                                            <h3 className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+                                                {!backgroundFinished && <Loader2 className="h-4 w-4 animate-spin text-blue-600" />}
+                                                {backgroundJob?.status === 'complete' && <CheckCircle className="h-4 w-4 text-green-600" />}
+                                                {backgroundJob?.status === 'failed' && <XCircle className="h-4 w-4 text-red-600" />}
+                                                后台 Outlook 导入：{getBackgroundStageLabel(backgroundJob)}
+                                            </h3>
+                                            {backgroundJob?.message && (
+                                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{backgroundJob.message}</p>
+                                            )}
+                                        </div>
+                                        <div className="text-right text-xs text-gray-500 dark:text-gray-400">
+                                            <div>{backgroundJob?.summary.completed_results ?? 0} / {backgroundJob?.summary.total ?? validCount}</div>
+                                            <div>{backgroundProgress}%</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-800">
+                                        <div
+                                            className={cn(
+                                                "h-full transition-all duration-500",
+                                                backgroundJob?.status === 'failed' ? "bg-red-500" : "bg-blue-600"
+                                            )}
+                                            style={{ width: `${Math.min(Math.max(backgroundProgress, 0), 100)}%` }}
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-4 gap-3 text-xs">
+                                        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                                            <div className="text-gray-500 dark:text-gray-400">导入成功</div>
+                                            <div className="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{backgroundJob?.summary.create_success ?? 0}</div>
+                                        </div>
+                                        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                                            <div className="text-gray-500 dark:text-gray-400">验证成功</div>
+                                            <div className="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{backgroundJob?.summary.verify_success ?? 0}</div>
+                                        </div>
+                                        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                                            <div className="text-gray-500 dark:text-gray-400">同步成功</div>
+                                            <div className="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{backgroundJob?.summary.sync_success ?? 0}</div>
+                                        </div>
+                                        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                                            <div className="text-gray-500 dark:text-gray-400">新邮件</div>
+                                            <div className="mt-1 text-lg font-semibold text-gray-900 dark:text-white">{backgroundJob?.summary.total_new_emails ?? 0}</div>
+                                        </div>
+                                    </div>
+
+                                    <div className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden max-h-[360px] overflow-y-auto">
+                                        <table className="w-full text-xs">
+                                            <thead className="bg-gray-50 dark:bg-gray-800 sticky top-0">
+                                                <tr>
+                                                    <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400 w-12">#</th>
+                                                    <th className="px-3 py-2 text-left font-medium text-gray-600 dark:text-gray-400">邮箱</th>
+                                                    <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-400 w-20">导入</th>
+                                                    <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-400 w-20">验证</th>
+                                                    <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-400 w-20">同步</th>
+                                                    <th className="px-3 py-2 text-center font-medium text-gray-600 dark:text-gray-400 w-20">配置</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                                                {(backgroundJob?.results ?? []).map((result) => (
+                                                    <tr key={`${result.line_number}-${result.email}`} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                                        <td className="px-3 py-2 text-gray-500">{result.line_number}</td>
+                                                        <td className="px-3 py-2 font-medium text-gray-900 dark:text-white truncate max-w-[200px]" title={result.email}>
+                                                            {result.email}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            {renderBackgroundStep(result.create_status, result.create_error)}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            {renderBackgroundStep(result.verify_status, result.verify_error)}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            {renderBackgroundStep(result.sync_status, result.sync_error, result.sync_new_emails ? `+${result.sync_new_emails}` : undefined)}
+                                                        </td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            {renderBackgroundStep(result.config_status, result.config_error)}
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                                {!backgroundJob?.results.length && (
+                                                    <tr>
+                                                        <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
+                                                            暂无任务明细
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </TooltipProvider>
+                        )}
+
                         {/* Status Table for creating/verifying/verified/syncing/complete stages (excluded autoSyncConfig) */}
                         {(stage === 'creating' || stage === 'verifying' || stage === 'verified' || stage === 'syncing' || stage === 'complete') && (
                             <TooltipProvider>
@@ -1330,8 +1625,8 @@ export default function BatchAddOutlookModal({
                     )}
                 </ModalBody>
 
-                <ModalFooter className={cn((stage === 'preview' || stage === 'verified' || stage === 'syncSettings' || stage === 'autoSyncConfig' || stage === 'complete') && "border-t border-gray-200 dark:border-gray-700 pt-4")}>
-                    {stage !== 'creating' && stage !== 'verifying' && stage !== 'syncing' && !isProcessing && (
+                <ModalFooter className={cn((stage === 'preview' || stage === 'verified' || stage === 'syncSettings' || stage === 'autoSyncConfig' || stage === 'background' || stage === 'complete') && "border-t border-gray-200 dark:border-gray-700 pt-4")}>
+                    {stage !== 'creating' && stage !== 'verifying' && stage !== 'syncing' && stage !== 'background' && !isProcessing && (
                         <Button variant="outline" onClick={handleClose}>
                             {stage === 'complete' ? '关闭' : '取消'}
                         </Button>
@@ -1379,7 +1674,15 @@ export default function BatchAddOutlookModal({
                                 <Layout className="mr-2 h-4 w-4" />
                                 重新解析
                             </Button>
-                            <Button disabled={validCount === 0} onClick={handleConfirmAdd}>
+                            <Button disabled={validCount === 0 || isProcessing} onClick={handleStartBackgroundImport}>
+                                {isProcessing ? (
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                ) : (
+                                    <Settings2 className="mr-2 h-4 w-4" />
+                                )}
+                                后台执行完整流程 ({validCount})
+                            </Button>
+                            <Button variant="outline" disabled={validCount === 0 || isProcessing} onClick={handleConfirmAdd}>
                                 {verifyAfterCreate ? `确认添加并验证 (${validCount})` : `仅导入 (${validCount})`}
                             </Button>
                         </>
@@ -1392,7 +1695,27 @@ export default function BatchAddOutlookModal({
                             {stage === 'verifying' && '正在验证连接...'}
                             {stage === 'syncing' && '正在同步邮件...'}
                             {isProcessing && stage === 'autoSyncConfig' && '正在保存配置...'}
+                            {isProcessing && stage === 'preview' && '正在启动后台任务...'}
                         </div>
+                    )}
+
+                    {stage === 'background' && (
+                        <>
+                            <div className="mr-auto flex items-center gap-2 text-sm text-gray-500">
+                                {!backgroundFinished && <Loader2 className="h-4 w-4 animate-spin" />}
+                                {backgroundFinished ? getBackgroundStageLabel(backgroundJob) : '后台任务运行中，可关闭窗口'}
+                            </div>
+                            <Button
+                                variant="outline"
+                                onClick={() => refreshBackgroundJob().catch((err: unknown) => onError?.(`刷新后台导入进度失败: ${getErrorMessage(err)}`))}
+                            >
+                                <RotateCw className="mr-2 h-4 w-4" />
+                                刷新
+                            </Button>
+                            <Button onClick={handleClose}>
+                                {backgroundFinished ? '完成' : '关闭窗口'}
+                            </Button>
+                        </>
                     )}
 
                     {stage === 'verified' && (

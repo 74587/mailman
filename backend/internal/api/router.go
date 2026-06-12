@@ -62,6 +62,8 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	apiRouter.HandleFunc("/accounts/{id}/proxy-config", handler.SetAccountProxyConfigHandler).Methods("PUT")
 	apiRouter.HandleFunc("/accounts/{id}/proxy-config", handler.DeleteAccountProxyConfigHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/accounts/oauth2/onboard", handler.CreateOAuth2AccountOnboardingHandler).Methods("POST")
+	apiRouter.HandleFunc("/accounts/batch-outlook-import", handler.StartBatchOutlookImportHandler).Methods("POST")
+	apiRouter.HandleFunc("/accounts/batch-outlook-import/{jobID}", handler.GetBatchOutlookImportJobHandler).Methods("GET")
 	apiRouter.HandleFunc("/business-modules", handler.ListBusinessModulesHandler).Methods("GET")
 	apiRouter.HandleFunc("/business-modules", handler.CreateBusinessModuleHandler).Methods("POST")
 	apiRouter.HandleFunc("/business-modules/{id}/email-accounts/claim", handler.ClaimBusinessModuleEmailAccountHandler).Methods("POST")

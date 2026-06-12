@@ -140,6 +140,8 @@ func NewRouterWithAuth(
 	accountRouter.HandleFunc("/accounts/{id}/proxy-config", handler.SetAccountProxyConfigHandler).Methods("PUT")
 	accountRouter.HandleFunc("/accounts/{id}/proxy-config", handler.DeleteAccountProxyConfigHandler).Methods("DELETE")
 	accountRouter.HandleFunc("/accounts/oauth2/onboard", handler.CreateOAuth2AccountOnboardingHandler).Methods("POST")
+	accountRouter.HandleFunc("/accounts/batch-outlook-import", handler.StartBatchOutlookImportHandler).Methods("POST")
+	accountRouter.HandleFunc("/accounts/batch-outlook-import/{jobID}", handler.GetBatchOutlookImportJobHandler).Methods("GET")
 	accountRouter.HandleFunc("/business-modules", handler.ListBusinessModulesHandler).Methods("GET")
 	accountRouter.HandleFunc("/business-modules", handler.CreateBusinessModuleHandler).Methods("POST")
 	accountRouter.HandleFunc("/business-modules/{id}/email-accounts/claim", handler.ClaimBusinessModuleEmailAccountHandler).Methods("POST")
