@@ -33,7 +33,7 @@ const (
 	businessAliasTypeDomainPart = "domain_local_part"
 	businessAliasTypeForwarded  = "forwarded"
 
-	businessClaimAccountOrder = "last_sync_at IS NOT NULL ASC, last_sync_at ASC, id ASC"
+	businessClaimAccountOrder = "last_sync_at IS NULL ASC, created_at ASC, id ASC"
 
 	defaultBusinessExclusionCooldownSeconds = 1800
 	minBusinessExclusionCooldownSeconds     = 60
@@ -201,6 +201,7 @@ type businessClaimPlan struct {
 type businessClaimAccountCursor struct {
 	set        bool
 	lastSyncAt *time.Time
+	createdAt  time.Time
 	id         uint
 }
 
@@ -581,6 +582,7 @@ func (h *APIHandler) buildBusinessClaimPlanBatch(tx *gorm.DB, orgID uint, module
 		nextCursor = businessClaimAccountCursor{
 			set:        true,
 			lastSyncAt: last.LastSyncAt,
+			createdAt:  last.CreatedAt,
 			id:         last.ID,
 		}
 	}
@@ -649,9 +651,9 @@ func applyBusinessClaimAccountCursor(query *gorm.DB, cursor businessClaimAccount
 		return query
 	}
 	if cursor.lastSyncAt == nil {
-		return query.Where("((last_sync_at IS NULL AND id > ?) OR last_sync_at IS NOT NULL)", cursor.id)
+		return query.Where("last_sync_at IS NULL AND (created_at > ? OR (created_at = ? AND id > ?))", cursor.createdAt, cursor.createdAt, cursor.id)
 	}
-	return query.Where("(last_sync_at IS NOT NULL AND (last_sync_at > ? OR (last_sync_at = ? AND id > ?)))", *cursor.lastSyncAt, *cursor.lastSyncAt, cursor.id)
+	return query.Where("((last_sync_at IS NOT NULL AND (created_at > ? OR (created_at = ? AND id > ?))) OR last_sync_at IS NULL)", cursor.createdAt, cursor.createdAt, cursor.id)
 }
 
 func applyBusinessPrimaryClaimAvailabilityFilter(query *gorm.DB, orgID uint, moduleID uint) *gorm.DB {

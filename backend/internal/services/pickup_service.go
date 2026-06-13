@@ -127,9 +127,11 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 		Source:         EmailIngestSourcePickup,
 	})
 	if syncErr != nil {
-		s.logger.Warn("Pickup immediate sync failed for account %d: %v", req.AccountID, syncErr)
+		s.logger.Warn("Pickup immediate sync failed for account %d (requested=%d, resolved_by=%s, to_query=%q): %v",
+			req.AccountID, requestedAccountID, resolvedBy, req.ToQuery, syncErr)
 	} else if syncResult != nil && syncResult.Error != nil {
-		s.logger.Warn("Pickup immediate sync completed with error for account %d: %v", req.AccountID, syncResult.Error)
+		s.logger.Warn("Pickup immediate sync completed with error for account %d (requested=%d, resolved_by=%s, to_query=%q): %v",
+			req.AccountID, requestedAccountID, resolvedBy, req.ToQuery, syncResult.Error)
 	} else if syncResult != nil {
 		s.logger.Debug("Pickup immediate sync completed for account %d: synced %d emails", req.AccountID, syncResult.EmailsSynced)
 	}

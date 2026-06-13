@@ -15,12 +15,30 @@ import (
 	"mailman/internal/repository"
 )
 
+const outlookPickupRESTMaxAttempts = 3
+
 func recordOutlookHTTPRequest(source EmailIngestSource, operation string, start time.Time, resp *http.Response, err error) {
 	statusCode := 0
 	if resp != nil {
 		statusCode = resp.StatusCode
 	}
 	RuntimeMetrics().RecordOutlookRequest(source, operation, statusCode, time.Since(start), err)
+}
+
+func shouldRetryOutlookRESTPickupError(source EmailIngestSource, err error, attempt int) bool {
+	if source != EmailIngestSourcePickup || err == nil || attempt >= outlookPickupRESTMaxAttempts {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "connection reset") ||
+		strings.Contains(message, "connection reset by peer") ||
+		strings.Contains(message, "unexpected eof") ||
+		strings.Contains(message, "eof") ||
+		strings.Contains(message, "broken pipe")
+}
+
+func outlookRESTPickupRetryDelay(attempt int) time.Duration {
+	return time.Duration(attempt) * 200 * time.Millisecond
 }
 
 func (s *FetcherService) shouldUseOutlookGraphAPI(account models.EmailAccount) bool {
@@ -625,29 +643,42 @@ func (s *FetcherService) fetchEmailsFromOutlookRESTAPI(account models.EmailAccou
 	requestURL := baseURL + "?" + queryParams.Encode()
 	s.logger.Debug("Outlook REST API request URL: %s", requestURL)
 
-	req, err := http.NewRequest("GET", requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
+	var resp *http.Response
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequest("GET", requestURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
 
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-	// REST API v2.0 specific headers
-	req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Content-Type", "application/json")
+		// REST API v2.0 specific headers
+		req.Header.Set("Accept", "application/json")
 
-	releaseSlot, err := s.acquireOutlookRequestSlot(options.Source, "REST messages fetch")
-	if err != nil {
-		return nil, err
-	}
-	requestStart := time.Now()
-	resp, err := httpClient.Do(req)
-	recordOutlookHTTPRequest(options.Source, "messages", requestStart, resp, err)
-	if err != nil {
+		releaseSlot, err := s.acquireOutlookRequestSlot(options.Source, "REST messages fetch")
+		if err != nil {
+			return nil, err
+		}
+		requestStart := time.Now()
+		resp, err = httpClient.Do(req)
+		recordOutlookHTTPRequest(options.Source, "messages", requestStart, resp, err)
+		if err == nil {
+			defer releaseSlot()
+			defer resp.Body.Close()
+			break
+		}
+		if resp != nil && resp.Body != nil {
+			resp.Body.Close()
+		}
 		releaseSlot()
-		return nil, fmt.Errorf("REST API request failed: %w", err)
+		if !shouldRetryOutlookRESTPickupError(options.Source, err, attempt) {
+			return nil, fmt.Errorf("REST API request failed: %w", err)
+		}
+		delay := outlookRESTPickupRetryDelay(attempt)
+		s.logger.Warn("Outlook REST pickup messages request failed for account %d (attempt %d/%d): %v; retrying in %s",
+			account.ID, attempt, outlookPickupRESTMaxAttempts, err, delay)
+		time.Sleep(delay)
 	}
-	defer releaseSlot()
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

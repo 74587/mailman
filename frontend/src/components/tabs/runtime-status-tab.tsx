@@ -15,6 +15,7 @@ import {
     Wifi,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { registerRefreshCallback, unregisterRefreshCallback } from '@/lib/tab-utils'
@@ -26,7 +27,10 @@ import {
 } from '@/services/observability.service'
 
 const RUNTIME_REFRESH_STORAGE_KEY = 'mailman-runtime-status-refresh-settings'
+const RUNTIME_REFRESH_MIN_SECONDS = 1
+const RUNTIME_REFRESH_MAX_SECONDS = 3600
 const RUNTIME_REFRESH_INTERVAL_OPTIONS = [
+    { value: 1, label: '1秒' },
     { value: 5, label: '5秒' },
     { value: 15, label: '15秒' },
     { value: 30, label: '30秒' },
@@ -45,6 +49,18 @@ const emptyMetric: RuntimeMetricSnapshot = {
     error_rate: 0,
 }
 
+function clampRuntimeRefreshInterval(value: number, fallback = 15) {
+    if (!Number.isFinite(value)) return fallback
+    return Math.min(RUNTIME_REFRESH_MAX_SECONDS, Math.max(RUNTIME_REFRESH_MIN_SECONDS, Math.round(value)))
+}
+
+function runtimeRefreshPresetValue(intervalSeconds: number) {
+    if (RUNTIME_REFRESH_INTERVAL_OPTIONS.some(option => option.value === intervalSeconds)) {
+        return String(intervalSeconds)
+    }
+    return 'custom'
+}
+
 function readRuntimeRefreshSettings() {
     const fallback = { enabled: true, intervalSeconds: 15 }
     if (typeof window === 'undefined') return fallback
@@ -54,10 +70,9 @@ function readRuntimeRefreshSettings() {
         if (!raw) return fallback
         const parsed = JSON.parse(raw)
         const intervalSeconds = Number(parsed.intervalSeconds)
-        const validInterval = RUNTIME_REFRESH_INTERVAL_OPTIONS.some(option => option.value === intervalSeconds)
         return {
             enabled: Boolean(parsed.enabled),
-            intervalSeconds: validInterval ? intervalSeconds : fallback.intervalSeconds,
+            intervalSeconds: clampRuntimeRefreshInterval(intervalSeconds, fallback.intervalSeconds),
         }
     } catch {
         return fallback
@@ -320,8 +335,11 @@ export default function RuntimeStatusTab() {
                         <span className="text-sm font-medium text-gray-700 dark:text-gray-200">自动刷新</span>
                         <Switch checked={autoRefreshEnabled} onCheckedChange={setAutoRefreshEnabled} aria-label="自动刷新" className="scale-90" />
                         <Select
-                            value={String(autoRefreshIntervalSeconds)}
-                            onValueChange={value => setAutoRefreshIntervalSeconds(Number(value))}
+                            value={runtimeRefreshPresetValue(autoRefreshIntervalSeconds)}
+                            onValueChange={value => {
+                                if (value === 'custom') return
+                                setAutoRefreshIntervalSeconds(clampRuntimeRefreshInterval(Number(value)))
+                            }}
                             disabled={!autoRefreshEnabled}
                         >
                             <SelectTrigger className="h-8 w-[92px] rounded-lg border-gray-200 bg-white text-xs dark:border-gray-700 dark:bg-gray-900">
@@ -333,8 +351,25 @@ export default function RuntimeStatusTab() {
                                         {option.label}
                                     </SelectItem>
                                 ))}
+                                <SelectItem value="custom">自定义</SelectItem>
                             </SelectContent>
                         </Select>
+                        <Input
+                            type="number"
+                            min={RUNTIME_REFRESH_MIN_SECONDS}
+                            max={RUNTIME_REFRESH_MAX_SECONDS}
+                            value={autoRefreshIntervalSeconds}
+                            onChange={event => {
+                                const next = Number(event.target.value)
+                                if (Number.isFinite(next)) {
+                                    setAutoRefreshIntervalSeconds(clampRuntimeRefreshInterval(next))
+                                }
+                            }}
+                            disabled={!autoRefreshEnabled}
+                            aria-label="自动刷新秒数"
+                            className="h-8 w-20 rounded-lg border-gray-200 bg-white text-xs tabular-nums dark:border-gray-700 dark:bg-gray-900"
+                        />
+                        <span className="text-xs text-gray-500 dark:text-gray-400">秒</span>
                     </div>
                 </div>
             </div>

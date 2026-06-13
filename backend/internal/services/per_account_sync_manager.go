@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -890,12 +891,35 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 
 // getAccount 获取账户信息
 func (as *AccountSyncer) getAccount() (*models.EmailAccount, error) {
-	// 通过邮件仓库获取账户信息
-	account, err := as.manager.syncConfigRepo.GetByAccountIDWithAccount(as.AccountID)
-	if err != nil {
+	// Prefer the persisted sync config path for normal auto-sync accounts.
+	config, err := as.manager.syncConfigRepo.GetByAccountIDWithAccount(as.AccountID)
+	if err == nil {
+		if config.Account.ID != 0 {
+			as.mu.Lock()
+			as.Config.Account = config.Account
+			as.mu.Unlock()
+			return &config.Account, nil
+		}
+		as.logger.Warn("Sync config for account %d has no preloaded account; falling back to email account lookup", as.AccountID)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	return &account.Account, nil
+
+	account, accountErr := as.manager.emailAccountRepo.GetByID(as.AccountID)
+	if accountErr != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("sync config missing and failed to get account: %w", accountErr)
+		}
+		return nil, accountErr
+	}
+
+	as.mu.Lock()
+	as.Config.Account = *account
+	as.mu.Unlock()
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		as.logger.Warn("Sync config missing for account %d; using email account fallback for temporary sync", as.AccountID)
+	}
+	return account, nil
 }
 
 // processEmails 处理邮件
@@ -948,6 +972,19 @@ func (as *AccountSyncer) updateSyncConfig(endTime time.Time, hasNewEmails bool) 
 	// CRITICAL FIX: 重新获取config确保拿到最新的Gmail History ID
 	config, err := as.manager.syncConfigRepo.GetByAccountID(as.AccountID)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			now := time.Now()
+			if err := as.manager.syncConfigRepo.UpsertAccountSyncCursorTimes(as.AccountID, models.SyncCursorProviderGeneric, &now, &endTime); err != nil {
+				return fmt.Errorf("failed to update sync cursor without sync config: %w", err)
+			}
+			as.mu.Lock()
+			as.Config.LastSyncTime = &now
+			as.Config.LastSyncEndTime = &endTime
+			as.Config.SyncStatus = models.SyncStatusIdle
+			as.mu.Unlock()
+			as.logger.Debug("Updated sync cursor for account %d without persistent sync config", as.AccountID)
+			return nil
+		}
 		return err
 	}
 

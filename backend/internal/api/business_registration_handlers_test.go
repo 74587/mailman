@@ -460,6 +460,72 @@ func TestClaimBusinessModuleEmailAccountScansPastOccupiedCandidateBatch(t *testi
 	}
 }
 
+func TestClaimBusinessModuleEmailAccountScansFromSyncedBatchToUnsyncedCandidate(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{OrgID: 1, Name: "GitHub"}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+
+	baseTime := time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC)
+	candidateCount := businessClaimCandidateBatchSize + 1
+	accounts := make([]models.EmailAccount, 0, candidateCount)
+	for i := 1; i <= candidateCount; i++ {
+		account := models.EmailAccount{
+			OrgID:        1,
+			EmailAddress: fmt.Sprintf("fifo%03d@example.com", i),
+			AuthType:     models.AuthTypePassword,
+			IsVerified:   true,
+			ErrorStatus:  string(models.ErrorStatusNormal),
+			CreatedAt:    baseTime.Add(time.Duration(i) * time.Minute),
+			UpdatedAt:    baseTime.Add(time.Duration(i) * time.Minute),
+		}
+		if i <= businessClaimCandidateBatchSize {
+			lastSyncAt := baseTime.Add(time.Duration(i) * time.Hour)
+			account.LastSyncAt = &lastSyncAt
+		}
+		accounts = append(accounts, account)
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create email accounts: %v", err)
+	}
+
+	moduleID := module.ID
+	existing := make([]models.BusinessAccount, 0, businessClaimCandidateBatchSize)
+	for i := 1; i <= businessClaimCandidateBatchSize; i++ {
+		registrationEmail := fmt.Sprintf("fifo%03d@example.com", i)
+		existing = append(existing, models.BusinessAccount{
+			OrgID:             1,
+			ModuleID:          &moduleID,
+			ModuleName:        module.Name,
+			DisplayName:       fmt.Sprintf("existing claim %03d", i),
+			RegistrationEmail: &registrationEmail,
+			Status:            models.BusinessAccountStatusActive,
+			NoteFormat:        models.AccountNoteFormatMarkdown,
+		})
+	}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatalf("failed to create existing business accounts: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"emailMode":"primary","claimedBy":"batch-worker"}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response BusinessEmailClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	expectedEmail := fmt.Sprintf("fifo%03d@example.com", candidateCount)
+	if response.Recipient.EmailAddress != expectedEmail {
+		t.Fatalf("expected claim to continue to unsynced candidate %s, got %+v", expectedEmail, response.Recipient)
+	}
+}
+
 func TestBusinessRegistrationClaimLifecycle(t *testing.T) {
 	handler, db := newBusinessRegistrationTestHandler(t)
 	module := models.BusinessModule{OrgID: 1, Name: "GitHub"}

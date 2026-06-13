@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mailman/internal/models"
 	"mailman/internal/services"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"gorm.io/gorm"
 )
 
 const (
@@ -536,6 +538,21 @@ func (h *APIHandler) runBatchOutlookImportJob(job *batchOutlookImportJob, accoun
 			})
 			return
 		}
+		if shouldRun(job.options.CreateSyncConfig, true) {
+			if err := h.ensureBatchOutlookDisabledSyncConfig(accountID, job.options.SyncConfig); err != nil {
+				job.updateResult(idx, func(result *BatchOutlookImportAccountResult) {
+					result.AccountID = accountID
+					result.Created = created
+					result.Updated = !created
+					result.CreateStatus = batchOutlookStepError
+					result.CreateError = fmt.Sprintf("account saved but failed to prepare sync config: %v", err)
+					result.VerifyStatus = batchOutlookStepSkipped
+					result.SyncStatus = batchOutlookStepSkipped
+					result.ConfigStatus = batchOutlookStepSkipped
+				})
+				return
+			}
+		}
 		job.updateResult(idx, func(result *BatchOutlookImportAccountResult) {
 			result.AccountID = accountID
 			result.Created = created
@@ -822,6 +839,34 @@ func (h *APIHandler) createOrUpdateBatchOutlookAccount(input BatchOutlookImportA
 	}
 	h.activityLogger.LogAccountActivity(models.ActivityAccountUpdated, &account, userID)
 	return account.ID, false, nil
+}
+
+func (h *APIHandler) ensureBatchOutlookDisabledSyncConfig(accountID uint, request *AccountOnboardSyncConfigRequest) error {
+	if h.SyncConfigRepo == nil {
+		return fmt.Errorf("sync config repository is not available")
+	}
+	if _, err := h.SyncConfigRepo.GetByAccountID(accountID); err == nil {
+		return nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	syncInterval := 300
+	syncFolders := models.StringSlice{"INBOX"}
+	if request != nil {
+		if request.SyncInterval > 0 {
+			syncInterval = request.SyncInterval
+		}
+		if len(request.SyncFolders) > 0 {
+			syncFolders = models.StringSlice(request.SyncFolders)
+		}
+	}
+	return h.SyncConfigRepo.CreateOrUpdateSettings(&models.EmailAccountSyncConfig{
+		AccountID:      accountID,
+		EnableAutoSync: false,
+		SyncInterval:   syncInterval,
+		SyncFolders:    syncFolders,
+		SyncStatus:     models.SyncStatusIdle,
+	})
 }
 
 func preserveBatchOutlookAccountSettings(account *models.EmailAccount, existing *models.EmailAccount) {
