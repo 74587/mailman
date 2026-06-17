@@ -19,21 +19,40 @@ const (
 )
 
 type BusinessModule struct {
-	ID            uint             `gorm:"primaryKey" json:"id"`
-	OrgID         uint             `gorm:"not null;index;default:1" json:"orgId"`
-	Name          string           `gorm:"type:varchar(255);not null;index" json:"name"`
-	Website       string           `gorm:"type:varchar(512)" json:"website,omitempty"`
-	LoginURL      string           `gorm:"type:varchar(512)" json:"loginUrl,omitempty"`
-	Description   string           `gorm:"type:text" json:"description,omitempty"`
-	Icon          string           `gorm:"type:varchar(128)" json:"icon,omitempty"`
-	Logo          string           `gorm:"type:text" json:"logo,omitempty"`
-	Color         string           `gorm:"type:varchar(32)" json:"color,omitempty"`
-	FieldSchema   JSONMapInterface `gorm:"type:json" json:"fieldSchema,omitempty"`
-	StatusOptions JSONMapInterface `gorm:"type:json" json:"statusOptions,omitempty"`
-	SortOrder     int              `gorm:"default:0" json:"sortOrder"`
-	CreatedAt     time.Time        `json:"createdAt"`
-	UpdatedAt     time.Time        `json:"updatedAt"`
-	DeletedAt     DeletedAt        `gorm:"index" json:"deletedAt,omitempty"`
+	ID               uint             `gorm:"primaryKey" json:"id"`
+	OrgID            uint             `gorm:"not null;index;default:1" json:"orgId"`
+	Name             string           `gorm:"type:varchar(255);not null;index" json:"name"`
+	Website          string           `gorm:"type:varchar(512)" json:"website,omitempty"`
+	LoginURL         string           `gorm:"type:varchar(512)" json:"loginUrl,omitempty"`
+	Description      string           `gorm:"type:text" json:"description,omitempty"`
+	Icon             string           `gorm:"type:varchar(128)" json:"icon,omitempty"`
+	Logo             string           `gorm:"type:text" json:"logo,omitempty"`
+	Color            string           `gorm:"type:varchar(32)" json:"color,omitempty"`
+	FieldSchema      JSONMapInterface `gorm:"type:json" json:"fieldSchema,omitempty"`
+	StatusOptions    JSONMapInterface `gorm:"type:json" json:"statusOptions,omitempty"`
+	ClaimDefaults    JSONMapInterface `gorm:"type:json" json:"claimDefaults,omitempty"`
+	EmailConstraints JSONMapInterface `gorm:"type:json" json:"emailConstraints,omitempty"`
+	SortOrder        int              `gorm:"default:0" json:"sortOrder"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	UpdatedAt        time.Time        `json:"updatedAt"`
+	DeletedAt        DeletedAt        `gorm:"index" json:"deletedAt,omitempty"`
+}
+
+type BusinessScenario struct {
+	ID              uint             `gorm:"primaryKey" json:"id"`
+	OrgID           uint             `gorm:"not null;index;default:1;uniqueIndex:idx_business_scenario_key" json:"orgId"`
+	ModuleID        uint             `gorm:"not null;index;uniqueIndex:idx_business_scenario_key" json:"moduleId"`
+	Module          *BusinessModule  `gorm:"foreignKey:ModuleID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;" json:"module,omitempty"`
+	Key             string           `gorm:"type:varchar(80);not null;uniqueIndex:idx_business_scenario_key" json:"key"`
+	Name            string           `gorm:"type:varchar(255);not null" json:"name"`
+	Description     string           `gorm:"type:text" json:"description,omitempty"`
+	Enabled         bool             `gorm:"not null;default:true;index" json:"enabled"`
+	PickupConfig    JSONMapInterface `gorm:"type:json" json:"pickupConfig,omitempty"`
+	ExtractorConfig JSONMapInterface `gorm:"type:json" json:"extractorConfig,omitempty"`
+	SortOrder       int              `gorm:"default:0" json:"sortOrder"`
+	CreatedAt       time.Time        `json:"createdAt"`
+	UpdatedAt       time.Time        `json:"updatedAt"`
+	DeletedAt       DeletedAt        `gorm:"index" json:"deletedAt,omitempty"`
 }
 
 type BusinessAccount struct {
@@ -93,6 +112,10 @@ type BusinessEmailExclusion struct {
 
 func (BusinessModule) TableName() string {
 	return "business_modules"
+}
+
+func (BusinessScenario) TableName() string {
+	return "business_scenarios"
 }
 
 func (BusinessAccount) TableName() string {

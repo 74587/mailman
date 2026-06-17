@@ -5,6 +5,7 @@ import (
 	"log"
 	"runtime/debug"
 	"sort"
+	"strings"
 	"time"
 
 	"mailman/internal/interceptor"
@@ -93,6 +94,19 @@ func (e *ActionExecutorV2) ExecuteActionsWithContext(
 			}
 		}
 
+		if err != nil && firstError == nil {
+			firstError = err
+		}
+
+		if shouldRecordFailedActionError(action, result, skipped) && firstError == nil {
+			firstError = fmt.Errorf("action %s failed: %s", action.ID, result.Error)
+		}
+
+		if shouldStopAfterFailedAction(action, result, skipped) {
+			result.StopPipeline = true
+			log.Printf("[ActionExecutorV2] Action %s failed; stopping pipeline. Set continue_on_error=true to continue after this action.", action.ID)
+		}
+
 		results = append(results, *result)
 
 		// 创建步骤结果
@@ -135,10 +149,6 @@ func (e *ActionExecutorV2) ExecuteActionsWithContext(
 		if result.Success && result.Result != nil {
 			sharedEvent.SetVariable("_", result.Result)
 			log.Printf("[ActionExecutorV2] Set $_ variable from action %s output", action.ID)
-		}
-
-		if err != nil && firstError == nil {
-			firstError = err
 		}
 
 		// 检查是否需要中断后续流程
@@ -457,4 +467,59 @@ func countSuccessfulActions(results models.ActionExecutionResults) int {
 		}
 	}
 	return count
+}
+
+func shouldStopAfterFailedAction(action models.TriggerAction, result *models.ActionExecutionResult, skipped bool) bool {
+	if result == nil || result.Success || result.StopPipeline || skipped || !action.Enabled {
+		return false
+	}
+	return !actionContinuesOnError(action)
+}
+
+func shouldRecordFailedActionError(action models.TriggerAction, result *models.ActionExecutionResult, skipped bool) bool {
+	if result == nil || result.Success || skipped || !action.Enabled {
+		return false
+	}
+	return result.StopPipeline || !actionContinuesOnError(action)
+}
+
+func actionContinuesOnError(action models.TriggerAction) bool {
+	if action.Config == nil {
+		return false
+	}
+
+	for _, key := range []string{"continue_on_error", "continueOnError"} {
+		if value, ok := action.Config[key]; ok {
+			return configBool(value)
+		}
+	}
+
+	for _, key := range []string{"on_error", "onError"} {
+		if value, ok := action.Config[key]; ok {
+			switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value))) {
+			case "continue", "ignore", "skip":
+				return true
+			case "stop", "fail", "halt", "abort":
+				return false
+			}
+		}
+	}
+
+	return false
+}
+
+func configBool(value interface{}) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "y", "on":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
 }

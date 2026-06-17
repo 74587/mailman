@@ -108,6 +108,12 @@ type BatchOperationResponse struct {
 	Errors     []string `json:"errors,omitempty"`
 }
 
+type TriggerExecutionLogV2DetailResponse struct {
+	models.TriggerExecutionLogV2
+	Trigger *TriggerV2Response `json:"trigger,omitempty"`
+	Email   *models.Email      `json:"email,omitempty"`
+}
+
 // TestTriggerConditionRequest is the request for testing a trigger condition
 type TestTriggerConditionRequest struct {
 	Expressions []models.TriggerExpression `json:"expressions"`
@@ -223,6 +229,14 @@ func (c *EmailTriggerV2Controller) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/triggers", c.GetTriggersHandler).Methods("GET")
 	// Note: /triggers/{id}/statistics must be registered before /triggers/{id}
 	router.HandleFunc("/triggers/{id}/statistics", c.GetTriggerStatisticsHandler).Methods("GET")
+
+	// Execution logs API routes must be registered before /triggers/{id}.
+	router.HandleFunc("/triggers/logs", c.GetTriggerLogsHandler).Methods("GET")
+	router.HandleFunc("/triggers/{id}/logs", c.GetTriggerLogsByTriggerIDHandler).Methods("GET")
+	router.HandleFunc("/triggers/logs/stats", c.GetTriggerLogsStatsHandler).Methods("GET")
+	router.HandleFunc("/triggers/logs/export", c.ExportTriggerLogsHandler).Methods("GET")
+	router.HandleFunc("/triggers/logs/{id}", c.GetTriggerLogHandler).Methods("GET")
+
 	router.HandleFunc("/triggers/{id}", c.GetTriggerHandler).Methods("GET")
 	router.HandleFunc("/triggers/{id}", c.UpdateTriggerHandler).Methods("PUT")
 	router.HandleFunc("/triggers/{id}", c.DeleteTriggerHandler).Methods("DELETE")
@@ -233,12 +247,6 @@ func (c *EmailTriggerV2Controller) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/triggers/batch/enable", c.BatchEnableTriggersHandler).Methods("POST")
 	router.HandleFunc("/triggers/batch/disable", c.BatchDisableTriggersHandler).Methods("POST")
 	router.HandleFunc("/triggers/batch/delete", c.BatchDeleteTriggersHandler).Methods("POST")
-
-	// Execution logs API routes
-	router.HandleFunc("/triggers/logs", c.GetTriggerLogsHandler).Methods("GET")
-	router.HandleFunc("/triggers/{id}/logs", c.GetTriggerLogsByTriggerIDHandler).Methods("GET")
-	router.HandleFunc("/triggers/logs/stats", c.GetTriggerLogsStatsHandler).Methods("GET")
-	router.HandleFunc("/triggers/logs/export", c.ExportTriggerLogsHandler).Methods("GET")
 }
 
 // CreateTriggerHandler handles requests to create a new trigger
@@ -985,6 +993,63 @@ func (c *EmailTriggerV2Controller) GetTriggerLogsHandler(w http.ResponseWriter, 
 		"page":        page,
 		"limit":       limit,
 		"total_pages": totalPages,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// GetTriggerLogHandler handles requests to get a single trigger execution log.
+func (c *EmailTriggerV2Controller) GetTriggerLogHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, err := strconv.ParseUint(vars["id"], 10, 32)
+	if err != nil || id == 0 {
+		http.Error(w, "Invalid execution log ID", http.StatusBadRequest)
+		return
+	}
+
+	logEntry, err := c.logRepo.GetByID(uint(id))
+	if err != nil {
+		http.Error(w, "Execution log not found: "+err.Error(), http.StatusNotFound)
+		return
+	}
+
+	trigger, err := c.triggerRepo.GetByID(logEntry.TriggerID)
+	if err != nil {
+		http.Error(w, "Trigger not found: "+err.Error(), http.StatusNotFound)
+		return
+	}
+	if orgID := GetCurrentOrgID(r); orgID > 0 && trigger.OrgID != orgID {
+		http.Error(w, "Execution log not found", http.StatusNotFound)
+		return
+	}
+
+	triggerResponse := TriggerV2Response{
+		ID:                trigger.ID,
+		Name:              trigger.Name,
+		Description:       trigger.Description,
+		Enabled:           trigger.Enabled,
+		Expressions:       convertModelExpressionsToAPI(trigger.Expressions),
+		Actions:           convertModelActionsToAPI(trigger.Actions),
+		TotalExecutions:   trigger.TotalExecutions,
+		SuccessExecutions: trigger.SuccessExecutions,
+		LastExecutedAt:    trigger.LastExecutedAt,
+		LastError:         trigger.LastError,
+		CreatedAt:         trigger.CreatedAt,
+		UpdatedAt:         trigger.UpdatedAt,
+	}
+
+	response := TriggerExecutionLogV2DetailResponse{
+		TriggerExecutionLogV2: *logEntry,
+		Trigger:               &triggerResponse,
+	}
+
+	if c.emailRepo != nil && logEntry.EmailID > 0 {
+		if email, err := c.emailRepo.GetByID(logEntry.EmailID); err == nil {
+			if email.Account.OrgID == 0 || email.Account.OrgID == trigger.OrgID {
+				response.Email = email
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

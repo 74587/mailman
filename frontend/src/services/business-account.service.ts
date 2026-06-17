@@ -28,6 +28,8 @@ export interface BusinessModule {
     color?: string
     fieldSchema?: Record<string, any>
     statusOptions?: Record<string, any>
+    claimDefaults?: BusinessClaimDefaults
+    emailConstraints?: BusinessEmailConstraints
     sortOrder?: number
     createdAt?: string
     updatedAt?: string
@@ -121,6 +123,8 @@ export interface BusinessEmailClaimPayload {
     aliasBaseAccountId?: number
     emailAddress?: string
     emailSuffix?: string
+    emailSuffixes?: string[]
+    blockedEmailSuffixes?: string[]
     emailMode?: 'auto' | 'primary' | 'domain' | 'alias' | 'forwarded'
     useDomainMail?: boolean
     domain?: string
@@ -132,6 +136,11 @@ export interface BusinessEmailClaimPayload {
     prefixTemplate?: string
     builtinPrefix?: string
     randomLength?: number
+    tagIds?: number[]
+    tagFilterMode?: 'or' | 'and'
+    providerId?: number
+    authTypes?: string[]
+    proxyMode?: string
     businessAccount?: Partial<BusinessAccountPayload>
 }
 
@@ -184,6 +193,65 @@ export interface BusinessModulePayload {
     color?: string
     fieldSchema?: Record<string, any>
     statusOptions?: Record<string, any>
+    claimDefaults?: BusinessClaimDefaults
+    emailConstraints?: BusinessEmailConstraints
+    sortOrder?: number
+}
+
+export interface BusinessClaimDefaults {
+    ttlSeconds?: number
+    emailMode?: 'auto' | 'primary' | 'domain' | 'alias' | 'forwarded'
+    emailSuffix?: string
+    emailSuffixes?: string[]
+    blockedEmailSuffixes?: string[]
+    useDomainMail?: boolean
+    domain?: string
+    useAlias?: boolean
+    aliasType?: 'gmail_plus' | 'domain_local_part' | 'forwarded'
+    prefixStrategy?: 'literal' | 'builtin' | 'template' | 'random'
+    prefix?: string
+    prefixTemplate?: string
+    builtinPrefix?: string
+    randomLength?: number
+    tagIds?: number[]
+    tagFilterMode?: 'or' | 'and'
+    providerId?: number
+    authTypes?: string[]
+    proxyMode?: string
+}
+
+export interface BusinessEmailConstraints {
+    allowedSuffixes?: string[]
+    blockedSuffixes?: string[]
+    allowedDomains?: string[]
+    blockedDomains?: string[]
+    allowAliases?: boolean
+    allowDomainMail?: boolean
+    allowForwarded?: boolean
+}
+
+export interface BusinessScenario {
+    id: number
+    orgId?: number
+    moduleId: number
+    key: string
+    name: string
+    description?: string
+    enabled: boolean
+    pickupConfig?: Record<string, any>
+    extractorConfig?: Record<string, any>
+    sortOrder?: number
+    createdAt?: string
+    updatedAt?: string
+}
+
+export interface BusinessScenarioPayload {
+    key?: string
+    name: string
+    description?: string
+    enabled?: boolean
+    pickupConfig?: Record<string, any>
+    extractorConfig?: Record<string, any>
     sortOrder?: number
 }
 
@@ -211,6 +279,22 @@ class BusinessAccountService {
 
     async deleteModule(id: number): Promise<void> {
         return apiClient.delete<void>(`/business-modules/${id}`)
+    }
+
+    async listScenarios(moduleId: number): Promise<BusinessScenario[]> {
+        return apiClient.get<BusinessScenario[]>(`/business-modules/${moduleId}/scenarios`)
+    }
+
+    async createScenario(moduleId: number, payload: BusinessScenarioPayload): Promise<BusinessScenario> {
+        return apiClient.post<BusinessScenario>(`/business-modules/${moduleId}/scenarios`, payload)
+    }
+
+    async updateScenario(moduleId: number, scenarioKey: string, payload: BusinessScenarioPayload): Promise<BusinessScenario> {
+        return apiClient.put<BusinessScenario>(`/business-modules/${moduleId}/scenarios/${encodeURIComponent(scenarioKey)}`, payload)
+    }
+
+    async deleteScenario(moduleId: number, scenarioKey: string): Promise<void> {
+        return apiClient.delete<void>(`/business-modules/${moduleId}/scenarios/${encodeURIComponent(scenarioKey)}`)
     }
 
     async listAccounts(params?: BusinessAccountListParams): Promise<BusinessAccountsListResponse> {

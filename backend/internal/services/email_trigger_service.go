@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -23,11 +25,16 @@ type EmailTriggerService struct {
 	pluginManager       plugins.PluginManager
 	actionExecutor      *ActionExecutorV2
 	resultCache         *ResultCache // 结果缓存
+	businessLog         *BusinessLogPipeline
 	logger              *utils.Logger
 
 	// For managing active subscriptions
 	activeSubscriptions map[uint]string // Map of triggerID to subscriptionID
 	mu                  sync.RWMutex
+}
+
+func (s *EmailTriggerService) SetBusinessLogPipeline(pipeline *BusinessLogPipeline) {
+	s.businessLog = pipeline
 }
 
 // NewEmailTriggerService creates a new EmailTriggerService
@@ -153,7 +160,9 @@ func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTrigge
 	}
 
 	// Evaluate trigger conditions
+	filterStart := time.Now()
 	conditionResult, conditionEval, err := s.evaluateTriggerConditions(trigger, email)
+	filterEnd := time.Now()
 	executionLog.ConditionResult = conditionResult
 	executionLog.ConditionEval = conditionEval
 
@@ -161,7 +170,9 @@ func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTrigge
 		executionLog.Error = fmt.Sprintf("Failed to evaluate conditions: %v", err)
 		executionLog.EndTime = time.Now()
 		executionLog.Duration = time.Since(startTime).Milliseconds()
+		executionLog.ExecutionTraceData = s.buildExecutionTrace(trigger, email, conditionResult, conditionEval, filterStart, filterEnd, err, nil, startTime, executionLog.EndTime)
 		s.logRepo.Create(executionLog)
+		s.recordTriggerBusinessLog(trigger, email, executionLog)
 
 		// Update trigger statistics
 		s.updateTriggerStatistics(trigger.ID, false, executionLog.Error)
@@ -174,7 +185,9 @@ func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTrigge
 		executionLog.EndTime = time.Now()
 		executionLog.Duration = time.Since(startTime).Milliseconds()
 		executionLog.Status = models.TriggerExecutionV2StatusSuccess // Successful evaluation, just didn't match
+		executionLog.ExecutionTraceData = s.buildExecutionTrace(trigger, email, conditionResult, conditionEval, filterStart, filterEnd, nil, nil, startTime, executionLog.EndTime)
 		s.logRepo.Create(executionLog)
+		s.recordTriggerBusinessLog(trigger, email, executionLog)
 
 		s.logger.Debug("Email %d did not match conditions for trigger %d",
 			email.ID, trigger.ID)
@@ -211,7 +224,9 @@ func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTrigge
 	// Finalize execution log
 	executionLog.EndTime = time.Now()
 	executionLog.Duration = time.Since(startTime).Milliseconds()
+	executionLog.ExecutionTraceData = s.buildExecutionTrace(trigger, email, conditionResult, conditionEval, filterStart, filterEnd, nil, actionResults, startTime, executionLog.EndTime)
 	s.logRepo.Create(executionLog)
+	s.recordTriggerBusinessLog(trigger, email, executionLog)
 
 	// Update trigger statistics
 	s.updateTriggerStatistics(trigger.ID, executionLog.Status == models.TriggerExecutionV2StatusSuccess, executionLog.Error)
@@ -220,6 +235,154 @@ func (s *EmailTriggerService) processEmailForTrigger(trigger *models.EmailTrigge
 		email.ID, trigger.ID, executionLog.Status)
 
 	return nil
+}
+
+// buildExecutionTrace 重建执行追踪并以 base64(JSON) 形式返回，供前端时间线展示。
+// 出错时返回空字符串（trace 仅为可观测信息，不应影响主流程）。
+func (s *EmailTriggerService) buildExecutionTrace(
+	trigger *models.EmailTriggerV2,
+	email models.Email,
+	conditionResult bool,
+	conditionEval models.JSONMap,
+	filterStart, filterEnd time.Time,
+	filterErr error,
+	actionResults models.ActionExecutionResults,
+	startTime, endTime time.Time,
+) string {
+	steps := make([]models.ExecutionStep, 0, len(actionResults)+1)
+
+	// Filter step（条件表达式评估）— 始终产出，失败时标记为 Success=false
+	filterInput := map[string]interface{}{
+		"accountId":       email.AccountID,
+		"emailId":         email.ID,
+		"messageId":       email.MessageID,
+		"subject":         email.Subject,
+		"from":            []string(email.From),
+		"to":              []string(email.To),
+		"cc":              []string(email.Cc),
+		"date":            email.Date,
+		"receivedAt":      email.ReceivedAt,
+		"mailboxName":     email.MailboxName,
+		"flags":           []string(email.Flags),
+		"hasAttachments":  email.HasAttachments,
+		"expressionCount": len(trigger.Expressions),
+		"expressions":     trigger.Expressions,
+	}
+	filterOutput := map[string]interface{}{
+		"result": conditionResult,
+	}
+	if conditionEval != nil {
+		filterOutput["evaluated"] = conditionEval
+	}
+	filterStep := models.ExecutionStep{
+		ID:        "filter-evaluation",
+		Type:      models.ExecutionStepTypeFilter,
+		Name:      "条件表达式评估",
+		PluginID:  "builtin",
+		StartTime: filterStart,
+		EndTime:   filterEnd,
+		Duration:  filterEnd.Sub(filterStart).Milliseconds(),
+		Success:   filterErr == nil,
+		Input:     filterInput,
+		Output:    filterOutput,
+	}
+	if filterErr != nil {
+		filterStep.Error = filterErr.Error()
+	}
+	steps = append(steps, filterStep)
+
+	// Action steps
+	for _, result := range actionResults {
+		name := result.PluginName
+		if name == "" {
+			name = result.PluginID
+		}
+		stepID := result.ActionID
+		if stepID == "" {
+			stepID = result.PluginID
+		}
+		steps = append(steps, models.ExecutionStep{
+			ID:        stepID,
+			Type:      models.ExecutionStepTypeAction,
+			Name:      name,
+			PluginID:  result.PluginID,
+			StartTime: result.StartTime,
+			EndTime:   result.EndTime,
+			Duration:  result.Duration,
+			Success:   result.Success,
+			Input:     result.Input,
+			Output:    result.Output,
+			Error:     result.Error,
+		})
+	}
+
+	trace := models.ExecutionTrace{
+		Steps:      steps,
+		TotalSteps: len(steps),
+		StartTime:  startTime,
+		EndTime:    endTime,
+		TotalMs:    endTime.Sub(startTime).Milliseconds(),
+	}
+
+	jsonBytes, err := json.Marshal(trace)
+	if err != nil {
+		s.logger.Error("Failed to marshal execution trace for trigger %d email %d: %v", trigger.ID, email.ID, err)
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(jsonBytes)
+}
+
+func (s *EmailTriggerService) recordTriggerBusinessLog(trigger *models.EmailTriggerV2, email models.Email, executionLog *models.TriggerExecutionLogV2) {
+	if s.businessLog == nil || trigger == nil || executionLog == nil {
+		return
+	}
+	status := models.BusinessLogStatusSuccess
+	result := string(executionLog.Status)
+	if !executionLog.ConditionResult {
+		status = models.BusinessLogStatusSkipped
+		result = "condition_not_matched"
+	} else if executionLog.Status == models.TriggerExecutionV2StatusFailed {
+		status = models.BusinessLogStatusFailed
+	} else if executionLog.Status == models.TriggerExecutionV2StatusPartial {
+		status = models.BusinessLogStatusPartial
+	}
+	finishedAt := executionLog.EndTime
+	s.businessLog.Process(context.Background(), BusinessLogEvent{
+		OrgID:         trigger.OrgID,
+		OperationType: models.BusinessLogOperationAutomatic,
+		ActorType:     models.BusinessLogActorTrigger,
+		ActorID:       fmt.Sprintf("%d", trigger.ID),
+		ActorName:     trigger.Name,
+		Module:        "trigger",
+		Action:        "execute",
+		EntityType:    "email_trigger",
+		EntityID:      fmt.Sprintf("%d", trigger.ID),
+		EntityName:    trigger.Name,
+		Title:         "触发器执行",
+		Summary:       fmt.Sprintf("触发器 %s 处理邮件 %d，结果 %s", trigger.Name, email.ID, result),
+		Status:        status,
+		Result:        result,
+		StartedAt:     executionLog.StartTime,
+		FinishedAt:    &finishedAt,
+		DurationMS:    executionLog.Duration,
+		RunID:         fmt.Sprintf("trigger_log_%d", executionLog.ID),
+		ErrorMessage:  executionLog.Error,
+		Details: map[string]interface{}{
+			"trigger_id":               trigger.ID,
+			"trigger_name":             trigger.Name,
+			"trigger_execution_log_id": executionLog.ID,
+			"email_id":                 email.ID,
+			"email_subject":            email.Subject,
+			"email_account_id":         email.AccountID,
+			"account_id":               email.AccountID,
+			"account_email":            email.Account.EmailAddress,
+			"mailbox":                  email.MailboxName,
+			"condition_result":         executionLog.ConditionResult,
+			"actions_executed":         executionLog.ActionsExecuted,
+			"actions_succeeded":        executionLog.ActionsSucceeded,
+			"action_results":           executionLog.ActionResults,
+		},
+	})
 }
 
 // evaluateTriggerConditions evaluates the conditions of a trigger against an email

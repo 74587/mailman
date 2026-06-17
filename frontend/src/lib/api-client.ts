@@ -1,5 +1,6 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
 import { logger } from '@/lib/logger';
+import { getApiBaseUrl } from '@/lib/runtime-url';
 
 // API响应包装类型
 export interface ApiResponse<T = any> {
@@ -21,11 +22,7 @@ class ApiClient {
     private baseURL: string;
 
     constructor() {
-        // 根据Swagger文档，基础路径是 /api
-        // 在生产环境或docker环境中使用相对路径，利用nginx代理
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL ||
-            (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8080');
-        this.baseURL = apiUrl + '/api';
+        this.baseURL = getApiBaseUrl();
 
         this.client = axios.create({
             baseURL: this.baseURL,

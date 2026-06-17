@@ -118,6 +118,32 @@ func (r *SystemConfigRepository) InitializeDefaultConfigs() error {
 			SortOrder:  0,
 		},
 		{
+			Key:         "business-log-settings",
+			Name:        "业务日志配置",
+			Description: "控制业务日志记录范围、脱敏、采样、保留时间和模块级条数限制。模块限制为0时继承全局限制，全局限制为0时不按条数裁剪。",
+			ValueType:   models.ConfigTypeJSON,
+			DefaultValue: models.JSONMap{
+				"value": `{"enabled":true,"redactSensitive":true,"detailLevel":"summary","forceRecordFailures":true,"successSampleRate":1,"retentionDays":0,"globalLimit":0,"moduleLimits":{},"modules":{},"organizationConfigs":{},"sensitiveFields":["authorization","cookie","password","passwd","secret","token","refresh_token","access_token","api_key","apikey","credential","proxy","private_key","totp","recovery_code"],"reviewMiddlewareMode":"disabled"}`,
+			},
+			Category:   "observability",
+			IsEditable: true,
+			IsVisible:  true,
+			SortOrder:  10,
+		},
+		{
+			Key:         "output-log-settings",
+			Name:        "实时日志配置",
+			Description: "控制实时输出日志的内存缓冲、查询上限、流式回补和订阅数量。",
+			ValueType:   models.ConfigTypeJSON,
+			DefaultValue: models.JSONMap{
+				"value": `{"enabled":true,"bufferLimit":5000,"queryLimitMax":2000,"streamBackfillLimit":200,"subscriberBuffer":256,"maxSubscribers":100}`,
+			},
+			Category:   "observability",
+			IsEditable: true,
+			IsVisible:  true,
+			SortOrder:  11,
+		},
+		{
 			Key:         "login-theme",
 			Name:        "登录页主题",
 			Description: "选择登录页面的视觉主题。classic=经典, elegant=优雅, playful=趣味互动（小玩偶）",

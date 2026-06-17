@@ -93,6 +93,7 @@ func main() {
 	tagRepo := repository.NewTagRepository(db)
 	proxyPoolRepo := repository.NewProxyPoolRepository(db)
 	proxyGatewayRepo := repository.NewProxyGatewayRepository(db)
+	businessLogRepo := repository.NewBusinessLogRepository(db)
 
 	// Organization & RBAC repositories
 	orgRepo := repository.NewOrganizationRepository(db)
@@ -110,6 +111,11 @@ func main() {
 	}
 
 	// Initialize services with repositories
+	outputLogService := services.GetOutputLogService()
+	outputLogService.ApplyConfig(services.LoadOutputLogConfig(systemConfigRepo))
+	utils.SetStructuredLogSink(outputLogService.Record)
+	businessLogRecorder := services.NewBusinessLogRecorder(businessLogRepo)
+	businessLogPipeline := services.NewBusinessLogPipeline(businessLogRecorder, systemConfigRepo)
 	fetcherService := services.NewFetcherService(emailAccountRepo, emailRepo, db)
 	proxyPoolService := services.NewProxyPoolService(proxyPoolRepo, emailAccountRepo)
 	proxyGatewayService := services.NewProxyGatewayService(proxyGatewayRepo, proxyPoolRepo)
@@ -282,6 +288,7 @@ func main() {
 		pluginManager,
 		interceptorManager,
 	)
+	emailTriggerService.SetBusinessLogPipeline(businessLogPipeline)
 
 	// Initialize V2 EmailTriggerService (set up trigger subscriptions)
 	mainLogger.Info("正在初始化 V2 EmailTriggerService...")
@@ -320,6 +327,7 @@ func main() {
 		subscriptionManager,
 	)
 	perAccountSyncManager.SetEmailIngestService(emailIngestService)
+	perAccountSyncManager.SetBusinessLogPipeline(businessLogPipeline)
 	if err := perAccountSyncManager.Start(); err != nil {
 		mainLogger.Error("Failed to start per-account sync manager: %v", err)
 		return
@@ -367,7 +375,11 @@ func main() {
 	extractorSvc := services.NewExtractorService()
 	extractorSvcV2 := services.NewExtractorServiceV2(db)
 	pickupService := services.NewPickupService(emailRepo, emailAccountRepo, extractorSvc, extractorSvcV2, perAccountSyncManager)
+	pickupService.SetBusinessLogPipeline(businessLogPipeline)
+	apiHandler.SetPickupService(pickupService)
 	pickupHandler := api.NewPickupHandler(pickupService)
+	outputLogHandler := api.NewOutputLogHandler(outputLogService, systemConfigRepo)
+	businessLogHandler := api.NewBusinessLogHandler(businessLogRepo, systemConfigRepo, businessLogPipeline)
 
 	// Initialize Session handler
 	sessionHandler := api.NewSessionHandler(authService)
@@ -434,6 +446,9 @@ func main() {
 		proxyPoolHandlers,
 		proxyGatewayHandlers,
 		pickupHandler,
+		outputLogHandler,
+		businessLogHandler,
+		businessLogPipeline,
 		orgHandler,
 		userMgmtHandler,
 		authService,
@@ -489,6 +504,10 @@ func main() {
 	mainLogger.Info("Stopping V2 EmailTriggerService...")
 	emailTriggerService.Shutdown()
 
+	// Stop per-account sync manager before shutting down shared scheduler/fetcher resources.
+	mainLogger.Info("Stopping per-account sync manager...")
+	perAccountSyncManager.Stop()
+
 	// Stop incremental sync manager
 	mainLogger.Info("Stopping incremental sync manager...")
 	incrementalSyncManager.Stop()
@@ -496,6 +515,11 @@ func main() {
 	// Stop email fetch scheduler
 	mainLogger.Info("Stopping email fetch scheduler...")
 	emailFetchScheduler.Stop()
+
+	// Stop long-lived log stream handlers so HTTP shutdown does not wait for SSE clients.
+	mainLogger.Info("Stopping output log stream service...")
+	outputLogService.Shutdown()
+
 
 	// Gracefully shutdown the HTTP server
 	mainLogger.Info("Shutting down HTTP server...")

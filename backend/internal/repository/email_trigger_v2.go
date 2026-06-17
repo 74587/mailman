@@ -221,7 +221,10 @@ func (r *TriggerExecutionLogV2Repository) GetAllPaginated(page, limit int, trigg
 
 	// Apply org filter
 	if orgID > 0 {
-		query = query.Where("org_id = ?", orgID)
+		query = query.Where(
+			"trigger_id IN (?)",
+			r.db.Model(&models.EmailTriggerV2{}).Select("id").Where("org_id = ?", orgID),
+		)
 	}
 
 	// Apply filters

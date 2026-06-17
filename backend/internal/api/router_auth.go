@@ -35,6 +35,9 @@ func NewRouterWithAuth(
 	proxyPoolHandlers *ProxyPoolHandlers,
 	proxyGatewayHandlers *ProxyGatewayHandlers,
 	pickupHandler *PickupHandler,
+	outputLogHandler *OutputLogHandler,
+	businessLogHandler *BusinessLogHandler,
+	businessLogPipeline *services.BusinessLogPipeline,
 	orgHandler *OrganizationHandler,
 	userMgmtHandler *UserManagementHandler,
 	authService *services.AuthService,
@@ -83,6 +86,9 @@ func NewRouterWithAuth(
 	authRouter.Use(AuthMiddleware(authService))
 	// 加载组织/角色/权限上下文
 	authRouter.Use(OrgMiddleware(orgRepo, memberRepo, roleRepo))
+	if businessLogPipeline != nil {
+		authRouter.Use(BusinessLogAuditMiddleware(businessLogPipeline))
+	}
 
 	// Authentication endpoints (protected)
 	authRouter.HandleFunc("/auth/logout", authHandler.LogoutHandler).Methods("POST")
@@ -145,6 +151,11 @@ func NewRouterWithAuth(
 	accountRouter.HandleFunc("/business-modules", handler.ListBusinessModulesHandler).Methods("GET")
 	accountRouter.HandleFunc("/business-modules", handler.CreateBusinessModuleHandler).Methods("POST")
 	accountRouter.HandleFunc("/business-modules/{id}/email-accounts/claim", handler.ClaimBusinessModuleEmailAccountHandler).Methods("POST")
+	accountRouter.HandleFunc("/business-modules/{id}/scenarios", handler.ListBusinessScenariosHandler).Methods("GET")
+	accountRouter.HandleFunc("/business-modules/{id}/scenarios", handler.CreateBusinessScenarioHandler).Methods("POST")
+	accountRouter.HandleFunc("/business-modules/{id}/scenarios/{scenarioKey}", handler.GetBusinessScenarioHandler).Methods("GET")
+	accountRouter.HandleFunc("/business-modules/{id}/scenarios/{scenarioKey}", handler.UpdateBusinessScenarioHandler).Methods("PUT")
+	accountRouter.HandleFunc("/business-modules/{id}/scenarios/{scenarioKey}", handler.DeleteBusinessScenarioHandler).Methods("DELETE")
 	accountRouter.HandleFunc("/business-modules/{id}", handler.GetBusinessModuleHandler).Methods("GET")
 	accountRouter.HandleFunc("/business-modules/{id}", handler.UpdateBusinessModuleHandler).Methods("PUT")
 	accountRouter.HandleFunc("/business-modules/{id}", handler.DeleteBusinessModuleHandler).Methods("DELETE")
@@ -153,6 +164,7 @@ func NewRouterWithAuth(
 	accountRouter.HandleFunc("/business-accounts/{id}/complete-registration", handler.CompleteBusinessRegistrationHandler).Methods("POST")
 	accountRouter.HandleFunc("/business-accounts/{id}/release-registration-claim", handler.ReleaseBusinessRegistrationClaimHandler).Methods("POST")
 	accountRouter.HandleFunc("/business-accounts/{id}/renew-registration-claim", handler.RenewBusinessRegistrationClaimHandler).Methods("POST")
+	accountRouter.HandleFunc("/business-accounts/{id}/scenarios/{scenarioKey}/pickup", handler.PickupBusinessAccountScenarioHandler).Methods("POST")
 	accountRouter.HandleFunc("/business-accounts/{id}", handler.GetBusinessAccountHandler).Methods("GET")
 	accountRouter.HandleFunc("/business-accounts/{id}", handler.UpdateBusinessAccountHandler).Methods("PUT")
 	accountRouter.HandleFunc("/business-accounts/{id}", handler.DeleteBusinessAccountHandler).Methods("DELETE")
@@ -342,6 +354,23 @@ func NewRouterWithAuth(
 	sysConfigRouter.HandleFunc("/oauth2/session/poll/{state}", oauth2Handler.PollOAuth2SessionStatus).Methods("GET")
 	sysConfigRouter.HandleFunc("/oauth2/session/cancel/{state}", oauth2Handler.CancelOAuth2Session).Methods("POST")
 
+	if outputLogHandler != nil {
+		sysConfigRouter.HandleFunc("/output-logs", outputLogHandler.ListLogs).Methods("GET")
+		sysConfigRouter.HandleFunc("/output-logs/modules", outputLogHandler.ListModules).Methods("GET")
+		sysConfigRouter.HandleFunc("/output-logs/config", outputLogHandler.GetConfig).Methods("GET")
+		sysConfigRouter.HandleFunc("/output-logs/config", outputLogHandler.UpdateConfig).Methods("PUT")
+		sysConfigRouter.HandleFunc("/output-logs/stream", outputLogHandler.StreamLogs).Methods("GET")
+	}
+
+	if businessLogHandler != nil {
+		sysConfigRouter.HandleFunc("/business-logs", businessLogHandler.ListLogs).Methods("GET")
+		sysConfigRouter.HandleFunc("/business-logs/stats", businessLogHandler.GetStats).Methods("GET")
+		sysConfigRouter.HandleFunc("/business-logs/config", businessLogHandler.GetConfig).Methods("GET")
+		sysConfigRouter.HandleFunc("/business-logs/config", businessLogHandler.UpdateConfig).Methods("PUT")
+		sysConfigRouter.HandleFunc("/business-logs/test-pipeline", businessLogHandler.TestPipeline).Methods("POST")
+		sysConfigRouter.HandleFunc("/business-logs/{id}", businessLogHandler.GetLog).Methods("GET")
+	}
+
 	// ==================== Non-permission-gated endpoints ====================
 
 	// Activity logs (protected, no specific resource permission)
@@ -353,6 +382,7 @@ func NewRouterWithAuth(
 	// Dashboard statistics endpoint (protected)
 	authRouter.HandleFunc("/dashboard/stats", handler.GetEmailStatsHandler).Methods("GET")
 	authRouter.HandleFunc("/observability/runtime", handler.GetRuntimeObservabilityHandler).Methods("GET")
+
 
 	// WebSocket和通知相关端点 (protected)
 	authRouter.HandleFunc("/notifications/stats", webSocketHandler.HandleNotificationStats).Methods("GET")
@@ -414,6 +444,7 @@ func NewRouterWithAuth(
 	triggerRouter.HandleFunc("/triggers/logs", emailTriggerV2Controller.GetTriggerLogsHandler).Methods("GET")
 	triggerRouter.HandleFunc("/triggers/logs/stats", emailTriggerV2Controller.GetTriggerLogsStatsHandler).Methods("GET")
 	triggerRouter.HandleFunc("/triggers/logs/export", emailTriggerV2Controller.ExportTriggerLogsHandler).Methods("GET")
+	triggerRouter.HandleFunc("/triggers/logs/{id}", emailTriggerV2Controller.GetTriggerLogHandler).Methods("GET")
 
 	// 3. 其他具体路径 (在 {id} 之前) - 保留V1用于表达式评估等兼容性功能
 	triggerRouter.HandleFunc("/triggers/evaluate-expression", triggerHandler.EvaluateExpressionHandler).Methods("POST")

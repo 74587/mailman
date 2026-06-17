@@ -13,7 +13,7 @@ const EVENT_NAME = 'menuVisibilityChanged'
 export interface MenuItemConfig {
     id: string
     name: string
-    group: 'main' | 'mail' | 'proxy' | 'business' | 'admin' | 'trigger' | 'plugin' | 'developer'
+    group: 'main' | 'mail' | 'proxy' | 'business' | 'log' | 'admin' | 'trigger' | 'plugin' | 'developer'
     defaultVisible: boolean
     locked?: boolean  // 锁定的菜单项不允许隐藏
 }
@@ -43,6 +43,13 @@ export const menuRegistry: MenuItemConfig[] = [
     // 业务资料
     { id: 'business-accounts', name: '业务账户', group: 'business', defaultVisible: true },
     { id: 'business-modules', name: '业务模块', group: 'business', defaultVisible: true },
+
+    // 日志中心
+    { id: 'output-logs', name: '实时日志', group: 'log', defaultVisible: true },
+    { id: 'output-log-settings', name: '实时日志设置', group: 'log', defaultVisible: true },
+    { id: 'business-logs', name: '业务日志', group: 'log', defaultVisible: true },
+    { id: 'business-log-global-settings', name: '业务日志全局设置', group: 'log', defaultVisible: true },
+    { id: 'business-log-org-settings', name: '业务日志组织设置', group: 'log', defaultVisible: true },
 
     // 系统管理
     { id: 'runtime-status', name: '运行状态', group: 'admin', defaultVisible: true },
@@ -76,6 +83,7 @@ export const groupNames: Record<string, string> = {
     mail: '邮箱运营',
     proxy: '代理池管理',
     business: '业务资料',
+    log: '日志中心',
     trigger: '自动化',
     admin: '系统与权限',
     plugin: '扩展插件',
@@ -107,6 +115,11 @@ const LEGACY_DEFAULT_MENU_ORDER = [
     'api-docs',
     'business-modules',
     'business-accounts',
+    'output-logs',
+    'output-log-settings',
+    'business-logs',
+    'business-log-org-settings',
+    'business-log-global-settings',
     'team-management',
     'user-management',
     'ai-config',

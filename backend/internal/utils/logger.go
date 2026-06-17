@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +30,29 @@ type Logger struct {
 	level   LogLevel
 	prefix  string
 	quieted bool // 是否被静默（仅输出 WARN 及以上）
+}
+
+// StructuredLogEntry is emitted to an optional in-process sink so the UI can
+// query and stream backend logs without scraping stdout.
+type StructuredLogEntry struct {
+	Time    time.Time
+	Level   string
+	Module  string
+	Message string
+	File    string
+	Line    int
+}
+
+var structuredLogSink struct {
+	sync.RWMutex
+	fn func(StructuredLogEntry)
+}
+
+// SetStructuredLogSink registers a process-wide structured log sink.
+func SetStructuredLogSink(fn func(StructuredLogEntry)) {
+	structuredLogSink.Lock()
+	defer structuredLogSink.Unlock()
+	structuredLogSink.fn = fn
 }
 
 // quietPrefixes 存储需要静默的前缀列表
@@ -140,7 +164,8 @@ func (l *Logger) ErrorWithStack(err error, format string, args ...interface{}) {
 
 // log formats and outputs the log message
 func (l *Logger) log(level, format string, args ...interface{}) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+	now := time.Now()
+	timestamp := now.Format("2006-01-02 15:04:05.000")
 	message := fmt.Sprintf(format, args...)
 
 	// Get caller information
@@ -150,6 +175,25 @@ func (l *Logger) log(level, format string, args ...interface{}) {
 	filename := parts[len(parts)-1]
 
 	log.Printf("[%s] [%s] [%s] %s:%d - %s", timestamp, level, l.prefix, filename, line, message)
+
+	structuredLogSink.RLock()
+	sink := structuredLogSink.fn
+	structuredLogSink.RUnlock()
+	if sink != nil {
+		func() {
+			defer func() {
+				_ = recover()
+			}()
+			sink(StructuredLogEntry{
+				Time:    now,
+				Level:   level,
+				Module:  l.prefix,
+				Message: message,
+				File:    filename,
+				Line:    line,
+			})
+		}()
+	}
 }
 
 // getStackTrace returns the current stack trace

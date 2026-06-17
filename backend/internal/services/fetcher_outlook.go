@@ -435,6 +435,11 @@ func (s *FetcherService) createOutlookHTTPClient(proxyURL string) *http.Client {
 // fetchEmailsFromOutlookGraphAPI fetches emails using Microsoft Graph API or Outlook REST API v2.0
 
 func (s *FetcherService) fetchEmailsFromOutlookGraphAPI(account models.EmailAccount, options FetchEmailsOptions) ([]models.Email, error) {
+	ctx := options.contextOrBackground()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Get access token
 	accessToken, err := s.getOutlookAccessTokenWithSource(account, options.Source)
 	if err != nil {
@@ -497,7 +502,7 @@ func (s *FetcherService) fetchEmailsFromOutlookGraphAPI(account models.EmailAcco
 	requestURL := baseURL + "?" + queryParams.Encode()
 	s.logger.Debug("Outlook Graph API request URL: %s", requestURL)
 
-	req, err := http.NewRequest("GET", requestURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -506,7 +511,7 @@ func (s *FetcherService) fetchEmailsFromOutlookGraphAPI(account models.EmailAcco
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Prefer", "outlook.body-content-type=\"html\"")
 
-	releaseSlot, err := s.acquireOutlookRequestSlot(options.Source, "messages fetch")
+	releaseSlot, err := s.acquireOutlookRequestSlotWithContext(ctx, options.Source, "messages fetch")
 	if err != nil {
 		return nil, err
 	}
@@ -594,6 +599,10 @@ type OutlookRESTMessage struct {
 // fetchEmailsFromOutlookRESTAPI fetches emails using the legacy Outlook REST API v2.0
 func (s *FetcherService) fetchEmailsFromOutlookRESTAPI(account models.EmailAccount, accessToken string, options FetchEmailsOptions) ([]models.Email, error) {
 	s.logger.Debug("Fetching emails using Outlook REST API v2.0 for account %s", account.EmailAddress)
+	ctx := options.contextOrBackground()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Create HTTP client
 	httpClient := s.createOutlookHTTPClient(account.Proxy)
@@ -645,7 +654,10 @@ func (s *FetcherService) fetchEmailsFromOutlookRESTAPI(account models.EmailAccou
 
 	var resp *http.Response
 	for attempt := 1; ; attempt++ {
-		req, err := http.NewRequest("GET", requestURL, nil)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -655,7 +667,7 @@ func (s *FetcherService) fetchEmailsFromOutlookRESTAPI(account models.EmailAccou
 		// REST API v2.0 specific headers
 		req.Header.Set("Accept", "application/json")
 
-		releaseSlot, err := s.acquireOutlookRequestSlot(options.Source, "REST messages fetch")
+		releaseSlot, err := s.acquireOutlookRequestSlotWithContext(ctx, options.Source, "REST messages fetch")
 		if err != nil {
 			return nil, err
 		}
@@ -677,7 +689,11 @@ func (s *FetcherService) fetchEmailsFromOutlookRESTAPI(account models.EmailAccou
 		delay := outlookRESTPickupRetryDelay(attempt)
 		s.logger.Warn("Outlook REST pickup messages request failed for account %d (attempt %d/%d): %v; retrying in %s",
 			account.ID, attempt, outlookPickupRESTMaxAttempts, err, delay)
-		time.Sleep(delay)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
 	}
 
 	if resp.StatusCode != http.StatusOK {

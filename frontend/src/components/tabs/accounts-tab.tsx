@@ -840,6 +840,37 @@ export default function AccountsTab() {
                 },
             },
             {
+                name: 'startOAuth2AccountOnboarding',
+                title: '发起邮箱 OAuth2 授权',
+                description: '打开添加账户窗口并预设 OAuth2 认证方式，由当前用户完成授权确认。',
+                risk: 'write',
+                parameters: {
+                    provider: '可选，gmail/outlook 等邮箱提供商',
+                },
+                run: (params) => {
+                    const provider = typeof params.provider === 'string' ? params.provider : undefined
+                    setModalPresets({
+                        provider,
+                        authType: 'oauth2',
+                    })
+                    setShowEnhancedAddModal(true)
+                    return {
+                        success: true,
+                        summary: provider
+                            ? `已打开 ${provider} OAuth2 授权添加账户窗口，授权和提交仍需要用户手动确认。`
+                            : '已打开 OAuth2 授权添加账户窗口，授权和提交仍需要用户手动确认。',
+                        data: {
+                            formOpened: true,
+                            requiresUserCompletion: true,
+                            presets: {
+                                provider,
+                                authType: 'oauth2',
+                            },
+                        },
+                    }
+                },
+            },
+            {
                 name: 'openOAuth2Config',
                 title: '打开 OAuth2 配置',
                 description: '切换到 OAuth2 配置页面。',

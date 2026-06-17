@@ -196,9 +196,13 @@ func (l *outlookRequestPriorityLimiter) decrement(priority outlookRequestPriorit
 }
 
 func (s *FetcherService) acquireOutlookRequestSlot(source EmailIngestSource, operation string) (func(), error) {
+	return s.acquireOutlookRequestSlotWithContext(context.Background(), source, operation)
+}
+
+func (s *FetcherService) acquireOutlookRequestSlotWithContext(ctx context.Context, source EmailIngestSource, operation string) (func(), error) {
 	priority := outlookPriorityForSource(source)
 	waitStart := time.Now()
-	release, err := defaultOutlookRequestLimiter.acquire(context.Background(), priority)
+	release, err := defaultOutlookRequestLimiter.acquire(ctx, priority)
 	RuntimeMetrics().RecordOutlookLimiterWait(source, priority.String(), operation, time.Since(waitStart), err)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire Outlook %s slot for %s priority: %w", operation, priority, err)

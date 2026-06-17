@@ -1,5 +1,6 @@
 'use client'
 import { logger } from '@/lib/logger';
+import { getWebSocketUrl } from '@/lib/runtime-url'
 
 import React, { useState, useEffect, useRef } from 'react'
 import { X, Mail, Inbox, ChevronLeft, ChevronRight, Eye, ExternalLink } from 'lucide-react'
@@ -208,13 +209,7 @@ export default function EmailNotificationToast({ onNotificationClick }: EmailNot
     // WebSocket连接管理
     const connectWebSocket = () => {
         try {
-            // 确定WebSocket URL
-            // 注意：Next.js rewrites 不支持 WebSocket 代理，
-            // 开发环境下需要直接连接后端端口
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-            const isDev = process.env.NODE_ENV === 'development' || window.location.port === '3000'
-            const host = isDev ? `${window.location.hostname}:8080` : window.location.host
-            const wsUrl = `${protocol}//${host}/api/ws/notifications`
+            const wsUrl = getWebSocketUrl('/api/ws/notifications')
 
             const ws = new WebSocket(wsUrl)
             wsRef.current = ws
@@ -516,10 +511,7 @@ export function useWebSocketConnection() {
     const [lastMessage, setLastMessage] = useState<EmailNotification | null>(null)
 
     useEffect(() => {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const isDev = process.env.NODE_ENV === 'development' || window.location.port === '3000'
-        const host = isDev ? `${window.location.hostname}:8080` : window.location.host
-        const wsUrl = `${protocol}//${host}/api/ws/notifications`
+        const wsUrl = getWebSocketUrl('/api/ws/notifications')
 
         const ws = new WebSocket(wsUrl)
 

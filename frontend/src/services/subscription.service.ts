@@ -1,5 +1,6 @@
 import { logger } from '@/lib/logger';
 import { apiClient } from '@/lib/api-client';
+import { getWebSocketUrl } from '@/lib/runtime-url';
 
 export interface EmailFilter {
     from_filter?: string;
@@ -102,7 +103,7 @@ class SubscriptionService {
                 return;
             }
 
-            const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8080/api/ws/subscriptions`;
+            const wsUrl = getWebSocketUrl('/api/ws/subscriptions');
             this.wsConnection = new WebSocket(wsUrl);
 
             this.wsConnection.onopen = () => {

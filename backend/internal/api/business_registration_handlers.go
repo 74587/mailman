@@ -10,6 +10,7 @@ import (
 	"mailman/internal/utils"
 	"net/http"
 	"net/mail"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,10 +52,12 @@ type BusinessEmailClaimRequest struct {
 	TTLSeconds int    `json:"ttlSeconds,omitempty"`
 	ClaimedBy  string `json:"claimedBy,omitempty"`
 
-	AccountID          *uint  `json:"accountId,omitempty"`
-	AliasBaseAccountID *uint  `json:"aliasBaseAccountId,omitempty"`
-	EmailAddress       string `json:"emailAddress,omitempty"`
-	EmailSuffix        string `json:"emailSuffix,omitempty"`
+	AccountID            *uint    `json:"accountId,omitempty"`
+	AliasBaseAccountID   *uint    `json:"aliasBaseAccountId,omitempty"`
+	EmailAddress         string   `json:"emailAddress,omitempty"`
+	EmailSuffix          string   `json:"emailSuffix,omitempty"`
+	EmailSuffixes        []string `json:"emailSuffixes,omitempty"`
+	BlockedEmailSuffixes []string `json:"blockedEmailSuffixes,omitempty"`
 
 	EmailMode      string `json:"emailMode,omitempty"`
 	UseDomainMail  *bool  `json:"useDomainMail,omitempty"`
@@ -262,6 +265,7 @@ func (h *APIHandler) CompleteBusinessRegistrationHandler(w http.ResponseWriter, 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	h.removeBusinessRegistrationPickupOverride(account)
 	if err := h.EmailAccountRepo.GetDB().Preload("EmailAccount").Preload("Module").First(account, account.ID).Error; err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -315,6 +319,7 @@ func (h *APIHandler) ReleaseBusinessRegistrationClaimHandler(w http.ResponseWrit
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		h.removeBusinessRegistrationPickupOverride(account)
 		writeBusinessJSON(w, http.StatusOK, map[string]interface{}{
 			"businessAccountId": account.ID,
 			"released":          true,
@@ -346,6 +351,7 @@ func (h *APIHandler) ReleaseBusinessRegistrationClaimHandler(w http.ResponseWrit
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	h.removeBusinessRegistrationPickupOverride(account)
 	writeBusinessJSON(w, http.StatusOK, account)
 }
 
@@ -402,11 +408,16 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 	if orgID == 0 {
 		orgID = module.OrgID
 	}
+	var err error
+	req, err = applyBusinessModuleClaimConfig(module, req)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
 	ttl := normalizeBusinessClaimTTL(req.TTLSeconds)
 	now := time.Now().UTC()
 
 	var response *BusinessEmailClaimResponse
-	err := h.EmailAccountRepo.GetDB().Transaction(func(tx *gorm.DB) error {
+	err = h.EmailAccountRepo.GetDB().Transaction(func(tx *gorm.DB) error {
 		if err := clearExpiredBusinessRegistrationClaims(tx, orgID, module.ID, now); err != nil {
 			return err
 		}
@@ -466,6 +477,10 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 		return gorm.ErrRecordNotFound
 	})
 	if err != nil {
+		var validationErr businessClaimValidationError
+		if errors.As(err, &validationErr) {
+			return nil, http.StatusBadRequest, validationErr.Unwrap()
+		}
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, http.StatusNotFound, fmt.Errorf("no available email account for business module")
 		}
@@ -475,6 +490,13 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 }
 
 func createBusinessRegistrationClaimForPlan(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest, plan businessClaimPlan, token string, expiresAt time.Time, now time.Time) (*models.BusinessAccount, bool, error) {
+	if err := validateBusinessClaimPlanForModule(module, req, plan); err != nil {
+		if businessClaimRequestTargetsAccount(req) {
+			return nil, false, businessClaimValidationError{err: err}
+		}
+		return nil, false, nil
+	}
+
 	excluded, err := businessClaimPlanExcluded(tx, orgID, module.ID, plan, now)
 	if err != nil {
 		return nil, false, err
@@ -555,11 +577,11 @@ func (h *APIHandler) buildBusinessClaimPlans(tx *gorm.DB, orgID uint, module *mo
 		return nil, err
 	}
 	if err := h.validateBusinessClaimAccount(tx, account, req); err != nil {
-		return nil, err
+		return nil, businessClaimValidationError{err: err}
 	}
 	plan, err := deriveBusinessClaimPlan(account, module, req)
 	if err != nil {
-		return nil, err
+		return nil, businessClaimValidationError{err: err}
 	}
 	return []businessClaimPlan{plan}, nil
 }
@@ -609,6 +631,11 @@ func (h *APIHandler) buildBusinessClaimAccountQuery(tx *gorm.DB, orgID uint, mod
 	}
 	if suffix := normalizeEmailSuffix(req.EmailSuffix); suffix != "" {
 		query = applyBusinessEmailSuffixFilter(query, suffix)
+	} else if suffixes := normalizeBusinessEmailSuffixes(req.EmailSuffixes); len(suffixes) > 0 {
+		query = applyBusinessEmailSuffixesFilter(query, suffixes)
+	}
+	if blockedSuffixes := normalizeBusinessEmailSuffixes(req.BlockedEmailSuffixes); len(blockedSuffixes) > 0 {
+		query = applyBusinessEmailBlockedSuffixesFilter(query, blockedSuffixes)
 	}
 	if len(req.AuthTypes) > 0 {
 		query = query.Where("auth_type IN ?", normalizeBusinessAuthTypes(req.AuthTypes))
@@ -678,6 +705,44 @@ func applyBusinessEmailSuffixFilter(query *gorm.DB, suffix string) *gorm.DB {
 	)
 }
 
+func applyBusinessEmailSuffixesFilter(query *gorm.DB, suffixes []string) *gorm.DB {
+	normalized := normalizeBusinessEmailSuffixes(suffixes)
+	if len(normalized) == 0 {
+		return query
+	}
+	conditions := make([]string, 0, len(normalized))
+	args := make([]interface{}, 0, len(normalized)*3)
+	for _, suffix := range normalized {
+		domain := strings.TrimPrefix(suffix, "@")
+		if domain == "" {
+			continue
+		}
+		conditions = append(conditions, "(LOWER(email_accounts.email_address) LIKE ? OR LOWER(email_accounts.domain) = ? OR "+businessLowerTextLikeExpr(query, "email_accounts.forwarded_addresses")+")")
+		args = append(args, "%"+suffix, domain, "%@"+domain+"%")
+	}
+	if len(conditions) == 0 {
+		return query
+	}
+	return query.Where("("+strings.Join(conditions, " OR ")+")", args...)
+}
+
+func applyBusinessEmailBlockedSuffixesFilter(query *gorm.DB, suffixes []string) *gorm.DB {
+	normalized := normalizeBusinessEmailSuffixes(suffixes)
+	for _, suffix := range normalized {
+		domain := strings.TrimPrefix(suffix, "@")
+		if domain == "" {
+			continue
+		}
+		query = query.Where(
+			"NOT (LOWER(email_accounts.email_address) LIKE ? OR LOWER(email_accounts.domain) = ? OR "+businessLowerTextLikeExpr(query, "email_accounts.forwarded_addresses")+")",
+			"%"+suffix,
+			domain,
+			"%@"+domain+"%",
+		)
+	}
+	return query
+}
+
 func applyBusinessEmailAccountExclusionFilter(query *gorm.DB, orgID uint, moduleID uint, now time.Time) *gorm.DB {
 	sql := "NOT EXISTS (SELECT 1 FROM business_email_exclusions bee WHERE (bee.module_id IS NULL OR bee.module_id = ?) AND bee.email_account_id = email_accounts.id AND (bee.expires_at IS NULL OR bee.expires_at > ?)"
 	args := []interface{}{moduleID, now}
@@ -745,6 +810,12 @@ func (h *APIHandler) validateBusinessClaimAccount(tx *gorm.DB, account models.Em
 	}
 	if suffix := normalizeEmailSuffix(req.EmailSuffix); suffix != "" && !accountMatchesEmailSuffix(account, suffix) {
 		return fmt.Errorf("email account suffix does not match")
+	}
+	if suffixes := normalizeBusinessEmailSuffixes(req.EmailSuffixes); len(suffixes) > 0 && normalizeEmailSuffix(req.EmailSuffix) == "" && !accountMatchesAnyBusinessEmailSuffix(account, suffixes) {
+		return fmt.Errorf("email account suffix does not match")
+	}
+	if blockedSuffixes := normalizeBusinessEmailSuffixes(req.BlockedEmailSuffixes); len(blockedSuffixes) > 0 && accountMatchesAnyBusinessEmailSuffix(account, blockedSuffixes) {
+		return fmt.Errorf("email account suffix is not allowed")
 	}
 	if len(req.AuthTypes) > 0 && !stringInSlice(string(account.AuthType), normalizeBusinessAuthTypes(req.AuthTypes)) {
 		return fmt.Errorf("email account auth type does not match")
@@ -1290,6 +1361,226 @@ func businessClaimRequestTargetsAccount(req BusinessEmailClaimRequest) bool {
 	return req.AccountID != nil || req.AliasBaseAccountID != nil || strings.TrimSpace(req.EmailAddress) != ""
 }
 
+type businessEmailConstraints struct {
+	AllowedSuffixes []string
+	BlockedSuffixes []string
+	AllowedDomains  []string
+	BlockedDomains  []string
+	AllowAliases    *bool
+	AllowDomainMail *bool
+	AllowForwarded  *bool
+}
+
+type businessClaimValidationError struct {
+	err error
+}
+
+func (e businessClaimValidationError) Error() string {
+	if e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e businessClaimValidationError) Unwrap() error {
+	return e.err
+}
+
+func applyBusinessModuleClaimConfig(module *models.BusinessModule, req BusinessEmailClaimRequest) (BusinessEmailClaimRequest, error) {
+	if module == nil {
+		return req, nil
+	}
+
+	defaults := safeBusinessJSONMap(module.ClaimDefaults)
+	if value, ok := businessConfigInt(defaults, "ttlSeconds", "ttl_seconds"); ok && req.TTLSeconds <= 0 {
+		req.TTLSeconds = value
+	}
+	if value, ok := businessConfigString(defaults, "emailMode", "email_mode"); ok && strings.TrimSpace(req.EmailMode) == "" {
+		req.EmailMode = value
+	}
+	if value, ok := businessConfigString(defaults, "emailSuffix", "email_suffix"); ok && strings.TrimSpace(req.EmailSuffix) == "" && len(req.EmailSuffixes) == 0 {
+		req.EmailSuffix = value
+	}
+	if values := businessConfigStringSlice(defaults, "emailSuffixes", "email_suffixes", "allowedSuffixes"); len(values) > 0 && strings.TrimSpace(req.EmailSuffix) == "" && len(req.EmailSuffixes) == 0 {
+		req.EmailSuffixes = values
+	}
+	if values := businessConfigStringSlice(defaults, "blockedEmailSuffixes", "blocked_email_suffixes", "blockedSuffixes"); len(values) > 0 && len(req.BlockedEmailSuffixes) == 0 {
+		req.BlockedEmailSuffixes = values
+	}
+	if value, ok := businessConfigBool(defaults, "useDomainMail", "use_domain_mail"); ok && req.UseDomainMail == nil {
+		req.UseDomainMail = &value
+	}
+	if value, ok := businessConfigString(defaults, "domain"); ok && strings.TrimSpace(req.Domain) == "" {
+		req.Domain = value
+	}
+	if value, ok := businessConfigBool(defaults, "useAlias", "use_alias"); ok && !req.UseAlias && strings.TrimSpace(req.EmailMode) == "" {
+		req.UseAlias = value
+	}
+	if value, ok := businessConfigString(defaults, "aliasType", "alias_type"); ok && strings.TrimSpace(req.AliasType) == "" {
+		req.AliasType = value
+	}
+	if value, ok := businessConfigString(defaults, "prefixStrategy", "prefix_strategy"); ok && strings.TrimSpace(req.PrefixStrategy) == "" {
+		req.PrefixStrategy = value
+	}
+	if value, ok := businessConfigString(defaults, "prefix"); ok && strings.TrimSpace(req.Prefix) == "" {
+		req.Prefix = value
+	}
+	if value, ok := businessConfigString(defaults, "prefixTemplate", "prefix_template"); ok && strings.TrimSpace(req.PrefixTemplate) == "" {
+		req.PrefixTemplate = value
+	}
+	if value, ok := businessConfigString(defaults, "builtinPrefix", "builtin_prefix"); ok && strings.TrimSpace(req.BuiltinPrefix) == "" {
+		req.BuiltinPrefix = value
+	}
+	if value, ok := businessConfigInt(defaults, "randomLength", "random_length"); ok && req.RandomLength <= 0 {
+		req.RandomLength = value
+	}
+	if values := businessConfigUintSlice(defaults, "tagIds", "tag_ids"); len(values) > 0 && len(req.TagIDs) == 0 {
+		req.TagIDs = values
+	}
+	if value, ok := businessConfigString(defaults, "tagFilterMode", "tag_filter_mode"); ok && strings.TrimSpace(req.TagFilterMode) == "" {
+		req.TagFilterMode = value
+	}
+	if value, ok := businessConfigUint(defaults, "providerId", "provider_id"); ok && req.ProviderID == nil {
+		req.ProviderID = &value
+	}
+	if values := businessConfigStringSlice(defaults, "authTypes", "auth_types"); len(values) > 0 && len(req.AuthTypes) == 0 {
+		req.AuthTypes = values
+	}
+	if value, ok := businessConfigString(defaults, "proxyMode", "proxy_mode"); ok && strings.TrimSpace(req.ProxyMode) == "" {
+		req.ProxyMode = value
+	}
+
+	constraints := readBusinessEmailConstraints(module.EmailConstraints)
+	if len(req.EmailSuffixes) == 0 && strings.TrimSpace(req.EmailSuffix) == "" {
+		if allowed := businessConstraintAllowedSuffixes(constraints); len(allowed) > 0 {
+			req.EmailSuffixes = allowed
+		}
+	}
+	if blocked := businessConstraintBlockedSuffixes(constraints); len(blocked) > 0 {
+		req.BlockedEmailSuffixes = append(req.BlockedEmailSuffixes, blocked...)
+	}
+	if constraints.AllowDomainMail != nil && !*constraints.AllowDomainMail && req.UseDomainMail == nil && !businessClaimRequestsDomain(req) {
+		value := false
+		req.UseDomainMail = &value
+	}
+	if err := validateBusinessClaimRequestConstraints(req, constraints); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+func readBusinessEmailConstraints(config models.JSONMapInterface) businessEmailConstraints {
+	config = safeBusinessJSONMap(config)
+	constraints := businessEmailConstraints{
+		AllowedSuffixes: normalizeBusinessEmailSuffixes(businessConfigStringSlice(config, "allowedSuffixes", "allowSuffixes", "emailSuffixes", "supportedSuffixes")),
+		BlockedSuffixes: normalizeBusinessEmailSuffixes(businessConfigStringSlice(config, "blockedSuffixes", "deniedSuffixes", "unsupportedSuffixes", "blockedEmailSuffixes")),
+		AllowedDomains:  normalizeBusinessEmailSuffixes(businessConfigStringSlice(config, "allowedDomains", "allowDomains")),
+		BlockedDomains:  normalizeBusinessEmailSuffixes(businessConfigStringSlice(config, "blockedDomains", "deniedDomains")),
+	}
+	if value, ok := businessConfigBool(config, "allowAliases", "allowAlias", "aliasesAllowed"); ok {
+		constraints.AllowAliases = &value
+	}
+	if value, ok := businessConfigBool(config, "allowDomainMail", "allowDomain", "domainMailAllowed"); ok {
+		constraints.AllowDomainMail = &value
+	}
+	if value, ok := businessConfigBool(config, "allowForwarded", "allowForwardedMail", "forwardedAllowed"); ok {
+		constraints.AllowForwarded = &value
+	}
+	return constraints
+}
+
+func businessConstraintAllowedSuffixes(constraints businessEmailConstraints) []string {
+	return normalizeBusinessEmailSuffixes(append(append([]string{}, constraints.AllowedSuffixes...), constraints.AllowedDomains...))
+}
+
+func businessConstraintBlockedSuffixes(constraints businessEmailConstraints) []string {
+	return normalizeBusinessEmailSuffixes(append(append([]string{}, constraints.BlockedSuffixes...), constraints.BlockedDomains...))
+}
+
+func validateBusinessClaimRequestConstraints(req BusinessEmailClaimRequest, constraints businessEmailConstraints) error {
+	mode := effectiveBusinessEmailMode(req)
+	aliasType := normalizeBusinessAliasType(req.AliasType)
+	if constraints.AllowAliases != nil && !*constraints.AllowAliases {
+		if req.UseAlias || mode == businessEmailModeAlias || aliasType == businessAliasTypeGmailPlus || aliasType == businessAliasTypeDomainPart {
+			return fmt.Errorf("business module does not allow alias email claims")
+		}
+	}
+	if constraints.AllowForwarded != nil && !*constraints.AllowForwarded {
+		if mode == businessEmailModeForwarded || aliasType == businessAliasTypeForwarded {
+			return fmt.Errorf("business module does not allow forwarded email claims")
+		}
+	}
+	if constraints.AllowDomainMail != nil && !*constraints.AllowDomainMail {
+		if businessClaimRequestsDomain(req) {
+			return fmt.Errorf("business module does not allow domain mailbox claims")
+		}
+	}
+	requestedSuffixes := normalizeBusinessEmailSuffixes(req.EmailSuffixes)
+	if suffix := normalizeEmailSuffix(req.EmailSuffix); suffix != "" {
+		requestedSuffixes = []string{suffix}
+	}
+	allowed := businessConstraintAllowedSuffixes(constraints)
+	if len(allowed) > 0 && len(requestedSuffixes) > 0 && !businessSuffixesSubsetOf(requestedSuffixes, allowed) {
+		return fmt.Errorf("requested email suffix is not allowed by business module")
+	}
+	blocked := businessConstraintBlockedSuffixes(constraints)
+	if len(blocked) > 0 && len(requestedSuffixes) > 0 && businessSuffixesIntersect(requestedSuffixes, blocked) {
+		return fmt.Errorf("requested email suffix is blocked by business module")
+	}
+	if domain := normalizeEmailSuffix(req.Domain); domain != "" {
+		if len(allowed) > 0 && !businessSuffixInList(domain, allowed) {
+			return fmt.Errorf("requested domain is not allowed by business module")
+		}
+		if businessSuffixInList(domain, blocked) {
+			return fmt.Errorf("requested domain is blocked by business module")
+		}
+	}
+	return nil
+}
+
+func validateBusinessClaimPlanForModule(module *models.BusinessModule, req BusinessEmailClaimRequest, plan businessClaimPlan) error {
+	if module == nil {
+		return nil
+	}
+	constraints := readBusinessEmailConstraints(module.EmailConstraints)
+	allowed := businessConstraintAllowedSuffixes(constraints)
+	blocked := businessConstraintBlockedSuffixes(constraints)
+	if suffix := normalizeEmailSuffix(req.EmailSuffix); suffix != "" {
+		allowed = normalizeBusinessEmailSuffixes([]string{suffix})
+	} else if suffixes := normalizeBusinessEmailSuffixes(req.EmailSuffixes); len(suffixes) > 0 {
+		allowed = suffixes
+	}
+	blocked = append(blocked, normalizeBusinessEmailSuffixes(req.BlockedEmailSuffixes)...)
+
+	if len(allowed) > 0 && !emailAddressMatchesAnyBusinessSuffix(plan.registrationEmail, allowed) {
+		return fmt.Errorf("registration email suffix is not allowed by business module")
+	}
+	if len(blocked) > 0 && emailAddressMatchesAnyBusinessSuffix(plan.registrationEmail, blocked) {
+		return fmt.Errorf("registration email suffix is blocked by business module")
+	}
+	if constraints.AllowAliases != nil && !*constraints.AllowAliases && plan.recipient.Kind != "primary" {
+		return fmt.Errorf("business module does not allow alias email claims")
+	}
+	if constraints.AllowDomainMail != nil && !*constraints.AllowDomainMail && (plan.account.IsDomainMail || plan.recipient.Kind == "domain_alias") {
+		return fmt.Errorf("business module does not allow domain mailbox claims")
+	}
+	if constraints.AllowForwarded != nil && !*constraints.AllowForwarded && plan.recipient.Kind == "forwarded_alias" {
+		return fmt.Errorf("business module does not allow forwarded email claims")
+	}
+	return nil
+}
+
+func businessClaimRequestsDomain(req BusinessEmailClaimRequest) bool {
+	mode := normalizeBusinessEmailMode(req.EmailMode)
+	if mode == businessEmailModeDomain {
+		return true
+	}
+	if strings.TrimSpace(req.Domain) != "" {
+		return true
+	}
+	return req.UseDomainMail != nil && *req.UseDomainMail
+}
+
 func effectiveBusinessEmailMode(req BusinessEmailClaimRequest) string {
 	mode := normalizeBusinessEmailMode(req.EmailMode)
 	if mode != businessEmailModeAuto {
@@ -1359,6 +1650,69 @@ func normalizeBusinessAuthTypes(values []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
+}
+
+func normalizeBusinessEmailSuffixes(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		suffix := normalizeEmailSuffix(value)
+		if suffix == "" || seen[suffix] {
+			continue
+		}
+		seen[suffix] = true
+		result = append(result, suffix)
+	}
+	return result
+}
+
+func accountMatchesAnyBusinessEmailSuffix(account models.EmailAccount, suffixes []string) bool {
+	for _, suffix := range normalizeBusinessEmailSuffixes(suffixes) {
+		if accountMatchesEmailSuffix(account, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func emailAddressMatchesAnyBusinessSuffix(email string, suffixes []string) bool {
+	for _, suffix := range normalizeBusinessEmailSuffixes(suffixes) {
+		if emailAddressMatchesSuffix(email, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func businessSuffixesSubsetOf(values []string, allowed []string) bool {
+	for _, value := range normalizeBusinessEmailSuffixes(values) {
+		if !businessSuffixInList(value, allowed) {
+			return false
+		}
+	}
+	return true
+}
+
+func businessSuffixesIntersect(a []string, b []string) bool {
+	for _, value := range normalizeBusinessEmailSuffixes(a) {
+		if businessSuffixInList(value, b) {
+			return true
+		}
+	}
+	return false
+}
+
+func businessSuffixInList(value string, values []string) bool {
+	suffix := normalizeEmailSuffix(value)
+	if suffix == "" {
+		return false
+	}
+	for _, item := range normalizeBusinessEmailSuffixes(values) {
+		if item == suffix {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeBusinessEmailAddress(value string) string {
@@ -1475,11 +1829,169 @@ func randomBusinessHex(size int) string {
 	return hex.EncodeToString(bytes)
 }
 
+func (h *APIHandler) removeBusinessRegistrationPickupOverride(account *models.BusinessAccount) {
+	if h == nil || h.perAccountSyncManager == nil || account == nil || account.EmailAccountID == nil {
+		return
+	}
+	h.perAccountSyncManager.RemovePickupOverride(*account.EmailAccountID)
+}
+
 func safeBusinessJSONMap(value models.JSONMapInterface) models.JSONMapInterface {
 	if value == nil {
 		return models.JSONMapInterface{}
 	}
 	return value
+}
+
+func businessConfigValue(config models.JSONMapInterface, names ...string) (interface{}, bool) {
+	for _, name := range names {
+		if value, ok := config[name]; ok {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func businessConfigString(config models.JSONMapInterface, names ...string) (string, bool) {
+	value, ok := businessConfigValue(config, names...)
+	if !ok || value == nil {
+		return "", false
+	}
+	switch typed := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		return trimmed, trimmed != ""
+	default:
+		trimmed := strings.TrimSpace(fmt.Sprint(typed))
+		return trimmed, trimmed != ""
+	}
+}
+
+func businessConfigBool(config models.JSONMapInterface, names ...string) (bool, bool) {
+	value, ok := businessConfigValue(config, names...)
+	if !ok || value == nil {
+		return false, false
+	}
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "1", "yes", "on":
+			return true, true
+		case "false", "0", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func businessConfigInt(config models.JSONMapInterface, names ...string) (int, bool) {
+	value, ok := businessConfigValue(config, names...)
+	if !ok || value == nil {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case float32:
+		return int(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		return int(parsed), err == nil
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func businessConfigUint(config models.JSONMapInterface, names ...string) (uint, bool) {
+	value, ok := businessConfigInt(config, names...)
+	if !ok || value <= 0 {
+		return 0, false
+	}
+	return uint(value), true
+}
+
+func businessConfigStringSlice(config models.JSONMapInterface, names ...string) []string {
+	value, ok := businessConfigValue(config, names...)
+	if !ok || value == nil {
+		return nil
+	}
+	switch typed := value.(type) {
+	case []string:
+		return normalizeBusinessStringSlice(typed)
+	case []interface{}:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			trimmed := strings.TrimSpace(fmt.Sprint(item))
+			if trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+		return result
+	case string:
+		parts := strings.FieldsFunc(typed, func(r rune) bool {
+			return r == ',' || r == '\n' || r == ';'
+		})
+		return normalizeBusinessStringSlice(parts)
+	default:
+		trimmed := strings.TrimSpace(fmt.Sprint(typed))
+		if trimmed == "" {
+			return nil
+		}
+		return []string{trimmed}
+	}
+}
+
+func businessConfigUintSlice(config models.JSONMapInterface, names ...string) []uint {
+	value, ok := businessConfigValue(config, names...)
+	if !ok || value == nil {
+		return nil
+	}
+	result := []uint{}
+	switch typed := value.(type) {
+	case []uint:
+		return typed
+	case []int:
+		for _, item := range typed {
+			if item > 0 {
+				result = append(result, uint(item))
+			}
+		}
+	case []interface{}:
+		for _, item := range typed {
+			switch n := item.(type) {
+			case float64:
+				if n > 0 {
+					result = append(result, uint(n))
+				}
+			case int:
+				if n > 0 {
+					result = append(result, uint(n))
+				}
+			case string:
+				parsed, err := strconv.ParseUint(strings.TrimSpace(n), 10, 64)
+				if err == nil && parsed > 0 {
+					result = append(result, uint(parsed))
+				}
+			}
+		}
+	case string:
+		for _, part := range strings.FieldsFunc(typed, func(r rune) bool { return r == ',' || r == '\n' || r == ';' }) {
+			parsed, err := strconv.ParseUint(strings.TrimSpace(part), 10, 64)
+			if err == nil && parsed > 0 {
+				result = append(result, uint(parsed))
+			}
+		}
+	}
+	return result
 }
 
 func mergeBusinessJSONMap(base models.JSONMapInterface, overlay models.JSONMapInterface) models.JSONMapInterface {

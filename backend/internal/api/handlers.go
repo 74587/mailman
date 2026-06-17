@@ -40,6 +40,7 @@ type APIHandler struct {
 	MailProviderRepo    *repository.MailProviderRepository
 	EmailRepo           *repository.EmailRepository
 	EmailIngestService  *services.EmailIngestService
+	PickupService       *services.PickupService
 	ProxyPoolService    *services.ProxyPoolService
 	SyncConfigRepo      *repository.SyncConfigRepository
 	IncrementalSyncRepo *repository.IncrementalSyncRepository
@@ -51,6 +52,10 @@ type APIHandler struct {
 	// 新增的同步管理器
 	optimizedSyncManager  *services.OptimizedIncrementalSyncManager
 	perAccountSyncManager *services.PerAccountSyncManager
+}
+
+func (h *APIHandler) SetPickupService(pickupService *services.PickupService) {
+	h.PickupService = pickupService
 }
 
 func (h *APIHandler) SetProxyPoolService(proxyPoolService *services.ProxyPoolService) {

@@ -1,9 +1,6 @@
-import { Inter } from 'next/font/google'
 import { Metadata } from 'next'
 import '@/styles/globals.css'
 import { Providers } from './providers'
-
-const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
     title: '邮箱管理系统',
@@ -24,7 +21,7 @@ export default function RootLayout({
 }) {
     return (
         <html lang="zh-CN" suppressHydrationWarning>
-            <body className={inter.className}>
+            <body className="font-sans">
                 <Providers>
                     {children}
                 </Providers>

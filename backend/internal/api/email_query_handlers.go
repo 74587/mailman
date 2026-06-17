@@ -1192,10 +1192,10 @@ func (h *APIHandler) GetEmailStatsHandler(w http.ResponseWriter, r *http.Request
 		h.logger.Error("Failed to get dashboard account stats for org %d: %v", orgID, err)
 	}
 
-	// 同步中的账户数：通过 PerAccountSyncManager 获取
+	// 同步中的账户数：统计正在占用同步并发槽的请求，而不是空闲存活的账户同步器。
 	if h.perAccountSyncManager != nil {
 		stats := h.perAccountSyncManager.GetStats()
-		syncingAccounts = stats.ActiveSyncers
+		syncingAccounts = stats.CurrentConcurrent
 	}
 
 	// === 邮件统计 ===

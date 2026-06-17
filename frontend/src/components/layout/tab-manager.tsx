@@ -92,6 +92,12 @@ const tabConfig: Tab[] = [
     { id: 'oauth2-config', name: 'OAuth2 配置', icon: Key },
     { id: 'ai-config', name: 'AI 配置', icon: Bot },
     { id: 'user-sessions', name: '访问令牌', icon: Settings },
+    { id: 'runtime-status', name: '运行状态', icon: BarChart3 },
+    { id: 'output-logs', name: '实时日志', icon: ScrollText },
+    { id: 'output-log-settings', name: '实时日志设置', icon: Settings },
+    { id: 'business-logs', name: '业务日志', icon: Shield },
+    { id: 'business-log-global-settings', name: '业务日志全局设置', icon: Shield },
+    { id: 'business-log-org-settings', name: '业务日志组织设置', icon: Users },
     // { id: 'settings', name: '设置', icon: Settings },
     // 高级模组菜单组 - 补充
     { id: 'filter-templates', name: '过滤器模板', icon: FileText },

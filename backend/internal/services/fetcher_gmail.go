@@ -176,9 +176,13 @@ func (s *FetcherService) shouldUseGmailAPI(account models.EmailAccount) bool {
 
 func (s *FetcherService) fetchEmailsFromGmailAPI(account models.EmailAccount, options FetchEmailsOptions) ([]models.Email, error) {
 	s.logger.Debug("Fetching emails using Gmail API for account %s", account.EmailAddress)
+	ctx := options.contextOrBackground()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Create Gmail API service
-	gmailService, err := s.createGmailService(account)
+	gmailService, err := s.createGmailService(ctx, account)
 	if err != nil {
 		s.logger.Error("Failed to create Gmail service: %v", err)
 		return nil, fmt.Errorf("failed to create Gmail service: %w", err)
@@ -237,7 +241,7 @@ func (s *FetcherService) fetchEmailsFromGmailAPI(account models.EmailAccount, op
 
 	// Get current profile to update History ID
 	if newHistoryID == "" {
-		profile, err := gmailService.Users.GetProfile("me").Do()
+		profile, err := gmailService.Users.GetProfile("me").Context(ctx).Do()
 		if err != nil {
 			s.logger.Warn("Failed to get user profile for History ID: %v", err)
 		} else {
@@ -271,7 +275,10 @@ func (s *FetcherService) fetchEmailsFromGmailAPI(account models.EmailAccount, op
 
 // createGmailService creates a Gmail API service client
 
-func (s *FetcherService) createGmailService(account models.EmailAccount) (*gmail.Service, error) {
+func (s *FetcherService) createGmailService(ctx context.Context, account models.EmailAccount) (*gmail.Service, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Get OAuth2 configuration
 	oauth2GlobalConfigRepo := repository.NewOAuth2GlobalConfigRepository(s.accountRepo.GetDB())
 
@@ -382,9 +389,6 @@ func (s *FetcherService) createGmailService(account models.EmailAccount) (*gmail
 		TokenType:    "Bearer",
 	}
 
-	// Create HTTP client with OAuth2 and proxy support
-	ctx := context.Background()
-
 	// Create base HTTP client with proxy support if configured
 	var baseClient *http.Client
 	if account.Proxy != "" {
@@ -422,6 +426,7 @@ func (s *FetcherService) createGmailService(account models.EmailAccount) (*gmail
 // fetchGmailMessages fetches messages from Gmail API
 
 func (s *FetcherService) fetchGmailMessages(service *gmail.Service, options FetchEmailsOptions) ([]*gmail.Message, error) {
+	ctx := options.contextOrBackground()
 	// Build query based on options
 	query := s.buildGmailQuery(service, options)
 
@@ -429,7 +434,7 @@ func (s *FetcherService) fetchGmailMessages(service *gmail.Service, options Fetc
 	labelIDs := []string{}
 	if options.Mailbox != "" && options.Mailbox != "INBOX" {
 		// Use dynamic label ID lookup
-		labelID, err := s.getGmailLabelID(service, options.Mailbox)
+		labelID, err := s.getGmailLabelID(ctx, service, options.Mailbox)
 		if err != nil {
 			s.logger.Warn("Failed to get Gmail label ID for mailbox '%s': %v", options.Mailbox, err)
 			// Fall back to searching all messages if label not found
@@ -456,7 +461,7 @@ func (s *FetcherService) fetchGmailMessages(service *gmail.Service, options Fetc
 
 	s.logger.Debug("Fetching Gmail messages with query: %s, labels: %v, limit: %d", query, labelIDs, limit)
 
-	listResp, err := listCall.Do()
+	listResp, err := listCall.Context(ctx).Do()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list Gmail messages: %w", err)
 	}
@@ -469,7 +474,10 @@ func (s *FetcherService) fetchGmailMessages(service *gmail.Service, options Fetc
 	// Fetch full message details
 	var messages []*gmail.Message
 	for _, msgRef := range listResp.Messages {
-		msg, err := service.Users.Messages.Get("me", msgRef.Id).Do()
+		if err := ctx.Err(); err != nil {
+			return messages, err
+		}
+		msg, err := service.Users.Messages.Get("me", msgRef.Id).Context(ctx).Do()
 		if err != nil {
 			s.logger.Warn("Failed to get message %s: %v", msgRef.Id, err)
 			continue
@@ -779,6 +787,7 @@ func (s *FetcherService) convertGmailMessages(messages []*gmail.Message, account
 
 func (s *FetcherService) fetchGmailHistoryChanges(service *gmail.Service, startHistoryID string, accountID uint, options FetchEmailsOptions) ([]models.Email, string, error) {
 	s.logger.Debug("Fetching Gmail history changes from History ID: %s", startHistoryID)
+	ctx := options.contextOrBackground()
 
 	// Parse start history ID
 	historyID, err := strconv.ParseUint(startHistoryID, 10, 64)
@@ -789,7 +798,7 @@ func (s *FetcherService) fetchGmailHistoryChanges(service *gmail.Service, startH
 	// Get Gmail label ID for the specified mailbox for later filtering
 	var targetLabelID string
 	if options.Mailbox != "" && options.Mailbox != "INBOX" {
-		targetLabelID, err = s.getGmailLabelID(service, options.Mailbox)
+		targetLabelID, err = s.getGmailLabelID(ctx, service, options.Mailbox)
 		if err != nil {
 			s.logger.Warn("Failed to get Gmail label ID for mailbox '%s': %v", options.Mailbox, err)
 			// Continue without label filter
@@ -804,7 +813,7 @@ func (s *FetcherService) fetchGmailHistoryChanges(service *gmail.Service, startH
 	// DO NOT set LabelId filter here - we want all changes
 
 	s.logger.Debug("Calling History API without label filter to capture all changes")
-	historyResp, err := historyCall.Do()
+	historyResp, err := historyCall.Context(ctx).Do()
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to get history: %w", err)
 	}
@@ -848,7 +857,10 @@ func (s *FetcherService) fetchGmailHistoryChanges(service *gmail.Service, startH
 	// Fetch full message details for changed messages
 	var messages []*gmail.Message
 	for messageID := range messageIDSet {
-		msg, err := service.Users.Messages.Get("me", messageID).Do()
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
+		msg, err := service.Users.Messages.Get("me", messageID).Context(ctx).Do()
 		if err != nil {
 			s.logger.Warn("Failed to get message %s: %v", messageID, err)
 			continue
@@ -985,9 +997,12 @@ func (s *FetcherService) messageMatchesQuery(msg *gmail.Message, query string) b
 
 // getGmailLabelID dynamically gets the Gmail label ID for a given mailbox name
 
-func (s *FetcherService) getGmailLabelID(service *gmail.Service, mailboxName string) (string, error) {
+func (s *FetcherService) getGmailLabelID(ctx context.Context, service *gmail.Service, mailboxName string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Get all labels from Gmail
-	labelList, err := service.Users.Labels.List("me").Do()
+	labelList, err := service.Users.Labels.List("me").Context(ctx).Do()
 	if err != nil {
 		return "", fmt.Errorf("failed to get labels: %w", err)
 	}
@@ -1039,6 +1054,7 @@ func (s *FetcherService) getGmailLabelID(service *gmail.Service, mailboxName str
 func (s *FetcherService) fetchGmailHistoryChangesUnified(service *gmail.Service, startHistoryID string, accountID uint, options FetchEmailsOptions) ([]models.Email, string, error) {
 	s.logger.Debug("=== Gmail History API Debug ===")
 	s.logger.Debug("Starting History ID: %s", startHistoryID)
+	ctx := options.contextOrBackground()
 
 	// Parse start history ID
 	historyID, err := strconv.ParseUint(startHistoryID, 10, 64)
@@ -1056,12 +1072,15 @@ func (s *FetcherService) fetchGmailHistoryChangesUnified(service *gmail.Service,
 	pageCount := 0
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
 		historyCall := service.Users.History.List("me").StartHistoryId(historyID)
 		if pageToken != "" {
 			historyCall = historyCall.PageToken(pageToken)
 		}
 
-		historyResp, err := historyCall.Do()
+		historyResp, err := historyCall.Context(ctx).Do()
 		if err != nil {
 			s.logger.Error("Gmail History API call failed on page %d: %v", pageCount+1, err)
 			return nil, "", fmt.Errorf("failed to get history: %w", err)
@@ -1126,7 +1145,10 @@ func (s *FetcherService) fetchGmailHistoryChangesUnified(service *gmail.Service,
 	// Fetch full message details for all changed messages
 	var messages []*gmail.Message
 	for messageID := range messageIDSet {
-		msg, err := service.Users.Messages.Get("me", messageID).Do()
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
+		msg, err := service.Users.Messages.Get("me", messageID).Context(ctx).Do()
 		if err != nil {
 			s.logger.Warn("Failed to get message %s: %v", messageID, err)
 			continue
@@ -1148,6 +1170,7 @@ func (s *FetcherService) fetchGmailHistoryChangesUnified(service *gmail.Service,
 
 func (s *FetcherService) fetchGmailMessagesUnified(service *gmail.Service, options FetchEmailsOptions) ([]*gmail.Message, error) {
 	s.logger.Debug("Fetching Gmail messages (unified full sync with pagination)")
+	ctx := options.contextOrBackground()
 
 	// Build query based on options (date, search) but NOT mailbox/labels
 	query := s.buildGmailQueryUnified(options)
@@ -1168,12 +1191,15 @@ func (s *FetcherService) fetchGmailMessagesUnified(service *gmail.Service, optio
 
 	// Paginate through all message lists
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		listCall := service.Users.Messages.List("me").Q(query).MaxResults(pageLimit)
 		if pageToken != "" {
 			listCall = listCall.PageToken(pageToken)
 		}
 
-		listResp, err := listCall.Do()
+		listResp, err := listCall.Context(ctx).Do()
 		if err != nil {
 			s.logger.Error("Failed to list Gmail messages on page %d: %v", pageCount+1, err)
 			return nil, fmt.Errorf("failed to list Gmail messages: %w", err)
@@ -1222,7 +1248,10 @@ fetchDetails:
 	// Fetch full message details for all collected messages
 	var messages []*gmail.Message
 	for i, msgRef := range allMessageRefs {
-		msg, err := service.Users.Messages.Get("me", msgRef.Id).Do()
+		if err := ctx.Err(); err != nil {
+			return messages, err
+		}
+		msg, err := service.Users.Messages.Get("me", msgRef.Id).Context(ctx).Do()
 		if err != nil {
 			s.logger.Warn("Failed to get message %s: %v", msgRef.Id, err)
 			continue
@@ -1337,14 +1366,15 @@ func (s *FetcherService) getGmailMailboxes(account models.EmailAccount) ([]model
 	s.logger.Debug("Getting Gmail mailboxes using Gmail API for account %s", account.EmailAddress)
 
 	// Create Gmail API service
-	gmailService, err := s.createGmailService(account)
+	ctx := context.Background()
+	gmailService, err := s.createGmailService(ctx, account)
 	if err != nil {
 		s.logger.Error("Failed to create Gmail service: %v", err)
 		return nil, fmt.Errorf("failed to create Gmail service: %w", err)
 	}
 
 	// Get all labels from Gmail
-	labelList, err := gmailService.Users.Labels.List("me").Do()
+	labelList, err := gmailService.Users.Labels.List("me").Context(ctx).Do()
 	if err != nil {
 		s.logger.Error("Failed to get Gmail labels: %v", err)
 		return nil, fmt.Errorf("failed to get Gmail labels: %w", err)
@@ -1387,7 +1417,8 @@ func (s *FetcherService) SyncGmailEmailAttachments(account models.EmailAccount, 
 	s.logger.Debug("Syncing Gmail attachments for message %s, downloadContent: %v", messageID, downloadContent)
 
 	// Create Gmail service
-	gmailService, err := s.createGmailService(account)
+	ctx := context.Background()
+	gmailService, err := s.createGmailService(ctx, account)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Gmail service: %w", err)
 	}
@@ -1404,7 +1435,7 @@ func (s *FetcherService) SyncGmailEmailAttachments(account models.EmailAccount, 
 	query := fmt.Sprintf("rfc822msgid:%s", searchID)
 	s.logger.Debug("Searching Gmail with query: %s", query)
 
-	listResp, err := gmailService.Users.Messages.List("me").Q(query).MaxResults(1).Do()
+	listResp, err := gmailService.Users.Messages.List("me").Q(query).MaxResults(1).Context(ctx).Do()
 	if err != nil {
 		return nil, fmt.Errorf("failed to search for message: %w", err)
 	}
@@ -1417,7 +1448,7 @@ func (s *FetcherService) SyncGmailEmailAttachments(account models.EmailAccount, 
 	s.logger.Debug("Found Gmail message ID: %s for RFC Message-ID: %s", gmailMsgID, messageID)
 
 	// Fetch the full message using Gmail's internal ID
-	msg, err := gmailService.Users.Messages.Get("me", gmailMsgID).Do()
+	msg, err := gmailService.Users.Messages.Get("me", gmailMsgID).Context(ctx).Do()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get message: %w", err)
 	}

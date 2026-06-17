@@ -1,13 +1,17 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/utils"
 	"strings"
+	"sync"
 	"time"
 )
+
+const pickupImmediateSyncTimeout = 12 * time.Second
 
 // PickupPollRequest 取件轮询请求
 type PickupPollRequest struct {
@@ -69,7 +73,11 @@ type PickupService struct {
 	extractorSvc   *ExtractorService   // V1
 	extractorSvcV2 *ExtractorServiceV2 // V2
 	syncManager    *PerAccountSyncManager
+	businessLog    *BusinessLogPipeline
 	logger         *utils.Logger
+
+	immediateSyncMu       sync.Mutex
+	immediateSyncInFlight map[uint]struct{}
 }
 
 // NewPickupService 创建取件轮询服务
@@ -87,15 +95,28 @@ func NewPickupService(
 		extractorSvcV2: extractorSvcV2,
 		syncManager:    syncManager,
 		logger:         utils.NewLogger("PickupService"),
+
+		immediateSyncInFlight: make(map[uint]struct{}),
 	}
+}
+
+func (s *PickupService) SetBusinessLogPipeline(pipeline *BusinessLogPipeline) {
+	s.businessLog = pipeline
 }
 
 // Poll 执行一次取件轮询
 func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error) {
+	startTime := time.Now()
 	recordPoll := RuntimeMetrics().BeginPickupPoll()
 	var pollErr error
+	requestedAccountID := req.AccountID
+	resolvedBy := ""
+	finalAccountID := req.AccountID
+	emailCount := 0
+	extractionCount := 0
 	defer func() {
 		recordPoll(pollErr)
+		s.recordPickupBusinessLog(startTime, requestedAccountID, finalAccountID, resolvedBy, req, emailCount, extractionCount, pollErr)
 	}()
 
 	// 1. 设置默认值
@@ -109,32 +130,20 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 		req.Limit = 10
 	}
 
-	requestedAccountID := req.AccountID
-	resolvedAccountID, resolvedBy, err := s.resolvePickupAccountID(req.AccountID, req.ToQuery)
+	resolvedAccountID, resolvedByValue, err := s.resolvePickupAccountID(req.AccountID, req.ToQuery)
 	if err != nil {
 		pollErr = err
 		return nil, err
 	}
+	resolvedBy = resolvedByValue
 	req.AccountID = resolvedAccountID
+	finalAccountID = resolvedAccountID
 
 	// 2. 注册/续期取件轮询覆盖（纯内存，零DB写入）
 	s.syncManager.RegisterPickupOverride(req.AccountID, req.SyncInterval, req.KeepAliveSeconds)
 
 	// pickup 需要尽量返回刚到达的邮件；注册临时覆盖后立即同步一次，再查数据库。
-	syncResult, syncErr := s.syncManager.SyncNow(req.AccountID, SyncNowOptions{
-		CreateStrategy: "ensure",
-		SyncInterval:   req.SyncInterval,
-		Source:         EmailIngestSourcePickup,
-	})
-	if syncErr != nil {
-		s.logger.Warn("Pickup immediate sync failed for account %d (requested=%d, resolved_by=%s, to_query=%q): %v",
-			req.AccountID, requestedAccountID, resolvedBy, req.ToQuery, syncErr)
-	} else if syncResult != nil && syncResult.Error != nil {
-		s.logger.Warn("Pickup immediate sync completed with error for account %d (requested=%d, resolved_by=%s, to_query=%q): %v",
-			req.AccountID, requestedAccountID, resolvedBy, req.ToQuery, syncResult.Error)
-	} else if syncResult != nil {
-		s.logger.Debug("Pickup immediate sync completed for account %d: synced %d emails", req.AccountID, syncResult.EmailsSynced)
-	}
+	s.runImmediatePickupSync(req, requestedAccountID, resolvedBy)
 
 	// 3. 解析搜索起始时间
 	var startDate *time.Time
@@ -161,6 +170,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 		pollErr = fmt.Errorf("failed to search emails: %w", err)
 		return nil, pollErr
 	}
+	emailCount = len(emails)
 
 	s.logger.Debug("Pickup poll for account %d: found %d emails", req.AccountID, len(emails))
 
@@ -182,6 +192,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 		} else if req.SimpleExtract != nil {
 			extractions = s.extractWithSimple(emails, req.SimpleExtract)
 		}
+		extractionCount = len(extractions)
 	}
 
 	return &PickupPollResponse{
@@ -195,6 +206,116 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 		SyncActive:         syncActive,
 		SyncExpiresAt:      syncExpiresAt,
 	}, nil
+}
+
+func (s *PickupService) runImmediatePickupSync(req PickupPollRequest, requestedAccountID uint, resolvedBy string) {
+	if s.syncManager == nil {
+		return
+	}
+	if !s.tryBeginImmediateSync(req.AccountID) {
+		if s.logger != nil {
+			s.logger.Debug("Pickup immediate sync already in flight for account %d; continuing with database search", req.AccountID)
+		}
+		return
+	}
+
+	type syncOutcome struct {
+		result *SyncResult
+		err    error
+	}
+	done := make(chan syncOutcome, 1)
+	go func() {
+		defer s.finishImmediateSync(req.AccountID)
+		result, err := s.syncManager.SyncNow(req.AccountID, SyncNowOptions{
+			CreateStrategy: "ensure",
+			SyncInterval:   req.SyncInterval,
+			Source:         EmailIngestSourcePickup,
+		})
+		done <- syncOutcome{result: result, err: err}
+	}()
+
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			s.logger.Warn("Pickup immediate sync failed for account %d (requested=%d, resolved_by=%s, to_query=%q): %v",
+				req.AccountID, requestedAccountID, resolvedBy, req.ToQuery, outcome.err)
+		} else if outcome.result != nil && outcome.result.Error != nil {
+			s.logger.Warn("Pickup immediate sync completed with error for account %d (requested=%d, resolved_by=%s, to_query=%q): %v",
+				req.AccountID, requestedAccountID, resolvedBy, req.ToQuery, outcome.result.Error)
+		} else if outcome.result != nil {
+			s.logger.Debug("Pickup immediate sync completed for account %d: synced %d emails", req.AccountID, outcome.result.EmailsSynced)
+		}
+	case <-time.After(pickupImmediateSyncTimeout):
+		s.logger.Warn("Pickup immediate sync exceeded %s for account %d (requested=%d, resolved_by=%s, to_query=%q); continuing with database search",
+			pickupImmediateSyncTimeout, req.AccountID, requestedAccountID, resolvedBy, req.ToQuery)
+	}
+}
+
+func (s *PickupService) tryBeginImmediateSync(accountID uint) bool {
+	s.immediateSyncMu.Lock()
+	defer s.immediateSyncMu.Unlock()
+	if s.immediateSyncInFlight == nil {
+		s.immediateSyncInFlight = make(map[uint]struct{})
+	}
+	if _, exists := s.immediateSyncInFlight[accountID]; exists {
+		return false
+	}
+	s.immediateSyncInFlight[accountID] = struct{}{}
+	return true
+}
+
+func (s *PickupService) finishImmediateSync(accountID uint) {
+	s.immediateSyncMu.Lock()
+	delete(s.immediateSyncInFlight, accountID)
+	s.immediateSyncMu.Unlock()
+}
+
+func (s *PickupService) recordPickupBusinessLog(startTime time.Time, requestedAccountID uint, finalAccountID uint, resolvedBy string, req PickupPollRequest, emailCount int, extractionCount int, pollErr error) {
+	if s.businessLog == nil {
+		return
+	}
+	finishedAt := time.Now()
+	status := models.BusinessLogStatusSuccess
+	result := "success"
+	errorMessage := ""
+	if pollErr != nil {
+		status = models.BusinessLogStatusFailed
+		result = "failed"
+		errorMessage = pollErr.Error()
+	}
+	s.businessLog.Process(context.Background(), BusinessLogEvent{
+		OrgID:         1,
+		OperationType: models.BusinessLogOperationAPI,
+		ActorType:     models.BusinessLogActorAPI,
+		ActorName:     "pickup_poll",
+		Module:        "pickup",
+		Action:        "poll",
+		EntityType:    "email_account",
+		EntityID:      fmt.Sprintf("%d", finalAccountID),
+		Title:         "取件轮询",
+		Summary:       fmt.Sprintf("取件账号 %d 命中 %d 封邮件，提取 %d 条", finalAccountID, emailCount, extractionCount),
+		Status:        status,
+		Result:        result,
+		StartedAt:     startTime,
+		FinishedAt:    &finishedAt,
+		DurationMS:    finishedAt.Sub(startTime).Milliseconds(),
+		ErrorMessage:  errorMessage,
+		Details: map[string]interface{}{
+			"requested_account_id": requestedAccountID,
+			"resolved_account_id":  finalAccountID,
+			"resolved_by":          resolvedBy,
+			"to_query":             req.ToQuery,
+			"limit":                req.Limit,
+			"since":                req.Since,
+			"sync_interval":        req.SyncInterval,
+			"keep_alive_seconds":   req.KeepAliveSeconds,
+			"email_count":          emailCount,
+			"extraction_count":     extractionCount,
+			"has_template":         req.TemplateID != nil,
+			"has_inline_actions":   req.InlineActions != nil,
+			"has_simple_extract":   req.SimpleExtract != nil,
+		},
+	})
 }
 
 func (s *PickupService) resolvePickupAccountID(requestedAccountID uint, toQuery string) (uint, string, error) {

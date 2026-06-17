@@ -466,6 +466,7 @@ func (m *OptimizedIncrementalSyncManager) fetchEmails(ctx context.Context, req F
 
 	// 创建 FetchEmailsOptions - 为Gmail账户特别处理
 	options := FetchEmailsOptions{
+		Context:         ctx,
 		Folders:         folders,
 		FetchFromServer: true, // 关键修复：从邮件服务器获取新邮件
 		IncludeBody:     true, // 包含邮件正文

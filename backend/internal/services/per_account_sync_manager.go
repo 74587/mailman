@@ -57,6 +57,7 @@ type PerAccountSyncManager struct {
 	fetcherService   *FetcherService
 	ingestService    *EmailIngestService
 	activityLogger   *ActivityLogger
+	businessLog      *BusinessLogPipeline
 	logger           *utils.Logger
 
 	// 通知系统
@@ -166,6 +167,10 @@ func (m *PerAccountSyncManager) SetEmailIngestService(ingestService *EmailIngest
 	}
 }
 
+func (m *PerAccountSyncManager) SetBusinessLogPipeline(pipeline *BusinessLogPipeline) {
+	m.businessLog = pipeline
+}
+
 // calculateConcurrentLimit 根据系统资源计算并发限制
 func calculateConcurrentLimit() int {
 	cpuCount := runtime.NumCPU()
@@ -219,6 +224,11 @@ func (m *PerAccountSyncManager) Start() error {
 	m.wg.Add(1)
 	go m.cleanupRoutine()
 
+	// 启动 pickup 覆盖清理例程。它只处理内存态覆盖，避免失败注册后的高频同步器
+	// 等到通用 5 分钟清理周期才释放。
+	m.wg.Add(1)
+	go m.pickupOverrideCleanupRoutine()
+
 	// 加载现有配置并启动AccountSyncer
 	if err := m.loadExistingConfigs(); err != nil {
 		m.logger.Error("Failed to load existing configs: %v", err)
@@ -233,11 +243,11 @@ func (m *PerAccountSyncManager) Start() error {
 func (m *PerAccountSyncManager) Stop() {
 	m.logger.Info("Stopping per-account sync manager")
 
-	// 停止配置监控器
-	m.configMonitor.Stop()
-
 	// 取消上下文
 	m.cancel()
+
+	// 停止配置监控器
+	m.configMonitor.Stop()
 
 	// 停止所有AccountSyncer
 	m.mu.Lock()
@@ -294,7 +304,10 @@ func (m *PerAccountSyncManager) handleConfigChanges() {
 		case <-m.ctx.Done():
 			return
 
-		case event := <-m.configMonitor.changes:
+		case event, ok := <-m.configMonitor.changes:
+			if !ok {
+				return
+			}
 			m.processConfigChange(event)
 		}
 	}
@@ -480,9 +493,6 @@ func (m *PerAccountSyncManager) cleanupRoutine() {
 			// Cleanup inactive in-memory syncers
 			m.cleanupInactiveSyncers()
 
-			// Cleanup expired pickup overrides
-			m.cleanupExpiredPickupOverrides()
-
 			// Cleanup expired temporary configs from database
 			affectedIDs, err := m.syncConfigRepo.DeleteExpiredTemporaryConfigs()
 			if err != nil {
@@ -503,6 +513,23 @@ func (m *PerAccountSyncManager) cleanupRoutine() {
 					}
 				}
 			}
+		}
+	}
+}
+
+func (m *PerAccountSyncManager) pickupOverrideCleanupRoutine() {
+	defer m.wg.Done()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+
+		case <-ticker.C:
+			m.cleanupExpiredPickupOverrides()
 		}
 	}
 }
@@ -793,13 +820,14 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 	syncRun := as.createSyncRun(startTime, source)
 	emailsFetched := 0
 	newEmailCount := 0
+	accountEmail := as.Config.Account.EmailAddress
 	defer func() {
 		as.finishSyncRun(syncRun, emailsFetched, newEmailCount, err)
 		recordSync(emailsFetched, newEmailCount, err)
+		as.recordSyncBusinessLog(startTime, source, syncRun, accountEmail, emailsFetched, newEmailCount, err)
 	}()
 
-	// 创建超时上下文（暂时不使用，但保留用于后续扩展）
-	_, cancel := context.WithTimeout(as.ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(as.ctx, 60*time.Second)
 	defer cancel()
 
 	// 获取账户信息
@@ -808,6 +836,7 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account: %w", err)
 	}
+	accountEmail = account.EmailAddress
 	as.logger.Debug("Account details obtained for: %s", account.EmailAddress)
 
 	// 计算同步时间窗口
@@ -843,6 +872,7 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 
 	// 创建获取选项
 	options := FetchEmailsOptions{
+		Context:         ctx,
 		Folders:         as.Config.SyncFolders,
 		StartDate:       startDate,
 		EndDate:         &endDate,
@@ -887,6 +917,61 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 		account.EmailAddress, historyId, newEmailCount, duration)
 
 	return newEmails, nil
+}
+
+func (as *AccountSyncer) recordSyncBusinessLog(startTime time.Time, source EmailIngestSource, run *models.SyncRun, accountEmail string, emailsFetched int, newEmailCount int, syncErr error) {
+	if as.manager == nil || as.manager.businessLog == nil {
+		return
+	}
+	finishedAt := time.Now()
+	status := models.BusinessLogStatusSuccess
+	result := "success"
+	errorMessage := ""
+	if syncErr != nil {
+		status = models.BusinessLogStatusFailed
+		result = "failed"
+		errorMessage = syncErr.Error()
+	}
+	runID := ""
+	if run != nil {
+		runID = fmt.Sprintf("sync_run_%d", run.ID)
+	}
+	operationType := models.BusinessLogOperationAutomatic
+	actorType := models.BusinessLogActorSystem
+	if source == EmailIngestSourceAutoSync {
+		operationType = models.BusinessLogOperationScheduled
+		actorType = models.BusinessLogActorScheduler
+	} else if source == EmailIngestSourceManualSync {
+		operationType = models.BusinessLogOperationManual
+	}
+	as.manager.businessLog.Process(context.Background(), BusinessLogEvent{
+		OrgID:         as.Config.Account.OrgID,
+		OperationType: operationType,
+		ActorType:     actorType,
+		ActorName:     string(source),
+		Module:        "sync",
+		Action:        string(source),
+		EntityType:    "email_account",
+		EntityID:      fmt.Sprintf("%d", as.AccountID),
+		EntityName:    accountEmail,
+		Title:         "邮箱同步",
+		Summary:       fmt.Sprintf("账户 %s 同步完成，拉取 %d 封，新入库 %d 封", accountEmail, emailsFetched, newEmailCount),
+		Status:        status,
+		Result:        result,
+		StartedAt:     startTime,
+		FinishedAt:    &finishedAt,
+		DurationMS:    finishedAt.Sub(startTime).Milliseconds(),
+		RunID:         runID,
+		ErrorMessage:  errorMessage,
+		Details: map[string]interface{}{
+			"account_id":     as.AccountID,
+			"account_email":  accountEmail,
+			"source":         string(source),
+			"emails_fetched": emailsFetched,
+			"new_emails":     newEmailCount,
+			"sync_run_id":    runID,
+		},
+	})
 }
 
 // getAccount 获取账户信息

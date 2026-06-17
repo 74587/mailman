@@ -14,6 +14,7 @@ import { OAuth2GlobalConfig, OAuth2ProviderType, CreateOAuth2ConfigRequest } fro
 import OAuth2HelpModal from './oauth2-help-modal'
 import { toast } from 'sonner'
 import { getProviderMetadata } from '@/lib/provider-metadata'
+import { getApiOrigin } from '@/lib/runtime-url'
 import { ProviderLogo } from '@/components/ui/provider-logo'
 import {
     Modal,
@@ -26,7 +27,7 @@ import {
 } from '@/components/ui/modal'
 
 const getCorrectRedirectUri = (provider: OAuth2ProviderType): string => {
-    const backendUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080'
+    const backendUrl = getApiOrigin() || 'http://localhost:8080'
     return `${backendUrl}/api/oauth2/callback/${provider}`
 }
 

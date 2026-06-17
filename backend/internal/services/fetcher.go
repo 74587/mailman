@@ -37,6 +37,7 @@ type FetcherService struct {
 
 // FetchEmailsOptions contains options for fetching emails
 type FetchEmailsOptions struct {
+	Context         context.Context
 	Mailbox         string
 	Limit           int
 	Offset          int
@@ -48,6 +49,29 @@ type FetchEmailsOptions struct {
 	SortBy          string
 	Folders         []string // List of folders to fetch from
 	Source          EmailIngestSource
+}
+
+func (o FetchEmailsOptions) contextOrBackground() context.Context {
+	if o.Context != nil {
+		return o.Context
+	}
+	return context.Background()
+}
+
+func fetcherContextTimeout(ctx context.Context, fallback time.Duration) time.Duration {
+	if ctx == nil {
+		return fallback
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return time.Nanosecond
+		}
+		if remaining < fallback {
+			return remaining
+		}
+	}
+	return fallback
 }
 
 // SetEmailIngestService connects fetch-and-store helpers to the unified ingest pipeline.
@@ -90,6 +114,9 @@ func (s *FetcherService) FetchEmails(account models.EmailAccount) ([]models.Emai
 // FetchEmailsWithOptions fetches emails for a given account with specified options.
 func (s *FetcherService) FetchEmailsWithOptions(account models.EmailAccount, options FetchEmailsOptions) ([]models.Email, error) {
 	DecryptAccountCredentials(&account.Password, &account.Token)
+	if err := options.contextOrBackground().Err(); err != nil {
+		return nil, err
+	}
 	s.logger.Info("FetchEmailsWithOptions called for account %s, mailbox: %s, limit: %d, fetchFromServer: %v",
 		account.EmailAddress, options.Mailbox, options.Limit, options.FetchFromServer)
 
@@ -111,6 +138,9 @@ func (s *FetcherService) FetchEmailsWithOptions(account models.EmailAccount, opt
 // FetchEmailsFromMultipleMailboxes fetches emails from multiple mailboxes based on user selection
 func (s *FetcherService) FetchEmailsFromMultipleMailboxes(account models.EmailAccount, options FetchEmailsOptions) ([]models.Email, error) {
 	DecryptAccountCredentials(&account.Password, &account.Token)
+	if err := options.contextOrBackground().Err(); err != nil {
+		return nil, err
+	}
 	s.logger.Debug("Starting to fetch emails from multiple mailboxes for %s", account.EmailAddress)
 	if options.StartDate != nil {
 		s.logger.Debug("Filter StartDate: %s", options.StartDate.Format(time.RFC3339))
@@ -290,6 +320,11 @@ func (s *FetcherService) convertSortOption(sortBy string) string {
 
 // fetchEmailsFromServer fetches emails from IMAP server with options
 func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, options FetchEmailsOptions) ([]models.Email, error) {
+	ctx := options.contextOrBackground()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	// Check if should use Gmail API instead of IMAP
 	if s.shouldUseGmailAPI(account) {
 		s.logger.Debug("Using Gmail API for account %s", account.EmailAddress)
@@ -314,6 +349,9 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 	s.logger.Info("Connecting to IMAP server %s for %s", serverAddr, account.EmailAddress)
 
 	if account.Proxy != "" {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		proxyURL, err := url.Parse(account.Proxy)
 		if err != nil {
 			return nil, fmt.Errorf("invalid proxy URL: %w", err)
@@ -341,6 +379,9 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 			tlsConn := tls.Client(proxyConn, &tls.Config{
 				ServerName: account.MailProvider.IMAPServer,
 			})
+			if deadline, ok := ctx.Deadline(); ok {
+				_ = tlsConn.SetDeadline(deadline)
+			}
 
 			// Perform TLS handshake
 			if err := tlsConn.Handshake(); err != nil {
@@ -348,6 +389,7 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 				s.logger.Error("TLS handshake failed: %v", err)
 				return nil, fmt.Errorf("TLS handshake failed: %w", err)
 			}
+			_ = tlsConn.SetDeadline(time.Time{})
 
 			// Create IMAP client with the TLS connection
 			c, err = client.New(tlsConn)
@@ -368,22 +410,41 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 		// Use TLS connection for secure IMAP (port 993)
 		if account.MailProvider.IMAPPort == 993 {
 			s.logger.Debug("Using TLS connection for port 993")
-			c, err = client.DialTLS(serverAddr, &tls.Config{ServerName: account.MailProvider.IMAPServer})
+			tlsConn, err := tls.DialWithDialer(&net.Dialer{
+				Timeout: fetcherContextTimeout(ctx, 30*time.Second),
+			}, "tcp", serverAddr, &tls.Config{ServerName: account.MailProvider.IMAPServer})
 			if err != nil {
 				s.logger.Error("Failed to dial with TLS: %v", err)
 				return nil, fmt.Errorf("failed to dial with TLS: %w", err)
 			}
+			c, err = client.New(tlsConn)
+			if err != nil {
+				tlsConn.Close()
+				s.logger.Error("Failed to create IMAP client: %v", err)
+				return nil, fmt.Errorf("failed to create IMAP client: %w", err)
+			}
 		} else {
 			// Use plain connection for non-secure IMAP (port 143)
 			s.logger.Debug("Using plain connection for port %d", account.MailProvider.IMAPPort)
-			c, err = client.Dial(serverAddr)
+			plainConn, err := (&net.Dialer{
+				Timeout: fetcherContextTimeout(ctx, 30*time.Second),
+			}).DialContext(ctx, "tcp", serverAddr)
 			if err != nil {
 				s.logger.Error("Failed to dial: %v", err)
 				return nil, fmt.Errorf("failed to dial: %w", err)
 			}
+			c, err = client.New(plainConn)
+			if err != nil {
+				plainConn.Close()
+				s.logger.Error("Failed to create IMAP client: %v", err)
+				return nil, fmt.Errorf("failed to create IMAP client: %w", err)
+			}
 		}
 	}
 	defer c.Logout()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Login based on auth type
 	s.logger.Debug("Authenticating with auth type: %s", account.AuthType)
@@ -529,6 +590,9 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 	}
 
 	s.logger.Debug("Attempting to select mailbox: %s", mailboxName)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	mbox, err := c.Select(mailboxName, false)
 	if err != nil {
 		s.logger.Error("Failed to select mailbox %s: %v (connection state: %v)", mailboxName, err, c.State())
@@ -581,6 +645,9 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 		criteria := imap.NewSearchCriteria()
 		criteria.Since = *options.StartDate
 
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		seqNums, err = c.Search(criteria)
 		if err != nil {
 			s.logger.Error("Failed to search messages: %v", err)
@@ -624,79 +691,100 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 	}()
 
 	var emails []models.Email
-	for msg := range messages {
-		if msg.Envelope == nil {
-			continue
-		}
+	for {
+		select {
+		case <-ctx.Done():
+			_ = c.Logout()
+			return nil, ctx.Err()
+		case msg, ok := <-messages:
+			if !ok {
+				goto fetchDone
+			}
+			if msg.Envelope == nil {
+				continue
+			}
 
-		email := models.Email{
-			MessageID:   msg.Envelope.MessageId,
-			AccountID:   account.ID,
-			Subject:     msg.Envelope.Subject,
-			Date:        msg.Envelope.Date,
-			MailboxName: mailboxName,
-			Size:        int64(msg.Size),
-		}
+			email := models.Email{
+				MessageID:   msg.Envelope.MessageId,
+				AccountID:   account.ID,
+				Subject:     msg.Envelope.Subject,
+				Date:        msg.Envelope.Date,
+				MailboxName: mailboxName,
+				Size:        int64(msg.Size),
+			}
 
-		// Convert addresses
-		email.From = convertAddresses(msg.Envelope.From)
-		email.To = convertAddresses(msg.Envelope.To)
-		email.Cc = convertAddresses(msg.Envelope.Cc)
-		email.Bcc = convertAddresses(msg.Envelope.Bcc)
+			// Convert addresses
+			email.From = convertAddresses(msg.Envelope.From)
+			email.To = convertAddresses(msg.Envelope.To)
+			email.Cc = convertAddresses(msg.Envelope.Cc)
+			email.Bcc = convertAddresses(msg.Envelope.Bcc)
 
-		// Convert flags
-		for _, flag := range msg.Flags {
-			email.Flags = append(email.Flags, string(flag))
-		}
+			// Convert flags
+			for _, flag := range msg.Flags {
+				email.Flags = append(email.Flags, string(flag))
+			}
 
-		// Parse email body content if available and requested
-		if options.IncludeBody && msg.Body != nil && len(msg.Body) > 0 {
-			for _, body := range msg.Body {
-				if body != nil {
-					// Read the raw email content
-					rawEmail, err := io.ReadAll(body)
-					if err != nil {
-						s.logger.Warn("Failed to read email body for message %s: %v", email.MessageID, err)
-						continue
-					}
+			// Parse email body content if available and requested
+			if options.IncludeBody && msg.Body != nil && len(msg.Body) > 0 {
+				for _, body := range msg.Body {
+					if body != nil {
+						// Read the raw email content
+						rawEmail, err := io.ReadAll(body)
+						if err != nil {
+							s.logger.Warn("Failed to read email body for message %s: %v", email.MessageID, err)
+							continue
+						}
 
-					// Parse the email content using the parser service
-					parsedEmail, err := s.parserService.ParseEmail(rawEmail)
-					if err != nil {
-						s.logger.Warn("Failed to parse email content for message %s: %v", email.MessageID, err)
-						continue
-					}
+						// Parse the email content using the parser service
+						parsedEmail, err := s.parserService.ParseEmail(rawEmail)
+						if err != nil {
+							s.logger.Warn("Failed to parse email content for message %s: %v", email.MessageID, err)
+							continue
+						}
 
-					// Update email with parsed content
-					if parsedEmail.RawMessage != "" {
-						email.RawMessage = parsedEmail.RawMessage
+						// Update email with parsed content
+						if parsedEmail.RawMessage != "" {
+							email.RawMessage = parsedEmail.RawMessage
+						}
+						if len(parsedEmail.Headers) > 0 {
+							email.Headers = parsedEmail.Headers
+						}
+						if parsedEmail.Body != "" {
+							email.Body = parsedEmail.Body
+						}
+						if parsedEmail.HTMLBody != "" {
+							email.HTMLBody = parsedEmail.HTMLBody
+						}
+						if len(parsedEmail.Attachments) > 0 {
+							email.Attachments = parsedEmail.Attachments
+						}
+						break // Only process the first body part
 					}
-					if len(parsedEmail.Headers) > 0 {
-						email.Headers = parsedEmail.Headers
-					}
-					if parsedEmail.Body != "" {
-						email.Body = parsedEmail.Body
-					}
-					if parsedEmail.HTMLBody != "" {
-						email.HTMLBody = parsedEmail.HTMLBody
-					}
-					if len(parsedEmail.Attachments) > 0 {
-						email.Attachments = parsedEmail.Attachments
-					}
-					break // Only process the first body part
 				}
 			}
+
+			emails = append(emails, email)
+
+			s.logger.Debug("Fetched email %d - Subject: '%s', From: %s, Date: %s",
+				len(emails), email.Subject, email.From, email.Date.Format(time.RFC3339))
 		}
-
-		emails = append(emails, email)
-
-		s.logger.Debug("Fetched email %d - Subject: '%s', From: %s, Date: %s",
-			len(emails), email.Subject, email.From, email.Date.Format(time.RFC3339))
 	}
 
-	if err := <-done; err != nil {
+fetchDone:
+	select {
+	case err := <-done:
+		if err != nil {
+			s.logger.Error("Failed to fetch messages: %v", err)
+			return nil, fmt.Errorf("failed to fetch messages: %w", err)
+		}
+	case <-ctx.Done():
+		_ = c.Logout()
+		return nil, ctx.Err()
+	}
+
+	if err := ctx.Err(); err != nil {
 		s.logger.Error("Failed to fetch messages: %v", err)
-		return nil, fmt.Errorf("failed to fetch messages: %w", err)
+		return nil, err
 	}
 
 	// Update last sync time

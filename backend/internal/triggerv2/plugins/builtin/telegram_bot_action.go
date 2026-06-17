@@ -414,20 +414,87 @@ func (p *TelegramBotActionPlugin) Execute(ctx *plugins.PluginContext, event *mod
 		}, nil
 	}
 
+	data := map[string]interface{}{
+		"chat_id":        chatID,
+		"message_length": len(message),
+		"sent_at":        time.Now().Format(time.RFC3339),
+		"parse_mode":     parseMode,
+		"silent":         silent,
+		"telegram_ok":    response.OK,
+	}
+	for key, value := range telegramDeliveryMetadata(response, threadID) {
+		data[key] = value
+	}
+
 	result := &plugins.PluginResult{
-		Success: true,
-		Data: map[string]interface{}{
-			"chat_id":        chatID,
-			"message_length": len(message),
-			"sent_at":        time.Now().Format(time.RFC3339),
-			"parse_mode":     parseMode,
-			"silent":         silent,
-		},
+		Success:       true,
+		Data:          data,
 		ExecutionTime: time.Since(startTime),
 		Timestamp:     time.Now(),
 	}
 
 	return result, nil
+}
+
+func telegramDeliveryMetadata(response *TelegramResponse, configuredThreadID int) map[string]interface{} {
+	metadata := make(map[string]interface{})
+	if response == nil || len(response.Result) == 0 {
+		return metadata
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		metadata["telegram_result_parse_error"] = err.Error()
+		return metadata
+	}
+
+	if messageID, ok := result["message_id"]; ok {
+		metadata["message_id"] = messageID
+	}
+	if date, ok := result["date"]; ok {
+		metadata["telegram_date"] = date
+		if unixTime, ok := numericInt64(date); ok {
+			metadata["telegram_sent_at"] = time.Unix(unixTime, 0).Format(time.RFC3339)
+		}
+	}
+	if threadID, ok := result["message_thread_id"]; ok {
+		metadata["message_thread_id"] = threadID
+	} else if configuredThreadID > 0 {
+		metadata["message_thread_id"] = configuredThreadID
+	}
+
+	if chat, ok := result["chat"].(map[string]interface{}); ok {
+		chatMetadata := make(map[string]interface{})
+		for _, key := range []string{"id", "type", "title", "username", "first_name", "last_name"} {
+			if value, exists := chat[key]; exists {
+				chatMetadata[key] = value
+			}
+		}
+		if len(chatMetadata) > 0 {
+			metadata["telegram_chat"] = chatMetadata
+		}
+		if deliveredChatID, ok := chat["id"]; ok {
+			metadata["delivered_chat_id"] = deliveredChatID
+		}
+	}
+
+	return metadata
+}
+
+func numericInt64(value interface{}) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case float64:
+		return int64(v), true
+	case json.Number:
+		parsed, err := v.Int64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // renderTemplate 渲染消息模板，支持 JavaScript 和 Go Template 两种引擎

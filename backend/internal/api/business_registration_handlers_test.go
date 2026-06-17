@@ -27,6 +27,7 @@ func newBusinessRegistrationTestHandler(t *testing.T) (*APIHandler, *gorm.DB) {
 	if err := db.AutoMigrate(
 		&models.EmailAccount{},
 		&models.BusinessModule{},
+		&models.BusinessScenario{},
 		&models.BusinessAccount{},
 		&models.BusinessEmailExclusion{},
 		&models.TagGroup{},
@@ -243,6 +244,308 @@ func TestClaimBusinessModuleEmailAccountFiltersBatchByEmailSuffix(t *testing.T) 
 	}
 	if response.EmailAccount.ID != accounts[1].ID || response.Recipient.EmailAddress != "second@gmail.com" {
 		t.Fatalf("unexpected suffix-filtered response: %+v", response)
+	}
+}
+
+func TestUpdateBusinessModulePreservesNewClaimConfigWhenOmitted(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		ClaimDefaults: models.JSONMapInterface{
+			"emailSuffixes": []interface{}{"@gmail.com"},
+			"ttlSeconds":    float64(900),
+		},
+		EmailConstraints: models.JSONMapInterface{
+			"allowAliases": false,
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/business-modules/1", bytes.NewBufferString(`{"name":"GitHub Updated","description":"legacy client payload"}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.UpdateBusinessModuleHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var updated models.BusinessModule
+	if err := db.First(&updated, module.ID).Error; err != nil {
+		t.Fatalf("failed to load updated module: %v", err)
+	}
+	if updated.Name != "GitHub Updated" {
+		t.Fatalf("module name was not updated: %+v", updated)
+	}
+	if suffixes := businessConfigStringSlice(updated.ClaimDefaults, "emailSuffixes"); len(suffixes) != 1 || suffixes[0] != "@gmail.com" {
+		t.Fatalf("claimDefaults were not preserved: %+v", updated.ClaimDefaults)
+	}
+	allowAliases, ok := businessConfigBool(updated.EmailConstraints, "allowAliases")
+	if !ok || allowAliases {
+		t.Fatalf("emailConstraints were not preserved: %+v", updated.EmailConstraints)
+	}
+}
+
+func TestClaimBusinessModuleEmailAccountUsesModuleDefaultSuffixes(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		ClaimDefaults: models.JSONMapInterface{
+			"emailMode":     "primary",
+			"emailSuffixes": []interface{}{"@gmail.com", "@outlook.com"},
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{OrgID: 1, EmailAddress: "first@example.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+		{OrgID: 1, EmailAddress: "second@outlook.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create accounts: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"ttlSeconds":60}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response BusinessEmailClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.EmailAccount.ID != accounts[1].ID || response.Recipient.EmailAddress != "second@outlook.com" {
+		t.Fatalf("unexpected default-filtered response: %+v", response)
+	}
+}
+
+func TestClaimBusinessModuleEmailAccountExplicitSuffixOverridesModuleDefaultSuffixes(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		ClaimDefaults: models.JSONMapInterface{
+			"emailMode":     "primary",
+			"emailSuffixes": []interface{}{"@gmail.com"},
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{OrgID: 1, EmailAddress: "first@example.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+		{OrgID: 1, EmailAddress: "second@gmail.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create accounts: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"emailMode":"primary","emailSuffix":"@example.com","ttlSeconds":60}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response BusinessEmailClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.EmailAccount.ID != accounts[0].ID || response.Recipient.EmailAddress != "first@example.com" {
+		t.Fatalf("explicit suffix did not override module defaults: %+v", response)
+	}
+}
+
+func TestClaimBusinessModuleEmailAccountUsesAllowedDomainsConstraint(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		EmailConstraints: models.JSONMapInterface{
+			"allowedDomains": []interface{}{"outlook.com"},
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{OrgID: 1, EmailAddress: "first@example.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+		{OrgID: 1, EmailAddress: "second@outlook.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create accounts: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"ttlSeconds":60}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response BusinessEmailClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.EmailAccount.ID != accounts[1].ID || response.Recipient.EmailAddress != "second@outlook.com" {
+		t.Fatalf("unexpected allowed-domain response: %+v", response)
+	}
+}
+
+func TestClaimBusinessModuleEmailAccountAppliesBlockedDomainsConstraint(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		EmailConstraints: models.JSONMapInterface{
+			"blockedDomains": []interface{}{"example.com"},
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{OrgID: 1, EmailAddress: "first@example.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+		{OrgID: 1, EmailAddress: "second@gmail.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create accounts: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"emailMode":"primary","ttlSeconds":60}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response BusinessEmailClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.EmailAccount.ID != accounts[1].ID || response.Recipient.EmailAddress != "second@gmail.com" {
+		t.Fatalf("unexpected blocked-domain response: %+v", response)
+	}
+}
+
+func TestClaimBusinessModuleEmailAccountRejectsBlockedTargetAsBadRequest(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		EmailConstraints: models.JSONMapInterface{
+			"blockedDomains": []interface{}{"gmail.com"},
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	account := models.EmailAccount{
+		OrgID:        1,
+		EmailAddress: "base@gmail.com",
+		AuthType:     models.AuthTypePassword,
+		IsVerified:   true,
+		ErrorStatus:  string(models.ErrorStatusNormal),
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatalf("failed to create account: %v", err)
+	}
+
+	body := fmt.Sprintf(`{"accountId":%d,"emailMode":"primary"}`, account.ID)
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(body))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("claim status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not allowed") {
+		t.Fatalf("unexpected error body: %s", rec.Body.String())
+	}
+}
+
+func TestClaimBusinessModuleEmailAccountRejectsDisallowedAlias(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		EmailConstraints: models.JSONMapInterface{
+			"allowAliases": false,
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	account := models.EmailAccount{
+		OrgID:        1,
+		EmailAddress: "base@gmail.com",
+		AuthType:     models.AuthTypePassword,
+		IsVerified:   true,
+		ErrorStatus:  string(models.ErrorStatusNormal),
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatalf("failed to create account: %v", err)
+	}
+
+	body := fmt.Sprintf(`{"accountId":%d,"emailMode":"alias","aliasType":"gmail_plus","aliasLocalPart":"github"}`, account.ID)
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(body))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("claim status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBusinessScenarioPickupRequestUsesScenarioConfig(t *testing.T) {
+	accountID := uint(9)
+	registrationEmail := "register@example.com"
+	account := &models.BusinessAccount{
+		ID:                3,
+		OrgID:             1,
+		EmailAccountID:    &accountID,
+		RegistrationEmail: &registrationEmail,
+		Status:            models.BusinessAccountStatusPending,
+	}
+	templateID := float64(12)
+	scenario := models.BusinessScenario{
+		OrgID:    1,
+		ModuleID: 2,
+		Key:      "register",
+		Name:     "注册验证码",
+		Enabled:  true,
+		PickupConfig: models.JSONMapInterface{
+			"keepAliveSeconds": float64(90),
+			"syncInterval":     float64(3),
+			"limit":            float64(5),
+		},
+		ExtractorConfig: models.JSONMapInterface{
+			"templateId": templateID,
+		},
+	}
+
+	pickupReq, err := buildBusinessScenarioPickupRequest(account, scenario, BusinessScenarioPickupRequest{})
+	if err != nil {
+		t.Fatalf("build pickup request failed: %v", err)
+	}
+	if pickupReq.AccountID != accountID || pickupReq.ToQuery != registrationEmail {
+		t.Fatalf("unexpected pickup target: %+v", pickupReq)
+	}
+	if pickupReq.KeepAliveSeconds != 90 || pickupReq.SyncInterval != 3 || pickupReq.Limit != 5 {
+		t.Fatalf("unexpected pickup config: %+v", pickupReq)
+	}
+	if pickupReq.TemplateID == nil || *pickupReq.TemplateID != 12 {
+		t.Fatalf("unexpected template id: %+v", pickupReq.TemplateID)
 	}
 }
 

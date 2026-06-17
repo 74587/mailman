@@ -15,16 +15,19 @@ import (
 )
 
 type BusinessModuleRequest struct {
-	Name          string                  `json:"name"`
-	Website       string                  `json:"website,omitempty"`
-	LoginURL      string                  `json:"loginUrl,omitempty"`
-	Description   string                  `json:"description,omitempty"`
-	Icon          string                  `json:"icon,omitempty"`
-	Logo          string                  `json:"logo,omitempty"`
-	Color         string                  `json:"color,omitempty"`
-	FieldSchema   models.JSONMapInterface `json:"fieldSchema,omitempty" swaggertype:"object"`
-	StatusOptions models.JSONMapInterface `json:"statusOptions,omitempty" swaggertype:"object"`
-	SortOrder     int                     `json:"sortOrder,omitempty"`
+	Name             string                  `json:"name"`
+	Website          string                  `json:"website,omitempty"`
+	LoginURL         string                  `json:"loginUrl,omitempty"`
+	Description      string                  `json:"description,omitempty"`
+	Icon             string                  `json:"icon,omitempty"`
+	Logo             string                  `json:"logo,omitempty"`
+	Color            string                  `json:"color,omitempty"`
+	FieldSchema      models.JSONMapInterface `json:"fieldSchema,omitempty" swaggertype:"object"`
+	StatusOptions    models.JSONMapInterface `json:"statusOptions,omitempty" swaggertype:"object"`
+	ClaimDefaults    models.JSONMapInterface `json:"claimDefaults,omitempty" swaggertype:"object"`
+	EmailConstraints models.JSONMapInterface `json:"emailConstraints,omitempty" swaggertype:"object"`
+	Constraints      models.JSONMapInterface `json:"constraints,omitempty" swaggertype:"object"`
+	SortOrder        int                     `json:"sortOrder,omitempty"`
 }
 
 type BusinessAccountRequest struct {
@@ -189,6 +192,12 @@ func (h *APIHandler) UpdateBusinessModuleHandler(w http.ResponseWriter, r *http.
 	updated := buildBusinessModule(request, module.OrgID)
 	updated.ID = module.ID
 	updated.CreatedAt = module.CreatedAt
+	if request.ClaimDefaults == nil {
+		updated.ClaimDefaults = module.ClaimDefaults
+	}
+	if request.EmailConstraints == nil && request.Constraints == nil {
+		updated.EmailConstraints = module.EmailConstraints
+	}
 	if updated.Name == "" {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
@@ -447,18 +456,24 @@ func (h *APIHandler) ListEmailAccountBusinessAccountsHandler(w http.ResponseWrit
 }
 
 func buildBusinessModule(request BusinessModuleRequest, orgID uint) models.BusinessModule {
+	emailConstraints := request.EmailConstraints
+	if len(emailConstraints) == 0 && len(request.Constraints) > 0 {
+		emailConstraints = request.Constraints
+	}
 	return models.BusinessModule{
-		OrgID:         orgID,
-		Name:          strings.TrimSpace(request.Name),
-		Website:       strings.TrimSpace(request.Website),
-		LoginURL:      strings.TrimSpace(request.LoginURL),
-		Description:   strings.TrimSpace(request.Description),
-		Icon:          strings.TrimSpace(request.Icon),
-		Logo:          strings.TrimSpace(request.Logo),
-		Color:         strings.TrimSpace(request.Color),
-		FieldSchema:   request.FieldSchema,
-		StatusOptions: request.StatusOptions,
-		SortOrder:     request.SortOrder,
+		OrgID:            orgID,
+		Name:             strings.TrimSpace(request.Name),
+		Website:          strings.TrimSpace(request.Website),
+		LoginURL:         strings.TrimSpace(request.LoginURL),
+		Description:      strings.TrimSpace(request.Description),
+		Icon:             strings.TrimSpace(request.Icon),
+		Logo:             strings.TrimSpace(request.Logo),
+		Color:            strings.TrimSpace(request.Color),
+		FieldSchema:      safeBusinessJSONMap(request.FieldSchema),
+		StatusOptions:    safeBusinessJSONMap(request.StatusOptions),
+		ClaimDefaults:    safeBusinessJSONMap(request.ClaimDefaults),
+		EmailConstraints: safeBusinessJSONMap(emailConstraints),
+		SortOrder:        request.SortOrder,
 	}
 }
 

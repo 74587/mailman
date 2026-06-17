@@ -1695,6 +1695,191 @@ export default function EnhancedClassicMailboxView() {
                 },
             },
             {
+                name: 'searchEmails',
+                title: '搜索当前账户邮件',
+                description: '在当前选中邮箱账户内按关键词、主题、发件人或收件人搜索邮件。',
+                risk: 'read',
+                parameters: { query: '邮件搜索关键词', openFirst: '为 true 时打开第一封匹配邮件' },
+                run: async (params) => {
+                    const query = String(params.query || params.q || params.keyword || '').trim()
+                    if (!selectedAccount) {
+                        return {
+                            success: false,
+                            summary: '当前还没有选中邮箱账户，请先打开某个账户的收件箱。',
+                        }
+                    }
+                    if (!query) {
+                        return {
+                            success: false,
+                            summary: '没有提供邮件搜索关键词。',
+                        }
+                    }
+
+                    setEmailSearchQuery(query)
+                    emailSearchQueryRef.current = query
+                    setSelectedEmailId(null)
+                    setLoadingEmails(true)
+
+                    try {
+                        const emailsData = await emailService.searchEmails({
+                            ...buildEmailSearchParams(query, directionFilter, PAGE_SIZE, 0, selectedAccount),
+                            cursor: true,
+                        }, selectedAccount.id)
+                        const emailList: Email[] = Array.isArray(emailsData) ? emailsData : (emailsData.emails || [])
+                        const pagination = (emailsData as any).pagination || {}
+                        const responseWindowStartIndex = readPositiveInteger(pagination.window_start_index)
+                        const shouldOpenFirst = params.openFirst === true || String(params.openFirst || '').toLowerCase() === 'true'
+                        let selectedSummary: ReturnType<typeof summarizeEmailForAI> | null = null
+
+                        setEmails(emailList)
+                        setTotalCount(pagination.total || emailList.length)
+                        setEmailWindowStartIndex(emailList.length > 0 ? responseWindowStartIndex || 1 : 0)
+                        setHasMore(Boolean(pagination.has_next))
+                        setHasPrevious(Boolean(pagination.has_prev))
+                        setCurrentOffset(0)
+                        emailNextCursorRef.current = pagination.next_cursor || null
+                        emailPrevCursorRef.current = pagination.prev_cursor || null
+
+                        if (shouldOpenFirst && emailList[0]) {
+                            let firstEmail = emailList[0]
+                            try {
+                                firstEmail = await emailService.getEmail(firstEmail.ID) || firstEmail
+                            } catch (error) {
+                                console.warn('Failed to fetch first matched email details:', error)
+                            }
+                            setEmails(prev => prev.map(email => email.ID === firstEmail.ID ? firstEmail : email))
+                            setSelectedEmailId(firstEmail.ID)
+                            setActivePanel('preview')
+                            selectedSummary = summarizeEmailForAI(firstEmail, AI_EMAIL_ACTION_BODY_LIMIT)
+                        } else if (isMobileView) {
+                            setActivePanel('list')
+                        }
+
+                        return {
+                            success: true,
+                            summary: selectedSummary
+                                ? `已搜索 ${query}，并打开第一封匹配邮件「${selectedSummary.subject}」。`
+                                : `已搜索 ${query}，找到 ${pagination.total || emailList.length} 封匹配邮件，当前加载 ${emailList.length} 封。`,
+                            details: selectedSummary?.bodyPreview,
+                            data: {
+                                query,
+                                accountId: selectedAccount.id,
+                                email: selectedAccount.emailAddress,
+                                matchedCount: pagination.total || emailList.length,
+                                loadedEmailsCount: emailList.length,
+                                selectedEmail: selectedSummary,
+                                emails: emailList.slice(0, 8).map(email => summarizeEmailForAI(email)),
+                            },
+                        }
+                    } finally {
+                        setLoadingEmails(false)
+                    }
+                },
+            },
+            {
+                name: 'openEmailById',
+                title: '打开指定邮件',
+                description: '按邮件 ID 打开详情，必要时切换到对应账户。',
+                risk: 'read',
+                parameters: { emailId: '邮件 ID', accountId: '可选，账户 ID' },
+                run: async (params) => {
+                    const emailId = Number(params.emailId || params.id || 0)
+                    if (!emailId) {
+                        return {
+                            success: false,
+                            summary: '没有提供有效的邮件 ID。',
+                        }
+                    }
+
+                    const fullEmail = await emailService.getEmail(emailId) as Email | null
+                    if (!fullEmail) {
+                        return {
+                            success: false,
+                            summary: `没有找到邮件 ID ${emailId}。`,
+                            data: { emailId },
+                        }
+                    }
+
+                    const targetAccountId = Number(params.accountId || fullEmail.AccountID || 0)
+                    let targetAccount = targetAccountId
+                        ? accounts.find(account => account.id === targetAccountId) || selectedAccount
+                        : selectedAccount
+                    if (targetAccountId && (!targetAccount || targetAccount.id !== targetAccountId)) {
+                        try {
+                            targetAccount = await emailAccountService.getAccount(targetAccountId)
+                            setAccounts(prev => prev.some(account => account.id === targetAccount?.id) || !targetAccount
+                                ? prev
+                                : [targetAccount, ...prev]
+                            )
+                        } catch (error) {
+                            console.warn('Failed to fetch account for email:', error)
+                        }
+                    }
+
+                    if (targetAccount) {
+                        selectedAccountRef.current = targetAccount
+                        setSelectedAccount(targetAccount)
+                    }
+
+                    try {
+                        setLoadingEmails(true)
+                        if (targetAccountId) {
+                            const emailsData = await emailService.searchEmails({
+                                limit: PAGE_SIZE,
+                                offset: 0,
+                                sort_by: 'date_desc',
+                                cursor: true,
+                                anchor_email_id: emailId,
+                                direction: directionFilter,
+                            }, targetAccountId)
+                            const emailList: Email[] = Array.isArray(emailsData) ? emailsData : (emailsData.emails || [])
+                            const pagination = (emailsData as any).pagination || {}
+                            const responseWindowStartIndex = readPositiveInteger(pagination.window_start_index)
+                            const nextEmails = emailList.some(email => email.ID === fullEmail.ID)
+                                ? emailList.map(email => email.ID === fullEmail.ID ? fullEmail : email)
+                                : [fullEmail, ...emailList]
+
+                            setEmails(nextEmails)
+                            setTotalCount(pagination.total || nextEmails.length)
+                            setEmailWindowStartIndex(nextEmails.length > 0 ? responseWindowStartIndex || 1 : 0)
+                            setHasMore(Boolean(pagination.has_next))
+                            setHasPrevious(Boolean(pagination.has_prev))
+                            setCurrentOffset(0)
+                            emailNextCursorRef.current = pagination.next_cursor || null
+                            emailPrevCursorRef.current = pagination.prev_cursor || null
+                        } else {
+                            setEmails([fullEmail])
+                            setTotalCount(1)
+                            setEmailWindowStartIndex(1)
+                            setHasMore(false)
+                            setHasPrevious(false)
+                            setCurrentOffset(0)
+                            emailNextCursorRef.current = null
+                            emailPrevCursorRef.current = null
+                        }
+                        setSelectedEmailId(fullEmail.ID)
+                        setActivePanel('preview')
+                    } finally {
+                        setLoadingEmails(false)
+                    }
+
+                    const emailSummary = summarizeEmailForAI(fullEmail, AI_EMAIL_ACTION_BODY_LIMIT)
+                    return {
+                        success: true,
+                        summary: `已打开邮件「${emailSummary.subject}」，发件人 ${emailSummary.from || '未知'}。`,
+                        details: emailSummary.bodyPreview,
+                        data: {
+                            selectedEmail: emailSummary,
+                            selectedAccount: targetAccount ? {
+                                id: targetAccount.id,
+                                email: targetAccount.emailAddress,
+                                provider: targetAccount.mailProvider?.type,
+                            } : null,
+                        },
+                    }
+                },
+            },
+            {
                 name: 'getSelectedEmailDetails',
                 title: '读取当前选中邮件',
                 description: '读取当前已选中邮件的主题、发件人、收件人、正文摘要和附件信息。',

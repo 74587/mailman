@@ -20,9 +20,9 @@ import {
   AlertCircle,
   GitBranch
 } from 'lucide-react'
-import { useRouter } from 'next/navigation'
 import { triggerService } from '@/services/trigger.service'
 import { ExecutionTimeline } from './execution-timeline'
+import { TriggerErrorDiagnosticsDialog } from './trigger-error-diagnostics-dialog'
 import { TriggerExecutionLog, PaginationParams, TriggerExecutionStatus } from '@/types'
 import { toast } from 'sonner'
 
@@ -43,13 +43,14 @@ export function TriggerLogs({
   showExport = true,
   onViewDetails
 }: TriggerLogsProps) {
-  const router = useRouter()
   const [logs, setLogs] = useState<TriggerExecutionLog[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(limit)
   const [isLoading, setIsLoading] = useState(true)
   const [expandedLogs, setExpandedLogs] = useState<Record<number, boolean>>({})
+  const [diagnosticLog, setDiagnosticLog] = useState<TriggerExecutionLog | null>(null)
+  const [diagnosticError, setDiagnosticError] = useState<string | undefined>()
 
   // 过滤条件
   const [statusFilter, setStatusFilter] = useState<TriggerExecutionStatus | 'all'>('all')
@@ -118,8 +119,9 @@ export function TriggerLogs({
   }
 
   // 打开错误诊断工具
-  const openDiagnostics = (log: TriggerExecutionLog) => {
-    router.push(`/triggers/diagnostics?logId=${log.id}${triggerId ? `&triggerId=${triggerId}` : ''}`)
+  const openDiagnostics = (log: TriggerExecutionLog, error?: string) => {
+    setDiagnosticLog(log)
+    setDiagnosticError(error || log.error_message || log.condition_error)
   }
 
   // 获取状态图标
@@ -342,7 +344,7 @@ export function TriggerLogs({
                                 variant="outline"
                                 size="sm"
                                 className="text-red-600"
-                                onClick={() => openDiagnostics(log)}
+                                onClick={() => openDiagnostics(log, log.condition_error)}
                               >
                                 <AlertCircle className="h-4 w-4 mr-1" />
                                 诊断错误
@@ -388,7 +390,7 @@ export function TriggerLogs({
                                         variant="outline"
                                         size="sm"
                                         className="text-red-600"
-                                        onClick={() => openDiagnostics(log)}
+                                        onClick={() => openDiagnostics(log, result.error)}
                                       >
                                         <AlertCircle className="h-4 w-4 mr-1" />
                                         诊断错误
@@ -427,7 +429,7 @@ export function TriggerLogs({
                                 variant="outline"
                                 size="sm"
                                 className="text-red-600"
-                                onClick={() => openDiagnostics(log)}
+                                onClick={() => openDiagnostics(log, log.error_message)}
                               >
                                 <AlertCircle className="h-4 w-4 mr-1" />
                                 诊断错误
@@ -521,6 +523,19 @@ export function TriggerLogs({
           )}
         </div>
       )}
+
+      <TriggerErrorDiagnosticsDialog
+        open={Boolean(diagnosticLog)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDiagnosticLog(null)
+            setDiagnosticError(undefined)
+          }
+        }}
+        triggerId={diagnosticLog?.trigger_id || triggerId}
+        logId={diagnosticLog?.id}
+        error={diagnosticError}
+      />
     </div>
   )
 }

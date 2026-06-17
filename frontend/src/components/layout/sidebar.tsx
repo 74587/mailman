@@ -42,6 +42,7 @@ import {
     Server,
     KeyRound,
     Tags,
+    ScrollText,
     type LucideIcon,
 } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
@@ -56,6 +57,7 @@ interface MenuItem {
     icon: LucideIcon
     description?: string
     hidden?: boolean  // 隐藏但不删除
+    superAdminOnly?: boolean
     permission?: { resource: string; action: string }
 }
 
@@ -99,6 +101,15 @@ const proxyNavigation: MenuItem[] = [
 const businessNavigation: MenuItem[] = [
     { name: '业务账户', id: 'business-accounts', icon: Briefcase, description: '站点账号 · 2FA · 资料', permission: { resource: 'email_account', action: 'read' } },
     { name: '业务模块', id: 'business-modules', icon: Package, description: 'Logo · 状态 · 字段模板', permission: { resource: 'email_account', action: 'read' } },
+]
+
+// 日志中心菜单组
+const logNavigation: MenuItem[] = [
+    { name: '实时日志', id: 'output-logs', icon: ScrollText, description: '实时流 · 搜索 · 时间过滤', permission: { resource: 'system_config', action: 'read' } },
+    { name: '实时日志设置', id: 'output-log-settings', icon: Settings, description: '缓冲 · 查询 · 订阅保护', permission: { resource: 'system_config', action: 'read' } },
+    { name: '业务日志', id: 'business-logs', icon: Shield, description: '审计 · 流程 · 异常排查', permission: { resource: 'system_config', action: 'read' } },
+    { name: '业务日志组织设置', id: 'business-log-org-settings', icon: Building2, description: '组织覆盖 · 模块覆盖', permission: { resource: 'system_config', action: 'read' } },
+    { name: '业务日志全局设置', id: 'business-log-global-settings', icon: Shield, description: '全局策略 · 超级管理员', superAdminOnly: true, permission: { resource: 'system_config', action: 'read' } },
 ]
 
 // 系统管理菜单组
@@ -279,6 +290,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     const [businessMenuExpanded, setBusinessMenuExpanded] = useState(true)
     const [mailMenuExpanded, setMailMenuExpanded] = useState(true)
     const [proxyMenuExpanded, setProxyMenuExpanded] = useState(true)
+    const [logMenuExpanded, setLogMenuExpanded] = useState(true)
     const [, setMenuVersion] = useState(0) // 用于触发菜单重新渲染
     const { theme, setTheme } = useTheme()
     const { logout, isSuperAdmin, hasPermission } = useAuth()
@@ -287,11 +299,12 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     const filterByVisibility = useCallback((items: MenuItem[]) => {
         return applyMenuOrderToItems(items).filter(item => {
             if (item.hidden) return false
+            if (item.superAdminOnly && !isSuperAdmin) return false
             if (!isMenuVisible(item.id)) return false
             if (item.permission && !hasPermission(item.permission.resource, item.permission.action)) return false
             return true
         })
-    }, [hasPermission])
+    }, [hasPermission, isSuperAdmin])
 
     // 订阅菜单可见性变化
     useEffect(() => {
@@ -317,6 +330,7 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
     const filteredMailNav = filterByVisibility(mailNavigation)
     const filteredProxyNav = filterByVisibility(proxyNavigation)
     const filteredBusinessNav = filterByVisibility(businessNavigation)
+    const filteredLogNav = filterByVisibility(logNavigation)
     const filteredTriggerNav = filterByVisibility(triggerNavigation)
     const filteredPluginNav = filterByVisibility(pluginNavigation)
     const filteredDeveloperNav = filterByVisibility(developerNavigation)
@@ -358,6 +372,16 @@ export function Sidebar({ activeTab, onTabChange }: SidebarProps) {
             items: filteredTriggerNav,
             expanded: triggerMenuExpanded,
             setExpanded: setTriggerMenuExpanded,
+        })
+    }
+
+    if (filteredLogNav.length > 0) {
+        menuGroups.push({
+            title: '日志中心',
+            icon: ScrollText,
+            items: filteredLogNav,
+            expanded: logMenuExpanded,
+            setExpanded: setLogMenuExpanded,
         })
     }
 

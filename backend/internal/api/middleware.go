@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"mailman/internal/services"
 	"mailman/internal/utils"
@@ -93,7 +94,10 @@ func LoggingMiddleware(logger *utils.Logger) func(http.Handler) http.Handler {
 // loggingResponseWriter wraps http.ResponseWriter to capture status code
 type loggingResponseWriter struct {
 	http.ResponseWriter
-	statusCode int
+	statusCode    int
+	body          bytes.Buffer
+	bodyLimit     int
+	bodyTruncated bool
 }
 
 // WriteHeader captures the status code
@@ -106,6 +110,19 @@ func (lrw *loggingResponseWriter) WriteHeader(code int) {
 func (lrw *loggingResponseWriter) Write(b []byte) (int, error) {
 	if lrw.statusCode == 0 {
 		lrw.statusCode = http.StatusOK
+	}
+	if lrw.bodyLimit > 0 && len(b) > 0 {
+		remaining := lrw.bodyLimit - lrw.body.Len()
+		if remaining > 0 {
+			if len(b) > remaining {
+				lrw.body.Write(b[:remaining])
+				lrw.bodyTruncated = true
+			} else {
+				lrw.body.Write(b)
+			}
+		} else {
+			lrw.bodyTruncated = true
+		}
 	}
 	return lrw.ResponseWriter.Write(b)
 }

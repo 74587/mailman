@@ -124,14 +124,33 @@ function adaptPaginatedResponseToV1(v2Response: any): PaginatedTriggersResponse 
     };
 }
 
+function adaptActionResultToV1(result: any): any {
+    if (!result || typeof result !== 'object') {
+        return result;
+    }
+
+    return {
+        ...result,
+        action_name: result.action_name || result.actionName || result.pluginName || result.plugin_name || result.actionId || result.action_id || result.pluginId || result.plugin_id || '未命名动作',
+        action_type: result.action_type || result.actionType || result.pluginId || result.plugin_id || result.type || 'unknown',
+        success: Boolean(result.success),
+        error: result.error,
+        input_data: result.input_data || result.inputData || result.input,
+        output_data: result.output_data || result.outputData || result.output || result.result,
+        execution_ms: result.execution_ms ?? result.executionMs ?? result.duration ?? 0,
+    };
+}
+
 /**
  * Convert V2 trigger execution log response to V1 format
  */
 function adaptLogToV1(v2Log: any): TriggerExecutionLog {
+    const conditionEvaluation = v2Log.conditionEvaluation || v2Log.condition_evaluation || {};
+
     return {
         id: v2Log.id,
         trigger_id: v2Log.triggerId || v2Log.trigger_id,
-        trigger: v2Log.trigger,
+        trigger: v2Log.trigger ? adaptResponseToV1(v2Log.trigger) : undefined,
         // Map execution info
         status: v2Log.status,
         start_time: v2Log.startTime || v2Log.start_time,
@@ -143,9 +162,9 @@ function adaptLogToV1(v2Log: any): TriggerExecutionLog {
         input_params: v2Log.inputParams || v2Log.input_params,
         // Map condition result
         condition_result: v2Log.conditionResult !== undefined ? v2Log.conditionResult : v2Log.condition_result,
-        condition_error: v2Log.conditionError || v2Log.condition_error,
+        condition_error: v2Log.conditionError || v2Log.condition_error || conditionEvaluation.error,
         // Map action results
-        action_results: v2Log.actionResults || v2Log.action_results || [],
+        action_results: (v2Log.actionResults || v2Log.action_results || []).map(adaptActionResultToV1),
         // Map error message
         error_message: v2Log.error || v2Log.errorMessage || v2Log.error_message,
         // Map execution trace data (base64 encoded)

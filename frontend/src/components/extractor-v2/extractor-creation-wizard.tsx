@@ -27,6 +27,7 @@ import type {
     ExtractorOutputConfig,
     CreateExtractorTemplateV2Request,
     Email,
+    ExtractorTemplateV2,
 } from '@/types'
 import { toast } from 'sonner'
 import { logger } from '@/lib/logger'
@@ -82,6 +83,9 @@ interface ExtractorCreationWizardProps {
     tempId?: string
     templateId?: number  // 编辑/查看时传入模板ID
     readOnly?: boolean   // 只读模式
+    embedded?: boolean
+    onSaved?: (template: ExtractorTemplateV2) => void
+    onCancel?: () => void
 }
 
 interface WizardData {
@@ -117,7 +121,7 @@ interface SelectedExpressionInfo {
     fields?: Record<string, any>
 }
 
-export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }: ExtractorCreationWizardProps) {
+export function ExtractorCreationWizard({ tempId, templateId, readOnly = false, embedded = false, onSaved, onCancel }: ExtractorCreationWizardProps) {
     const { closeTab } = useTabManager()
 
     // 当前步骤
@@ -272,10 +276,11 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
         }
 
         setSaving(true)
+        let savedTemplate: ExtractorTemplateV2 | null = null
         try {
             if (isEditMode && templateId) {
                 // 编辑模式 - 更新
-                await extractorTemplateV2Service.updateTemplate(templateId, {
+                savedTemplate = await extractorTemplateV2Service.updateTemplate(templateId, {
                     name: data.name,
                     description: data.description,
                     enabled: data.enabled,
@@ -299,7 +304,7 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
                     category: data.category || undefined,
                     tags: data.tags.length > 0 ? data.tags : undefined,
                 }
-                await extractorTemplateV2Service.createTemplate(request)
+                savedTemplate = await extractorTemplateV2Service.createTemplate(request)
                 setSaveSuccess(true)
                 toast.success('模板创建成功')
             }
@@ -309,10 +314,15 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
         } finally {
             setSaving(false)
         }
-    }, [data, validateCurrentStep, getValidationMessage, isEditMode, templateId, readOnly])
+        if (savedTemplate) onSaved?.(savedTemplate)
+    }, [data, validateCurrentStep, getValidationMessage, isEditMode, templateId, readOnly, onSaved])
 
     // 关闭Tab
     const handleCloseTab = useCallback(() => {
+        if (embedded) {
+            onCancel?.()
+            return
+        }
         if (templateId) {
             if (readOnly) {
                 closeTab(`extractor-v2-view-${templateId}`)
@@ -322,7 +332,7 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
         } else {
             closeTab(`extractor-v2-create-${tempId}`)
         }
-    }, [closeTab, tempId, templateId, readOnly])
+    }, [closeTab, tempId, templateId, readOnly, embedded, onCancel])
 
     // 继续编辑
     const handleContinueEdit = useCallback(() => {
@@ -732,9 +742,9 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
     }
 
     return (
-        <div className="flex flex-col h-full">
+        <div className={cn('flex flex-col h-full', embedded && 'min-h-0')}>
             {/* 顶部标题栏 */}
-            <div className="flex items-center justify-between px-6 py-3 border-b bg-background flex-shrink-0">
+            <div className={cn('flex items-center justify-between px-6 py-3 border-b bg-background flex-shrink-0', embedded && 'relative z-10 min-h-[52px] bg-white dark:bg-gray-800')}>
                 <div className="flex items-center gap-3">
                     <Package className="w-5 h-5 text-primary" />
                     <h1 className="text-lg font-semibold">
@@ -771,6 +781,7 @@ export function ExtractorCreationWizard({ tempId, templateId, readOnly = false }
                 isSubmitting={saving}
                 rightPanelConfig={rightPanelConfig}
                 showRightPanel={currentStep > 0} // 第一步不显示右侧面板
+                className={embedded ? 'm-0 h-auto min-h-0 flex-1 p-6' : undefined}
             >
                 {renderStepContent()}
             </WizardLayout>

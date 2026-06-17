@@ -73,6 +73,11 @@ const tabNameMap: { [key: string]: string } = {
     'interceptors': '拦截器管理[interceptors]',
     'interceptor-logs': '拦截器日志[interceptor-logs]',
     'runtime-status': '运行状态[runtime-status]',
+    'output-logs': '实时日志[output-logs]',
+    'output-log-settings': '实时日志设置[output-log-settings]',
+    'business-logs': '业务日志[business-logs]',
+    'business-log-global-settings': '业务日志全局设置[business-log-global-settings]',
+    'business-log-org-settings': '业务日志组织设置[business-log-org-settings]',
     'system-config': '系统配置[system-config]',
     'component-test': '组件测试[component-test]',
     'extractor-v2-list': '取件模板V2[extractor-v2-list]',
@@ -283,6 +288,26 @@ export default function MainPage() {
                     case 'runtime-status':
                         const RuntimeStatusTab = require('@/components/tabs/runtime-status-tab').default
                         content = guard('system_config', 'read', <RuntimeStatusTab key={tabId} />)
+                        break
+                    case 'output-logs':
+                        const OutputLogsTab = require('@/components/tabs/output-logs-tab').default
+                        content = guard('system_config', 'read', <OutputLogsTab key={tabId} />)
+                        break
+                    case 'output-log-settings':
+                        const OutputLogSettingsTab = require('@/components/tabs/output-log-settings-tab').default
+                        content = guard('system_config', 'read', <OutputLogSettingsTab key={tabId} />)
+                        break
+                    case 'business-logs':
+                        const BusinessLogsTab = require('@/components/tabs/business-logs-tab').default
+                        content = guard('system_config', 'read', <BusinessLogsTab key={tabId} />)
+                        break
+                    case 'business-log-global-settings':
+                        const BusinessLogGlobalSettingsTab = require('@/components/tabs/business-log-global-settings-tab').default
+                        content = guard('system_config', 'read', <BusinessLogGlobalSettingsTab key={tabId} />)
+                        break
+                    case 'business-log-org-settings':
+                        const BusinessLogOrgSettingsTab = require('@/components/tabs/business-log-org-settings-tab').default
+                        content = guard('system_config', 'read', <BusinessLogOrgSettingsTab key={tabId} />)
                         break
                     case 'system-config':
                         content = guard('system_config', 'read', <SystemConfigTab key={tabId} />)
@@ -660,7 +685,7 @@ export default function MainPage() {
                         {openTabs.map((tabId) => {
                             // 定义需要全屏显示的 Tab（无 padding 和 container 限制）
                             // 包括需要固定header/footer布局的编辑和创建页面
-                            const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide', 'proxy-pool', 'proxy-gateway-gateways', 'proxy-gateway-listeners', 'proxy-gateway-accounts', 'proxy-gateway-account-groups', 'proxy-gateway-account-tags', 'proxy-gateway-routes', 'proxy-gateway-security', 'proxy-gateway-dns', 'proxy-gateway-logs', 'business-modules', 'business-accounts']
+                            const fullscreenTabs = ['classic-mailbox', 'trigger-create', 'compose-email', 'extractor-v2-list', 'mail-pickup-v2', 'integration-guide', 'proxy-pool', 'proxy-gateway-gateways', 'proxy-gateway-listeners', 'proxy-gateway-accounts', 'proxy-gateway-account-groups', 'proxy-gateway-account-tags', 'proxy-gateway-routes', 'proxy-gateway-security', 'proxy-gateway-dns', 'proxy-gateway-logs', 'business-modules', 'business-accounts', 'output-logs', 'output-log-settings', 'business-logs', 'business-log-global-settings', 'business-log-org-settings']
                             const isFullscreen = fullscreenTabs.includes(tabId) ||
                                 tabId.startsWith('account-note-') ||
                                 tabId.startsWith('trigger-edit-') ||
@@ -677,7 +702,7 @@ export default function MainPage() {
                                         'absolute inset-0 transition-all duration-300',
                                         isFullscreen ? 'overflow-hidden' : 'overflow-y-auto',
                                         activeTab === tabId
-                                            ? 'opacity-100 translate-x-0 z-10'
+                                            ? 'opacity-100 z-10'
                                             : 'opacity-0 translate-x-4 pointer-events-none z-0'
                                     )}
                                 >
