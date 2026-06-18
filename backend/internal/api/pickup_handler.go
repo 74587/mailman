@@ -1,11 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"mailman/internal/services"
 	"mailman/internal/utils"
 	"net/http"
+	"time"
 )
+
+const pickupPollHandlerTimeout = 30 * time.Second
 
 // PickupHandler 取件轮询API处理器
 type PickupHandler struct {
@@ -45,13 +50,45 @@ func (h *PickupHandler) PollHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "account_id or to_query is required", http.StatusBadRequest)
 		return
 	}
-	req.Context = r.Context()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	req.Context = ctx
 
 	// 执行轮询
-	result, err := h.pickupService.Poll(req)
+	type pollOutcome struct {
+		result *services.PickupPollResponse
+		err    error
+	}
+	done := make(chan pollOutcome, 1)
+	go func() {
+		result, err := h.pickupService.Poll(req)
+		done <- pollOutcome{result: result, err: err}
+	}()
+
+	var result *services.PickupPollResponse
+	var err error
+	timer := time.NewTimer(pickupPollHandlerTimeout)
+	defer timer.Stop()
+	select {
+	case outcome := <-done:
+		result = outcome.result
+		err = outcome.err
+	case <-ctx.Done():
+		h.logger.Warn("Pickup poll request canceled for account %d: %v", req.AccountID, ctx.Err())
+		return
+	case <-timer.C:
+		cancel()
+		h.logger.Error("Pickup poll handler timed out for account %d after %s", req.AccountID, pickupPollHandlerTimeout)
+		http.Error(w, "Pickup poll timed out", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		h.logger.Error("Pickup poll failed for account %d: %v", req.AccountID, err)
-		http.Error(w, "Pickup poll failed: "+err.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			status = http.StatusServiceUnavailable
+		}
+		http.Error(w, "Pickup poll failed: "+err.Error(), status)
 		return
 	}
 

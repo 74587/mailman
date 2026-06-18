@@ -19,6 +19,11 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	pickupSyncerControlTimeout = 2 * time.Second
+	syncStateUpdateTimeout     = 5 * time.Second
+)
+
 // PickupOverride 取件轮询临时同步覆盖（纯内存，不写数据库）
 type PickupOverride struct {
 	AccountID    uint      `json:"account_id"`
@@ -589,6 +594,10 @@ func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*S
 	if source == "" {
 		source = EmailIngestSourceManualSync
 	}
+	lookupCtx := opts.Context
+	if lookupCtx == nil {
+		lookupCtx = context.Background()
+	}
 
 	m.mu.RLock()
 	syncer, exists := m.accountSyncers[accountID]
@@ -613,13 +622,13 @@ func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*S
 
 	// 3. 创建临时Syncer
 	// 获取账户配置
-	config, err := m.syncConfigRepo.GetByAccountIDWithAccount(accountID)
+	config, err := m.syncConfigRepo.GetByAccountIDWithAccountContext(lookupCtx, accountID)
 	if err != nil {
 		// 如果配置不存在，创建一个临时的默认配置对象
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			m.logger.Warn("SyncNow: No config found for account %d, using default ephemeral config", accountID)
 			// 获取账户信息
-			account, err := m.emailAccountRepo.GetByID(accountID)
+			account, err := m.emailAccountRepo.GetByIDWithContext(lookupCtx, accountID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get account %d: %w", accountID, err)
 			}
@@ -819,9 +828,14 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 func (as *AccountSyncer) doSyncWithContext(parentCtx context.Context, startTime time.Time, source EmailIngestSource) (syncedEmails []models.Email, err error) {
 	as.logger.Debug("Executing doSync")
 	source = normalizeEmailIngestSource(source)
+	baseCtx, baseCancel := mergeSyncContexts(parentCtx, as.ctx)
+	defer baseCancel()
+	ctx, cancel := context.WithTimeout(baseCtx, 60*time.Second)
+	defer cancel()
+
 	recordSync := RuntimeMetrics().BeginSync(source)
 	activeSync := RuntimeMetrics().BeginActiveOperation("sync", source, "account_sync", as.AccountID, as.Config.Account.EmailAddress, "create_sync_run")
-	syncRun := as.createSyncRun(startTime, source)
+	syncRun := as.createSyncRunWithContext(ctx, startTime, source)
 	emailsFetched := 0
 	newEmailCount := 0
 	accountEmail := as.Config.Account.EmailAddress
@@ -832,15 +846,10 @@ func (as *AccountSyncer) doSyncWithContext(parentCtx context.Context, startTime 
 		as.recordSyncBusinessLog(startTime, source, syncRun, accountEmail, emailsFetched, newEmailCount, err)
 	}()
 
-	baseCtx, baseCancel := mergeSyncContexts(parentCtx, as.ctx)
-	defer baseCancel()
-	ctx, cancel := context.WithTimeout(baseCtx, 60*time.Second)
-	defer cancel()
-
 	// 获取账户信息
 	activeSync.Stage("get_account")
 	as.logger.Debug("Getting account details")
-	account, err := as.getAccount()
+	account, err := as.getAccountWithContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account: %w", err)
 	}
@@ -853,7 +862,7 @@ func (as *AccountSyncer) doSyncWithContext(parentCtx context.Context, startTime 
 	endDate := time.Now()
 
 	lastSyncEndTime := as.Config.LastSyncEndTime
-	cursor, cursorErr := as.manager.syncConfigRepo.GetAccountSyncCursor(as.AccountID, models.SyncCursorProviderGeneric)
+	cursor, cursorErr := as.manager.syncConfigRepo.GetAccountSyncCursorWithContext(ctx, as.AccountID, models.SyncCursorProviderGeneric)
 	if cursorErr == nil && cursor.LastSyncEndTime != nil {
 		lastSyncEndTime = cursor.LastSyncEndTime
 		as.logger.Debug("Using SyncCursor LastSyncEndTime for account %d: %v", as.AccountID, *cursor.LastSyncEndTime)
@@ -913,7 +922,7 @@ func (as *AccountSyncer) doSyncWithContext(parentCtx context.Context, startTime 
 
 	// 更新同步配置
 	activeSync.Stage("update_sync_cursor")
-	if err := as.updateSyncConfig(endDate, newEmailCount > 0); err != nil {
+	if err := as.updateSyncConfigWithContext(ctx, endDate, newEmailCount > 0); err != nil {
 		as.logger.Warn("Failed to update sync config: %v", err)
 	}
 
@@ -1007,8 +1016,12 @@ func (as *AccountSyncer) recordSyncBusinessLog(startTime time.Time, source Email
 
 // getAccount 获取账户信息
 func (as *AccountSyncer) getAccount() (*models.EmailAccount, error) {
+	return as.getAccountWithContext(context.Background())
+}
+
+func (as *AccountSyncer) getAccountWithContext(ctx context.Context) (*models.EmailAccount, error) {
 	// Prefer the persisted sync config path for normal auto-sync accounts.
-	config, err := as.manager.syncConfigRepo.GetByAccountIDWithAccount(as.AccountID)
+	config, err := as.manager.syncConfigRepo.GetByAccountIDWithAccountContext(ctx, as.AccountID)
 	if err == nil {
 		if config.Account.ID != 0 {
 			as.mu.Lock()
@@ -1021,7 +1034,7 @@ func (as *AccountSyncer) getAccount() (*models.EmailAccount, error) {
 		return nil, err
 	}
 
-	account, accountErr := as.manager.emailAccountRepo.GetByID(as.AccountID)
+	account, accountErr := as.manager.emailAccountRepo.GetByIDWithContext(ctx, as.AccountID)
 	if accountErr != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fmt.Errorf("sync config missing and failed to get account: %w", accountErr)
@@ -1051,6 +1064,12 @@ func (as *AccountSyncer) processEmails(emails []models.Email, source EmailIngest
 }
 
 func (as *AccountSyncer) createSyncRun(startTime time.Time, source EmailIngestSource) *models.SyncRun {
+	ctx, cancel := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancel()
+	return as.createSyncRunWithContext(ctx, startTime, source)
+}
+
+func (as *AccountSyncer) createSyncRunWithContext(ctx context.Context, startTime time.Time, source EmailIngestSource) *models.SyncRun {
 	if as.manager.syncConfigRepo == nil {
 		return nil
 	}
@@ -1063,7 +1082,7 @@ func (as *AccountSyncer) createSyncRun(startTime time.Time, source EmailIngestSo
 			"sync_manager": "per_account",
 		},
 	}
-	if err := as.manager.syncConfigRepo.CreateSyncRun(run); err != nil {
+	if err := as.manager.syncConfigRepo.CreateSyncRunWithContext(ctx, run); err != nil {
 		as.logger.Warn("Failed to create sync run: %v", err)
 		return nil
 	}
@@ -1071,6 +1090,12 @@ func (as *AccountSyncer) createSyncRun(startTime time.Time, source EmailIngestSo
 }
 
 func (as *AccountSyncer) finishSyncRun(run *models.SyncRun, emailsFetched int, newEmails int, syncErr error) {
+	ctx, cancel := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancel()
+	as.finishSyncRunWithContext(ctx, run, emailsFetched, newEmails, syncErr)
+}
+
+func (as *AccountSyncer) finishSyncRunWithContext(ctx context.Context, run *models.SyncRun, emailsFetched int, newEmails int, syncErr error) {
 	if run == nil || as.manager.syncConfigRepo == nil {
 		return
 	}
@@ -1078,19 +1103,25 @@ func (as *AccountSyncer) finishSyncRun(run *models.SyncRun, emailsFetched int, n
 	if syncErr != nil {
 		status = models.SyncRunStatusFailed
 	}
-	if err := as.manager.syncConfigRepo.FinishSyncRun(run.ID, status, emailsFetched, newEmails, syncErr); err != nil {
+	if err := as.manager.syncConfigRepo.FinishSyncRunWithContext(ctx, run.ID, status, emailsFetched, newEmails, syncErr); err != nil {
 		as.logger.Warn("Failed to finish sync run %d: %v", run.ID, err)
 	}
 }
 
 // updateSyncConfig 更新同步配置
 func (as *AccountSyncer) updateSyncConfig(endTime time.Time, hasNewEmails bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancel()
+	return as.updateSyncConfigWithContext(ctx, endTime, hasNewEmails)
+}
+
+func (as *AccountSyncer) updateSyncConfigWithContext(ctx context.Context, endTime time.Time, hasNewEmails bool) error {
 	// CRITICAL FIX: 重新获取config确保拿到最新的Gmail History ID
-	config, err := as.manager.syncConfigRepo.GetByAccountID(as.AccountID)
+	config, err := as.manager.syncConfigRepo.GetByAccountIDWithContext(ctx, as.AccountID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			now := time.Now()
-			if err := as.manager.syncConfigRepo.UpsertAccountSyncCursorTimes(as.AccountID, models.SyncCursorProviderGeneric, &now, &endTime); err != nil {
+			if err := as.manager.syncConfigRepo.UpsertAccountSyncCursorTimesWithContext(ctx, as.AccountID, models.SyncCursorProviderGeneric, &now, &endTime); err != nil {
 				return fmt.Errorf("failed to update sync cursor without sync config: %w", err)
 			}
 			as.mu.Lock()
@@ -1112,10 +1143,10 @@ func (as *AccountSyncer) updateSyncConfig(endTime time.Time, hasNewEmails bool) 
 	// 注意：故意不修改config.LastHistoryID，保持Gmail API的更新
 
 	as.logger.Debug("Updating sync config - preserving History ID: %s", config.LastHistoryID)
-	if err := as.manager.syncConfigRepo.CreateOrUpdate(config); err != nil {
+	if err := as.manager.syncConfigRepo.CreateOrUpdateWithContext(ctx, config); err != nil {
 		return err
 	}
-	if err := as.manager.syncConfigRepo.UpsertAccountSyncCursorTimes(as.AccountID, models.SyncCursorProviderGeneric, config.LastSyncTime, config.LastSyncEndTime); err != nil {
+	if err := as.manager.syncConfigRepo.UpsertAccountSyncCursorTimesWithContext(ctx, as.AccountID, models.SyncCursorProviderGeneric, config.LastSyncTime, config.LastSyncEndTime); err != nil {
 		return fmt.Errorf("failed to update sync cursor: %w", err)
 	}
 
@@ -1348,9 +1379,9 @@ func (as *AccountSyncer) SyncNowWithContext(ctx context.Context, source EmailIng
 	as.mu.Unlock()
 
 	if shouldHandleError {
-		as.handleSyncError(err)
+		as.handleSyncErrorWithContext(ctx, err)
 	} else {
-		as.resetErrorStatus()
+		as.resetErrorStatusWithContext(ctx)
 	}
 
 	result := &SyncResult{
@@ -1391,13 +1422,19 @@ func (as *AccountSyncer) GetStatus() *AccountSyncerStatus {
 
 // handleSyncError 处理同步错误，智能分析并决定是否自动禁用
 func (as *AccountSyncer) handleSyncError(err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancel()
+	as.handleSyncErrorWithContext(ctx, err)
+}
+
+func (as *AccountSyncer) handleSyncErrorWithContext(ctx context.Context, err error) {
 	errorMsg := err.Error()
 
 	// 分析错误类型
 	errorStatus := as.analyzeErrorType(errorMsg)
 
 	// 更新同步配置的错误计数
-	config, getErr := as.manager.syncConfigRepo.GetByAccountID(as.AccountID)
+	config, getErr := as.manager.syncConfigRepo.GetByAccountIDWithContext(ctx, as.AccountID)
 	if getErr != nil {
 		as.manager.logger.Error("Failed to get sync config for error handling: %v", getErr)
 		return
@@ -1421,10 +1458,10 @@ func (as *AccountSyncer) handleSyncError(err error) {
 			as.AccountID, reason, config.ConsecutiveErrors)
 
 		// 更新账户错误状态
-		as.updateAccountErrorStatus(errorStatus, errorMsg)
+		as.updateAccountErrorStatusWithContext(ctx, errorStatus, errorMsg)
 
 		// 发送禁用通知
-		as.sendDisableNotification(reason)
+		as.sendDisableNotificationWithContext(ctx, reason)
 
 		// 停止当前AccountSyncer
 		go func() {
@@ -1434,7 +1471,7 @@ func (as *AccountSyncer) handleSyncError(err error) {
 	}
 
 	// 更新同步配置
-	if updateErr := as.manager.syncConfigRepo.CreateOrUpdate(config); updateErr != nil {
+	if updateErr := as.manager.syncConfigRepo.CreateOrUpdateWithContext(ctx, config); updateErr != nil {
 		as.manager.logger.Error("Failed to update sync config after error: %v", updateErr)
 	}
 }
@@ -1524,8 +1561,14 @@ func (as *AccountSyncer) shouldAutoDisable(errorStatus models.AccountErrorStatus
 
 // updateAccountErrorStatus 更新账户错误状态
 func (as *AccountSyncer) updateAccountErrorStatus(errorStatus models.AccountErrorStatus, errorMsg string) {
+	ctx, cancel := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancel()
+	as.updateAccountErrorStatusWithContext(ctx, errorStatus, errorMsg)
+}
+
+func (as *AccountSyncer) updateAccountErrorStatusWithContext(ctx context.Context, errorStatus models.AccountErrorStatus, errorMsg string) {
 	// 获取账户信息
-	account, err := as.manager.emailAccountRepo.GetByID(as.AccountID)
+	account, err := as.manager.emailAccountRepo.GetByIDWithContext(ctx, as.AccountID)
 	if err != nil {
 		as.manager.logger.Error("Failed to get account for error status update: %v", err)
 		return
@@ -1540,15 +1583,21 @@ func (as *AccountSyncer) updateAccountErrorStatus(errorStatus models.AccountErro
 	account.AutoDisabledAt = &now
 
 	// 保存到数据库
-	if err := as.manager.emailAccountRepo.Update(account); err != nil {
+	if err := as.manager.emailAccountRepo.UpdateWithContext(ctx, account); err != nil {
 		as.manager.logger.Error("Failed to update account error status: %v", err)
 	}
 }
 
 // resetErrorStatus 重置错误状态（同步成功时调用）
 func (as *AccountSyncer) resetErrorStatus() {
+	ctx, cancel := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancel()
+	as.resetErrorStatusWithContext(ctx)
+}
+
+func (as *AccountSyncer) resetErrorStatusWithContext(ctx context.Context) {
 	// 获取同步配置
-	config, err := as.manager.syncConfigRepo.GetByAccountID(as.AccountID)
+	config, err := as.manager.syncConfigRepo.GetByAccountIDWithContext(ctx, as.AccountID)
 	if err != nil {
 		return
 	}
@@ -1572,18 +1621,24 @@ func (as *AccountSyncer) resetErrorStatus() {
 	}
 
 	if needUpdate {
-		if updateErr := as.manager.syncConfigRepo.CreateOrUpdate(config); updateErr != nil {
+		if updateErr := as.manager.syncConfigRepo.CreateOrUpdateWithContext(ctx, config); updateErr != nil {
 			as.manager.logger.Error("Failed to reset error status: %v", updateErr)
 		}
 
 		// 如果账户之前有错误状态，也重置
-		as.resetAccountErrorStatus()
+		as.resetAccountErrorStatusWithContext(ctx)
 	}
 }
 
 // resetAccountErrorStatus 重置账户错误状态
 func (as *AccountSyncer) resetAccountErrorStatus() {
-	account, err := as.manager.emailAccountRepo.GetByID(as.AccountID)
+	ctx, cancel := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancel()
+	as.resetAccountErrorStatusWithContext(ctx)
+}
+
+func (as *AccountSyncer) resetAccountErrorStatusWithContext(ctx context.Context) {
+	account, err := as.manager.emailAccountRepo.GetByIDWithContext(ctx, as.AccountID)
 	if err != nil {
 		return
 	}
@@ -1595,7 +1650,7 @@ func (as *AccountSyncer) resetAccountErrorStatus() {
 		account.ErrorTimestamp = nil
 		// 不重置ErrorCount，保留历史统计
 
-		if err := as.manager.emailAccountRepo.Update(account); err != nil {
+		if err := as.manager.emailAccountRepo.UpdateWithContext(ctx, account); err != nil {
 			as.manager.logger.Error("Failed to reset account error status: %v", err)
 		} else {
 			as.manager.logger.Info("Account %d error status reset to normal", as.AccountID)
@@ -1605,11 +1660,17 @@ func (as *AccountSyncer) resetAccountErrorStatus() {
 
 // sendDisableNotification 发送禁用通知
 func (as *AccountSyncer) sendDisableNotification(reason string) {
+	ctx, cancel := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancel()
+	as.sendDisableNotificationWithContext(ctx, reason)
+}
+
+func (as *AccountSyncer) sendDisableNotificationWithContext(ctx context.Context, reason string) {
 	if as.manager.notificationService == nil {
 		return
 	}
 
-	account, err := as.getAccount()
+	account, err := as.getAccountWithContext(ctx)
 	if err != nil {
 		return
 	}
@@ -1658,11 +1719,22 @@ func (m *PerAccountSyncManager) UpdateSubscription(accountID uint, config *model
 // RegisterPickupOverride 注册/续期取件轮询临时同步覆盖（纯内存，零DB写入）
 // 每次 pickup/poll 调用时触发，确保后端在 keepAliveSeconds 内持续同步该账户的邮件
 func (m *PerAccountSyncManager) RegisterPickupOverride(accountID uint, syncInterval int, keepAliveSeconds int) {
+	ctx, cancel := context.WithTimeout(context.Background(), pickupSyncerControlTimeout)
+	defer cancel()
+	if err := m.RegisterPickupOverrideWithContext(ctx, accountID, syncInterval, keepAliveSeconds); err != nil {
+		m.logger.Warn("Pickup override registered for account %d, but syncer setup was skipped/failed: %v", accountID, err)
+	}
+}
+
+func (m *PerAccountSyncManager) RegisterPickupOverrideWithContext(ctx context.Context, accountID uint, syncInterval int, keepAliveSeconds int) error {
 	if syncInterval <= 0 {
 		syncInterval = 5
 	}
 	if keepAliveSeconds <= 0 {
 		keepAliveSeconds = 30
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	m.pickupOverridesMu.Lock()
@@ -1686,11 +1758,23 @@ func (m *PerAccountSyncManager) RegisterPickupOverride(accountID uint, syncInter
 	}
 
 	// 每次续期都确保同步器正在运行，并临时应用 pickup 同步间隔。
-	m.ensurePickupSyncer(accountID, syncInterval)
+	return m.ensurePickupSyncerWithContext(ctx, accountID, syncInterval)
 }
 
 // RemovePickupOverride 移除取件轮询覆盖
 func (m *PerAccountSyncManager) RemovePickupOverride(accountID uint) {
+	ctx, cancel := context.WithTimeout(context.Background(), pickupSyncerControlTimeout)
+	defer cancel()
+	if err := m.RemovePickupOverrideWithContext(ctx, accountID); err != nil {
+		m.logger.Warn("Pickup override removed for account %d, but syncer cleanup was skipped/failed: %v", accountID, err)
+	}
+}
+
+func (m *PerAccountSyncManager) RemovePickupOverrideWithContext(ctx context.Context, accountID uint) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	m.pickupOverridesMu.Lock()
 	_, exists := m.pickupOverrides[accountID]
 	delete(m.pickupOverrides, accountID)
@@ -1700,12 +1784,15 @@ func (m *PerAccountSyncManager) RemovePickupOverride(accountID uint) {
 		m.logger.Info("Removed pickup override for account %d", accountID)
 
 		// 检查原始配置是否启用了自动同步，如果没有则停止同步器
-		config, err := m.syncConfigRepo.GetByAccountID(accountID)
-		if err != nil || config == nil || !config.EnableAutoSync {
+		config, err := m.syncConfigRepo.GetByAccountIDWithContext(ctx, accountID)
+		if errors.Is(err, gorm.ErrRecordNotFound) || config == nil || !config.EnableAutoSync {
 			m.stopAccountSyncer(accountID)
 			m.logger.Info("Stopped syncer for account %d (no auto-sync and pickup override removed)", accountID)
+		} else if err != nil {
+			return fmt.Errorf("failed to inspect sync config while removing pickup override: %w", err)
 		}
 	}
+	return nil
 }
 
 // GetPickupOverride 获取取件轮询覆盖状态
@@ -1741,6 +1828,17 @@ func (m *PerAccountSyncManager) GetAllPickupOverrides() []*PickupOverride {
 // ensurePickupSyncer 确保取件轮询账户有同步器在运行
 // 如果账户没有活跃的同步器，创建一个临时的
 func (m *PerAccountSyncManager) ensurePickupSyncer(accountID uint, syncInterval int) {
+	ctx, cancel := context.WithTimeout(context.Background(), pickupSyncerControlTimeout)
+	defer cancel()
+	if err := m.ensurePickupSyncerWithContext(ctx, accountID, syncInterval); err != nil {
+		m.logger.Warn("Failed to ensure pickup syncer for account %d: %v", accountID, err)
+	}
+}
+
+func (m *PerAccountSyncManager) ensurePickupSyncerWithContext(ctx context.Context, accountID uint, syncInterval int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.RLock()
 	syncer, exists := m.accountSyncers[accountID]
 	m.mu.RUnlock()
@@ -1748,19 +1846,21 @@ func (m *PerAccountSyncManager) ensurePickupSyncer(accountID uint, syncInterval 
 	if exists {
 		syncer.ApplyPickupOverride(syncInterval)
 		m.logger.Debug("Syncer already exists for account %d, applied pickup override", accountID)
-		return
+		return nil
 	}
 
 	// 需要创建一个临时同步器
 	m.logger.Info("Creating pickup syncer for account %d", accountID)
 
-	config, err := m.syncConfigRepo.GetByAccountIDWithAccount(accountID)
+	config, err := m.syncConfigRepo.GetByAccountIDWithAccountContext(ctx, accountID)
 	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to get sync config for pickup syncer: %w", err)
+		}
 		// 配置不存在，创建一个最小化的临时配置
-		account, accErr := m.emailAccountRepo.GetByID(accountID)
+		account, accErr := m.emailAccountRepo.GetByIDWithContext(ctx, accountID)
 		if accErr != nil {
-			m.logger.Error("Failed to get account %d for pickup syncer: %v", accountID, accErr)
-			return
+			return fmt.Errorf("failed to get account %d for pickup syncer: %w", accountID, accErr)
 		}
 		config = &models.EmailAccountSyncConfig{
 			AccountID:      accountID,
@@ -1780,7 +1880,9 @@ func (m *PerAccountSyncManager) ensurePickupSyncer(accountID uint, syncInterval 
 
 	if err := m.startAccountSyncer(config); err != nil {
 		m.logger.Error("Failed to start pickup syncer for account %d: %v", accountID, err)
+		return err
 	}
+	return nil
 }
 
 // cleanupExpiredPickupOverrides 清理过期的取件轮询覆盖
@@ -1800,10 +1902,14 @@ func (m *PerAccountSyncManager) cleanupExpiredPickupOverrides() {
 	// 对过期的覆盖，检查是否需要停止同步器
 	for _, accountID := range expiredIDs {
 		m.logger.Info("Pickup override expired for account %d", accountID)
-		config, err := m.syncConfigRepo.GetByAccountID(accountID)
-		if err != nil || config == nil || !config.EnableAutoSync {
+		ctx, cancel := context.WithTimeout(context.Background(), pickupSyncerControlTimeout)
+		config, err := m.syncConfigRepo.GetByAccountIDWithContext(ctx, accountID)
+		cancel()
+		if errors.Is(err, gorm.ErrRecordNotFound) || config == nil || !config.EnableAutoSync {
 			m.stopAccountSyncer(accountID)
 			m.logger.Info("Stopped syncer for account %d (pickup override expired, no auto-sync)", accountID)
+		} else if err != nil {
+			m.logger.Warn("Failed to inspect sync config for expired pickup override account %d: %v", accountID, err)
 		}
 	}
 }

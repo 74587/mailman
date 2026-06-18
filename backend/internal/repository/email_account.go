@@ -171,8 +171,16 @@ func (r *EmailAccountRepository) Create(account *models.EmailAccount) error {
 
 // GetByID retrieves an email account by ID
 func (r *EmailAccountRepository) GetByID(id uint) (*models.EmailAccount, error) {
+	return r.GetByIDWithContext(context.Background(), id)
+}
+
+func (r *EmailAccountRepository) GetByIDWithContext(ctx context.Context, id uint) (*models.EmailAccount, error) {
+	db := r.db
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
 	var account models.EmailAccount
-	err := r.db.Preload("MailProvider").First(&account, id).Error
+	err := db.Preload("MailProvider").First(&account, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("email account not found")
@@ -197,8 +205,16 @@ func (r *EmailAccountRepository) GetByEmailWithProvider(email string) (*models.E
 
 // GetByEmail retrieves an email account by email address
 func (r *EmailAccountRepository) GetByEmail(email string) (*models.EmailAccount, error) {
+	return r.GetByEmailWithContext(context.Background(), email)
+}
+
+func (r *EmailAccountRepository) GetByEmailWithContext(ctx context.Context, email string) (*models.EmailAccount, error) {
+	db := r.db
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
 	var account models.EmailAccount
-	err := r.db.Preload("MailProvider").Where("email_address = ?", email).First(&account).Error
+	err := db.Preload("MailProvider").Where("email_address = ?", email).First(&account).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errors.New("email account not found")
@@ -210,8 +226,16 @@ func (r *EmailAccountRepository) GetByEmail(email string) (*models.EmailAccount,
 
 // GetByEmailOrAlias retrieves an email account by email address, handling Gmail aliases, forwarding routes, and domain emails
 func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailAccount, error) {
+	return r.GetByEmailOrAliasWithContext(context.Background(), email)
+}
+
+func (r *EmailAccountRepository) GetByEmailOrAliasWithContext(ctx context.Context, email string) (*models.EmailAccount, error) {
+	db := r.db
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
 	// First try exact match
-	account, err := r.GetByEmail(email)
+	account, err := r.GetByEmailWithContext(ctx, email)
 	if err == nil {
 		return account, nil
 	}
@@ -222,7 +246,7 @@ func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailA
 			atIndex := strings.Index(email, "@")
 			if atIndex > plusIndex {
 				baseEmail := email[:plusIndex] + email[atIndex:]
-				account, err = r.GetByEmail(baseEmail)
+				account, err = r.GetByEmailWithContext(ctx, baseEmail)
 				if err == nil {
 					return account, nil
 				}
@@ -231,7 +255,7 @@ func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailA
 	}
 
 	// Handle forwarding routes: original recipient addresses that land in this account
-	account, err = r.GetByForwardedAddress(email)
+	account, err = r.GetByForwardedAddressWithContext(ctx, email)
 	if err == nil {
 		return account, nil
 	}
@@ -241,7 +265,7 @@ func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailA
 	if atIndex > 0 && atIndex < len(email)-1 {
 		domain := email[atIndex+1:]
 		var domainAccount models.EmailAccount
-		err = r.db.Preload("MailProvider").
+		err = db.Preload("MailProvider").
 			Where("is_domain_mail = ? AND domain = ?", true, domain).
 			First(&domainAccount).Error
 		if err == nil {
@@ -253,19 +277,23 @@ func (r *EmailAccountRepository) GetByEmailOrAlias(email string) (*models.EmailA
 }
 
 func (r *EmailAccountRepository) GetByForwardedAddress(email string) (*models.EmailAccount, error) {
+	return r.GetByForwardedAddressWithContext(context.Background(), email)
+}
+
+func (r *EmailAccountRepository) GetByForwardedAddressWithContext(ctx context.Context, email string) (*models.EmailAccount, error) {
 	recipient := models.NormalizeEmailRoutingAddress(email)
 	if recipient == "" {
 		return nil, errors.New("email account not found")
 	}
 
-	if account, err := r.getAccountByRoutingAddress(recipient); err == nil {
+	if account, err := r.getAccountByRoutingAddressWithContext(ctx, recipient); err == nil {
 		return account, nil
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 
 	if wildcard := forwardedRoutingWildcardCandidate(recipient); wildcard != "" && wildcard != recipient {
-		if account, err := r.getAccountByRoutingAddress(wildcard); err == nil {
+		if account, err := r.getAccountByRoutingAddressWithContext(ctx, wildcard); err == nil {
 			return account, nil
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
@@ -276,8 +304,16 @@ func (r *EmailAccountRepository) GetByForwardedAddress(email string) (*models.Em
 }
 
 func (r *EmailAccountRepository) getAccountByRoutingAddress(normalizedAddress string) (*models.EmailAccount, error) {
+	return r.getAccountByRoutingAddressWithContext(context.Background(), normalizedAddress)
+}
+
+func (r *EmailAccountRepository) getAccountByRoutingAddressWithContext(ctx context.Context, normalizedAddress string) (*models.EmailAccount, error) {
+	db := r.db
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
 	var route models.EmailRoutingAddress
-	err := r.db.
+	err := db.
 		Where("kind = ? AND normalized_address = ?", models.EmailRoutingAddressKindForwarded, normalizedAddress).
 		Order("account_id ASC").
 		First(&route).Error
@@ -286,7 +322,7 @@ func (r *EmailAccountRepository) getAccountByRoutingAddress(normalizedAddress st
 	}
 
 	var account models.EmailAccount
-	if err := r.db.Preload("MailProvider").First(&account, route.AccountID).Error; err != nil {
+	if err := db.Preload("MailProvider").First(&account, route.AccountID).Error; err != nil {
 		return nil, err
 	}
 	return &account, nil
@@ -974,8 +1010,16 @@ func (r *EmailAccountRepository) GetByDomain(domain string) ([]models.EmailAccou
 
 // Update updates an email account
 func (r *EmailAccountRepository) Update(account *models.EmailAccount) error {
+	return r.UpdateWithContext(context.Background(), account)
+}
+
+func (r *EmailAccountRepository) UpdateWithContext(ctx context.Context, account *models.EmailAccount) error {
+	db := r.db
+	if ctx != nil {
+		db = db.WithContext(ctx)
+	}
 	account.ForwardedAddresses = models.NormalizeEmailRoutingAddresses(account.ForwardedAddresses)
-	return r.db.Transaction(func(tx *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Save(account).Error; err != nil {
 			return err
 		}

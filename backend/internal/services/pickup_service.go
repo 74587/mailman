@@ -12,9 +12,12 @@ import (
 )
 
 const (
-	pickupImmediateSyncTimeout = 12 * time.Second
-	pickupEmailSearchTimeout   = 5 * time.Second
-	businessLogHotPathTimeout  = 2 * time.Second
+	pickupImmediateSyncTimeout  = 12 * time.Second
+	pickupEmailSearchTimeout    = 5 * time.Second
+	pickupPollRequestTimeout    = 25 * time.Second
+	pickupAccountResolveTimeout = 3 * time.Second
+	pickupOverrideSetupTimeout  = 2 * time.Second
+	businessLogHotPathTimeout   = 2 * time.Second
 )
 
 // PickupPollRequest 取件轮询请求
@@ -116,9 +119,16 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := context.WithTimeout(ctx, pickupPollRequestTimeout)
+	defer cancel()
 	recordPoll := RuntimeMetrics().BeginPickupPoll()
 	activePoll := RuntimeMetrics().BeginActiveOperation("http", EmailIngestSourcePickup, "pickup_poll", req.AccountID, "", "resolve_account")
 	var pollErr error
+	currentStage := "resolve_account"
+	setStage := func(stage string) {
+		currentStage = stage
+		activePoll.Stage(stage)
+	}
 	requestedAccountID := req.AccountID
 	resolvedBy := ""
 	finalAccountID := req.AccountID
@@ -127,6 +137,14 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	defer func() {
 		recordPoll(pollErr)
 		activePoll.Finish(pollErr)
+		duration := time.Since(startTime)
+		if pollErr != nil || duration > 5*time.Second {
+			s.logger.Warn("Pickup poll finished: requested=%d final=%d resolved_by=%s stage=%s duration=%s emails=%d extractions=%d err=%v",
+				requestedAccountID, finalAccountID, resolvedBy, currentStage, duration, emailCount, extractionCount, pollErr)
+		} else {
+			s.logger.Debug("Pickup poll finished: requested=%d final=%d resolved_by=%s stage=%s duration=%s emails=%d extractions=%d",
+				requestedAccountID, finalAccountID, resolvedBy, currentStage, duration, emailCount, extractionCount)
+		}
 		s.recordPickupBusinessLog(startTime, requestedAccountID, finalAccountID, resolvedBy, req, emailCount, extractionCount, pollErr)
 	}()
 
@@ -141,7 +159,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 		req.Limit = 10
 	}
 
-	resolvedAccountID, resolvedByValue, err := s.resolvePickupAccountID(req.AccountID, req.ToQuery)
+	resolvedAccountID, resolvedByValue, err := s.resolvePickupAccountID(ctx, req.AccountID, req.ToQuery)
 	if err != nil {
 		pollErr = err
 		return nil, err
@@ -151,11 +169,18 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	finalAccountID = resolvedAccountID
 
 	// 2. 注册/续期取件轮询覆盖（纯内存，零DB写入）
-	activePoll.Stage("register_pickup_override")
-	s.syncManager.RegisterPickupOverride(req.AccountID, req.SyncInterval, req.KeepAliveSeconds)
+	setStage("register_pickup_override")
+	if s.syncManager != nil {
+		overrideCtx, overrideCancel := context.WithTimeout(ctx, pickupOverrideSetupTimeout)
+		if err := s.syncManager.RegisterPickupOverrideWithContext(overrideCtx, req.AccountID, req.SyncInterval, req.KeepAliveSeconds); err != nil {
+			s.logger.Warn("Pickup override setup skipped/failed for account %d (requested=%d, resolved_by=%s): %v",
+				req.AccountID, requestedAccountID, resolvedBy, err)
+		}
+		overrideCancel()
+	}
 
 	// pickup 需要尽量返回刚到达的邮件；注册临时覆盖后立即同步一次，再查数据库。
-	activePoll.Stage("immediate_sync")
+	setStage("immediate_sync")
 	syncCtx, syncCancel := context.WithTimeout(ctx, pickupImmediateSyncTimeout)
 	defer syncCancel()
 	s.runImmediatePickupSync(syncCtx, req, requestedAccountID, resolvedBy)
@@ -172,7 +197,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	}
 
 	// 4. 搜索邮件
-	activePoll.Stage("search_db")
+	setStage("search_db")
 	searchCtx, searchCancel := context.WithTimeout(ctx, pickupEmailSearchTimeout)
 	defer searchCancel()
 	searchOpts := repository.EmailSearchOptions{
@@ -195,7 +220,10 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	s.logger.Debug("Pickup poll for account %d: found %d emails", req.AccountID, len(emails))
 
 	// 5. 获取覆盖状态
-	override := s.syncManager.GetPickupOverride(req.AccountID)
+	var override *PickupOverride
+	if s.syncManager != nil {
+		override = s.syncManager.GetPickupOverride(req.AccountID)
+	}
 	syncActive := override != nil
 	syncExpiresAt := ""
 	if override != nil {
@@ -205,7 +233,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	// 6. 执行提取（如果配置了）
 	var extractions []ExtractionResultItem
 	if len(emails) > 0 {
-		activePoll.Stage("extract")
+		setStage("extract")
 		if req.TemplateID != nil {
 			extractions = s.extractWithTemplate(emails, *req.TemplateID)
 		} else if req.InlineActions != nil {
@@ -361,10 +389,12 @@ func processBusinessLogAsync(pipeline *BusinessLogPipeline, logger *utils.Logger
 	}()
 }
 
-func (s *PickupService) resolvePickupAccountID(requestedAccountID uint, toQuery string) (uint, string, error) {
+func (s *PickupService) resolvePickupAccountID(ctx context.Context, requestedAccountID uint, toQuery string) (uint, string, error) {
 	recipient := strings.TrimSpace(toQuery)
 	if recipient != "" && s.accountRepo != nil {
-		account, err := s.accountRepo.GetByEmailOrAlias(recipient)
+		resolveCtx, cancel := context.WithTimeout(ctx, pickupAccountResolveTimeout)
+		defer cancel()
+		account, err := s.accountRepo.GetByEmailOrAliasWithContext(resolveCtx, recipient)
 		if err == nil && account != nil {
 			if s.logger != nil && requestedAccountID != 0 && requestedAccountID != account.ID {
 				s.logger.Info("Pickup account resolved by to_query %q: requested=%d resolved=%d", recipient, requestedAccountID, account.ID)

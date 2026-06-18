@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -227,7 +228,7 @@ func TestPickupResolveAccountIDUsesRecipientAddress(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotID, gotBy, err := service.resolvePickupAccountID(tt.requestedID, tt.toQuery)
+			gotID, gotBy, err := service.resolvePickupAccountID(context.Background(), tt.requestedID, tt.toQuery)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
