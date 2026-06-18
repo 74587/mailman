@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1170,6 +1171,8 @@ type EmailStatsResponse struct {
 	EnabledTriggers int64 `json:"enabledTriggers"`
 }
 
+const dashboardStatsQueryTimeout = 2 * time.Second
+
 // GetEmailStatsHandler godoc
 // @Summary Get email statistics for dashboard
 // @Description Get comprehensive email statistics including accounts, emails, triggers and growth rates
@@ -1183,7 +1186,9 @@ func (h *APIHandler) GetEmailStatsHandler(w http.ResponseWriter, r *http.Request
 	orgID := GetCurrentOrgID(r)
 	// === 账户统计 ===
 	var totalAccounts, verifiedAccounts, syncingAccounts, errorAccounts int64
-	accountStats, err := h.EmailAccountRepo.GetDashboardStats(orgID)
+	accountCtx, accountCancel := context.WithTimeout(r.Context(), dashboardStatsQueryTimeout)
+	accountStats, err := h.EmailAccountRepo.GetDashboardStatsWithContext(accountCtx, orgID)
+	accountCancel()
 	if err == nil {
 		totalAccounts = accountStats.TotalAccounts
 		verifiedAccounts = accountStats.VerifiedAccounts
@@ -1203,7 +1208,9 @@ func (h *APIHandler) GetEmailStatsHandler(w http.ResponseWriter, r *http.Request
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	tomorrowStart := todayStart.AddDate(0, 0, 1)
 
-	emailStats, err := h.EmailRepo.GetDashboardStats(orgID, todayStart, tomorrowStart)
+	emailCtx, emailCancel := context.WithTimeout(r.Context(), dashboardStatsQueryTimeout)
+	emailStats, err := h.EmailRepo.GetDashboardStatsWithContext(emailCtx, orgID, todayStart, tomorrowStart)
+	emailCancel()
 	var totalEmails, unreadEmails, todayEmails, yesterdayEmails, emailsUntilYesterday int64
 	if err == nil {
 		totalEmails = emailStats.TotalEmails
@@ -1237,14 +1244,21 @@ func (h *APIHandler) GetEmailStatsHandler(w http.ResponseWriter, r *http.Request
 	var totalTriggers, enabledTriggers int64
 	db := database.GetDB()
 	if db != nil {
-		triggerQuery := db.Model(&models.EmailTriggerV2{})
-		enabledQuery := db.Model(&models.EmailTriggerV2{}).Where("enabled = ?", true)
+		triggerCtx, triggerCancel := context.WithTimeout(r.Context(), dashboardStatsQueryTimeout)
+		defer triggerCancel()
+		triggerDB := db.WithContext(triggerCtx)
+		triggerQuery := triggerDB.Model(&models.EmailTriggerV2{})
+		enabledQuery := triggerDB.Model(&models.EmailTriggerV2{}).Where("enabled = ?", true)
 		if orgID > 0 {
 			triggerQuery = triggerQuery.Where("org_id = ?", orgID)
 			enabledQuery = enabledQuery.Where("org_id = ?", orgID)
 		}
-		triggerQuery.Count(&totalTriggers)
-		enabledQuery.Count(&enabledTriggers)
+		if err := triggerQuery.Count(&totalTriggers).Error; err != nil && h.logger != nil {
+			h.logger.Error("Failed to get dashboard trigger stats for org %d: %v", orgID, err)
+		}
+		if err := enabledQuery.Count(&enabledTriggers).Error; err != nil && h.logger != nil {
+			h.logger.Error("Failed to get dashboard enabled trigger stats for org %d: %v", orgID, err)
+		}
 	}
 
 	response := EmailStatsResponse{

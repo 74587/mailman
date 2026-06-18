@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -46,6 +47,8 @@ const (
 	businessEmailExclusionTargetEmailAccount      = "email_account"
 	businessEmailExclusionTargetRegistrationEmail = "registration_email"
 	businessEmailExclusionTargetBoth              = "both"
+
+	businessRegistrationDBTimeout = 5 * time.Second
 )
 
 type BusinessEmailClaimRequest struct {
@@ -208,6 +211,14 @@ type businessClaimAccountCursor struct {
 	id         uint
 }
 
+func writeBusinessDBError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		status = http.StatusServiceUnavailable
+	}
+	http.Error(w, err.Error(), status)
+}
+
 // ClaimBusinessModuleEmailAccountHandler atomically reserves an email address for a business module registration.
 func (h *APIHandler) ClaimBusinessModuleEmailAccountHandler(w http.ResponseWriter, r *http.Request) {
 	module, ok := h.getBusinessModuleForRequest(w, r)
@@ -261,13 +272,16 @@ func (h *APIHandler) CompleteBusinessRegistrationHandler(w http.ResponseWriter, 
 	}
 
 	applyBusinessCompletion(account, req, now)
-	if err := h.EmailAccountRepo.GetDB().Save(account).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	dbCtx, dbCancel := context.WithTimeout(r.Context(), businessRegistrationDBTimeout)
+	defer dbCancel()
+	db := h.EmailAccountRepo.GetDB().WithContext(dbCtx)
+	if err := db.Save(account).Error; err != nil {
+		writeBusinessDBError(w, err)
 		return
 	}
 	h.removeBusinessRegistrationPickupOverride(account)
-	if err := h.EmailAccountRepo.GetDB().Preload("EmailAccount").Preload("Module").First(account, account.ID).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := db.Preload("EmailAccount").Preload("Module").First(account, account.ID).Error; err != nil {
+		writeBusinessDBError(w, err)
 		return
 	}
 	writeBusinessJSON(w, http.StatusOK, account)
@@ -294,7 +308,9 @@ func (h *APIHandler) ReleaseBusinessRegistrationClaimHandler(w http.ResponseWrit
 		return
 	}
 
-	db := h.EmailAccountRepo.GetDB()
+	dbCtx, dbCancel := context.WithTimeout(r.Context(), businessRegistrationDBTimeout)
+	defer dbCancel()
+	db := h.EmailAccountRepo.GetDB().WithContext(dbCtx)
 	now := time.Now().UTC()
 	exclusions, err := buildBusinessEmailExclusionsForRelease(account, req, now)
 	if err != nil {
@@ -316,7 +332,7 @@ func (h *APIHandler) ReleaseBusinessRegistrationClaimHandler(w http.ResponseWrit
 			}
 			return tx.Delete(account).Error
 		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeBusinessDBError(w, err)
 			return
 		}
 		h.removeBusinessRegistrationPickupOverride(account)
@@ -344,11 +360,11 @@ func (h *APIHandler) ReleaseBusinessRegistrationClaimHandler(w http.ResponseWrit
 		})
 		return tx.Save(account).Error
 	}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeBusinessDBError(w, err)
 		return
 	}
 	if err := db.Preload("EmailAccount").Preload("Module").First(account, account.ID).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeBusinessDBError(w, err)
 		return
 	}
 	h.removeBusinessRegistrationPickupOverride(account)
@@ -390,8 +406,11 @@ func (h *APIHandler) RenewBusinessRegistrationClaimHandler(w http.ResponseWriter
 		"lastRenewedAt":     now.Format(time.RFC3339),
 		"renewMessage":      strings.TrimSpace(req.Message),
 	})
-	if err := h.EmailAccountRepo.GetDB().Save(account).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	dbCtx, dbCancel := context.WithTimeout(r.Context(), businessRegistrationDBTimeout)
+	defer dbCancel()
+	db := h.EmailAccountRepo.GetDB().WithContext(dbCtx)
+	if err := db.Save(account).Error; err != nil {
+		writeBusinessDBError(w, err)
 		return
 	}
 

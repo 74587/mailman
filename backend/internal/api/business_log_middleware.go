@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 var businessLogMiddlewareLogger = utils.NewLogger("BusinessLogAudit")
 
 const businessLogBodyCaptureLimit = 64 * 1024
+const businessLogAuditTimeout = 2 * time.Second
 
 func BusinessLogAuditMiddleware(pipeline *services.BusinessLogPipeline) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -74,7 +76,7 @@ func BusinessLogAuditMiddleware(pipeline *services.BusinessLogPipeline) func(htt
 				},
 			}
 
-			result := pipeline.Process(r.Context(), services.BusinessLogEvent{
+			event := services.BusinessLogEvent{
 				OrgID:         GetCurrentOrgID(r),
 				UserID:        userID,
 				OperationType: models.BusinessLogOperationAPI,
@@ -96,14 +98,29 @@ func BusinessLogAuditMiddleware(pipeline *services.BusinessLogPipeline) func(htt
 				Details:       details,
 				SourceIP:      clientIP(r),
 				UserAgent:     r.UserAgent(),
-			})
-			if !result.Allowed {
-				// Generic HTTP audit is post-action; explicit business call sites should
-				// use the returned decision before mutating state when they need gating.
-				businessLogMiddlewareLogger.Warn("Business log pipeline returned %s after HTTP action: %s", result.Decision, result.Reason)
 			}
+			processBusinessLogAuditAsync(pipeline, event)
 		})
 	}
+}
+
+func processBusinessLogAuditAsync(pipeline *services.BusinessLogPipeline, event services.BusinessLogEvent) {
+	if pipeline == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), businessLogAuditTimeout)
+		defer cancel()
+		result := pipeline.Process(ctx, event)
+		if !result.Allowed {
+			// Generic HTTP audit is post-action; explicit business call sites should
+			// use the returned decision before mutating state when they need gating.
+			businessLogMiddlewareLogger.Warn("Business log pipeline returned %s after HTTP action: %s", result.Decision, result.Reason)
+		}
+		if len(result.Warnings) > 0 {
+			businessLogMiddlewareLogger.Warn("Business log audit completed with warnings: %s", strings.Join(result.Warnings, "; "))
+		}
+	}()
 }
 
 type businessLogBodySnapshot struct {

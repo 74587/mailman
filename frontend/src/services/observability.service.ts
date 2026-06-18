@@ -49,6 +49,10 @@ export interface RuntimeOutlookOperationSnapshot {
     by_source: Record<string, RuntimeMetricSnapshot>
 }
 
+export interface RuntimeIMAPSnapshot {
+    operations: Record<string, RuntimeOutlookOperationSnapshot>
+}
+
 export interface RuntimeOutlookSnapshot {
     limiter: RuntimeOutlookLimiterSnapshot
     limiter_wait_by_type: Record<string, RuntimeMetricSnapshot>
@@ -61,6 +65,53 @@ export interface RuntimeSyncConcurrencySnapshot {
     concurrent_limit: number
     pickup_limit: number
     active_syncers: number
+}
+
+export interface RuntimeProcessSnapshot {
+    goroutines: number
+    heap_alloc_bytes: number
+    heap_sys_bytes: number
+    stack_inuse_bytes: number
+    heap_objects: number
+    num_gc: number
+    last_gc_at?: string
+}
+
+export interface RuntimeDatabaseWaitSnapshot {
+    state: string
+    wait_event_type: string
+    wait_event: string
+    count: number
+}
+
+export interface RuntimeDatabaseSnapshot {
+    driver: string
+    max_open_connections: number
+    open_connections: number
+    in_use: number
+    idle: number
+    wait_count: number
+    wait_duration_ms: number
+    max_idle_closed: number
+    max_idle_time_closed: number
+    max_lifetime_closed: number
+    wait_events?: RuntimeDatabaseWaitSnapshot[]
+    error?: string
+    wait_events_error?: string
+}
+
+export interface RuntimeActiveOperationSnapshot {
+    id: string
+    kind: string
+    source?: string
+    operation: string
+    account_id?: number
+    account_email?: string
+    stage: string
+    started_at: string
+    updated_at: string
+    age_ms: number
+    last_error?: string
 }
 
 export interface RuntimeErrorEvent {
@@ -113,7 +164,11 @@ export interface RuntimeObservabilitySnapshot {
     sources: Record<string, RuntimeSourceSnapshot>
     pickup: RuntimePickupSnapshot
     outlook: RuntimeOutlookSnapshot
+    imap: RuntimeIMAPSnapshot
     sync_concurrency: RuntimeSyncConcurrencySnapshot
+    process: RuntimeProcessSnapshot
+    database: RuntimeDatabaseSnapshot
+    active_operations: RuntimeActiveOperationSnapshot[]
     batch_outlook_import: BatchImportObservabilitySnapshot
     recent_errors: RuntimeErrorEvent[]
     error_top: RuntimeErrorSummary[]

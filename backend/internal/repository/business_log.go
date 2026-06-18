@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -64,17 +65,31 @@ func NewBusinessLogRepository(db *gorm.DB) *BusinessLogRepository {
 }
 
 func (r *BusinessLogRepository) Create(log *models.BusinessLog) error {
-	return r.db.Create(log).Error
+	return r.CreateWithContext(context.Background(), log)
+}
+
+func (r *BusinessLogRepository) CreateWithContext(ctx context.Context, log *models.BusinessLog) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return r.db.WithContext(ctx).Create(log).Error
 }
 
 func (r *BusinessLogRepository) MergeIntoRecent(next *models.BusinessLog, window time.Duration) (uint, bool, error) {
+	return r.MergeIntoRecentWithContext(context.Background(), next, window)
+}
+
+func (r *BusinessLogRepository) MergeIntoRecentWithContext(ctx context.Context, next *models.BusinessLog, window time.Duration) (uint, bool, error) {
 	if next == nil || window <= 0 {
 		return 0, false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	var mergedID uint
 	merged := false
-	err := r.db.Transaction(func(tx *gorm.DB) error {
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var candidate models.BusinessLog
 		cutoff := next.StartedAt.Add(-window)
 		query := tx.Where(
@@ -219,7 +234,14 @@ func (r *BusinessLogRepository) Stats(query BusinessLogQuery) (BusinessLogStats,
 }
 
 func (r *BusinessLogRepository) DeleteOld(orgID uint, before time.Time) error {
-	query := r.db.Where("created_at < ?", before)
+	return r.DeleteOldWithContext(context.Background(), orgID, before)
+}
+
+func (r *BusinessLogRepository) DeleteOldWithContext(ctx context.Context, orgID uint, before time.Time) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	query := r.db.WithContext(ctx).Where("created_at < ?", before)
 	if orgID > 0 {
 		query = query.Where("org_id = ?", orgID)
 	}
@@ -227,10 +249,17 @@ func (r *BusinessLogRepository) DeleteOld(orgID uint, before time.Time) error {
 }
 
 func (r *BusinessLogRepository) EnforceLimit(orgID uint, module string, limit int) error {
+	return r.EnforceLimitWithContext(context.Background(), orgID, module, limit)
+}
+
+func (r *BusinessLogRepository) EnforceLimitWithContext(ctx context.Context, orgID uint, module string, limit int) error {
 	if limit <= 0 {
 		return nil
 	}
-	query := r.db.Model(&models.BusinessLog{})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	query := r.db.WithContext(ctx).Model(&models.BusinessLog{})
 	if orgID > 0 {
 		query = query.Where("org_id = ?", orgID)
 	}
@@ -258,7 +287,7 @@ func (r *BusinessLogRepository) EnforceLimit(orgID uint, module string, limit in
 	if len(ids) == 0 {
 		return nil
 	}
-	return r.db.Delete(&models.BusinessLog{}, ids).Error
+	return r.db.WithContext(ctx).Delete(&models.BusinessLog{}, ids).Error
 }
 
 func (r *BusinessLogRepository) applyFilters(db *gorm.DB, query BusinessLogQuery) *gorm.DB {

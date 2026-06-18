@@ -45,6 +45,7 @@ func (h *PickupHandler) PollHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "account_id or to_query is required", http.StatusBadRequest)
 		return
 	}
+	req.Context = r.Context()
 
 	// 执行轮询
 	result, err := h.pickupService.Poll(req)

@@ -1,14 +1,17 @@
 package repository
 
 import (
+	"context"
 	"mailman/internal/models"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func TestEmailRepositoryTextLikeExprQuotesReservedColumns(t *testing.T) {
@@ -297,6 +300,94 @@ func TestEmailSearchQueryExpandsDomainWildcardRecipient(t *testing.T) {
 	if !statementHasVar(stmt.Vars, "%@example.com%") {
 		t.Fatalf("generated vars %#v do not include domain wildcard pattern", stmt.Vars)
 	}
+}
+
+func TestSearchEmailsSkipTotalCountAvoidsCountQuery(t *testing.T) {
+	collector := &sqlCollectingLogger{Interface: logger.Default.LogMode(logger.Silent)}
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: collector})
+	if err != nil {
+		t.Fatalf("failed to open sqlite db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.Email{}); err != nil {
+		t.Fatalf("failed to migrate emails: %v", err)
+	}
+	if err := db.Create(&models.Email{
+		AccountID: 1,
+		Subject:   "verification",
+		Date:      time.Now(),
+		Direction: models.EmailDirectionReceived,
+	}).Error; err != nil {
+		t.Fatalf("failed to seed email: %v", err)
+	}
+
+	repo := NewEmailRepository(db)
+	collector.Reset()
+	emails, total, err := repo.SearchEmails(EmailSearchOptions{
+		AccountID:      1,
+		Limit:          1,
+		SortBy:         "date DESC",
+		SkipTotalCount: true,
+	})
+	if err != nil {
+		t.Fatalf("SearchEmails with SkipTotalCount failed: %v", err)
+	}
+	if len(emails) != 1 {
+		t.Fatalf("SearchEmails returned %d emails, want 1", len(emails))
+	}
+	if total != 0 {
+		t.Fatalf("SearchEmails total = %d, want 0 when count is skipped", total)
+	}
+	if collector.Contains("count(") {
+		t.Fatalf("SkipTotalCount still issued count query: %v", collector.Queries())
+	}
+
+	collector.Reset()
+	if _, _, err := repo.SearchEmails(EmailSearchOptions{
+		AccountID: 1,
+		Limit:     1,
+		SortBy:    "date DESC",
+	}); err != nil {
+		t.Fatalf("SearchEmails with count failed: %v", err)
+	}
+	if !collector.Contains("count(") {
+		t.Fatalf("SearchEmails without SkipTotalCount did not issue count query: %v", collector.Queries())
+	}
+}
+
+type sqlCollectingLogger struct {
+	logger.Interface
+	mu      sync.Mutex
+	queries []string
+}
+
+func (l *sqlCollectingLogger) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
+	sql, _ := fc()
+	l.mu.Lock()
+	l.queries = append(l.queries, strings.ToLower(sql))
+	l.mu.Unlock()
+}
+
+func (l *sqlCollectingLogger) Reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.queries = nil
+}
+
+func (l *sqlCollectingLogger) Contains(fragment string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, query := range l.queries {
+		if strings.Contains(query, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *sqlCollectingLogger) Queries() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.queries...)
 }
 
 func statementHasVar(vars []interface{}, expected string) bool {

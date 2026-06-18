@@ -590,6 +590,7 @@ type SyncNowOptions struct {
 	CreateStrategy string // "none", "ensure", "force"
 	SyncInterval   int    // 临时同步间隔（如果创建临时Sync需要用到）
 	Source         EmailIngestSource
+	Context        context.Context
 }
 
 // SyncNow 立即同步指定账户
@@ -606,7 +607,7 @@ func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*S
 	// 1. 如果存在活跃的Syncer，且策略不是"force"，直接使用
 	if exists && opts.CreateStrategy != "force" {
 		m.logger.Debug("SyncNow: Using existing active syncer for account %d", accountID)
-		return syncer.SyncNow(source)
+		return syncer.SyncNowWithContext(opts.Context, source)
 	}
 
 	// 2. 如果不存在，或者策略是"force"
@@ -648,7 +649,11 @@ func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*S
 	}
 
 	// 构造临时Syncer
-	ctx, cancel := context.WithCancel(context.Background())
+	parentCtx := opts.Context
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel() // 确保销毁
 
 	ephemeralSyncer := &AccountSyncer{
@@ -670,7 +675,7 @@ func (m *PerAccountSyncManager) SyncNow(accountID uint, opts SyncNowOptions) (*S
 	// 直接调用SyncNow，它内部会调用doSync
 	// 注意：doSync 不依赖 Run 循环，是安全的单次执行
 	m.logger.Debug("SyncNow: Starting ephemeral sync execution")
-	result, err := ephemeralSyncer.SyncNow(source)
+	result, err := ephemeralSyncer.SyncNowWithContext(parentCtx, source)
 
 	m.logger.Info("SyncNow: Ephemeral sync completed for account %d. Emails: %d, Error: %v",
 		accountID, result.EmailsSynced, err)
@@ -814,9 +819,14 @@ func (as *AccountSyncer) performSync() {
 
 // doSync 执行实际的邮件同步
 func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (syncedEmails []models.Email, err error) {
+	return as.doSyncWithContext(context.Background(), startTime, source)
+}
+
+func (as *AccountSyncer) doSyncWithContext(parentCtx context.Context, startTime time.Time, source EmailIngestSource) (syncedEmails []models.Email, err error) {
 	as.logger.Debug("Executing doSync")
 	source = normalizeEmailIngestSource(source)
 	recordSync := RuntimeMetrics().BeginSync(source)
+	activeSync := RuntimeMetrics().BeginActiveOperation("sync", source, "account_sync", as.AccountID, as.Config.Account.EmailAddress, "create_sync_run")
 	syncRun := as.createSyncRun(startTime, source)
 	emailsFetched := 0
 	newEmailCount := 0
@@ -824,13 +834,17 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 	defer func() {
 		as.finishSyncRun(syncRun, emailsFetched, newEmailCount, err)
 		recordSync(emailsFetched, newEmailCount, err)
+		activeSync.Finish(err)
 		as.recordSyncBusinessLog(startTime, source, syncRun, accountEmail, emailsFetched, newEmailCount, err)
 	}()
 
-	ctx, cancel := context.WithTimeout(as.ctx, 60*time.Second)
+	baseCtx, baseCancel := mergeSyncContexts(parentCtx, as.ctx)
+	defer baseCancel()
+	ctx, cancel := context.WithTimeout(baseCtx, 60*time.Second)
 	defer cancel()
 
 	// 获取账户信息
+	activeSync.Stage("get_account")
 	as.logger.Debug("Getting account details")
 	account, err := as.getAccount()
 	if err != nil {
@@ -840,6 +854,7 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 	as.logger.Debug("Account details obtained for: %s", account.EmailAddress)
 
 	// 计算同步时间窗口
+	activeSync.Stage("read_sync_cursor")
 	var startDate *time.Time
 	endDate := time.Now()
 
@@ -883,6 +898,7 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 	as.logger.Debug("Fetching emails with options: Folders=%v, StartDate=%v, EndDate=%v", options.Folders, options.StartDate, options.EndDate)
 
 	// 获取邮件
+	activeSync.Stage("fetch_from_server")
 	emails, err := as.manager.fetcherService.FetchEmailsFromMultipleMailboxes(*account, options)
 	if err != nil {
 		as.logger.Error("Failed to fetch emails: %v", err)
@@ -892,6 +908,7 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 	as.logger.Debug("Fetched %d emails from server", len(emails))
 
 	// 处理邮件
+	activeSync.Stage("process_emails")
 	newEmails, err := as.processEmails(emails, source)
 	if err != nil {
 		as.logger.Error("Failed to process emails: %v", err)
@@ -901,6 +918,7 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 	as.logger.Debug("Processed %d new emails", newEmailCount)
 
 	// 更新同步配置
+	activeSync.Stage("update_sync_cursor")
 	if err := as.updateSyncConfig(endDate, newEmailCount > 0); err != nil {
 		as.logger.Warn("Failed to update sync config: %v", err)
 	}
@@ -917,6 +935,24 @@ func (as *AccountSyncer) doSync(startTime time.Time, source EmailIngestSource) (
 		account.EmailAddress, historyId, newEmailCount, duration)
 
 	return newEmails, nil
+}
+
+func mergeSyncContexts(parentCtx context.Context, syncerCtx context.Context) (context.Context, context.CancelFunc) {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	if syncerCtx == nil {
+		return context.WithCancel(parentCtx)
+	}
+	ctx, cancel := context.WithCancel(parentCtx)
+	go func() {
+		select {
+		case <-syncerCtx.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 func (as *AccountSyncer) recordSyncBusinessLog(startTime time.Time, source EmailIngestSource, run *models.SyncRun, accountEmail string, emailsFetched int, newEmailCount int, syncErr error) {
@@ -944,7 +980,7 @@ func (as *AccountSyncer) recordSyncBusinessLog(startTime time.Time, source Email
 	} else if source == EmailIngestSourceManualSync {
 		operationType = models.BusinessLogOperationManual
 	}
-	as.manager.businessLog.Process(context.Background(), BusinessLogEvent{
+	event := BusinessLogEvent{
 		OrgID:         as.Config.Account.OrgID,
 		OperationType: operationType,
 		ActorType:     actorType,
@@ -971,7 +1007,8 @@ func (as *AccountSyncer) recordSyncBusinessLog(startTime time.Time, source Email
 			"new_emails":     newEmailCount,
 			"sync_run_id":    runID,
 		},
-	})
+	}
+	processBusinessLogAsync(as.manager.businessLog, as.logger, "sync run", event)
 }
 
 // getAccount 获取账户信息
@@ -1210,6 +1247,10 @@ func (as *AccountSyncer) Stop() {
 }
 
 func (as *AccountSyncer) acquireSyncSlot(source EmailIngestSource, timeout time.Duration) (func(), error) {
+	return as.acquireSyncSlotWithContext(context.Background(), source, timeout)
+}
+
+func (as *AccountSyncer) acquireSyncSlotWithContext(ctx context.Context, source EmailIngestSource, timeout time.Duration) (func(), error) {
 	source = normalizeEmailIngestSource(source)
 	slotName := "sync semaphore"
 	slot := as.manager.semaphore
@@ -1220,8 +1261,14 @@ func (as *AccountSyncer) acquireSyncSlot(source EmailIngestSource, timeout time.
 	if slot == nil {
 		return nil, fmt.Errorf("%s is not initialized", slotName)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	waitStart := time.Now()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	select {
 	case slot <- struct{}{}:
 		RuntimeMetrics().RecordSyncSlotWait(source, time.Since(waitStart), nil)
@@ -1230,7 +1277,11 @@ func (as *AccountSyncer) acquireSyncSlot(source EmailIngestSource, timeout time.
 			<-slot
 			as.logger.Debug("%s released", slotName)
 		}, nil
-	case <-time.After(timeout):
+	case <-ctx.Done():
+		err := fmt.Errorf("failed to acquire %s: %w", slotName, ctx.Err())
+		RuntimeMetrics().RecordSyncSlotWait(source, time.Since(waitStart), err)
+		return nil, err
+	case <-timer.C:
 		err := fmt.Errorf("failed to acquire %s", slotName)
 		RuntimeMetrics().RecordSyncSlotWait(source, time.Since(waitStart), err)
 		return nil, err
@@ -1239,17 +1290,41 @@ func (as *AccountSyncer) acquireSyncSlot(source EmailIngestSource, timeout time.
 
 // SyncNow 立即同步
 func (as *AccountSyncer) SyncNow(source EmailIngestSource) (*SyncResult, error) {
+	return as.SyncNowWithContext(context.Background(), source)
+}
+
+func (as *AccountSyncer) SyncNowWithContext(ctx context.Context, source EmailIngestSource) (*SyncResult, error) {
 	start := time.Now()
 	source = normalizeEmailIngestSource(source)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return &SyncResult{
+			Duration: time.Since(start),
+			Error:    err,
+		}, err
+	}
 
-	as.syncMu.Lock()
+	if source == EmailIngestSourcePickup {
+		if !as.syncMu.TryLock() {
+			err := fmt.Errorf("sync already running for account %d", as.AccountID)
+			as.logger.Debug(err.Error())
+			return &SyncResult{
+				Duration: time.Since(start),
+				Error:    err,
+			}, err
+		}
+	} else {
+		as.syncMu.Lock()
+	}
 	defer as.syncMu.Unlock()
 
 	slotTimeout := 5 * time.Second
 	if source == EmailIngestSourcePickup {
 		slotTimeout = 10 * time.Second
 	}
-	releaseSlot, err := as.acquireSyncSlot(source, slotTimeout)
+	releaseSlot, err := as.acquireSyncSlotWithContext(ctx, source, slotTimeout)
 	if err != nil {
 		as.logger.Warn(err.Error())
 		return &SyncResult{
@@ -1262,7 +1337,7 @@ func (as *AccountSyncer) SyncNow(source EmailIngestSource) (*SyncResult, error) 
 	atomic.AddInt64(&as.syncCount, 1)
 	atomic.AddInt64(&as.manager.stats.TotalSyncs, 1)
 
-	emails, err := as.doSync(start, source)
+	emails, err := as.doSyncWithContext(ctx, start, source)
 
 	as.mu.Lock()
 	as.LastSyncTime = time.Now()

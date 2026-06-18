@@ -74,6 +74,15 @@ func fetcherContextTimeout(ctx context.Context, fallback time.Duration) time.Dur
 	return fallback
 }
 
+func applyConnectionDeadline(ctx context.Context, conn net.Conn) {
+	if ctx == nil || conn == nil {
+		return
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+}
+
 // SetEmailIngestService connects fetch-and-store helpers to the unified ingest pipeline.
 func (s *FetcherService) SetEmailIngestService(ingestService *EmailIngestService) {
 	if ingestService != nil {
@@ -347,6 +356,8 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 
 	serverAddr := fmt.Sprintf("%s:%d", account.MailProvider.IMAPServer, account.MailProvider.IMAPPort)
 	s.logger.Info("Connecting to IMAP server %s for %s", serverAddr, account.EmailAddress)
+	activeFetch := RuntimeMetrics().BeginActiveOperation("imap", options.Source, "fetch_emails", account.ID, account.EmailAddress, "connect")
+	defer activeFetch.Finish(nil)
 
 	if account.Proxy != "" {
 		if err := ctx.Err(); err != nil {
@@ -357,6 +368,7 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 			return nil, fmt.Errorf("invalid proxy URL: %w", err)
 		}
 
+		activeFetch.Stage("create_proxy_dialer")
 		dialer, err := s.createProxyDialer(proxyURL)
 		if err != nil {
 			s.logger.Error("Failed to create proxy dialer: %v", err)
@@ -368,7 +380,10 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 		// For IMAP over proxy, we need to handle TLS after CONNECT
 		if account.MailProvider.IMAPPort == 993 {
 			// First establish the proxy tunnel
-			proxyConn, err := dialer.Dial("tcp", serverAddr)
+			activeFetch.Stage("proxy_dial")
+			recordDial := RuntimeMetrics().BeginIMAPOperation(options.Source, "proxy_dial")
+			proxyConn, err := dialProxyWithContext(ctx, dialer, "tcp", serverAddr)
+			recordDial(err)
 			if err != nil {
 				s.logger.Error("Failed to dial via proxy: %v", err)
 				return nil, fmt.Errorf("failed to dial via proxy: %w", err)
@@ -384,12 +399,16 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 			}
 
 			// Perform TLS handshake
+			activeFetch.Stage("tls_handshake")
+			recordTLS := RuntimeMetrics().BeginIMAPOperation(options.Source, "tls_handshake")
 			if err := tlsConn.Handshake(); err != nil {
+				recordTLS(err)
 				proxyConn.Close()
 				s.logger.Error("TLS handshake failed: %v", err)
 				return nil, fmt.Errorf("TLS handshake failed: %w", err)
 			}
-			_ = tlsConn.SetDeadline(time.Time{})
+			recordTLS(nil)
+			applyConnectionDeadline(ctx, tlsConn)
 
 			// Create IMAP client with the TLS connection
 			c, err = client.New(tlsConn)
@@ -400,23 +419,36 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 			}
 		} else {
 			// For non-TLS IMAP, use the proxy connection directly
-			c, err = client.DialWithDialer(dialer, serverAddr)
+			activeFetch.Stage("proxy_dial")
+			recordDial := RuntimeMetrics().BeginIMAPOperation(options.Source, "proxy_dial")
+			proxyConn, err := dialProxyWithContext(ctx, dialer, "tcp", serverAddr)
+			recordDial(err)
 			if err != nil {
 				s.logger.Error("Failed to dial via proxy: %v", err)
 				return nil, fmt.Errorf("failed to dial via proxy: %w", err)
+			}
+			c, err = client.New(proxyConn)
+			if err != nil {
+				proxyConn.Close()
+				s.logger.Error("Failed to create IMAP client: %v", err)
+				return nil, fmt.Errorf("failed to create IMAP client: %w", err)
 			}
 		}
 	} else {
 		// Use TLS connection for secure IMAP (port 993)
 		if account.MailProvider.IMAPPort == 993 {
 			s.logger.Debug("Using TLS connection for port 993")
+			activeFetch.Stage("tls_dial")
+			recordDial := RuntimeMetrics().BeginIMAPOperation(options.Source, "tls_dial")
 			tlsConn, err := tls.DialWithDialer(&net.Dialer{
 				Timeout: fetcherContextTimeout(ctx, 30*time.Second),
 			}, "tcp", serverAddr, &tls.Config{ServerName: account.MailProvider.IMAPServer})
+			recordDial(err)
 			if err != nil {
 				s.logger.Error("Failed to dial with TLS: %v", err)
 				return nil, fmt.Errorf("failed to dial with TLS: %w", err)
 			}
+			applyConnectionDeadline(ctx, tlsConn)
 			c, err = client.New(tlsConn)
 			if err != nil {
 				tlsConn.Close()
@@ -426,13 +458,17 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 		} else {
 			// Use plain connection for non-secure IMAP (port 143)
 			s.logger.Debug("Using plain connection for port %d", account.MailProvider.IMAPPort)
+			activeFetch.Stage("tcp_dial")
+			recordDial := RuntimeMetrics().BeginIMAPOperation(options.Source, "tcp_dial")
 			plainConn, err := (&net.Dialer{
 				Timeout: fetcherContextTimeout(ctx, 30*time.Second),
 			}).DialContext(ctx, "tcp", serverAddr)
+			recordDial(err)
 			if err != nil {
 				s.logger.Error("Failed to dial: %v", err)
 				return nil, fmt.Errorf("failed to dial: %w", err)
 			}
+			applyConnectionDeadline(ctx, plainConn)
 			c, err = client.New(plainConn)
 			if err != nil {
 				plainConn.Close()
@@ -448,13 +484,17 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 
 	// Login based on auth type
 	s.logger.Debug("Authenticating with auth type: %s", account.AuthType)
+	activeFetch.Stage("login")
 	switch account.AuthType {
 	case models.AuthTypePassword:
 		// Standard password authentication
+		recordLogin := RuntimeMetrics().BeginIMAPOperation(options.Source, "login")
 		if err := c.Login(account.EmailAddress, account.Password); err != nil {
+			recordLogin(err)
 			s.logger.Error("Password authentication failed for %s: %v", account.EmailAddress, err)
 			return nil, fmt.Errorf("login failed: %w", err)
 		}
+		recordLogin(nil)
 	case models.AuthTypeOAuth2:
 		// OAuth2 authentication
 		s.logger.Debug("Using OAuth2 authentication")
@@ -532,6 +572,8 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 
 		// Refresh access token - use cached method with retry protection and proxy support
 		s.logger.Debug("Refreshing OAuth2 access token with cache for provider: %s", account.MailProvider.Type)
+		activeFetch.Stage("oauth_refresh")
+		recordOAuth := RuntimeMetrics().BeginIMAPOperation(options.Source, "oauth_refresh")
 		accessToken, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxy(
 			string(account.MailProvider.Type),
 			clientID,
@@ -540,6 +582,7 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 			account.ID,
 			account.Proxy, // Pass proxy settings if available
 		)
+		recordOAuth(err)
 		if err != nil {
 			s.logger.Error("Failed to refresh access token: %v", err)
 			return nil, fmt.Errorf("failed to refresh access token: %w", err)
@@ -563,12 +606,18 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 		}
 
 		// Authenticate with OAuth2
+		activeFetch.Stage("login")
+		recordLogin := RuntimeMetrics().BeginIMAPOperation(options.Source, "login")
 		saslClient := NewOAuth2SASLClient(account.EmailAddress, accessToken)
 		if err := c.Authenticate(saslClient); err != nil {
+			recordLogin(err)
 			s.logger.Error("OAuth2 authentication failed: %v", err)
 			return nil, fmt.Errorf("OAuth2 authentication failed: %w", err)
 		}
+		recordLogin(nil)
 	default:
+		recordLogin := RuntimeMetrics().BeginIMAPOperation(options.Source, "login")
+		recordLogin(fmt.Errorf("unsupported auth type: %s", account.AuthType))
 		s.logger.Error("Unsupported auth type: %s", account.AuthType)
 		return nil, fmt.Errorf("unsupported auth type: %s", account.AuthType)
 	}
@@ -593,7 +642,10 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	activeFetch.Stage("mailbox_select")
+	recordSelect := RuntimeMetrics().BeginIMAPOperation(options.Source, "mailbox_select")
 	mbox, err := c.Select(mailboxName, false)
+	recordSelect(err)
 	if err != nil {
 		s.logger.Error("Failed to select mailbox %s: %v (connection state: %v)", mailboxName, err, c.State())
 
@@ -648,7 +700,10 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		activeFetch.Stage("search")
+		recordSearch := RuntimeMetrics().BeginIMAPOperation(options.Source, "search")
 		seqNums, err = c.Search(criteria)
+		recordSearch(err)
 		if err != nil {
 			s.logger.Error("Failed to search messages: %v", err)
 			return nil, fmt.Errorf("failed to search messages: %w", err)
@@ -686,6 +741,16 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 	// Fetch messages
 	messages := make(chan *imap.Message, limit)
 	done := make(chan error, 1)
+	activeFetch.Stage("fetch")
+	recordFetch := RuntimeMetrics().BeginIMAPOperation(options.Source, "fetch")
+	fetchRecorded := false
+	finishFetch := func(fetchErr error) {
+		if fetchRecorded {
+			return
+		}
+		fetchRecorded = true
+		recordFetch(fetchErr)
+	}
 	go func() {
 		done <- c.Fetch(seqset, fetchItems, messages)
 	}()
@@ -694,6 +759,7 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 	for {
 		select {
 		case <-ctx.Done():
+			finishFetch(ctx.Err())
 			_ = c.Logout()
 			return nil, ctx.Err()
 		case msg, ok := <-messages:
@@ -773,16 +839,19 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 fetchDone:
 	select {
 	case err := <-done:
+		finishFetch(err)
 		if err != nil {
 			s.logger.Error("Failed to fetch messages: %v", err)
 			return nil, fmt.Errorf("failed to fetch messages: %w", err)
 		}
 	case <-ctx.Done():
+		finishFetch(ctx.Err())
 		_ = c.Logout()
 		return nil, ctx.Err()
 	}
 
 	if err := ctx.Err(); err != nil {
+		finishFetch(err)
 		s.logger.Error("Failed to fetch messages: %v", err)
 		return nil, err
 	}
@@ -1113,7 +1182,7 @@ func (s *FetcherService) createProxyDialer(proxyURL *url.URL) (proxy.Dialer, err
 	switch proxyURL.Scheme {
 	case "socks5", "socks5h":
 		// Use the existing SOCKS5 support
-		return proxy.FromURL(proxyURL, proxy.Direct)
+		return proxy.FromURL(proxyURL, timeoutProxyDialer{timeout: 30 * time.Second})
 	case "http", "https":
 		// Create HTTP proxy dialer
 		return s.createHTTPProxyDialer(proxyURL), nil
@@ -1121,6 +1190,56 @@ func (s *FetcherService) createProxyDialer(proxyURL *url.URL) (proxy.Dialer, err
 		return &sshProxyDialer{proxyURL: proxyURL, logger: s.logger}, nil
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme: %s", proxyURL.Scheme)
+	}
+}
+
+type timeoutProxyDialer struct {
+	timeout time.Duration
+}
+
+func (d timeoutProxyDialer) Dial(network, addr string) (net.Conn, error) {
+	timeout := d.timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return net.DialTimeout(network, addr, timeout)
+}
+
+func dialProxyWithContext(ctx context.Context, dialer proxy.Dialer, network string, addr string) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	type dialResult struct {
+		conn net.Conn
+		err  error
+	}
+	done := make(chan dialResult, 1)
+	go func() {
+		conn, err := dialer.Dial(network, addr)
+		select {
+		case done <- dialResult{conn: conn, err: err}:
+		case <-ctx.Done():
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-done:
+		if result.err != nil {
+			return nil, result.err
+		}
+		if deadline, ok := ctx.Deadline(); ok && result.conn != nil {
+			_ = result.conn.SetDeadline(deadline)
+		}
+		return result.conn, nil
 	}
 }
 
@@ -1211,11 +1330,13 @@ func (s *FetcherService) createHTTPClientWithProxy(proxyStr string) (*http.Clien
 
 	// Handle SOCKS5 proxy
 	if proxyURL.Scheme == "socks5" || proxyURL.Scheme == "socks5h" {
-		dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
+		dialer, err := proxy.FromURL(proxyURL, timeoutProxyDialer{timeout: 30 * time.Second})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SOCKS5 proxy dialer: %w", err)
 		}
-		transport.Dial = dialer.Dial
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialProxyWithContext(ctx, dialer, network, addr)
+		}
 		transport.Proxy = nil // Don't use HTTP proxy for SOCKS5
 	}
 

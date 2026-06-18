@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"mailman/internal/models"
@@ -576,9 +577,16 @@ func (r *EmailRepository) buildDashboardStatsQuery(orgID uint, today, tomorrow t
 }
 
 func (r *EmailRepository) GetDashboardStats(orgID uint, today, tomorrow time.Time) (EmailDashboardStats, error) {
+	return r.GetDashboardStatsWithContext(context.Background(), orgID, today, tomorrow)
+}
+
+func (r *EmailRepository) GetDashboardStatsWithContext(ctx context.Context, orgID uint, today, tomorrow time.Time) (EmailDashboardStats, error) {
 	var stats EmailDashboardStats
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	query := r.buildDashboardStatsQuery(orgID, today, tomorrow)
-	err := query.Scan(&stats).Error
+	err := query.WithContext(ctx).Scan(&stats).Error
 	return stats, err
 }
 
@@ -591,6 +599,7 @@ func (r *EmailRepository) CheckDuplicate(messageID string, accountID uint) (bool
 
 // EmailSearchOptions represents search criteria for emails
 type EmailSearchOptions struct {
+	Context            context.Context
 	AccountID          uint
 	OrgID              uint // Filter emails by organization (via account)
 	AnchorID           uint
@@ -609,6 +618,7 @@ type EmailSearchOptions struct {
 	MailboxName        string
 	Direction          string // "received", "sent", or "" for all
 	PreloadAttachments bool   // Whether to preload attachments (default false for performance)
+	SkipTotalCount     bool   // Skip COUNT(*) for hot paths that only need result rows
 	Pagination         KeysetPagination
 }
 
@@ -796,7 +806,11 @@ func (r *EmailRepository) SearchEmailsAroundAnchor(options EmailSearchOptions) (
 }
 
 func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gorm.DB {
-	query := r.db.Model(&models.Email{})
+	db := r.db
+	if options.Context != nil {
+		db = db.WithContext(options.Context)
+	}
+	query := db.Model(&models.Email{})
 
 	// Apply account filter only if AccountID is specified (non-zero)
 	if options.AccountID > 0 {
@@ -805,7 +819,7 @@ func (r *EmailRepository) buildEmailSearchQuery(options EmailSearchOptions) *gor
 
 	// Apply organization filter (via account subquery)
 	if options.OrgID > 0 {
-		query = query.Where("account_id IN (?)", r.db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", options.OrgID))
+		query = query.Where("account_id IN (?)", db.Model(&models.EmailAccount{}).Select("id").Where("org_id = ?", options.OrgID))
 	}
 
 	// Apply date range filter
@@ -894,11 +908,13 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 		query = query.Preload("Attachments")
 	}
 
-	// Get total count for pagination
-	countQuery := query
-	err := countQuery.Count(&totalCount).Error
-	if err != nil {
-		return nil, 0, err
+	if !options.SkipTotalCount {
+		// Get total count for pagination. Hot paths such as pickup/poll can
+		// skip this because they only need the first page of matching emails.
+		countQuery := query
+		if err := countQuery.Count(&totalCount).Error; err != nil {
+			return nil, 0, err
+		}
 	}
 
 	// Apply cursor condition before sorting/pagination.
@@ -953,13 +969,13 @@ func (r *EmailRepository) SearchEmails(options EmailSearchOptions) ([]models.Ema
 	}
 
 	// Execute the query
-	err = query.Find(&emails).Error
-	if err == nil && reverseForBefore {
+	findErr := query.Find(&emails).Error
+	if findErr == nil && reverseForBefore {
 		for i, j := 0, len(emails)-1; i < j; i, j = i+1, j-1 {
 			emails[i], emails[j] = emails[j], emails[i]
 		}
 	}
-	return emails, totalCount, err
+	return emails, totalCount, findErr
 }
 
 // EmailCursor represents a cursor for streaming email queries

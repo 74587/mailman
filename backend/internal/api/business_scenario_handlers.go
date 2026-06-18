@@ -179,6 +179,7 @@ func (h *APIHandler) PickupBusinessAccountScenarioHandler(w http.ResponseWriter,
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	pickupReq.Context = r.Context()
 	result, err := h.PickupService.Poll(pickupReq)
 	if err != nil {
 		http.Error(w, "Pickup poll failed: "+err.Error(), http.StatusInternalServerError)

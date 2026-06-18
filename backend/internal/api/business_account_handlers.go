@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -559,7 +560,9 @@ func (h *APIHandler) getBusinessModuleForRequest(w http.ResponseWriter, r *http.
 		return nil, false
 	}
 	var module models.BusinessModule
-	db := h.EmailAccountRepo.GetDB().Where("id = ?", id)
+	ctx, cancel := context.WithTimeout(r.Context(), businessRegistrationDBTimeout)
+	defer cancel()
+	db := h.EmailAccountRepo.GetDB().WithContext(ctx).Where("id = ?", id)
 	if orgID > 0 {
 		db = db.Where("org_id = ?", orgID)
 	}
@@ -568,7 +571,7 @@ func (h *APIHandler) getBusinessModuleForRequest(w http.ResponseWriter, r *http.
 			http.Error(w, "Business module not found", http.StatusNotFound)
 			return nil, false
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeBusinessDBError(w, err)
 		return nil, false
 	}
 	return &module, true
@@ -582,7 +585,9 @@ func (h *APIHandler) getBusinessAccountForRequest(w http.ResponseWriter, r *http
 		return nil, false
 	}
 	var account models.BusinessAccount
-	db := h.EmailAccountRepo.GetDB().Preload("EmailAccount").Preload("Module").Where("business_accounts.id = ?", id)
+	ctx, cancel := context.WithTimeout(r.Context(), businessRegistrationDBTimeout)
+	defer cancel()
+	db := h.EmailAccountRepo.GetDB().WithContext(ctx).Preload("EmailAccount").Preload("Module").Where("business_accounts.id = ?", id)
 	if orgID > 0 {
 		db = db.Where("business_accounts.org_id = ?", orgID)
 	}
@@ -591,7 +596,7 @@ func (h *APIHandler) getBusinessAccountForRequest(w http.ResponseWriter, r *http
 			http.Error(w, "Business account not found", http.StatusNotFound)
 			return nil, false
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeBusinessDBError(w, err)
 		return nil, false
 	}
 	return &account, true

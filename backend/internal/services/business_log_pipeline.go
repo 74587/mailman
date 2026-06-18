@@ -416,7 +416,7 @@ func (p *BusinessLogPipeline) recordMiddleware() BusinessLogMiddleware {
 				return result
 			}
 			result.LogID = &logID
-			p.enforceRetention(*event)
+			p.enforceRetention(ctx, *event)
 			return result
 		},
 	}
@@ -425,6 +425,12 @@ func (p *BusinessLogPipeline) recordMiddleware() BusinessLogMiddleware {
 func (r *BusinessLogRecorder) Record(ctx context.Context, event *BusinessLogEvent) (uint, error) {
 	if r == nil || r.repo == nil {
 		return 0, fmt.Errorf("business log recorder is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 
 	details := models.JSONMapInterface{}
@@ -462,13 +468,13 @@ func (r *BusinessLogRecorder) Record(ctx context.Context, event *BusinessLogEven
 	}
 	mergeEnabled, mergeWindow := businessLogMergeConfig(event)
 	if mergeEnabled {
-		if id, merged, err := r.repo.MergeIntoRecent(log, mergeWindow); err != nil {
+		if id, merged, err := r.repo.MergeIntoRecentWithContext(ctx, log, mergeWindow); err != nil {
 			return 0, err
 		} else if merged {
 			return id, nil
 		}
 	}
-	if err := r.repo.Create(log); err != nil {
+	if err := r.repo.CreateWithContext(ctx, log); err != nil {
 		return 0, err
 	}
 	return log.ID, nil
@@ -616,13 +622,22 @@ func businessLogMergeConfig(event *BusinessLogEvent) (bool, time.Duration) {
 	return true, time.Duration(seconds) * time.Second
 }
 
-func (p *BusinessLogPipeline) enforceRetention(event BusinessLogEvent) {
+func (p *BusinessLogPipeline) enforceRetention(ctx context.Context, event BusinessLogEvent) {
 	if p == nil || p.recorder == nil || p.recorder.repo == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
 		return
 	}
 	config := event.config
 	if config.RetentionDays > 0 {
-		_ = p.recorder.repo.DeleteOld(event.OrgID, time.Now().AddDate(0, 0, -config.RetentionDays))
+		_ = p.recorder.repo.DeleteOldWithContext(ctx, event.OrgID, time.Now().AddDate(0, 0, -config.RetentionDays))
+	}
+	if err := ctx.Err(); err != nil {
+		return
 	}
 
 	moduleLimit := 0
@@ -635,9 +650,12 @@ func (p *BusinessLogPipeline) enforceRetention(event BusinessLogEvent) {
 	if config.GlobalLimit > 0 && (moduleLimit == 0 || config.GlobalLimit < moduleLimit) {
 		moduleLimit = config.GlobalLimit
 	}
-	_ = p.recorder.repo.EnforceLimit(event.OrgID, event.Module, moduleLimit)
+	_ = p.recorder.repo.EnforceLimitWithContext(ctx, event.OrgID, event.Module, moduleLimit)
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	if config.GlobalLimit > 0 {
-		_ = p.recorder.repo.EnforceLimit(event.OrgID, "", config.GlobalLimit)
+		_ = p.recorder.repo.EnforceLimitWithContext(ctx, event.OrgID, "", config.GlobalLimit)
 	}
 }
 

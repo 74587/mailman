@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"mailman/internal/models"
 	"mailman/internal/repository"
@@ -16,7 +17,7 @@ import (
 )
 
 func TestBusinessLogAuditMiddlewareCapturesHTTPExchange(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("file:business_log_audit?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("failed to open sqlite test db: %v", err)
 	}
@@ -55,9 +56,7 @@ func TestBusinessLogAuditMiddlewareCapturesHTTPExchange(t *testing.T) {
 	}
 
 	var saved models.BusinessLog
-	if err := db.First(&saved).Error; err != nil {
-		t.Fatalf("failed to load business log: %v", err)
-	}
+	waitForBusinessLog(t, db, &saved)
 	if saved.Module != "api" || saved.Action != "post" || saved.RequestID != "req-1" {
 		t.Fatalf("unexpected log routing fields: module=%s action=%s request_id=%s", saved.Module, saved.Action, saved.RequestID)
 	}
@@ -104,4 +103,19 @@ func TestBusinessLogAuditMiddlewareCapturesHTTPExchange(t *testing.T) {
 	if !ok || responseBody["ok"] != true {
 		t.Fatalf("response body = %#v", responseDetails["body"])
 	}
+}
+
+func waitForBusinessLog(t *testing.T, db *gorm.DB, out *models.BusinessLog) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if err := db.First(out).Error; err != nil {
+			lastErr = err
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		return
+	}
+	t.Fatalf("failed to load business log: %v", lastErr)
 }

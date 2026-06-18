@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -12,6 +13,7 @@ const runtimeMetricSampleLimit = 256
 const runtimeRecentErrorLimit = 50
 
 var defaultRuntimeObservability = NewRuntimeObservability()
+var runtimeActiveOperationSeq uint64
 
 type RuntimeMetricSnapshot struct {
 	Count     int64      `json:"count"`
@@ -47,16 +49,22 @@ type RuntimePickupSnapshot struct {
 	Poll     RuntimeMetricSnapshot `json:"poll"`
 }
 
-type RuntimeOutlookOperationSnapshot struct {
+type RuntimeOperationSnapshot struct {
 	Operation string                           `json:"operation"`
 	Total     RuntimeMetricSnapshot            `json:"total"`
 	BySource  map[string]RuntimeMetricSnapshot `json:"by_source"`
 }
 
+type RuntimeOutlookOperationSnapshot = RuntimeOperationSnapshot
+
 type RuntimeOutlookSnapshot struct {
 	Limiter           OutlookPriorityLimiterSnapshot             `json:"limiter"`
 	LimiterWaitByType map[string]RuntimeMetricSnapshot           `json:"limiter_wait_by_type"`
 	Operations        map[string]RuntimeOutlookOperationSnapshot `json:"operations"`
+}
+
+type RuntimeIMAPSnapshot struct {
+	Operations map[string]RuntimeOperationSnapshot `json:"operations"`
 }
 
 type RuntimeSyncConcurrencySnapshot struct {
@@ -65,6 +73,53 @@ type RuntimeSyncConcurrencySnapshot struct {
 	ConcurrentLimit   int   `json:"concurrent_limit"`
 	PickupLimit       int   `json:"pickup_limit"`
 	ActiveSyncers     int64 `json:"active_syncers"`
+}
+
+type RuntimeProcessSnapshot struct {
+	Goroutines      int        `json:"goroutines"`
+	HeapAllocBytes  uint64     `json:"heap_alloc_bytes"`
+	HeapSysBytes    uint64     `json:"heap_sys_bytes"`
+	StackInuseBytes uint64     `json:"stack_inuse_bytes"`
+	HeapObjects     uint64     `json:"heap_objects"`
+	NumGC           uint32     `json:"num_gc"`
+	LastGCAt        *time.Time `json:"last_gc_at,omitempty"`
+}
+
+type RuntimeDatabaseWaitSnapshot struct {
+	State         string `json:"state"`
+	WaitEventType string `json:"wait_event_type"`
+	WaitEvent     string `json:"wait_event"`
+	Count         int64  `json:"count"`
+}
+
+type RuntimeDatabaseSnapshot struct {
+	Driver             string                        `json:"driver"`
+	MaxOpenConnections int                           `json:"max_open_connections"`
+	OpenConnections    int                           `json:"open_connections"`
+	InUse              int                           `json:"in_use"`
+	Idle               int                           `json:"idle"`
+	WaitCount          int64                         `json:"wait_count"`
+	WaitDurationMS     float64                       `json:"wait_duration_ms"`
+	MaxIdleClosed      int64                         `json:"max_idle_closed"`
+	MaxIdleTimeClosed  int64                         `json:"max_idle_time_closed"`
+	MaxLifetimeClosed  int64                         `json:"max_lifetime_closed"`
+	WaitEvents         []RuntimeDatabaseWaitSnapshot `json:"wait_events,omitempty"`
+	Error              string                        `json:"error,omitempty"`
+	WaitEventsError    string                        `json:"wait_events_error,omitempty"`
+}
+
+type RuntimeActiveOperationSnapshot struct {
+	ID           string    `json:"id"`
+	Kind         string    `json:"kind"`
+	Source       string    `json:"source,omitempty"`
+	Operation    string    `json:"operation"`
+	AccountID    uint      `json:"account_id,omitempty"`
+	AccountEmail string    `json:"account_email,omitempty"`
+	Stage        string    `json:"stage"`
+	StartedAt    time.Time `json:"started_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	AgeMS        float64   `json:"age_ms"`
+	LastError    string    `json:"last_error,omitempty"`
 }
 
 type RuntimeErrorEvent struct {
@@ -117,7 +172,11 @@ type RuntimeObservabilitySnapshot struct {
 	Sources            map[string]RuntimeSourceSnapshot `json:"sources"`
 	Pickup             RuntimePickupSnapshot            `json:"pickup"`
 	Outlook            RuntimeOutlookSnapshot           `json:"outlook"`
+	IMAP               RuntimeIMAPSnapshot              `json:"imap"`
 	SyncConcurrency    RuntimeSyncConcurrencySnapshot   `json:"sync_concurrency"`
+	Process            RuntimeProcessSnapshot           `json:"process"`
+	Database           RuntimeDatabaseSnapshot          `json:"database"`
+	ActiveOperations   []RuntimeActiveOperationSnapshot `json:"active_operations"`
 	BatchOutlookImport BatchImportObservabilitySnapshot `json:"batch_outlook_import"`
 	RecentErrors       []RuntimeErrorEvent              `json:"recent_errors"`
 	ErrorTop           []RuntimeErrorSummary            `json:"error_top"`
@@ -138,9 +197,11 @@ type RuntimeObservability struct {
 
 	outlookLimiterWait map[string]*runtimeMetricAggregate
 	outlookRequests    map[string]map[string]*runtimeMetricAggregate
+	imapOperations     map[string]map[string]*runtimeMetricAggregate
 
-	recentErrors []RuntimeErrorEvent
-	errorCounts  map[string]*RuntimeErrorSummary
+	activeOperations map[string]RuntimeActiveOperationSnapshot
+	recentErrors     []RuntimeErrorEvent
+	errorCounts      map[string]*RuntimeErrorSummary
 }
 
 type runtimeMetricAggregate struct {
@@ -172,6 +233,8 @@ func NewRuntimeObservability() *RuntimeObservability {
 		pickupPoll:         &runtimeMetricAggregate{},
 		outlookLimiterWait: make(map[string]*runtimeMetricAggregate),
 		outlookRequests:    make(map[string]map[string]*runtimeMetricAggregate),
+		imapOperations:     make(map[string]map[string]*runtimeMetricAggregate),
+		activeOperations:   make(map[string]RuntimeActiveOperationSnapshot),
 		errorCounts:        make(map[string]*RuntimeErrorSummary),
 	}
 }
@@ -273,16 +336,96 @@ func (o *RuntimeObservability) RecordOutlookRequest(source EmailIngestSource, op
 	success := requestErr == nil && (statusCode == 0 || statusCode < 400)
 
 	o.mu.Lock()
-	bySource, ok := o.outlookRequests[operationKey]
-	if !ok {
-		bySource = make(map[string]*runtimeMetricAggregate)
-		o.outlookRequests[operationKey] = bySource
-	}
-	o.metricFor(bySource, sourceKey).record(duration, success)
+	o.recordOperationLocked(o.outlookRequests, sourceKey, operationKey, duration, success)
 	if !success {
 		o.recordErrorLocked("outlook_api", sourceKey, operationKey, requestErr, statusCode)
 	}
 	o.mu.Unlock()
+}
+
+func (o *RuntimeObservability) BeginIMAPOperation(source EmailIngestSource, operation string) func(error) {
+	start := time.Now()
+	return func(operationErr error) {
+		o.RecordIMAPOperation(source, operation, time.Since(start), operationErr)
+	}
+}
+
+func (o *RuntimeObservability) RecordIMAPOperation(source EmailIngestSource, operation string, duration time.Duration, operationErr error) {
+	sourceKey := runtimeSourceKey(source)
+	operationKey := normalizeRuntimeOperation(operation)
+
+	o.mu.Lock()
+	o.recordOperationLocked(o.imapOperations, sourceKey, operationKey, duration, operationErr == nil)
+	if operationErr != nil {
+		o.recordErrorLocked("imap", sourceKey, operationKey, operationErr, 0)
+	}
+	o.mu.Unlock()
+}
+
+type RuntimeActiveOperationHandle struct {
+	observer *RuntimeObservability
+	id       string
+}
+
+func (o *RuntimeObservability) BeginActiveOperation(kind string, source EmailIngestSource, operation string, accountID uint, accountEmail string, stage string) *RuntimeActiveOperationHandle {
+	if o == nil {
+		return nil
+	}
+	kind = normalizeRuntimeOperation(kind)
+	operation = normalizeRuntimeOperation(operation)
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		stage = "started"
+	}
+	id := fmt.Sprintf("%d-%s-%d", time.Now().UnixNano(), kind, atomic.AddUint64(&runtimeActiveOperationSeq, 1))
+	now := time.Now()
+	sourceKey := runtimeSourceKey(source)
+	o.mu.Lock()
+	o.activeOperations[id] = RuntimeActiveOperationSnapshot{
+		ID:           id,
+		Kind:         kind,
+		Source:       sourceKey,
+		Operation:    operation,
+		AccountID:    accountID,
+		AccountEmail: accountEmail,
+		Stage:        stage,
+		StartedAt:    now,
+		UpdatedAt:    now,
+	}
+	o.mu.Unlock()
+	return &RuntimeActiveOperationHandle{observer: o, id: id}
+}
+
+func (h *RuntimeActiveOperationHandle) Stage(stage string) {
+	if h == nil || h.observer == nil {
+		return
+	}
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		return
+	}
+	h.observer.mu.Lock()
+	operation, ok := h.observer.activeOperations[h.id]
+	if ok {
+		operation.Stage = stage
+		operation.UpdatedAt = time.Now()
+		h.observer.activeOperations[h.id] = operation
+	}
+	h.observer.mu.Unlock()
+}
+
+func (h *RuntimeActiveOperationHandle) Finish(operationErr error) {
+	if h == nil || h.observer == nil {
+		return
+	}
+	h.observer.mu.Lock()
+	if operation, ok := h.observer.activeOperations[h.id]; ok && operationErr != nil {
+		operation.LastError = runtimeErrorMessage(operationErr, 0)
+		operation.UpdatedAt = time.Now()
+		h.observer.activeOperations[h.id] = operation
+	}
+	delete(h.observer.activeOperations, h.id)
+	h.observer.mu.Unlock()
 }
 
 func (o *RuntimeObservability) Snapshot() RuntimeObservabilitySnapshot {
@@ -315,25 +458,22 @@ func (o *RuntimeObservability) Snapshot() RuntimeObservabilitySnapshot {
 		}
 	}
 
-	operations := make(map[string]RuntimeOutlookOperationSnapshot, len(o.outlookRequests))
-	for operation, bySource := range o.outlookRequests {
-		total := &runtimeMetricAggregate{}
-		sourceSnapshots := make(map[string]RuntimeMetricSnapshot, len(bySource))
-		for source, metric := range bySource {
-			sourceSnapshots[source] = metric.snapshot()
-			total.merge(metric)
-		}
-		operations[operation] = RuntimeOutlookOperationSnapshot{
-			Operation: operation,
-			Total:     total.snapshot(),
-			BySource:  sourceSnapshots,
-		}
-	}
+	operations := o.snapshotOperationsLocked(o.outlookRequests)
+	imapOperations := o.snapshotOperationsLocked(o.imapOperations)
 
 	waitSnapshots := make(map[string]RuntimeMetricSnapshot, len(o.outlookLimiterWait))
 	for priority, metric := range o.outlookLimiterWait {
 		waitSnapshots[priority] = metric.snapshot()
 	}
+
+	activeOperations := make([]RuntimeActiveOperationSnapshot, 0, len(o.activeOperations))
+	for _, operation := range o.activeOperations {
+		operation.AgeMS = float64(now.Sub(operation.StartedAt).Microseconds()) / 1000
+		activeOperations = append(activeOperations, operation)
+	}
+	sort.Slice(activeOperations, func(i, j int) bool {
+		return activeOperations[i].StartedAt.Before(activeOperations[j].StartedAt)
+	})
 
 	recentErrors := make([]RuntimeErrorEvent, len(o.recentErrors))
 	copy(recentErrors, o.recentErrors)
@@ -363,8 +503,12 @@ func (o *RuntimeObservability) Snapshot() RuntimeObservabilitySnapshot {
 			LimiterWaitByType: waitSnapshots,
 			Operations:        operations,
 		},
-		RecentErrors: recentErrors,
-		ErrorTop:     errorTop,
+		IMAP: RuntimeIMAPSnapshot{
+			Operations: imapOperations,
+		},
+		ActiveOperations: activeOperations,
+		RecentErrors:     recentErrors,
+		ErrorTop:         errorTop,
 	}
 }
 
@@ -396,6 +540,33 @@ func (o *RuntimeObservability) ingestFor(source string) *runtimeIngestAggregate 
 		o.ingest[source] = aggregate
 	}
 	return aggregate
+}
+
+func (o *RuntimeObservability) recordOperationLocked(metrics map[string]map[string]*runtimeMetricAggregate, sourceKey string, operationKey string, duration time.Duration, success bool) {
+	bySource, ok := metrics[operationKey]
+	if !ok {
+		bySource = make(map[string]*runtimeMetricAggregate)
+		metrics[operationKey] = bySource
+	}
+	o.metricFor(bySource, sourceKey).record(duration, success)
+}
+
+func (o *RuntimeObservability) snapshotOperationsLocked(metrics map[string]map[string]*runtimeMetricAggregate) map[string]RuntimeOperationSnapshot {
+	operations := make(map[string]RuntimeOperationSnapshot, len(metrics))
+	for operation, bySource := range metrics {
+		total := &runtimeMetricAggregate{}
+		sourceSnapshots := make(map[string]RuntimeMetricSnapshot, len(bySource))
+		for source, metric := range bySource {
+			sourceSnapshots[source] = metric.snapshot()
+			total.merge(metric)
+		}
+		operations[operation] = RuntimeOperationSnapshot{
+			Operation: operation,
+			Total:     total.snapshot(),
+			BySource:  sourceSnapshots,
+		}
+	}
+	return operations
 }
 
 func (o *RuntimeObservability) snapshotIngest(source string) RuntimeIngestSnapshot {

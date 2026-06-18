@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"mailman/internal/models"
@@ -395,8 +396,15 @@ func (r *EmailAccountRepository) GetByIDs(orgID uint, ids []uint) ([]models.Emai
 }
 
 func (r *EmailAccountRepository) GetDashboardStats(orgID uint) (AccountDashboardStats, error) {
+	return r.GetDashboardStatsWithContext(context.Background(), orgID)
+}
+
+func (r *EmailAccountRepository) GetDashboardStatsWithContext(ctx context.Context, orgID uint) (AccountDashboardStats, error) {
 	var stats AccountDashboardStats
-	query := r.db.Model(&models.EmailAccount{}).Select(
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	query := r.db.WithContext(ctx).Model(&models.EmailAccount{}).Select(
 		`COUNT(*) AS total_accounts,
 		COALESCE(SUM(CASE WHEN is_verified = ? THEN 1 ELSE 0 END), 0) AS verified_accounts,
 		COALESCE(SUM(CASE WHEN error_status IS NOT NULL AND error_status != '' AND error_status != ? THEN 1 ELSE 0 END), 0) AS error_accounts`,

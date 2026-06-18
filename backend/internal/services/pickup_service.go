@@ -11,16 +11,21 @@ import (
 	"time"
 )
 
-const pickupImmediateSyncTimeout = 12 * time.Second
+const (
+	pickupImmediateSyncTimeout = 12 * time.Second
+	pickupEmailSearchTimeout   = 5 * time.Second
+	businessLogHotPathTimeout  = 2 * time.Second
+)
 
 // PickupPollRequest 取件轮询请求
 type PickupPollRequest struct {
-	AccountID        uint   `json:"account_id"`         // 可选但推荐传；to_query 能解析到账户时以后端解析结果为准
-	KeepAliveSeconds int    `json:"keep_alive_seconds"` // 临时同步覆盖有效期(秒)，建议 30-120
-	SyncInterval     int    `json:"sync_interval"`      // 后端拉取邮件间隔(秒)，默认 5
-	Since            string `json:"since"`              // ISO8601 搜索起始时间
-	ToQuery          string `json:"to_query,omitempty"` // 收件人过滤
-	Limit            int    `json:"limit,omitempty"`    // 返回数量限制，默认 10
+	Context          context.Context `json:"-"`
+	AccountID        uint            `json:"account_id"`         // 可选但推荐传；to_query 能解析到账户时以后端解析结果为准
+	KeepAliveSeconds int             `json:"keep_alive_seconds"` // 临时同步覆盖有效期(秒)，建议 30-120
+	SyncInterval     int             `json:"sync_interval"`      // 后端拉取邮件间隔(秒)，默认 5
+	Since            string          `json:"since"`              // ISO8601 搜索起始时间
+	ToQuery          string          `json:"to_query,omitempty"` // 收件人过滤
+	Limit            int             `json:"limit,omitempty"`    // 返回数量限制，默认 10
 
 	// 提取模式（三选一，可都不传表示只搜索不提取）
 	TemplateID    *uint                `json:"template_id,omitempty"`    // 方式1: 引用已有V2模板
@@ -107,7 +112,12 @@ func (s *PickupService) SetBusinessLogPipeline(pipeline *BusinessLogPipeline) {
 // Poll 执行一次取件轮询
 func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error) {
 	startTime := time.Now()
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	recordPoll := RuntimeMetrics().BeginPickupPoll()
+	activePoll := RuntimeMetrics().BeginActiveOperation("http", EmailIngestSourcePickup, "pickup_poll", req.AccountID, "", "resolve_account")
 	var pollErr error
 	requestedAccountID := req.AccountID
 	resolvedBy := ""
@@ -116,6 +126,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	extractionCount := 0
 	defer func() {
 		recordPoll(pollErr)
+		activePoll.Finish(pollErr)
 		s.recordPickupBusinessLog(startTime, requestedAccountID, finalAccountID, resolvedBy, req, emailCount, extractionCount, pollErr)
 	}()
 
@@ -140,10 +151,14 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	finalAccountID = resolvedAccountID
 
 	// 2. 注册/续期取件轮询覆盖（纯内存，零DB写入）
+	activePoll.Stage("register_pickup_override")
 	s.syncManager.RegisterPickupOverride(req.AccountID, req.SyncInterval, req.KeepAliveSeconds)
 
 	// pickup 需要尽量返回刚到达的邮件；注册临时覆盖后立即同步一次，再查数据库。
-	s.runImmediatePickupSync(req, requestedAccountID, resolvedBy)
+	activePoll.Stage("immediate_sync")
+	syncCtx, syncCancel := context.WithTimeout(ctx, pickupImmediateSyncTimeout)
+	defer syncCancel()
+	s.runImmediatePickupSync(syncCtx, req, requestedAccountID, resolvedBy)
 
 	// 3. 解析搜索起始时间
 	var startDate *time.Time
@@ -157,12 +172,17 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	}
 
 	// 4. 搜索邮件
+	activePoll.Stage("search_db")
+	searchCtx, searchCancel := context.WithTimeout(ctx, pickupEmailSearchTimeout)
+	defer searchCancel()
 	searchOpts := repository.EmailSearchOptions{
-		AccountID: req.AccountID,
-		Limit:     req.Limit,
-		StartDate: startDate,
-		ToQuery:   req.ToQuery,
-		SortBy:    "date DESC",
+		Context:        searchCtx,
+		AccountID:      req.AccountID,
+		Limit:          req.Limit,
+		StartDate:      startDate,
+		ToQuery:        req.ToQuery,
+		SortBy:         "date DESC",
+		SkipTotalCount: true,
 	}
 
 	emails, _, err := s.emailRepo.SearchEmails(searchOpts)
@@ -185,6 +205,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	// 6. 执行提取（如果配置了）
 	var extractions []ExtractionResultItem
 	if len(emails) > 0 {
+		activePoll.Stage("extract")
 		if req.TemplateID != nil {
 			extractions = s.extractWithTemplate(emails, *req.TemplateID)
 		} else if req.InlineActions != nil {
@@ -208,7 +229,7 @@ func (s *PickupService) Poll(req PickupPollRequest) (*PickupPollResponse, error)
 	}, nil
 }
 
-func (s *PickupService) runImmediatePickupSync(req PickupPollRequest, requestedAccountID uint, resolvedBy string) {
+func (s *PickupService) runImmediatePickupSync(ctx context.Context, req PickupPollRequest, requestedAccountID uint, resolvedBy string) {
 	if s.syncManager == nil {
 		return
 	}
@@ -230,9 +251,13 @@ func (s *PickupService) runImmediatePickupSync(req PickupPollRequest, requestedA
 			CreateStrategy: "ensure",
 			SyncInterval:   req.SyncInterval,
 			Source:         EmailIngestSourcePickup,
+			Context:        ctx,
 		})
 		done <- syncOutcome{result: result, err: err}
 	}()
+
+	timer := time.NewTimer(pickupImmediateSyncTimeout)
+	defer timer.Stop()
 
 	select {
 	case outcome := <-done:
@@ -245,7 +270,10 @@ func (s *PickupService) runImmediatePickupSync(req PickupPollRequest, requestedA
 		} else if outcome.result != nil {
 			s.logger.Debug("Pickup immediate sync completed for account %d: synced %d emails", req.AccountID, outcome.result.EmailsSynced)
 		}
-	case <-time.After(pickupImmediateSyncTimeout):
+	case <-ctx.Done():
+		s.logger.Warn("Pickup immediate sync canceled for account %d (requested=%d, resolved_by=%s, to_query=%q): %v",
+			req.AccountID, requestedAccountID, resolvedBy, req.ToQuery, ctx.Err())
+	case <-timer.C:
 		s.logger.Warn("Pickup immediate sync exceeded %s for account %d (requested=%d, resolved_by=%s, to_query=%q); continuing with database search",
 			pickupImmediateSyncTimeout, req.AccountID, requestedAccountID, resolvedBy, req.ToQuery)
 	}
@@ -283,7 +311,7 @@ func (s *PickupService) recordPickupBusinessLog(startTime time.Time, requestedAc
 		result = "failed"
 		errorMessage = pollErr.Error()
 	}
-	s.businessLog.Process(context.Background(), BusinessLogEvent{
+	event := BusinessLogEvent{
 		OrgID:         1,
 		OperationType: models.BusinessLogOperationAPI,
 		ActorType:     models.BusinessLogActorAPI,
@@ -315,7 +343,22 @@ func (s *PickupService) recordPickupBusinessLog(startTime time.Time, requestedAc
 			"has_inline_actions":   req.InlineActions != nil,
 			"has_simple_extract":   req.SimpleExtract != nil,
 		},
-	})
+	}
+	processBusinessLogAsync(s.businessLog, s.logger, "pickup poll", event)
+}
+
+func processBusinessLogAsync(pipeline *BusinessLogPipeline, logger *utils.Logger, label string, event BusinessLogEvent) {
+	if pipeline == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), businessLogHotPathTimeout)
+		defer cancel()
+		result := pipeline.Process(ctx, event)
+		if logger != nil && len(result.Warnings) > 0 {
+			logger.Warn("Async business log %s completed with warnings: %s", label, strings.Join(result.Warnings, "; "))
+		}
+	}()
 }
 
 func (s *PickupService) resolvePickupAccountID(requestedAccountID uint, toQuery string) (uint, string, error) {
