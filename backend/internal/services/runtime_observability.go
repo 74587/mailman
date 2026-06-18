@@ -429,6 +429,8 @@ func (h *RuntimeActiveOperationHandle) Finish(operationErr error) {
 }
 
 func (o *RuntimeObservability) Snapshot() RuntimeObservabilitySnapshot {
+	limiterSnapshot := GetOutlookRequestLimiterSnapshot()
+
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
@@ -499,7 +501,7 @@ func (o *RuntimeObservability) Snapshot() RuntimeObservabilitySnapshot {
 			Poll:     o.pickupPoll.snapshot(),
 		},
 		Outlook: RuntimeOutlookSnapshot{
-			Limiter:           GetOutlookRequestLimiterSnapshot(),
+			Limiter:           limiterSnapshot,
 			LimiterWaitByType: waitSnapshots,
 			Operations:        operations,
 		},

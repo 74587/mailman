@@ -451,6 +451,10 @@ func (m *PerAccountSyncManager) updateStatsRoutine() {
 
 // updateStats 更新统计信息
 func (m *PerAccountSyncManager) updateStats() {
+	m.updateConcurrentStats()
+}
+
+func (m *PerAccountSyncManager) updateConcurrentStats() {
 	backgroundConcurrent := 0
 	if m.semaphore != nil {
 		backgroundConcurrent = len(m.semaphore)
@@ -461,20 +465,6 @@ func (m *PerAccountSyncManager) updateStats() {
 	}
 	atomic.StoreInt64(&m.stats.CurrentConcurrent, int64(backgroundConcurrent+pickupConcurrent))
 	atomic.StoreInt64(&m.stats.CurrentPickup, int64(pickupConcurrent))
-
-	// 计算总同步次数和错误次数
-	var totalSyncs, totalErrors int64
-	m.mu.RLock()
-	for _, syncer := range m.accountSyncers {
-		syncer.mu.RLock()
-		totalSyncs += atomic.LoadInt64(&syncer.syncCount)
-		totalErrors += atomic.LoadInt64(&syncer.errorCount)
-		syncer.mu.RUnlock()
-	}
-	m.mu.RUnlock()
-
-	atomic.StoreInt64(&m.stats.TotalSyncs, totalSyncs)
-	atomic.StoreInt64(&m.stats.TotalErrors, totalErrors)
 }
 
 // cleanupRoutine 清理例程
@@ -571,7 +561,7 @@ func (m *PerAccountSyncManager) cleanupInactiveSyncers() {
 
 // GetStats 获取统计信息
 func (m *PerAccountSyncManager) GetStats() PerAccountSyncStats {
-	m.updateStats() // 强制更新一次
+	m.updateConcurrentStats()
 	return PerAccountSyncStats{
 		ActiveSyncers:     atomic.LoadInt64(&m.stats.ActiveSyncers),
 		TotalSyncers:      atomic.LoadInt64(&m.stats.TotalSyncers),
@@ -799,22 +789,26 @@ func (as *AccountSyncer) performSync() {
 
 	as.mu.Lock()
 	as.LastSyncTime = time.Now()
+	shouldHandleError := err != nil
 	if err != nil {
 		atomic.AddInt64(&as.errorCount, 1)
 		atomic.AddInt64(&as.manager.stats.TotalErrors, 1)
 		as.lastError = err
 		as.lastErrorTime = time.Now()
 		as.logger.Error("Sync cycle failed: %v", err)
+	} else {
+		as.lastError = nil
+	}
+	as.mu.Unlock()
 
+	if shouldHandleError {
 		// 智能错误处理：分析错误类型并决定是否自动禁用
 		as.handleSyncError(err)
 	} else {
-		as.lastError = nil
 		// 同步成功，重置错误计数
 		as.resetErrorStatus()
 		// 日志已在doSync中输出
 	}
-	as.mu.Unlock()
 }
 
 // doSync 执行实际的邮件同步
@@ -1341,18 +1335,23 @@ func (as *AccountSyncer) SyncNowWithContext(ctx context.Context, source EmailIng
 
 	as.mu.Lock()
 	as.LastSyncTime = time.Now()
+	shouldHandleError := err != nil
 	if err != nil {
 		atomic.AddInt64(&as.errorCount, 1)
 		atomic.AddInt64(&as.manager.stats.TotalErrors, 1)
 		as.lastError = err
 		as.lastErrorTime = time.Now()
 		as.logger.Error("Immediate sync failed: %v", err)
-		as.handleSyncError(err)
 	} else {
 		as.lastError = nil
-		as.resetErrorStatus()
 	}
 	as.mu.Unlock()
+
+	if shouldHandleError {
+		as.handleSyncError(err)
+	} else {
+		as.resetErrorStatus()
+	}
 
 	result := &SyncResult{
 		EmailsSynced: len(emails),

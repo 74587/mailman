@@ -13,9 +13,12 @@ import (
 
 // GetRuntimeObservabilityHandler returns the in-memory runtime observability snapshot.
 func (h *APIHandler) GetRuntimeObservabilityHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
 	snapshot := services.GetRuntimeObservabilitySnapshot()
 	snapshot.Process = buildRuntimeProcessSnapshot()
-	snapshot.Database = buildRuntimeDatabaseSnapshot(r.Context())
+	snapshot.Database = buildRuntimeDatabaseSnapshot(ctx)
 	if h.perAccountSyncManager != nil {
 		stats := h.perAccountSyncManager.GetStats()
 		snapshot.SyncConcurrency = services.RuntimeSyncConcurrencySnapshot{
