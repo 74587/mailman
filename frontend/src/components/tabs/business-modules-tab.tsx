@@ -5,16 +5,17 @@ import { createPortal } from 'react-dom'
 import { closestCenter, DndContext, DragOverlay, PointerSensor, type DragEndEvent, type DragStartEvent, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove, rectSortingStrategy, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Briefcase, Check, ChevronLeft, ChevronRight, ExternalLink, GripVertical, ImagePlus, Loader2, MailCheck, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Tag, Trash2, Workflow, X } from 'lucide-react'
+import { BookOpen, Briefcase, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, GripVertical, ImagePlus, Loader2, MailCheck, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Tag, Trash2, Workflow, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { businessAccountService, BusinessClaimDefaults, BusinessCustomFieldType, BusinessEmailConstraints, BusinessModule, BusinessModulePayload, BusinessScenario, BusinessScenarioPayload, BusinessStatusOption } from '@/services/business-account.service'
+import { businessAccountService, BusinessClaimDefaults, BusinessCustomFieldType, BusinessEmailClaimPayload, BusinessEmailConstraints, BusinessModule, BusinessModulePayload, BusinessScenario, BusinessScenarioPayload, BusinessStatusOption } from '@/services/business-account.service'
 import { extractorTemplateV2Service } from '@/services/extractor-template-v2.service'
 import { Modal, ModalBody, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '@/components/ui/modal'
 import { Switch } from '@/components/ui/switch'
 import ExtractorCreationWizard from '@/components/extractor-v2/extractor-creation-wizard'
 import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 import { registerRefreshCallback, unregisterRefreshCallback } from '@/lib/tab-utils'
+import { getApiBaseUrl } from '@/lib/runtime-url'
 import type { ExtractorTemplateV2 } from '@/types'
 
 type ModuleFieldDraft = {
@@ -78,6 +79,8 @@ type ScenarioDraft = {
 }
 
 type ModuleEditorScene = 'profile' | 'email-policy' | 'scenarios'
+type GuideEndpointKey = 'claim' | 'pickup' | 'complete' | 'release' | 'renew'
+type GuideLanguage = 'curl' | 'node' | 'python' | 'go'
 
 const moduleColors = ['#2563eb', '#10b981', '#f97316', '#8b5cf6', '#ec4899', '#06b6d4', '#64748b']
 const statusColors = ['#10b981', '#f59e0b', '#64748b', '#94a3b8', '#ef4444', '#8b5cf6', '#06b6d4']
@@ -100,6 +103,12 @@ const prefixStrategies: Array<{
     { value: 'template', label: '模板' },
     { value: 'random', label: '随机' },
     { value: 'literal', label: '固定' }
+]
+const guideLanguages: Array<{ value: GuideLanguage; label: string }> = [
+    { value: 'curl', label: 'curl' },
+    { value: 'node', label: 'Node.js' },
+    { value: 'python', label: 'Python' },
+    { value: 'go', label: 'Go' }
 ]
 const scenarioPresets: Array<Pick<ScenarioDraft, 'key' | 'name' | 'description'>> = [
     {
@@ -459,6 +468,694 @@ function formatScenarioSummary(scenarios: ScenarioDraft[]) {
     return names + (scenarios.length > 2 ? ` +${scenarios.length - 2}` : '')
 }
 
+function getGuideClaimTtl(module: BusinessModule) {
+    const ttl = Number(module.claimDefaults?.ttlSeconds || 600)
+    if (!Number.isFinite(ttl)) return 600
+    return Math.min(3600, Math.max(60, ttl))
+}
+
+function getModuleAllowedSuffixes(module: BusinessModule) {
+    const constraints = module.emailConstraints || {}
+    const defaults = module.claimDefaults || {}
+    return normalizeSuffixList(constraints.allowedSuffixes || defaults.emailSuffixes || (defaults.emailSuffix ? [defaults.emailSuffix] : []))
+}
+
+function getModuleBlockedSuffixes(module: BusinessModule) {
+    const constraints = module.emailConstraints || {}
+    const defaults = module.claimDefaults || {}
+    return normalizeSuffixList(constraints.blockedSuffixes || defaults.blockedEmailSuffixes || [])
+}
+
+function isModuleEmailModeSupported(module: BusinessModule, mode: BusinessEmailMode) {
+    const constraints = module.emailConstraints || {}
+    if (mode === 'primary') return true
+    if (mode === 'alias') return constraints.allowAliases !== false
+    if (mode === 'domain') return constraints.allowDomainMail !== false
+    if (mode === 'forwarded') return constraints.allowForwarded !== false
+    return true
+}
+
+function buildExampleCustomFields(module: BusinessModule) {
+    const fields = readModuleFields(module).filter(field => field.key.trim())
+    const result: Record<string, string> = {}
+    fields.forEach(field => {
+        const key = field.key.trim()
+        const fallback = field.value.trim()
+        if (fallback) {
+            result[key] = fallback
+            return
+        }
+        if (field.type === 'username') result[key] = 'registered_user_001'
+        else if (field.type === 'password') result[key] = 'replace-with-real-password'
+        else if (field.type === 'totp') result[key] = 'JBSWY3DPEHPK3PXP'
+        else if (field.type === 'url') result[key] = module.loginUrl || module.website || 'https://example.com/login'
+        else if (field.type === 'email') result[key] = 'user@example.com'
+        else if (field.type === 'phone') result[key] = '+1 555 0100'
+        else if (field.type === 'date') result[key] = '2026-06-20'
+        else if (field.type === 'number') result[key] = '1'
+        else if (field.type === 'note') result[key] = `${module.name} registration note`
+        else result[key] = `${key}_value`
+    })
+    return result
+}
+
+function getGuideCompletionStatus(module: BusinessModule) {
+    const statuses = readModuleStatuses(module)
+    return statuses.find(status => status.value === 'active')?.value || statuses[0]?.value || 'active'
+}
+
+function buildGuideClaimPayload(module: BusinessModule): BusinessEmailClaimPayload {
+    const defaults = module.claimDefaults || {}
+    const constraints = module.emailConstraints || {}
+    const allowedSuffixes = getModuleAllowedSuffixes(module)
+    const blockedSuffixes = getModuleBlockedSuffixes(module)
+    const suffixPriorityEnabled = readBoolean(constraints.allowedSuffixPriorityEnabled ?? constraints.emailSuffixPriorityEnabled ?? constraints.suffixPriorityEnabled, false)
+    const modePriorityEnabled = readBoolean(defaults.emailModePriorityEnabled ?? defaults.emailModeSortEnabled ?? defaults.enableEmailModePriority, false)
+    const orderedModes = normalizeEmailModeOrder(defaults.emailModePriority || defaults.emailModeOrder).filter(mode => isModuleEmailModeSupported(module, mode))
+    const customFields = buildExampleCustomFields(module)
+    const payload: BusinessEmailClaimPayload = {
+        ttlSeconds: getGuideClaimTtl(module),
+        claimedBy: 'business-registration-worker',
+        businessAccount: {
+            displayName: `${module.name} 自动注册账号`,
+            username: 'pending-registration',
+            description: `由 ${module.name} 接入流程创建，完成注册后会写入真实账号资料。`,
+            customFields: Object.keys(customFields).length ? customFields : undefined,
+            extraData: {
+                source: 'integration-guide',
+                moduleId: module.id
+            }
+        }
+    }
+
+    if (modePriorityEnabled) {
+        payload.emailModePriorityEnabled = true
+        payload.emailModePriority = orderedModes.length ? orderedModes : normalizeEmailModeOrder(undefined)
+    } else if (defaults.emailMode && defaults.emailMode !== 'auto') {
+        payload.emailMode = defaults.emailMode
+    }
+
+    if (allowedSuffixes.length) {
+        payload.emailSuffixes = allowedSuffixes
+        if (suffixPriorityEnabled) payload.emailSuffixPriorityEnabled = true
+    }
+    if (blockedSuffixes.length) payload.blockedEmailSuffixes = blockedSuffixes
+
+    if (defaults.useDomainMail !== undefined) payload.useDomainMail = defaults.useDomainMail
+    if (defaults.domain) payload.domain = defaults.domain
+    if (defaults.useAlias !== undefined) payload.useAlias = defaults.useAlias
+    if (defaults.aliasType) payload.aliasType = defaults.aliasType
+    if (defaults.prefixStrategy) payload.prefixStrategy = defaults.prefixStrategy
+    if (defaults.prefix) payload.prefix = defaults.prefix
+    if (defaults.prefixTemplate) payload.prefixTemplate = defaults.prefixTemplate
+    if (defaults.builtinPrefix) payload.builtinPrefix = defaults.builtinPrefix
+    if (defaults.randomLength) payload.randomLength = defaults.randomLength
+
+    return payload
+}
+
+function buildGuideCompletePayload(module: BusinessModule) {
+    const customFields = buildExampleCustomFields(module)
+    return {
+        claimToken: '<claim.claimToken>',
+        username: 'registered_user_001',
+        password: 'replace-with-real-password',
+        status: getGuideCompletionStatus(module),
+        customFields: Object.keys(customFields).length ? customFields : undefined,
+        extraData: {
+            registeredBy: 'integration-worker'
+        }
+    }
+}
+
+function buildGuideReleasePayload() {
+    return {
+        claimToken: '<claim.claimToken>',
+        reason: 'registration_failed',
+        message: '注册失败，释放本次占用的注册邮箱',
+        deletePendingAccount: true,
+        exclusion: {
+            type: 'cooldown',
+            target: 'both',
+            durationSeconds: 1800,
+            reason: 'registration_failed'
+        }
+    }
+}
+
+function toPrettyJson(value: unknown) {
+    return JSON.stringify(value, null, 2)
+}
+
+function shellSingleQuote(value: string) {
+    return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function buildBusinessIntegrationGuide(module: BusinessModule) {
+    const apiBase = getApiBaseUrl()
+    const claimPath = `/business-modules/${module.id}/email-accounts/claim`
+    const pickupPath = '/pickup/poll'
+    const completePath = '/business-accounts/{businessAccountId}/complete-registration'
+    const releasePath = '/business-accounts/{businessAccountId}/release-registration-claim'
+    const renewPath = '/business-accounts/{businessAccountId}/renew-registration-claim'
+    const claimPayload = buildGuideClaimPayload(module)
+    const completePayload = buildGuideCompletePayload(module)
+    const releasePayload = buildGuideReleasePayload()
+    const renewPayload = {
+        claimToken: '<claim.claimToken>',
+        ttlSeconds: getGuideClaimTtl(module),
+        message: '注册流程仍在进行，延长邮箱占用时间'
+    }
+    const pickupPayload = {
+        account_id: '<claim.pickup.account_id>',
+        to_query: '<claim.pickup.to_query>',
+        keep_alive_seconds: 90,
+        sync_interval: 5,
+        since: '<ISO8601 time, for example 10 minutes ago>',
+        limit: 10
+    }
+    const allowedSuffixes = getModuleAllowedSuffixes(module)
+    const blockedSuffixes = getModuleBlockedSuffixes(module)
+    const defaults = module.claimDefaults || {}
+    const constraints = module.emailConstraints || {}
+    const modePriorityEnabled = readBoolean(defaults.emailModePriorityEnabled ?? defaults.emailModeSortEnabled ?? defaults.enableEmailModePriority, false)
+    const suffixPriorityEnabled = readBoolean(constraints.allowedSuffixPriorityEnabled ?? constraints.emailSuffixPriorityEnabled ?? constraints.suffixPriorityEnabled, false)
+    const orderedModes = normalizeEmailModeOrder(defaults.emailModePriority || defaults.emailModeOrder)
+        .filter(mode => isModuleEmailModeSupported(module, mode))
+        .map(mode => emailModes.find(item => item.value === mode)?.label || mode)
+
+    return {
+        apiBase,
+        claimPath,
+        pickupPath,
+        completePath,
+        releasePath,
+        renewPath,
+        claimPayload,
+        pickupPayload,
+        completePayload,
+        releasePayload,
+        renewPayload,
+        policyItems: [
+            { label: '模块 ID', value: String(module.id) },
+            { label: '模块名称', value: module.name },
+            { label: 'API Base', value: apiBase },
+            { label: 'Claim 有效期', value: `${getGuideClaimTtl(module)} 秒` },
+            { label: '邮箱类型', value: modePriorityEnabled ? `按顺序尝试：${orderedModes.join(' > ') || '主邮箱'}` : emailModes.find(mode => mode.value === normalizeDraftEmailMode(defaults.emailMode))?.label || '主邮箱' },
+            { label: '允许后缀', value: allowedSuffixes.length ? `${allowedSuffixes.join('、')}${suffixPriorityEnabled ? '（按顺序优先）' : ''}` : '不限制' },
+            { label: '禁止后缀', value: blockedSuffixes.length ? blockedSuffixes.join('、') : '未配置' },
+            { label: '别名/域名/转发', value: `${constraints.allowAliases === false ? '禁用别名' : '允许别名'} / ${constraints.allowDomainMail === false ? '禁用域名' : '允许域名'} / ${constraints.allowForwarded === false ? '禁用转发' : '允许转发'}` }
+        ],
+        endpoints: [
+            { key: 'claim' as GuideEndpointKey, method: 'POST', path: claimPath, label: '申请并占用注册邮箱', response: '201，返回 claimToken、businessAccountId、pickup 参数' },
+            { key: 'pickup' as GuideEndpointKey, method: 'POST', path: pickupPath, label: '轮询取件/提取验证码', response: '200，返回 emails 与 extractions' },
+            { key: 'complete' as GuideEndpointKey, method: 'POST', path: completePath, label: '注册成功后完成 claim', response: '200，返回业务账号' },
+            { key: 'release' as GuideEndpointKey, method: 'POST', path: releasePath, label: '注册失败后释放 claim', response: '200，释放或删除待注册账号' },
+            { key: 'renew' as GuideEndpointKey, method: 'POST', path: renewPath, label: '注册耗时较长时续租 claim', response: '200，返回新的 claimExpiresAt' }
+        ]
+    }
+}
+
+type BusinessIntegrationGuide = ReturnType<typeof buildBusinessIntegrationGuide>
+
+function getGuideEndpointSamplePayload(guide: BusinessIntegrationGuide, endpointKey: GuideEndpointKey): Record<string, any> {
+    if (endpointKey === 'claim') return guide.claimPayload
+    if (endpointKey === 'pickup') {
+        return {
+            account_id: 1,
+            to_query: 'registration@example.com',
+            keep_alive_seconds: 90,
+            sync_interval: 5,
+            since: '2026-06-20T00:00:00Z',
+            limit: 10
+        }
+    }
+    if (endpointKey === 'complete') {
+        return {
+            ...guide.completePayload,
+            claimToken: 'replace-with-claim-token'
+        }
+    }
+    if (endpointKey === 'release') {
+        return {
+            ...guide.releasePayload,
+            claimToken: 'replace-with-claim-token'
+        }
+    }
+    return {
+        ...guide.renewPayload,
+        claimToken: 'replace-with-claim-token'
+    }
+}
+
+function getBusinessAccountEndpointPath(endpointKey: GuideEndpointKey, accountExpression: string) {
+    if (endpointKey === 'complete') return `/business-accounts/${accountExpression}/complete-registration`
+    if (endpointKey === 'release') return `/business-accounts/${accountExpression}/release-registration-claim`
+    if (endpointKey === 'renew') return `/business-accounts/${accountExpression}/renew-registration-claim`
+    return ''
+}
+
+function buildGuideEndpointCode(guide: BusinessIntegrationGuide, endpointKey: GuideEndpointKey, language: GuideLanguage) {
+    if (language === 'node') return buildNodeEndpointCode(guide, endpointKey)
+    if (language === 'python') return buildPythonEndpointCode(guide, endpointKey)
+    if (language === 'go') return buildGoEndpointCode(guide, endpointKey)
+    return buildCurlEndpointCode(guide, endpointKey)
+}
+
+function buildCurlEndpointCode(guide: BusinessIntegrationGuide, endpointKey: GuideEndpointKey) {
+    const payload = getGuideEndpointSamplePayload(guide, endpointKey)
+    const payloadJson = toPrettyJson(payload)
+    const needsBusinessAccount = endpointKey === 'complete' || endpointKey === 'release' || endpointKey === 'renew'
+    const endpointPath = endpointKey === 'claim' ? guide.claimPath : endpointKey === 'pickup' ? guide.pickupPath : getBusinessAccountEndpointPath(endpointKey, '$BUSINESS_ACCOUNT_ID')
+    const businessAccountEnv = needsBusinessAccount ? '\nexport BUSINESS_ACCOUNT_ID="1" # 替换为 claim.businessAccountId' : ''
+    const pickupHint = endpointKey === 'pickup' ? '\n# account_id 与 to_query 来自 claim.pickup.account_id / claim.pickup.to_query' : ''
+    const tokenHint = needsBusinessAccount ? '\n# claimToken 来自 claim.claimToken' : ''
+    return `export MAILMAN_API_BASE="${guide.apiBase}"
+export MAILMAN_TOKEN="replace-with-your-token"${businessAccountEnv}${pickupHint}${tokenHint}
+
+curl -sS -X POST "$MAILMAN_API_BASE${endpointPath}" \\
+  -H "Authorization: Bearer $MAILMAN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d ${shellSingleQuote(payloadJson)}`
+}
+
+function buildNodeEndpointCode(guide: BusinessIntegrationGuide, endpointKey: GuideEndpointKey) {
+    const payload = getGuideEndpointSamplePayload(guide, endpointKey)
+    const needsBusinessAccount = endpointKey === 'complete' || endpointKey === 'release' || endpointKey === 'renew'
+    const endpointPathExpression =
+        endpointKey === 'claim'
+            ? `"${guide.claimPath}"`
+            : endpointKey === 'pickup'
+              ? `"${guide.pickupPath}"`
+              : endpointKey === 'complete'
+                ? '"/business-accounts/" + businessAccountId + "/complete-registration"'
+                : endpointKey === 'release'
+                  ? '"/business-accounts/" + businessAccountId + "/release-registration-claim"'
+                  : '"/business-accounts/" + businessAccountId + "/renew-registration-claim"'
+    const accountSetup = needsBusinessAccount ? 'const businessAccountId = 1; // 替换为 claim.businessAccountId\n' : ''
+    const payloadText =
+        endpointKey === 'pickup'
+            ? `{
+  account_id: 1, // 替换为 claim.pickup.account_id
+  to_query: "registration@example.com", // 替换为 claim.pickup.to_query
+  keep_alive_seconds: 90,
+  sync_interval: 5,
+  since: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+  limit: 10,
+}`
+            : toPrettyJson(payload)
+
+    return `const API_BASE = process.env.MAILMAN_API_BASE ?? "${guide.apiBase}";
+const TOKEN = process.env.MAILMAN_TOKEN;
+
+if (!TOKEN) throw new Error("Missing MAILMAN_TOKEN");
+
+async function post(path, body) {
+  const response = await fetch(API_BASE + path, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + TOKEN,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(response.status + " " + await response.text());
+  return response.json();
+}
+
+${accountSetup}const payload = ${payloadText};
+const result = await post(${endpointPathExpression}, payload);
+console.log(result);`
+}
+
+function buildPythonEndpointCode(guide: BusinessIntegrationGuide, endpointKey: GuideEndpointKey) {
+    const payload = getGuideEndpointSamplePayload(guide, endpointKey)
+    const needsBusinessAccount = endpointKey === 'complete' || endpointKey === 'release' || endpointKey === 'renew'
+    const endpointPathExpression = endpointKey === 'claim' ? `"${guide.claimPath}"` : endpointKey === 'pickup' ? `"${guide.pickupPath}"` : `f"${getBusinessAccountEndpointPath(endpointKey, '{business_account_id}')}"`
+    const accountSetup = needsBusinessAccount ? 'business_account_id = 1  # 替换为 claim["businessAccountId"]\n' : ''
+    const payloadText =
+        endpointKey === 'pickup'
+            ? `{
+    "account_id": 1,  # 替换为 claim["pickup"]["account_id"]
+    "to_query": "registration@example.com",  # 替换为 claim["pickup"]["to_query"]
+    "keep_alive_seconds": 90,
+    "sync_interval": 5,
+    "since": (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),
+    "limit": 10,
+}`
+            : `json.loads(r'''${toPrettyJson(payload)}''')`
+
+    return `import json
+import os
+from datetime import datetime, timedelta, timezone
+
+import requests
+
+API_BASE = os.getenv("MAILMAN_API_BASE", "${guide.apiBase}")
+TOKEN = os.environ["MAILMAN_TOKEN"]
+
+def post(path, payload):
+    response = requests.post(
+        f"{API_BASE}{path}",
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json()
+
+${accountSetup}payload = ${payloadText}
+result = post(${endpointPathExpression}, payload)
+print(result)`
+}
+
+function buildGoEndpointCode(guide: BusinessIntegrationGuide, endpointKey: GuideEndpointKey) {
+    const payload = getGuideEndpointSamplePayload(guide, endpointKey)
+    const payloadJson = toPrettyJson(payload)
+    const needsBusinessAccount = endpointKey === 'complete' || endpointKey === 'release' || endpointKey === 'renew'
+    const timeImport = endpointKey === 'pickup' ? '\n\t"time"' : ''
+    const accountSetup = needsBusinessAccount ? '\tbusinessAccountID := 1 // 替换为 claim.businessAccountId\n' : ''
+    const endpointPathExpression = endpointKey === 'claim' ? `"${guide.claimPath}"` : endpointKey === 'pickup' ? `"${guide.pickupPath}"` : `fmt.Sprintf("${getBusinessAccountEndpointPath(endpointKey, '%d')}", businessAccountID)`
+    const pickupSince = endpointKey === 'pickup' ? '\tpayload["since"] = time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)\n' : ''
+    return `package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"${timeImport}
+)
+
+func getenv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func postJSON(apiBase, token, path string, payload any, out any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, apiBase+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("%s: %s", resp.Status, string(responseBody))
+	}
+	return json.Unmarshal(responseBody, out)
+}
+
+func main() {
+	apiBase := getenv("MAILMAN_API_BASE", "${guide.apiBase}")
+	token := os.Getenv("MAILMAN_TOKEN")
+	if token == "" {
+		panic("Missing MAILMAN_TOKEN")
+	}
+
+${accountSetup}	var payload map[string]any
+	if err := json.Unmarshal([]byte(${JSON.stringify(payloadJson)}), &payload); err != nil {
+		panic(err)
+	}
+${pickupSince}	var result map[string]any
+	if err := postJSON(apiBase, token, ${endpointPathExpression}, payload, &result); err != nil {
+		panic(err)
+	}
+	pretty, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(pretty))
+}`
+}
+
+function buildGuideCodeSamples({
+    apiBase,
+    module,
+    claimPath,
+    pickupPath,
+    claimPayload
+}: {
+    apiBase: string
+    module: BusinessModule
+    claimPath: string
+    pickupPath: string
+    claimPayload: BusinessEmailClaimPayload
+}) {
+    const claimJson = toPrettyJson(claimPayload)
+    const completionStatus = getGuideCompletionStatus(module)
+    const curl = `export MAILMAN_API_BASE="${apiBase}"
+export MAILMAN_TOKEN="replace-with-your-token"
+
+CLAIM_RESPONSE=$(curl -sS -X POST "$MAILMAN_API_BASE${claimPath}" \\
+  -H "Authorization: Bearer $MAILMAN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d ${shellSingleQuote(claimJson)})
+
+BUSINESS_ACCOUNT_ID=$(printf '%s' "$CLAIM_RESPONSE" | jq -r '.businessAccountId')
+CLAIM_TOKEN=$(printf '%s' "$CLAIM_RESPONSE" | jq -r '.claimToken')
+PICKUP_ACCOUNT_ID=$(printf '%s' "$CLAIM_RESPONSE" | jq -r '.pickup.account_id')
+TO_QUERY=$(printf '%s' "$CLAIM_RESPONSE" | jq -r '.pickup.to_query')
+SINCE=$(date -u -v-10M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+
+curl -sS -X POST "$MAILMAN_API_BASE${pickupPath}" \\
+  -H "Authorization: Bearer $MAILMAN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d "$(jq -n --argjson account_id "$PICKUP_ACCOUNT_ID" --arg to_query "$TO_QUERY" --arg since "$SINCE" '{account_id:$account_id,to_query:$to_query,keep_alive_seconds:90,sync_interval:5,since:$since,limit:10}')"
+
+curl -sS -X POST "$MAILMAN_API_BASE/business-accounts/$BUSINESS_ACCOUNT_ID/complete-registration" \\
+  -H "Authorization: Bearer $MAILMAN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d "$(jq -n --arg claimToken "$CLAIM_TOKEN" '{claimToken:$claimToken,username:"registered_user_001",password:"replace-with-real-password",status:"${completionStatus}" }')"
+
+# 注册失败时改调用释放接口，避免邮箱被一直占用：
+curl -sS -X POST "$MAILMAN_API_BASE/business-accounts/$BUSINESS_ACCOUNT_ID/release-registration-claim" \\
+  -H "Authorization: Bearer $MAILMAN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d "$(jq -n --arg claimToken "$CLAIM_TOKEN" '{claimToken:$claimToken,reason:"registration_failed",deletePendingAccount:true,exclusion:{type:"cooldown",target:"both",durationSeconds:1800,reason:"registration_failed"}}')"`
+
+    const node = `const API_BASE = process.env.MAILMAN_API_BASE ?? "${apiBase}";
+const TOKEN = process.env.MAILMAN_TOKEN;
+
+if (!TOKEN) throw new Error("Missing MAILMAN_TOKEN");
+
+async function post(path, body) {
+  const response = await fetch(\`\${API_BASE}\${path}\`, {
+    method: "POST",
+    headers: {
+      Authorization: \`Bearer \${TOKEN}\`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(\`\${response.status} \${await response.text()}\`);
+  return response.json();
+}
+
+const claim = await post("${claimPath}", ${claimJson});
+
+const pickup = await post("${pickupPath}", {
+  account_id: claim.pickup.account_id,
+  to_query: claim.pickup.to_query,
+  keep_alive_seconds: 90,
+  sync_interval: 5,
+  since: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+  limit: 10,
+});
+
+console.log("matched emails", pickup.emails);
+
+await post(\`/business-accounts/\${claim.businessAccountId}/complete-registration\`, {
+  claimToken: claim.claimToken,
+  username: "registered_user_001",
+  password: "replace-with-real-password",
+  status: "${completionStatus}",
+});
+
+// 注册失败时释放占用：
+// await post(\`/business-accounts/\${claim.businessAccountId}/release-registration-claim\`, {
+//   claimToken: claim.claimToken,
+//   reason: "registration_failed",
+//   deletePendingAccount: true,
+//   exclusion: { type: "cooldown", target: "both", durationSeconds: 1800, reason: "registration_failed" },
+// });`
+
+    const python = `import json
+import os
+from datetime import datetime, timedelta, timezone
+
+import requests
+
+API_BASE = os.getenv("MAILMAN_API_BASE", "${apiBase}")
+TOKEN = os.environ["MAILMAN_TOKEN"]
+
+def post(path, payload):
+    response = requests.post(
+        f"{API_BASE}{path}",
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json()
+
+claim_payload = json.loads(r'''${claimJson}''')
+claim = post("${claimPath}", claim_payload)
+
+pickup = post("${pickupPath}", {
+    "account_id": claim["pickup"]["account_id"],
+    "to_query": claim["pickup"]["to_query"],
+    "keep_alive_seconds": 90,
+    "sync_interval": 5,
+    "since": (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat(),
+    "limit": 10,
+})
+print("matched emails", pickup.get("emails", []))
+
+post(f"/business-accounts/{claim['businessAccountId']}/complete-registration", {
+    "claimToken": claim["claimToken"],
+    "username": "registered_user_001",
+    "password": "replace-with-real-password",
+    "status": "${completionStatus}",
+})
+
+# 注册失败时释放占用：
+# post(f"/business-accounts/{claim['businessAccountId']}/release-registration-claim", {
+#     "claimToken": claim["claimToken"],
+#     "reason": "registration_failed",
+#     "deletePendingAccount": True,
+#     "exclusion": {"type": "cooldown", "target": "both", "durationSeconds": 1800, "reason": "registration_failed"},
+# })`
+
+    const go = `package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"time"
+)
+
+func getenv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func postJSON(apiBase, token, path string, payload any, out any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, apiBase+path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	responseBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("%s: %s", resp.Status, string(responseBody))
+	}
+	return json.Unmarshal(responseBody, out)
+}
+
+func main() {
+	apiBase := getenv("MAILMAN_API_BASE", "${apiBase}")
+	token := os.Getenv("MAILMAN_TOKEN")
+	if token == "" {
+		panic("Missing MAILMAN_TOKEN")
+	}
+
+	var claimPayload map[string]any
+	if err := json.Unmarshal([]byte(${JSON.stringify(claimJson)}), &claimPayload); err != nil {
+		panic(err)
+	}
+
+	var claim struct {
+		BusinessAccountID int    \`json:"businessAccountId"\`
+		ClaimToken        string \`json:"claimToken"\`
+		Pickup            struct {
+			AccountID int    \`json:"account_id"\`
+			ToQuery   string \`json:"to_query"\`
+		} \`json:"pickup"\`
+	}
+	if err := postJSON(apiBase, token, "${claimPath}", claimPayload, &claim); err != nil {
+		panic(err)
+	}
+
+	var pickup map[string]any
+	err := postJSON(apiBase, token, "${pickupPath}", map[string]any{
+		"account_id":         claim.Pickup.AccountID,
+		"to_query":           claim.Pickup.ToQuery,
+		"keep_alive_seconds": 90,
+		"sync_interval":      5,
+		"since":              time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339),
+		"limit":              10,
+	}, &pickup)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("matched emails: %#v\\n", pickup["emails"])
+
+	var completed map[string]any
+	err = postJSON(apiBase, token, fmt.Sprintf("/business-accounts/%d/complete-registration", claim.BusinessAccountID), map[string]any{
+		"claimToken": claim.ClaimToken,
+		"username":   "registered_user_001",
+		"password":   "replace-with-real-password",
+		"status":     "${completionStatus}",
+	}, &completed)
+	if err != nil {
+		panic(err)
+	}
+}`
+
+    return [
+        { label: 'curl', code: curl },
+        { label: 'Node.js', code: node },
+        { label: 'Python', code: python },
+        { label: 'Go', code: go }
+    ]
+}
+
+async function copyToClipboard(text: string) {
+    try {
+        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text)
+        } else if (typeof document !== 'undefined') {
+            const textarea = document.createElement('textarea')
+            textarea.value = text
+            textarea.style.position = 'fixed'
+            textarea.style.left = '-9999px'
+            document.body.appendChild(textarea)
+            textarea.select()
+            document.execCommand('copy')
+            document.body.removeChild(textarea)
+        }
+        toast.success('已复制到剪贴板')
+    } catch {
+        toast.error('复制失败，请手动选择代码')
+    }
+}
+
 export default function BusinessModulesTab() {
     const [modules, setModules] = useState<BusinessModule[]>([])
     const [search, setSearch] = useState('')
@@ -469,6 +1166,7 @@ export default function BusinessModulesTab() {
     const [saving, setSaving] = useState(false)
     const [modalOpen, setModalOpen] = useState(false)
     const [editing, setEditing] = useState<BusinessModule | null>(null)
+    const [guideModule, setGuideModule] = useState<BusinessModule | null>(null)
     const [editorScene, setEditorScene] = useState<ModuleEditorScene>('profile')
     const [draft, setDraft] = useState<ModuleDraft>(emptyDraft)
     const [originalScenarios, setOriginalScenarios] = useState<BusinessScenario[]>([])
@@ -868,6 +1566,9 @@ export default function BusinessModulesTab() {
                                             <td className="px-4 py-3 text-xs text-gray-500">{module.updatedAt ? new Date(module.updatedAt).toLocaleString() : '-'}</td>
                                             <td className="px-4 py-3">
                                                 <div className="flex justify-end gap-1">
+                                                    <button type="button" onClick={() => setGuideModule(module)} title="接入手册" aria-label={`${module.name} 接入手册`} className="rounded-lg p-2 text-gray-500 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-950/30">
+                                                        <BookOpen className="h-4 w-4" />
+                                                    </button>
                                                     <button onClick={() => openEdit(module)} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-blue-600 dark:hover:bg-gray-800">
                                                         <Pencil className="h-4 w-4" />
                                                     </button>
@@ -900,6 +1601,8 @@ export default function BusinessModulesTab() {
                     </div>
                 )}
             </div>
+
+            <BusinessIntegrationGuideModal module={guideModule} open={Boolean(guideModule)} onOpenChange={open => !open && setGuideModule(null)} />
 
             <Modal
                 open={modalOpen}
@@ -1308,6 +2011,179 @@ export default function BusinessModulesTab() {
 
 const inputClass = 'h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950'
 const textareaClass = 'min-h-[96px] w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950'
+
+function BusinessIntegrationGuideModal({ module, open, onOpenChange }: { module: BusinessModule | null; open: boolean; onOpenChange: (open: boolean) => void }) {
+    const [selectedEndpointKey, setSelectedEndpointKey] = useState<GuideEndpointKey>('claim')
+    const [selectedLanguage, setSelectedLanguage] = useState<GuideLanguage>('curl')
+
+    useEffect(() => {
+        if (!open || !module) return
+        setSelectedEndpointKey('claim')
+        setSelectedLanguage('curl')
+    }, [module?.id, open])
+
+    if (!module) return null
+    const guide = buildBusinessIntegrationGuide(module)
+    const selectedEndpoint = guide.endpoints.find(endpoint => endpoint.key === selectedEndpointKey) || guide.endpoints[0]
+    const selectedCode = buildGuideEndpointCode(guide, selectedEndpoint.key, selectedLanguage)
+
+    return (
+        <Modal open={open} onOpenChange={onOpenChange}>
+            <ModalContent size="full" className="h-[92vh] max-h-[92vh] max-w-[96vw]">
+                <ModalHeader>
+                    <ModalTitle className="flex items-center gap-2">
+                        <BookOpen className="h-5 w-5 text-blue-600" />
+                        {module.name} 接入手册
+                    </ModalTitle>
+                    <ModalDescription>按当前业务模块和 API 配置实时生成。复制示例前请替换 `MAILMAN_TOKEN`，或把 `MAILMAN_API_BASE` 指向目标实例。</ModalDescription>
+                </ModalHeader>
+                <ModalBody className="space-y-5">
+                    <GuideSection title="接入顺序">
+                        <div className="grid gap-3 md:grid-cols-3">
+                            <GuideStep index={1} title="申请邮箱" description="调用模块 claim 接口，系统会按邮箱模式和后缀策略占用一个注册邮箱。" />
+                            <GuideStep index={2} title="取件验证" description="使用 claim 返回的 pickup.account_id 与 pickup.to_query 轮询验证码或确认链接。" />
+                            <GuideStep index={3} title="完成或释放" description="注册成功调用 complete；失败调用 release 并可写入冷却排除，避免重复踩同一邮箱。" />
+                        </div>
+                    </GuideSection>
+
+                    <div className="grid gap-4 xl:grid-cols-[minmax(560px,0.95fr)_minmax(540px,1.05fr)]">
+                        <GuideSection title="接口清单">
+                            <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+                                <table className="min-w-full divide-y divide-gray-100 text-sm dark:divide-gray-800">
+                                    <thead className="bg-gray-50 text-xs text-gray-500 dark:bg-gray-950/60 dark:text-gray-400">
+                                        <tr>
+                                            <th className="w-[76px] px-3 py-2 text-left font-medium">方法</th>
+                                            <th className="px-3 py-2 text-left font-medium">路径</th>
+                                            <th className="w-[150px] px-3 py-2 text-left font-medium">用途</th>
+                                            <th className="w-[210px] px-3 py-2 text-left font-medium">返回</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                                        {guide.endpoints.map(endpoint => {
+                                            const selected = endpoint.key === selectedEndpoint.key
+                                            return (
+                                                <tr
+                                                    key={endpoint.key}
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    aria-selected={selected}
+                                                    onClick={() => setSelectedEndpointKey(endpoint.key)}
+                                                    onKeyDown={event => {
+                                                        if (event.key !== 'Enter' && event.key !== ' ') return
+                                                        event.preventDefault()
+                                                        setSelectedEndpointKey(endpoint.key)
+                                                    }}
+                                                    className={cn('cursor-pointer outline-none transition focus:bg-blue-50/80 dark:focus:bg-blue-950/30', selected ? 'bg-blue-50/80 dark:bg-blue-950/30' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50')}
+                                                >
+                                                    <td className="px-3 py-3">
+                                                        <span className="rounded bg-blue-50 px-2 py-0.5 font-mono text-xs font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-200">{endpoint.method}</span>
+                                                    </td>
+                                                    <td className="px-3 py-3 font-mono text-xs text-gray-700 dark:text-gray-200">{endpoint.path}</td>
+                                                    <td className="px-3 py-3 text-gray-600 dark:text-gray-300">{endpoint.label}</td>
+                                                    <td className="px-3 py-3 text-xs text-gray-500 dark:text-gray-400">{endpoint.response}</td>
+                                                </tr>
+                                            )
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </GuideSection>
+
+                        <GuideSection
+                            title="接口代码"
+                            actions={
+                                <select value={selectedLanguage} onChange={event => setSelectedLanguage(event.target.value as GuideLanguage)} className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-200">
+                                    {guideLanguages.map(language => (
+                                        <option key={language.value} value={language.value}>
+                                            {language.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            }
+                        >
+                            <div className="mb-3 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-950/60">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className="rounded bg-blue-50 px-2 py-0.5 font-mono text-xs font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-200">{selectedEndpoint.method}</span>
+                                    <span className="font-mono text-xs text-gray-700 dark:text-gray-200">{selectedEndpoint.path}</span>
+                                </div>
+                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{selectedEndpoint.label}，{selectedEndpoint.response}</p>
+                            </div>
+                            <IntegrationCodeBlock title={`${guideLanguages.find(language => language.value === selectedLanguage)?.label || 'curl'} 示例`} code={selectedCode} />
+                        </GuideSection>
+                    </div>
+
+                    <GuideSection title="当前模块参数">
+                        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                            {guide.policyItems.map(item => (
+                                <div key={item.label} className="rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-950/60">
+                                    <div className="text-xs text-gray-400">{item.label}</div>
+                                    <div className="mt-1 break-words text-sm font-medium text-gray-800 dark:text-gray-100">{item.value}</div>
+                                </div>
+                            ))}
+                            {(module.website || module.loginUrl) && (
+                                <div className="flex flex-wrap items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-950/60">
+                                    {module.website && (
+                                        <a href={module.website} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:text-blue-600 dark:border-gray-700 dark:text-gray-300">
+                                            <ExternalLink className="h-3.5 w-3.5" />
+                                            官网
+                                        </a>
+                                    )}
+                                    {module.loginUrl && (
+                                        <a href={module.loginUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 hover:text-blue-600 dark:border-gray-700 dark:text-gray-300">
+                                            <ExternalLink className="h-3.5 w-3.5" />
+                                            登录地址
+                                        </a>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </GuideSection>
+                </ModalBody>
+            </ModalContent>
+        </Modal>
+    )
+}
+
+function GuideSection({ title, children, actions }: { title: string; children: ReactNode; actions?: ReactNode }) {
+    return (
+        <section className="rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900">
+            <div className="mb-3 flex min-h-9 items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</h3>
+                {actions}
+            </div>
+            {children}
+        </section>
+    )
+}
+
+function GuideStep({ index, title, description }: { index: number; title: string; description: string }) {
+    return (
+        <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950/60">
+            <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-xs font-semibold text-white">{index}</span>
+                <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{description}</p>
+        </div>
+    )
+}
+
+function IntegrationCodeBlock({ title, code, compact = false }: { title: string; code: string; compact?: boolean }) {
+    return (
+        <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+            <div className="flex h-10 items-center justify-between border-b border-gray-100 bg-gray-50 px-3 dark:border-gray-800 dark:bg-gray-950/70">
+                <span className="text-xs font-semibold text-gray-600 dark:text-gray-300">{title}</span>
+                <button type="button" onClick={() => void copyToClipboard(code)} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-white hover:text-blue-600 dark:hover:bg-gray-800 dark:hover:text-blue-200">
+                    <Copy className="h-3.5 w-3.5" />
+                    复制
+                </button>
+            </div>
+            <pre className={cn('overflow-auto bg-gray-950 p-3 text-xs leading-5 text-gray-100', compact ? 'max-h-56' : 'max-h-[420px]')}>
+                <code>{code}</code>
+            </pre>
+        </div>
+    )
+}
 
 function Field({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
     return (
