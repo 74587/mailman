@@ -364,6 +364,87 @@ func TestClaimBusinessModuleEmailAccountExplicitSuffixOverridesModuleDefaultSuff
 	}
 }
 
+func TestClaimBusinessModuleEmailAccountUsesEmailModePriority(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		ClaimDefaults: models.JSONMapInterface{
+			"emailModePriorityEnabled": true,
+			"emailModePriority":        []interface{}{"alias", "primary"},
+			"prefixStrategy":           "literal",
+			"prefix":                   "github",
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{OrgID: 1, EmailAddress: "first@example.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+		{OrgID: 1, EmailAddress: "base@gmail.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create accounts: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"ttlSeconds":60}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response BusinessEmailClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.EmailAccount.ID != accounts[1].ID || response.Recipient.Kind != "gmail_plus" || response.Recipient.EmailAddress != "base+github@gmail.com" {
+		t.Fatalf("email mode priority did not prefer alias: %+v", response)
+	}
+}
+
+func TestClaimBusinessModuleEmailAccountUsesAllowedSuffixPriority(t *testing.T) {
+	handler, db := newBusinessRegistrationTestHandler(t)
+	module := models.BusinessModule{
+		OrgID: 1,
+		Name:  "GitHub",
+		ClaimDefaults: models.JSONMapInterface{
+			"emailMode": "primary",
+		},
+		EmailConstraints: models.JSONMapInterface{
+			"allowedSuffixes":              []interface{}{"@outlook.com", "@gmail.com"},
+			"allowedSuffixPriorityEnabled": true,
+		},
+	}
+	if err := db.Create(&module).Error; err != nil {
+		t.Fatalf("failed to create module: %v", err)
+	}
+	accounts := []models.EmailAccount{
+		{OrgID: 1, EmailAddress: "first@gmail.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+		{OrgID: 1, EmailAddress: "second@outlook.com", AuthType: models.AuthTypePassword, IsVerified: true, ErrorStatus: string(models.ErrorStatusNormal)},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("failed to create accounts: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/business-modules/1/email-accounts/claim", bytes.NewBufferString(`{"ttlSeconds":60}`))
+	req = mux.SetURLVars(req, map[string]string{"id": "1"})
+	rec := httptest.NewRecorder()
+	handler.ClaimBusinessModuleEmailAccountHandler(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("claim status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response BusinessEmailClaimResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if response.EmailAccount.ID != accounts[1].ID || response.Recipient.EmailAddress != "second@outlook.com" {
+		t.Fatalf("allowed suffix priority did not prefer outlook: %+v", response)
+	}
+}
+
 func TestClaimBusinessModuleEmailAccountUsesAllowedDomainsConstraint(t *testing.T) {
 	handler, db := newBusinessRegistrationTestHandler(t)
 	module := models.BusinessModule{

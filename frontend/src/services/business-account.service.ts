@@ -124,8 +124,11 @@ export interface BusinessEmailClaimPayload {
     emailAddress?: string
     emailSuffix?: string
     emailSuffixes?: string[]
+    emailSuffixPriorityEnabled?: boolean
     blockedEmailSuffixes?: string[]
     emailMode?: 'auto' | 'primary' | 'domain' | 'alias' | 'forwarded'
+    emailModePriorityEnabled?: boolean
+    emailModePriority?: Array<'primary' | 'domain' | 'alias' | 'forwarded'>
     useDomainMail?: boolean
     domain?: string
     useAlias?: boolean
@@ -201,6 +204,11 @@ export interface BusinessModulePayload {
 export interface BusinessClaimDefaults {
     ttlSeconds?: number
     emailMode?: 'auto' | 'primary' | 'domain' | 'alias' | 'forwarded'
+    emailModePriorityEnabled?: boolean
+    emailModePriority?: Array<'primary' | 'domain' | 'alias' | 'forwarded'>
+    emailModeOrder?: Array<'primary' | 'domain' | 'alias' | 'forwarded'>
+    emailModeSortEnabled?: boolean
+    enableEmailModePriority?: boolean
     emailSuffix?: string
     emailSuffixes?: string[]
     blockedEmailSuffixes?: string[]
@@ -222,6 +230,9 @@ export interface BusinessClaimDefaults {
 
 export interface BusinessEmailConstraints {
     allowedSuffixes?: string[]
+    allowedSuffixPriorityEnabled?: boolean
+    emailSuffixPriorityEnabled?: boolean
+    suffixPriorityEnabled?: boolean
     blockedSuffixes?: string[]
     allowedDomains?: string[]
     blockedDomains?: string[]

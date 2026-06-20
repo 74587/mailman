@@ -55,24 +55,27 @@ type BusinessEmailClaimRequest struct {
 	TTLSeconds int    `json:"ttlSeconds,omitempty"`
 	ClaimedBy  string `json:"claimedBy,omitempty"`
 
-	AccountID            *uint    `json:"accountId,omitempty"`
-	AliasBaseAccountID   *uint    `json:"aliasBaseAccountId,omitempty"`
-	EmailAddress         string   `json:"emailAddress,omitempty"`
-	EmailSuffix          string   `json:"emailSuffix,omitempty"`
-	EmailSuffixes        []string `json:"emailSuffixes,omitempty"`
-	BlockedEmailSuffixes []string `json:"blockedEmailSuffixes,omitempty"`
+	AccountID                  *uint    `json:"accountId,omitempty"`
+	AliasBaseAccountID         *uint    `json:"aliasBaseAccountId,omitempty"`
+	EmailAddress               string   `json:"emailAddress,omitempty"`
+	EmailSuffix                string   `json:"emailSuffix,omitempty"`
+	EmailSuffixes              []string `json:"emailSuffixes,omitempty"`
+	EmailSuffixPriorityEnabled *bool    `json:"emailSuffixPriorityEnabled,omitempty"`
+	BlockedEmailSuffixes       []string `json:"blockedEmailSuffixes,omitempty"`
 
-	EmailMode      string `json:"emailMode,omitempty"`
-	UseDomainMail  *bool  `json:"useDomainMail,omitempty"`
-	Domain         string `json:"domain,omitempty"`
-	UseAlias       bool   `json:"useAlias,omitempty"`
-	AliasType      string `json:"aliasType,omitempty"`
-	AliasLocalPart string `json:"aliasLocalPart,omitempty"`
-	PrefixStrategy string `json:"prefixStrategy,omitempty"`
-	Prefix         string `json:"prefix,omitempty"`
-	PrefixTemplate string `json:"prefixTemplate,omitempty"`
-	BuiltinPrefix  string `json:"builtinPrefix,omitempty"`
-	RandomLength   int    `json:"randomLength,omitempty"`
+	EmailMode                string   `json:"emailMode,omitempty"`
+	EmailModePriorityEnabled *bool    `json:"emailModePriorityEnabled,omitempty"`
+	EmailModePriority        []string `json:"emailModePriority,omitempty"`
+	UseDomainMail            *bool    `json:"useDomainMail,omitempty"`
+	Domain                   string   `json:"domain,omitempty"`
+	UseAlias                 bool     `json:"useAlias,omitempty"`
+	AliasType                string   `json:"aliasType,omitempty"`
+	AliasLocalPart           string   `json:"aliasLocalPart,omitempty"`
+	PrefixStrategy           string   `json:"prefixStrategy,omitempty"`
+	Prefix                   string   `json:"prefix,omitempty"`
+	PrefixTemplate           string   `json:"prefixTemplate,omitempty"`
+	BuiltinPrefix            string   `json:"builtinPrefix,omitempty"`
+	RandomLength             int      `json:"randomLength,omitempty"`
 
 	TagIDs        []uint   `json:"tagIds,omitempty"`
 	TagFilterMode string   `json:"tagFilterMode,omitempty"`
@@ -202,6 +205,8 @@ type businessClaimPlan struct {
 	account           models.EmailAccount
 	registrationEmail string
 	recipient         BusinessClaimRecipient
+	claimRequest      BusinessEmailClaimRequest
+	hasClaimRequest   bool
 }
 
 type businessClaimAccountCursor struct {
@@ -448,7 +453,8 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 		expiresAt := now.Add(time.Duration(ttl) * time.Second)
 
 		tryClaim := func(plan businessClaimPlan) (bool, error) {
-			businessAccount, claimed, err := createBusinessRegistrationClaimForPlan(tx, orgID, module, req, plan, token, expiresAt, now)
+			claimReq := businessClaimPlanRequest(plan, req)
+			businessAccount, claimed, err := createBusinessRegistrationClaimForPlan(tx, orgID, module, claimReq, plan, token, expiresAt, now)
 			if err != nil || !claimed {
 				return claimed, err
 			}
@@ -473,25 +479,27 @@ func (h *APIHandler) claimBusinessModuleEmailAccount(r *http.Request, module *mo
 			return gorm.ErrRecordNotFound
 		}
 
-		cursor := businessClaimAccountCursor{}
-		for {
-			plans, nextCursor, hasMore, err := h.buildBusinessClaimPlanBatch(tx, orgID, module, req, cursor, now, businessClaimCandidateBatchSize)
-			if err != nil {
-				return err
-			}
-			for _, plan := range plans {
-				claimed, err := tryClaim(plan)
+		for _, attemptReq := range buildBusinessClaimAttemptRequests(module, req) {
+			cursor := businessClaimAccountCursor{}
+			for {
+				plans, nextCursor, hasMore, err := h.buildBusinessClaimPlanBatch(tx, orgID, module, attemptReq, cursor, now, businessClaimCandidateBatchSize)
 				if err != nil {
 					return err
 				}
-				if claimed {
-					return nil
+				for _, plan := range plans {
+					claimed, err := tryClaim(plan)
+					if err != nil {
+						return err
+					}
+					if claimed {
+						return nil
+					}
 				}
+				if !hasMore {
+					break
+				}
+				cursor = nextCursor
 			}
-			if !hasMore {
-				break
-			}
-			cursor = nextCursor
 		}
 		return gorm.ErrRecordNotFound
 	})
@@ -598,11 +606,28 @@ func (h *APIHandler) buildBusinessClaimPlans(tx *gorm.DB, orgID uint, module *mo
 	if err := h.validateBusinessClaimAccount(tx, account, req); err != nil {
 		return nil, businessClaimValidationError{err: err}
 	}
-	plan, err := deriveBusinessClaimPlan(account, module, req)
-	if err != nil {
-		return nil, businessClaimValidationError{err: err}
+	attempts := buildBusinessClaimAttemptRequests(module, req)
+	plans := make([]businessClaimPlan, 0, len(attempts))
+	var lastErr error
+	for _, attemptReq := range attempts {
+		plan, err := deriveBusinessClaimPlan(account, module, attemptReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := validateBusinessClaimPlanForModule(module, attemptReq, plan); err != nil {
+			lastErr = err
+			continue
+		}
+		plans = append(plans, withBusinessClaimPlanRequest(plan, attemptReq))
 	}
-	return []businessClaimPlan{plan}, nil
+	if len(plans) == 0 {
+		if lastErr != nil {
+			return nil, businessClaimValidationError{err: lastErr}
+		}
+		return nil, gorm.ErrRecordNotFound
+	}
+	return plans, nil
 }
 
 func (h *APIHandler) buildBusinessClaimPlanBatch(tx *gorm.DB, orgID uint, module *models.BusinessModule, req BusinessEmailClaimRequest, cursor businessClaimAccountCursor, now time.Time, limit int) ([]businessClaimPlan, businessClaimAccountCursor, bool, error) {
@@ -632,7 +657,7 @@ func (h *APIHandler) buildBusinessClaimPlanBatch(tx *gorm.DB, orgID uint, module
 	for _, account := range accounts {
 		plan, err := deriveBusinessClaimPlan(account, module, req)
 		if err == nil {
-			plans = append(plans, plan)
+			plans = append(plans, withBusinessClaimPlanRequest(plan, req))
 		}
 	}
 	return plans, nextCursor, len(accounts) == limit, nil
@@ -1380,14 +1405,128 @@ func businessClaimRequestTargetsAccount(req BusinessEmailClaimRequest) bool {
 	return req.AccountID != nil || req.AliasBaseAccountID != nil || strings.TrimSpace(req.EmailAddress) != ""
 }
 
+func businessClaimRequestHasExplicitEmailMode(req BusinessEmailClaimRequest) bool {
+	return strings.TrimSpace(req.EmailMode) != "" || req.UseAlias || req.UseDomainMail != nil || strings.TrimSpace(req.Domain) != ""
+}
+
+func businessClaimModePriorityEnabled(req BusinessEmailClaimRequest) bool {
+	return req.EmailModePriorityEnabled != nil && *req.EmailModePriorityEnabled && !businessClaimRequestHasExplicitEmailMode(req)
+}
+
+func businessClaimSuffixPriorityEnabled(req BusinessEmailClaimRequest) bool {
+	return req.EmailSuffixPriorityEnabled != nil && *req.EmailSuffixPriorityEnabled && strings.TrimSpace(req.EmailSuffix) == ""
+}
+
+func buildBusinessClaimAttemptRequests(module *models.BusinessModule, req BusinessEmailClaimRequest) []BusinessEmailClaimRequest {
+	modeRequests := buildBusinessClaimModeAttemptRequests(module, req)
+	attempts := make([]BusinessEmailClaimRequest, 0, len(modeRequests))
+	for _, modeReq := range modeRequests {
+		suffixes := normalizeBusinessEmailSuffixes(modeReq.EmailSuffixes)
+		if businessClaimSuffixPriorityEnabled(modeReq) && len(suffixes) > 1 {
+			for _, suffix := range suffixes {
+				next := modeReq
+				next.EmailSuffix = suffix
+				next.EmailSuffixes = nil
+				attempts = append(attempts, next)
+			}
+			continue
+		}
+		attempts = append(attempts, modeReq)
+	}
+	if len(attempts) == 0 {
+		return []BusinessEmailClaimRequest{req}
+	}
+	return attempts
+}
+
+func buildBusinessClaimModeAttemptRequests(module *models.BusinessModule, req BusinessEmailClaimRequest) []BusinessEmailClaimRequest {
+	if !businessClaimModePriorityEnabled(req) {
+		return []BusinessEmailClaimRequest{req}
+	}
+	modes := normalizeBusinessEmailModePriority(req.EmailModePriority)
+	if len(modes) == 0 {
+		modes = []string{businessEmailModePrimary, businessEmailModeAlias, businessEmailModeDomain, businessEmailModeForwarded}
+	}
+	constraints := businessEmailConstraints{}
+	if module != nil {
+		constraints = readBusinessEmailConstraints(module.EmailConstraints)
+	}
+	requests := make([]BusinessEmailClaimRequest, 0, len(modes))
+	for _, mode := range modes {
+		if !businessEmailModeSupportedByConstraints(mode, constraints) {
+			continue
+		}
+		next := req
+		next.EmailMode = mode
+		next.UseAlias = false
+		next.UseDomainMail = nil
+		if mode == businessEmailModePrimary {
+			next.Domain = ""
+			next.AliasType = ""
+		}
+		requests = append(requests, next)
+	}
+	if len(requests) == 0 {
+		return []BusinessEmailClaimRequest{req}
+	}
+	return requests
+}
+
+func normalizeBusinessEmailModePriority(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		mode := normalizeBusinessEmailMode(value)
+		if mode == businessEmailModeAuto || seen[mode] {
+			continue
+		}
+		seen[mode] = true
+		result = append(result, mode)
+	}
+	return result
+}
+
+func appendBusinessEmailModeFirst(first string, values []string) []string {
+	order := append([]string{first}, values...)
+	order = append(order, businessEmailModePrimary, businessEmailModeAlias, businessEmailModeDomain, businessEmailModeForwarded)
+	return normalizeBusinessEmailModePriority(order)
+}
+
+func businessEmailModeSupportedByConstraints(mode string, constraints businessEmailConstraints) bool {
+	switch mode {
+	case businessEmailModeAlias:
+		return constraints.AllowAliases == nil || *constraints.AllowAliases
+	case businessEmailModeDomain:
+		return constraints.AllowDomainMail == nil || *constraints.AllowDomainMail
+	case businessEmailModeForwarded:
+		return constraints.AllowForwarded == nil || *constraints.AllowForwarded
+	default:
+		return true
+	}
+}
+
+func withBusinessClaimPlanRequest(plan businessClaimPlan, req BusinessEmailClaimRequest) businessClaimPlan {
+	plan.claimRequest = req
+	plan.hasClaimRequest = true
+	return plan
+}
+
+func businessClaimPlanRequest(plan businessClaimPlan, fallback BusinessEmailClaimRequest) BusinessEmailClaimRequest {
+	if plan.hasClaimRequest {
+		return plan.claimRequest
+	}
+	return fallback
+}
+
 type businessEmailConstraints struct {
-	AllowedSuffixes []string
-	BlockedSuffixes []string
-	AllowedDomains  []string
-	BlockedDomains  []string
-	AllowAliases    *bool
-	AllowDomainMail *bool
-	AllowForwarded  *bool
+	AllowedSuffixes              []string
+	BlockedSuffixes              []string
+	AllowedDomains               []string
+	BlockedDomains               []string
+	AllowedSuffixPriorityEnabled *bool
+	AllowAliases                 *bool
+	AllowDomainMail              *bool
+	AllowForwarded               *bool
 }
 
 type businessClaimValidationError struct {
@@ -1414,8 +1553,19 @@ func applyBusinessModuleClaimConfig(module *models.BusinessModule, req BusinessE
 	if value, ok := businessConfigInt(defaults, "ttlSeconds", "ttl_seconds"); ok && req.TTLSeconds <= 0 {
 		req.TTLSeconds = value
 	}
-	if value, ok := businessConfigString(defaults, "emailMode", "email_mode"); ok && strings.TrimSpace(req.EmailMode) == "" {
-		req.EmailMode = value
+	explicitEmailMode := businessClaimRequestHasExplicitEmailMode(req)
+	defaultEmailMode, hasDefaultEmailMode := businessConfigString(defaults, "emailMode", "email_mode")
+	if value, ok := businessConfigBool(defaults, "emailModePriorityEnabled", "emailModeSortEnabled", "enableEmailModePriority"); ok && req.EmailModePriorityEnabled == nil {
+		req.EmailModePriorityEnabled = &value
+	}
+	if values := businessConfigStringSlice(defaults, "emailModePriority", "email_mode_priority", "emailModeOrder", "email_mode_order", "emailTypePriority", "email_type_priority"); len(values) > 0 && len(req.EmailModePriority) == 0 {
+		req.EmailModePriority = values
+	}
+	if businessClaimModePriorityEnabled(req) && len(req.EmailModePriority) == 0 && hasDefaultEmailMode {
+		req.EmailModePriority = appendBusinessEmailModeFirst(defaultEmailMode, nil)
+	}
+	if hasDefaultEmailMode && strings.TrimSpace(req.EmailMode) == "" && !businessClaimModePriorityEnabled(req) {
+		req.EmailMode = defaultEmailMode
 	}
 	if value, ok := businessConfigString(defaults, "emailSuffix", "email_suffix"); ok && strings.TrimSpace(req.EmailSuffix) == "" && len(req.EmailSuffixes) == 0 {
 		req.EmailSuffix = value
@@ -1426,13 +1576,13 @@ func applyBusinessModuleClaimConfig(module *models.BusinessModule, req BusinessE
 	if values := businessConfigStringSlice(defaults, "blockedEmailSuffixes", "blocked_email_suffixes", "blockedSuffixes"); len(values) > 0 && len(req.BlockedEmailSuffixes) == 0 {
 		req.BlockedEmailSuffixes = values
 	}
-	if value, ok := businessConfigBool(defaults, "useDomainMail", "use_domain_mail"); ok && req.UseDomainMail == nil {
+	if value, ok := businessConfigBool(defaults, "useDomainMail", "use_domain_mail"); ok && req.UseDomainMail == nil && (!businessClaimModePriorityEnabled(req) || explicitEmailMode) {
 		req.UseDomainMail = &value
 	}
-	if value, ok := businessConfigString(defaults, "domain"); ok && strings.TrimSpace(req.Domain) == "" {
+	if value, ok := businessConfigString(defaults, "domain"); ok && strings.TrimSpace(req.Domain) == "" && (!businessClaimModePriorityEnabled(req) || explicitEmailMode) {
 		req.Domain = value
 	}
-	if value, ok := businessConfigBool(defaults, "useAlias", "use_alias"); ok && !req.UseAlias && strings.TrimSpace(req.EmailMode) == "" {
+	if value, ok := businessConfigBool(defaults, "useAlias", "use_alias"); ok && !req.UseAlias && strings.TrimSpace(req.EmailMode) == "" && (!businessClaimModePriorityEnabled(req) || explicitEmailMode) {
 		req.UseAlias = value
 	}
 	if value, ok := businessConfigString(defaults, "aliasType", "alias_type"); ok && strings.TrimSpace(req.AliasType) == "" {
@@ -1470,6 +1620,9 @@ func applyBusinessModuleClaimConfig(module *models.BusinessModule, req BusinessE
 	}
 
 	constraints := readBusinessEmailConstraints(module.EmailConstraints)
+	if constraints.AllowedSuffixPriorityEnabled != nil && req.EmailSuffixPriorityEnabled == nil {
+		req.EmailSuffixPriorityEnabled = constraints.AllowedSuffixPriorityEnabled
+	}
 	if len(req.EmailSuffixes) == 0 && strings.TrimSpace(req.EmailSuffix) == "" {
 		if allowed := businessConstraintAllowedSuffixes(constraints); len(allowed) > 0 {
 			req.EmailSuffixes = allowed
@@ -1495,6 +1648,9 @@ func readBusinessEmailConstraints(config models.JSONMapInterface) businessEmailC
 		BlockedSuffixes: normalizeBusinessEmailSuffixes(businessConfigStringSlice(config, "blockedSuffixes", "deniedSuffixes", "unsupportedSuffixes", "blockedEmailSuffixes")),
 		AllowedDomains:  normalizeBusinessEmailSuffixes(businessConfigStringSlice(config, "allowedDomains", "allowDomains")),
 		BlockedDomains:  normalizeBusinessEmailSuffixes(businessConfigStringSlice(config, "blockedDomains", "deniedDomains")),
+	}
+	if value, ok := businessConfigBool(config, "allowedSuffixPriorityEnabled", "emailSuffixPriorityEnabled", "suffixPriorityEnabled", "allowedSuffixSortEnabled"); ok {
+		constraints.AllowedSuffixPriorityEnabled = &value
 	}
 	if value, ok := businessConfigBool(config, "allowAliases", "allowAlias", "aliasesAllowed"); ok {
 		constraints.AllowAliases = &value
