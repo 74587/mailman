@@ -1,6 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useState, type Dispatch, type DragEvent, type ReactNode, type SetStateAction } from 'react'
+import { useCallback, useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { closestCenter, DndContext, DragOverlay, PointerSensor, type DragEndEvent, type DragStartEvent, useSensor, useSensors } from '@dnd-kit/core'
+import { arrayMove, rectSortingStrategy, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { Briefcase, Check, ChevronLeft, ChevronRight, ExternalLink, GripVertical, ImagePlus, Loader2, MailCheck, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Tag, Trash2, Workflow, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
@@ -415,14 +418,6 @@ function normalizeSuffix(value: string) {
     const trimmed = value.trim().toLowerCase().replace(/^[.]+/, '')
     if (!trimmed) return ''
     return trimmed.startsWith('@') ? trimmed : `@${trimmed}`
-}
-
-function moveItem<T>(values: T[], sourceIndex: number, targetIndex: number): T[] {
-    if (sourceIndex === targetIndex || sourceIndex < 0 || targetIndex < 0) return values
-    const next = [...values]
-    const [moved] = next.splice(sourceIndex, 1)
-    next.splice(targetIndex, 0, moved)
-    return next
 }
 
 function normalizeScenarioKey(value: string) {
@@ -1446,16 +1441,18 @@ function EmailPolicyEditor({ draft, setDraft }: { draft: ModuleDraft; setDraft: 
                 values={draft.allowedSuffixes}
                 suggestions={suffixSuggestions}
                 sortEnabled={draft.allowedSuffixPriorityEnabled}
+                emptyText="不限制后缀"
                 onSortEnabledChange={checked => setDraft(prev => ({ ...prev, allowedSuffixPriorityEnabled: checked }))}
                 onChange={values => setDraft(prev => ({ ...prev, allowedSuffixes: values }))}
             />
-            <ChipMultiSelect label="禁止邮箱后缀" description="申请邮箱时会排除这些后缀。" values={draft.blockedSuffixes} suggestions={suffixSuggestions} tone="danger" onChange={values => setDraft(prev => ({ ...prev, blockedSuffixes: values }))} />
+            <ChipMultiSelect label="禁止邮箱后缀" description="申请邮箱时会排除这些后缀。" values={draft.blockedSuffixes} suggestions={suffixSuggestions} tone="danger" emptyText="未禁止后缀" onChange={values => setDraft(prev => ({ ...prev, blockedSuffixes: values }))} />
         </div>
     )
 }
 
 function EmailModePolicyGrid({ draft, setDraft }: { draft: ModuleDraft; setDraft: Dispatch<SetStateAction<ModuleDraft>> }) {
-    const [draggingMode, setDraggingMode] = useState<string | null>(null)
+    const [activeMode, setActiveMode] = useState<BusinessEmailMode | null>(null)
+    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
     const setDefaultMode = (mode: ModuleDraft['claimEmailMode']) => {
         setDraft(prev => ({
             ...enableEmailMode(prev, mode),
@@ -1468,87 +1465,160 @@ function EmailModePolicyGrid({ draft, setDraft }: { draft: ModuleDraft; setDraft
             return !supported && next.claimEmailMode === mode ? { ...next, claimEmailMode: 'primary' } : next
         })
     }
-    const moveMode = (source: string, target: string) => {
-        if (!draft.emailModePriorityEnabled || source === target) return
+    const handleDragStart = (event: DragStartEvent) => {
+        setActiveMode(event.active.id as BusinessEmailMode)
+    }
+    const handleDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event
+        setActiveMode(null)
+        if (!over || active.id === over.id) return
         setDraft(prev => {
             const order = normalizeEmailModeOrder(prev.emailModePriority)
-            const sourceIndex = order.indexOf(source as ModuleDraft['claimEmailMode'])
-            const targetIndex = order.indexOf(target as ModuleDraft['claimEmailMode'])
-            if (sourceIndex < 0 || targetIndex < 0) return prev
-            return {
-                ...prev,
-                emailModePriority: moveItem(order, sourceIndex, targetIndex)
-            }
+            const oldIndex = order.indexOf(active.id as BusinessEmailMode)
+            const newIndex = order.indexOf(over.id as BusinessEmailMode)
+            if (oldIndex < 0 || newIndex < 0) return prev
+            return { ...prev, emailModePriority: arrayMove(order, oldIndex, newIndex) }
         })
     }
-    const handleDragStart = (event: DragEvent<HTMLDivElement>, mode: string) => {
-        if (!draft.emailModePriorityEnabled) return
-        setDraggingMode(mode)
-        event.dataTransfer.effectAllowed = 'move'
-        event.dataTransfer.setData('text/plain', mode)
-        requestAnimationFrame(() => {
-            event.currentTarget.style.opacity = '0.55'
-        })
-    }
-    const handleDragEnd = (event: DragEvent<HTMLDivElement>) => {
-        event.currentTarget.style.opacity = '1'
-        setDraggingMode(null)
-    }
-    const renderedModes = (draft.emailModePriorityEnabled ? normalizeEmailModeOrder(draft.emailModePriority) : emailModes.map(mode => mode.value))
+    const orderedModeValues = draft.emailModePriorityEnabled ? normalizeEmailModeOrder(draft.emailModePriority) : emailModes.map(mode => mode.value)
+    const renderedModes = orderedModeValues
         .map(value => emailModes.find(mode => mode.value === value))
         .filter(Boolean) as typeof emailModes
+    const activeModeMeta = activeMode ? emailModes.find(mode => mode.value === activeMode) : undefined
+    const activeModeIndex = activeMode ? orderedModeValues.indexOf(activeMode) : -1
 
     return (
-        <div className="grid gap-2 md:grid-cols-4">
-            {renderedModes.map((mode, index) => {
-                const isDefault = draft.claimEmailMode === mode.value
-                const supported = isEmailModeSupported(draft, mode.value)
-                const primary = mode.value === 'primary'
-                return (
-                    <div
-                        key={mode.value}
-                        draggable={draft.emailModePriorityEnabled}
-                        onDragStart={event => handleDragStart(event, mode.value)}
-                        onDragEnd={handleDragEnd}
-                        onDragOver={event => {
-                            if (draft.emailModePriorityEnabled) event.preventDefault()
-                        }}
-                        onDrop={event => {
-                            event.preventDefault()
-                            moveMode(event.dataTransfer.getData('text/plain') || draggingMode || '', mode.value)
-                        }}
-                        className={cn(
-                            'overflow-hidden rounded-lg border bg-white transition dark:bg-gray-950',
-                            draft.emailModePriorityEnabled && 'cursor-grab active:cursor-grabbing',
-                            isDefault ? 'border-blue-500 bg-blue-50/60 dark:bg-blue-950/30' : supported ? 'border-gray-200 dark:border-gray-700' : 'border-gray-200 opacity-70 dark:border-gray-800'
-                        )}
-                    >
-                        <button type="button" onClick={() => setDefaultMode(mode.value)} className="block min-h-[88px] w-full p-3 text-left hover:bg-gray-50 dark:hover:bg-gray-900/60">
-                            <div className="flex items-start justify-between gap-2">
-                                <div className="min-w-0">
-                                    {draft.emailModePriorityEnabled && (
-                                        <div className="mb-2 flex items-center gap-1 text-xs font-medium text-gray-400">
-                                            <GripVertical className="h-3.5 w-3.5" />
-                                            <span>优先 {index + 1}</span>
-                                        </div>
-                                    )}
-                                    <div className={cn('text-sm font-semibold', isDefault ? 'text-blue-700 dark:text-blue-200' : 'text-gray-900 dark:text-gray-100')}>{mode.label}</div>
-                                    <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{mode.description}</div>
-                                </div>
-                                {isDefault && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/60 dark:text-blue-200">默认</span>}
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={() => setActiveMode(null)}>
+            <SortableContext items={orderedModeValues} strategy={rectSortingStrategy}>
+                <div className="grid gap-2 md:grid-cols-4">
+                    {renderedModes.map((mode, index) => (
+                        <SortableEmailModeCard
+                            key={mode.value}
+                            mode={mode}
+                            index={index}
+                            sortEnabled={draft.emailModePriorityEnabled}
+                            isDefault={draft.claimEmailMode === mode.value}
+                            supported={isEmailModeSupported(draft, mode.value)}
+                            onSetDefault={() => setDefaultMode(mode.value)}
+                            onSupportedChange={checked => setSupported(mode.value, checked)}
+                        />
+                    ))}
+                </div>
+            </SortableContext>
+            <DragOverlay dropAnimation={null}>
+                {activeModeMeta ? (
+                    <EmailModeCardPreview
+                        mode={activeModeMeta}
+                        index={activeModeIndex}
+                        isDefault={draft.claimEmailMode === activeModeMeta.value}
+                        supported={isEmailModeSupported(draft, activeModeMeta.value)}
+                    />
+                ) : null}
+            </DragOverlay>
+        </DndContext>
+    )
+}
+
+function SortableEmailModeCard({
+    mode,
+    index,
+    sortEnabled,
+    isDefault,
+    supported,
+    onSetDefault,
+    onSupportedChange
+}: {
+    mode: (typeof emailModes)[number]
+    index: number
+    sortEnabled: boolean
+    isDefault: boolean
+    supported: boolean
+    onSetDefault: () => void
+    onSupportedChange: (checked: boolean) => void
+}) {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+        id: mode.value,
+        disabled: !sortEnabled
+    })
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition
+    }
+    return (
+        <div ref={setNodeRef} style={style} className={cn(isDragging && 'relative z-10 opacity-35')}>
+            <EmailModeCardContent
+                mode={mode}
+                index={index}
+                sortEnabled={sortEnabled}
+                isDefault={isDefault}
+                supported={supported}
+                onSetDefault={onSetDefault}
+                onSupportedChange={onSupportedChange}
+                dragHandleProps={sortEnabled ? { ...attributes, ...listeners } : undefined}
+            />
+        </div>
+    )
+}
+
+function EmailModeCardPreview({ mode, index, isDefault, supported }: { mode: (typeof emailModes)[number]; index: number; isDefault: boolean; supported: boolean }) {
+    return (
+        <div className="w-[220px] rotate-[1deg] shadow-2xl">
+            <EmailModeCardContent mode={mode} index={index} sortEnabled isDefault={isDefault} supported={supported} preview />
+        </div>
+    )
+}
+
+function EmailModeCardContent({
+    mode,
+    index,
+    sortEnabled,
+    isDefault,
+    supported,
+    preview = false,
+    onSetDefault,
+    onSupportedChange,
+    dragHandleProps
+}: {
+    mode: (typeof emailModes)[number]
+    index: number
+    sortEnabled: boolean
+    isDefault: boolean
+    supported: boolean
+    preview?: boolean
+    onSetDefault?: () => void
+    onSupportedChange?: (checked: boolean) => void
+    dragHandleProps?: Record<string, any>
+}) {
+    const primary = mode.value === 'primary'
+    return (
+        <div className={cn('overflow-hidden rounded-lg border bg-white transition dark:bg-gray-950', isDefault ? 'border-blue-500 bg-blue-50/60 dark:bg-blue-950/30' : supported ? 'border-gray-200 dark:border-gray-700' : 'border-gray-200 opacity-70 dark:border-gray-800', preview && 'border-blue-300 bg-white dark:bg-gray-900')}>
+            <div className="block min-h-[88px] w-full p-3 text-left">
+                <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                        {sortEnabled && (
+                            <div className="mb-2 flex items-center gap-1 text-xs font-medium text-gray-400">
+                                <button type="button" disabled={preview} className="rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 disabled:hover:bg-transparent dark:hover:bg-gray-800" {...dragHandleProps}>
+                                    <GripVertical className="h-3.5 w-3.5" />
+                                </button>
+                                <span>优先 {index + 1}</span>
                             </div>
+                        )}
+                        <button type="button" disabled={preview} onClick={onSetDefault} className={cn('block text-left text-sm font-semibold disabled:cursor-default', isDefault ? 'text-blue-700 dark:text-blue-200' : 'text-gray-900 hover:text-blue-600 dark:text-gray-100 dark:hover:text-blue-200')}>
+                            {mode.label}
                         </button>
-                        <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-2 text-xs dark:border-gray-800">
-                            <span className={supported ? 'text-emerald-600 dark:text-emerald-300' : 'text-gray-400'}>{supported ? '已启用' : '已关闭'}</span>
-                            {primary ? (
-                                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-500 dark:bg-gray-800">基础</span>
-                            ) : (
-                                <Switch checked={supported} onCheckedChange={checked => setSupported(mode.value, checked)} />
-                            )}
-                        </div>
+                        <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{mode.description}</div>
                     </div>
-                )
-            })}
+                    {isDefault && <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/60 dark:text-blue-200">默认</span>}
+                </div>
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-3 py-2 text-xs dark:border-gray-800">
+                <span className={supported ? 'text-emerald-600 dark:text-emerald-300' : 'text-gray-400'}>{supported ? '已启用' : '已关闭'}</span>
+                {primary ? (
+                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-gray-500 dark:bg-gray-800">基础</span>
+                ) : (
+                    <Switch disabled={preview} checked={supported} onCheckedChange={onSupportedChange} />
+                )}
+            </div>
         </div>
     )
 }
@@ -1695,6 +1765,7 @@ function ChipMultiSelect({
     suggestions,
     tone = 'default',
     sortEnabled = false,
+    emptyText = '暂无后缀',
     onSortEnabledChange,
     onChange
 }: {
@@ -1704,11 +1775,13 @@ function ChipMultiSelect({
     suggestions: string[]
     tone?: 'default' | 'danger'
     sortEnabled?: boolean
+    emptyText?: string
     onSortEnabledChange?: (checked: boolean) => void
     onChange: (values: string[]) => void
 }) {
     const [input, setInput] = useState('')
-    const [draggingValue, setDraggingValue] = useState<string | null>(null)
+    const [activeSuffix, setActiveSuffix] = useState<string | null>(null)
+    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
     const addValue = (raw: string) => {
         const next = normalizeSuffix(raw)
         if (!next) return
@@ -1716,29 +1789,22 @@ function ChipMultiSelect({
         setInput('')
     }
     const removeValue = (target: string) => onChange(values.filter(value => value !== target))
-    const moveValue = (source: string, target: string) => {
-        if (!sortEnabled || source === target) return
-        const sourceIndex = values.indexOf(source)
-        const targetIndex = values.indexOf(target)
-        if (sourceIndex < 0 || targetIndex < 0) return
-        onChange(moveItem(values, sourceIndex, targetIndex))
+    const handleDragStart = (event: DragStartEvent) => {
+        setActiveSuffix(String(event.active.id))
     }
-    const handleDragStart = (event: DragEvent<HTMLSpanElement>, value: string) => {
-        if (!sortEnabled) return
-        setDraggingValue(value)
-        event.dataTransfer.effectAllowed = 'move'
-        event.dataTransfer.setData('text/plain', value)
-        requestAnimationFrame(() => {
-            event.currentTarget.style.opacity = '0.55'
-        })
-    }
-    const handleDragEnd = (event: DragEvent<HTMLSpanElement>) => {
-        event.currentTarget.style.opacity = '1'
-        setDraggingValue(null)
+    const handleDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event
+        setActiveSuffix(null)
+        if (!over || active.id === over.id) return
+        const oldIndex = values.indexOf(String(active.id))
+        const newIndex = values.indexOf(String(over.id))
+        if (oldIndex < 0 || newIndex < 0) return
+        onChange(arrayMove(values, oldIndex, newIndex))
     }
     const activeClass = tone === 'danger' ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-200' : 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200'
+    const neutralClass = 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-900'
     return (
-        <div className="space-y-2">
+        <div className="space-y-3 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                     <div className="text-sm font-medium text-gray-700 dark:text-gray-200">{label}</div>
@@ -1751,7 +1817,7 @@ function ChipMultiSelect({
                     </label>
                 )}
             </div>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1.5 border-b border-gray-100 pb-3 dark:border-gray-800">
                 {suggestions.map(suggestion => {
                     const normalized = normalizeSuffix(suggestion)
                     const active = values.includes(normalized)
@@ -1763,29 +1829,36 @@ function ChipMultiSelect({
                     )
                 })}
             </div>
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-950">
-                {values.map(value => (
-                    <span
-                        key={value}
-                        draggable={sortEnabled}
-                        onDragStart={event => handleDragStart(event, value)}
-                        onDragEnd={handleDragEnd}
-                        onDragOver={event => {
-                            if (sortEnabled) event.preventDefault()
-                        }}
-                        onDrop={event => {
-                            event.preventDefault()
-                            moveValue(event.dataTransfer.getData('text/plain') || draggingValue || '', value)
-                        }}
-                        className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs', activeClass, sortEnabled && 'cursor-grab active:cursor-grabbing')}
-                    >
-                        {sortEnabled && <GripVertical className="h-3 w-3 opacity-70" />}
-                        {value}
-                        <button type="button" onClick={() => removeValue(value)}>
-                            <X className="h-3 w-3" />
-                        </button>
-                    </span>
-                ))}
+            <div className="space-y-2">
+                {values.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-400 dark:border-gray-700">{emptyText}</div>
+                ) : sortEnabled ? (
+                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={() => setActiveSuffix(null)}>
+                        <SortableContext items={values} strategy={verticalListSortingStrategy}>
+                            <div className="space-y-1.5">
+                                {values.map((value, index) => (
+                                    <SortableSuffixRow key={value} value={value} index={index} activeClass={activeClass} onRemove={() => removeValue(value)} />
+                                ))}
+                            </div>
+                        </SortableContext>
+                        <DragOverlay dropAnimation={null}>
+                            {activeSuffix ? <SuffixRowPreview value={activeSuffix} index={values.indexOf(activeSuffix)} activeClass={activeClass} /> : null}
+                        </DragOverlay>
+                    </DndContext>
+                ) : (
+                    <div className="flex flex-wrap gap-2">
+                        {values.map(value => (
+                            <span key={value} className={cn('inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs', activeClass)}>
+                                {value}
+                                <button type="button" onClick={() => removeValue(value)} className="rounded-full hover:bg-white/60 dark:hover:bg-gray-900/40">
+                                    <X className="h-3 w-3" />
+                                </button>
+                            </span>
+                        ))}
+                    </div>
+                )}
+            </div>
+            <div className="flex items-center gap-2">
                 <input
                     value={input}
                     onChange={event => setInput(event.target.value)}
@@ -1795,10 +1868,52 @@ function ChipMultiSelect({
                             addValue(input)
                         }
                     }}
-                    placeholder={values.length ? '继续添加...' : '输入域名后回车'}
-                    className="h-7 min-w-[160px] flex-1 bg-transparent px-1 text-sm outline-none"
+                    placeholder={values.length ? '继续添加后缀' : '输入域名后回车'}
+                    className="h-9 min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
                 />
+                <button type="button" onClick={() => addValue(input)} disabled={!input.trim()} className={cn('inline-flex h-9 shrink-0 items-center gap-1 rounded-lg border px-3 text-sm transition disabled:cursor-not-allowed disabled:opacity-50', neutralClass)}>
+                    <Plus className="h-4 w-4" />
+                    添加
+                </button>
             </div>
+        </div>
+    )
+}
+
+function SortableSuffixRow({ value, index, activeClass, onRemove }: { value: string; index: number; activeClass: string; onRemove: () => void }) {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: value })
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition
+    }
+    return (
+        <div ref={setNodeRef} style={style} className={cn(isDragging && 'relative z-10 opacity-35')}>
+            <SuffixRowContent value={value} index={index} activeClass={activeClass} onRemove={onRemove} dragHandleProps={{ ...attributes, ...listeners }} />
+        </div>
+    )
+}
+
+function SuffixRowPreview({ value, index, activeClass }: { value: string; index: number; activeClass: string }) {
+    return (
+        <div className="w-[260px] rotate-[1deg] shadow-2xl">
+            <SuffixRowContent value={value} index={index} activeClass={activeClass} preview />
+        </div>
+    )
+}
+
+function SuffixRowContent({ value, index, activeClass, preview = false, onRemove, dragHandleProps }: { value: string; index: number; activeClass: string; preview?: boolean; onRemove?: () => void; dragHandleProps?: Record<string, any> }) {
+    return (
+        <div className={cn('flex h-9 items-center gap-2 rounded-lg border px-2 text-sm', activeClass, preview && 'bg-white dark:bg-gray-900')}>
+            <button type="button" disabled={preview} className="rounded p-0.5 text-current opacity-70 hover:bg-white/50 disabled:hover:bg-transparent dark:hover:bg-gray-900/40" {...dragHandleProps}>
+                <GripVertical className="h-4 w-4" />
+            </button>
+            <span className="w-5 shrink-0 text-center text-xs font-semibold opacity-70">{index >= 0 ? index + 1 : ''}</span>
+            <span className="min-w-0 flex-1 truncate font-medium">{value}</span>
+            {!preview && (
+                <button type="button" onClick={onRemove} className="rounded-full p-0.5 hover:bg-white/60 dark:hover:bg-gray-900/40">
+                    <X className="h-3.5 w-3.5" />
+                </button>
+            )}
         </div>
     )
 }
