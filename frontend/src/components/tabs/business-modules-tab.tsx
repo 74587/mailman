@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { useCallback, useEffect, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { createPortal } from 'react-dom'
 import { closestCenter, DndContext, DragOverlay, PointerSensor, type DragEndEvent, type DragStartEvent, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove, rectSortingStrategy, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -1451,7 +1452,7 @@ function EmailPolicyEditor({ draft, setDraft }: { draft: ModuleDraft; setDraft: 
 }
 
 function EmailModePolicyGrid({ draft, setDraft }: { draft: ModuleDraft; setDraft: Dispatch<SetStateAction<ModuleDraft>> }) {
-    const [activeMode, setActiveMode] = useState<BusinessEmailMode | null>(null)
+    const [activeMode, setActiveMode] = useState<{ id: BusinessEmailMode; width: number } | null>(null)
     const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
     const setDefaultMode = (mode: ModuleDraft['claimEmailMode']) => {
         setDraft(prev => ({
@@ -1466,7 +1467,10 @@ function EmailModePolicyGrid({ draft, setDraft }: { draft: ModuleDraft; setDraft
         })
     }
     const handleDragStart = (event: DragStartEvent) => {
-        setActiveMode(event.active.id as BusinessEmailMode)
+        setActiveMode({
+            id: event.active.id as BusinessEmailMode,
+            width: event.active.rect.current.initial?.width || 220
+        })
     }
     const handleDragEnd = (event: DragEndEvent) => {
         const { active, over } = event
@@ -1484,8 +1488,8 @@ function EmailModePolicyGrid({ draft, setDraft }: { draft: ModuleDraft; setDraft
     const renderedModes = orderedModeValues
         .map(value => emailModes.find(mode => mode.value === value))
         .filter(Boolean) as typeof emailModes
-    const activeModeMeta = activeMode ? emailModes.find(mode => mode.value === activeMode) : undefined
-    const activeModeIndex = activeMode ? orderedModeValues.indexOf(activeMode) : -1
+    const activeModeMeta = activeMode ? emailModes.find(mode => mode.value === activeMode.id) : undefined
+    const activeModeIndex = activeMode ? orderedModeValues.indexOf(activeMode.id) : -1
 
     return (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd} onDragCancel={() => setActiveMode(null)}>
@@ -1505,16 +1509,17 @@ function EmailModePolicyGrid({ draft, setDraft }: { draft: ModuleDraft; setDraft
                     ))}
                 </div>
             </SortableContext>
-            <DragOverlay dropAnimation={null}>
+            <BodyDragOverlay dropAnimation={null}>
                 {activeModeMeta ? (
                     <EmailModeCardPreview
                         mode={activeModeMeta}
                         index={activeModeIndex}
                         isDefault={draft.claimEmailMode === activeModeMeta.value}
                         supported={isEmailModeSupported(draft, activeModeMeta.value)}
+                        width={activeMode?.width}
                     />
                 ) : null}
-            </DragOverlay>
+            </BodyDragOverlay>
         </DndContext>
     )
 }
@@ -1560,9 +1565,9 @@ function SortableEmailModeCard({
     )
 }
 
-function EmailModeCardPreview({ mode, index, isDefault, supported }: { mode: (typeof emailModes)[number]; index: number; isDefault: boolean; supported: boolean }) {
+function EmailModeCardPreview({ mode, index, isDefault, supported, width }: { mode: (typeof emailModes)[number]; index: number; isDefault: boolean; supported: boolean; width?: number }) {
     return (
-        <div className="w-[220px] rotate-[1deg] shadow-2xl">
+        <div className="shadow-2xl" style={{ width: width ? `${width}px` : undefined }}>
             <EmailModeCardContent mode={mode} index={index} sortEnabled isDefault={isDefault} supported={supported} preview />
         </div>
     )
@@ -1780,7 +1785,7 @@ function ChipMultiSelect({
     onChange: (values: string[]) => void
 }) {
     const [input, setInput] = useState('')
-    const [activeSuffix, setActiveSuffix] = useState<string | null>(null)
+    const [activeSuffix, setActiveSuffix] = useState<{ value: string; width: number } | null>(null)
     const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
     const addValue = (raw: string) => {
         const next = normalizeSuffix(raw)
@@ -1790,7 +1795,10 @@ function ChipMultiSelect({
     }
     const removeValue = (target: string) => onChange(values.filter(value => value !== target))
     const handleDragStart = (event: DragStartEvent) => {
-        setActiveSuffix(String(event.active.id))
+        setActiveSuffix({
+            value: String(event.active.id),
+            width: event.active.rect.current.initial?.width || 260
+        })
     }
     const handleDragEnd = (event: DragEndEvent) => {
         const { active, over } = event
@@ -1841,9 +1849,9 @@ function ChipMultiSelect({
                                 ))}
                             </div>
                         </SortableContext>
-                        <DragOverlay dropAnimation={null}>
-                            {activeSuffix ? <SuffixRowPreview value={activeSuffix} index={values.indexOf(activeSuffix)} activeClass={activeClass} /> : null}
-                        </DragOverlay>
+                        <BodyDragOverlay dropAnimation={null}>
+                            {activeSuffix ? <SuffixRowPreview value={activeSuffix.value} index={values.indexOf(activeSuffix.value)} activeClass={activeClass} width={activeSuffix.width} /> : null}
+                        </BodyDragOverlay>
                     </DndContext>
                 ) : (
                     <div className="flex flex-wrap gap-2">
@@ -1880,6 +1888,15 @@ function ChipMultiSelect({
     )
 }
 
+function BodyDragOverlay(props: ComponentProps<typeof DragOverlay>) {
+    const [mounted, setMounted] = useState(false)
+    useEffect(() => {
+        setMounted(true)
+    }, [])
+    if (!mounted || typeof document === 'undefined') return null
+    return createPortal(<DragOverlay {...props} />, document.body)
+}
+
 function SortableSuffixRow({ value, index, activeClass, onRemove }: { value: string; index: number; activeClass: string; onRemove: () => void }) {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: value })
     const style = {
@@ -1893,9 +1910,9 @@ function SortableSuffixRow({ value, index, activeClass, onRemove }: { value: str
     )
 }
 
-function SuffixRowPreview({ value, index, activeClass }: { value: string; index: number; activeClass: string }) {
+function SuffixRowPreview({ value, index, activeClass, width }: { value: string; index: number; activeClass: string; width?: number }) {
     return (
-        <div className="w-[260px] rotate-[1deg] shadow-2xl">
+        <div className="shadow-2xl" style={{ width: width ? `${width}px` : undefined }}>
             <SuffixRowContent value={value} index={index} activeClass={activeClass} preview />
         </div>
     )
