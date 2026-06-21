@@ -450,13 +450,27 @@ TTL 建议：
 | 外部合作方 | 5 到 20 | 60 到 300 | 120s | 1800s |
 | 自动化浏览器 | 10 到 50 | 300 到 1000 | 300s | 7200s |
 
-## 11. 第八步：生成并使用测试命令
+## 11. 第八步：生成并使用代码示例
 
-在网关用户列表中点击“生成测试 curl”，选择一个该用户可用的网关。页面会实时拉取网关信息，不使用缓存，并允许单独复制 HTTP 或 SOCKS5 示例。
+在网关用户列表中点击“代码示例”，选择一个该用户可用的网关。页面会实时拉取网关信息，不使用缓存，并允许单独复制代理 URL、curl 命令和程序接入片段。旁边的“文档”按钮会打开本接入手册。
 
-页面生成的 curl 使用 `--proxy-user '用户名:密码'` 传递原始凭据。这里不要把密码里的字符做 URL 编码，例如真实密码包含 `}` 时应写 `}`，不要写成 `%7d`。只有把凭据直接嵌入代理 URL 时，才需要按 URL 规则编码。
+页面生成的代理 URL 会把用户名和密码按 URL 规则编码，适合粘贴到需要完整代理地址的工具里。页面生成的 curl 使用 `--proxy-user '用户名:密码'` 传递原始凭据。这里不要把密码里的字符做 URL 编码，例如真实密码包含 `}` 时应写 `}`，不要写成 `%7d`。只有把凭据直接嵌入代理 URL 时，才需要按 URL 规则编码。
 
-### 11.1 HTTP 代理 curl
+### 11.1 完整代理 URL
+
+```text
+http://gw_user:gw_password@proxy.example.com:32109
+socks5://gw_user:gw_password@proxy.example.com:32109
+```
+
+如果用户名使用路由标志号，`#` 需要编码成 `%23`：
+
+```text
+http://gw_user%2317:gw_password@proxy.example.com:32109
+socks5://gw_user%2317:gw_password@proxy.example.com:32109
+```
+
+### 11.2 HTTP 代理 curl
 
 ```bash
 curl -x 'http://proxy.example.com:32109' \
@@ -472,7 +486,7 @@ curl -x 'http://proxy.example.com:32109' \
   'https://api.ipify.org?format=json'
 ```
 
-### 11.2 SOCKS5 代理 curl
+### 11.3 SOCKS5 代理 curl
 
 ```bash
 curl --socks5 'proxy.example.com:32109' \
@@ -496,7 +510,7 @@ curl --socks5-hostname 'proxy.example.com:32109' \
   'https://example.com'
 ```
 
-### 11.3 Mixed 网关
+### 11.4 Mixed 网关
 
 Mixed 网关同一端口可同时支持 HTTP 和 SOCKS5。客户端选择哪种协议，Mailman 就按对应协议处理：
 
@@ -508,7 +522,7 @@ curl -x 'http://proxy.example.com:32109' --proxy-user 'gw_user:gw_password' http
 curl --socks5-hostname 'proxy.example.com:32109' --proxy-user 'gw_user:gw_password' https://example.com
 ```
 
-### 11.4 浏览器接入
+### 11.5 浏览器接入
 
 浏览器代理配置：
 
@@ -521,7 +535,7 @@ curl --socks5-hostname 'proxy.example.com:32109' --proxy-user 'gw_user:gw_passwo
 
 如果浏览器不支持用户名密码内置保存，可以使用浏览器插件或自动化工具传入认证信息。
 
-### 11.5 Playwright 接入
+### 11.6 Playwright 接入
 
 ```ts
 import { chromium } from 'playwright'
@@ -552,7 +566,7 @@ const browser = await chromium.launch({
 })
 ```
 
-### 11.6 Python requests 接入
+### 11.7 Python requests 接入
 
 ```python
 import requests
@@ -575,7 +589,7 @@ password = quote("gw_password", safe="")
 proxy = f"http://{username}:{password}@proxy.example.com:32109"
 ```
 
-### 11.7 AdsPower / 指纹浏览器接入
+### 11.8 AdsPower / 指纹浏览器接入
 
 一般填写：
 
@@ -713,9 +727,16 @@ Fallback：
 11. 每分钟连接数：120。
 12. 保存。
 
-### 14.6 生成测试命令
+### 14.6 生成代码示例
 
-在网关用户列表中点击“生成测试 curl”，选择 `Mixed Proxy Gateway`。
+在网关用户列表中点击“代码示例”，选择 `Mixed Proxy Gateway`。
+
+完整代理 URL：
+
+```text
+http://gw_login_us:password@proxy.example.com:32109
+socks5://gw_login_us:password@proxy.example.com:32109
+```
 
 HTTP 测试：
 

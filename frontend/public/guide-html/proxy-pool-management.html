@@ -225,11 +225,19 @@ proxy_user#17;purpose=signup;batch=202606</code></pre>
           </tbody>
         </table>
       </div>
-      <div class="callout success">创建完成后，在网关用户列表点击“生成测试 curl”，选择可用网关，页面会实时拉取网关信息并生成 HTTP 与 SOCKS5 示例。</div>
+      <div class="callout success">创建完成后，在网关用户列表点击“代码示例”，选择可用网关，页面会实时拉取网关信息并生成代理 URL、curl 和程序接入片段。</div>
     </section>
 
     <section id="usage" class="section">
       <h2>第五步：客户端接入代理</h2>
+      <h3>完整代理 URL</h3>
+      <p class="muted">适合粘贴到需要 <code>scheme://username:password@host:port</code> 的工具里。用户名或密码包含 <code>#</code>、<code>?</code>、空格等字符时，需要按 URL 规则编码。</p>
+      <pre><code>http://gw_user:gw_password@proxy.example.com:32109
+socks5://gw_user:gw_password@proxy.example.com:32109
+
+# 用户名路由示例，gw_user#17 需要编码为 gw_user%2317
+http://gw_user%2317:gw_password@proxy.example.com:32109
+socks5://gw_user%2317:gw_password@proxy.example.com:32109</code></pre>
       <h3>curl</h3>
       <p class="muted">curl 示例使用 <code>--proxy-user</code> 传递原始用户名密码，不要把密码里的 <code>}</code> 写成 <code>%7d</code> 这类 URL 编码。</p>
       <pre><code># HTTP CONNECT

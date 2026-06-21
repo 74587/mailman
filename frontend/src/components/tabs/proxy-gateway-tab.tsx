@@ -62,6 +62,8 @@ type AccountDraft = Partial<ProxyGatewayAccount> & { password?: string; tagIds?:
 type MetaDraft = { id?: number; type: 'group' | 'tag'; name: string; description?: string; color?: string; sortOrder?: number }
 type SearchOption = { id: number; name: string; description?: string; color?: string; meta?: string }
 
+const proxyGatewayGuideHref = '/guide-html/proxy-pool-management.html#usage'
+
 const sectionMeta: Record<NormalizedSection, { title: string; subtitle: string; icon: any }> = {
     gateways: { title: '代理网关', subtitle: '先创建 HTTP / SOCKS5 / Mixed 网关，再在网关下维护路由、安全和 DNS 策略', icon: Network },
     accounts: { title: '网关用户', subtitle: '独立于 Mailman 用户体系，配置账号、可用网关和代理选择策略', icon: KeyRound },
@@ -952,7 +954,7 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
     onEdit: (item: ProxyGatewayAccount) => void
     onDelete: (item: ProxyGatewayAccount) => void
 }) {
-    const [curlAccount, setCurlAccount] = useState<ProxyGatewayAccount | null>(null)
+    const [exampleAccount, setExampleAccount] = useState<ProxyGatewayAccount | null>(null)
     if (!accounts.length) return <EmptyState label="还没有网关用户" />
     const gatewayById = new Map(gateways.map(item => [item.id, item]))
     const strategyById = new Map(routeStrategies.map(item => [item.id, item]))
@@ -1024,7 +1026,22 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                                     </td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="inline-flex items-center gap-1">
-                                            <button onClick={() => setCurlAccount(item)} className="rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">测试 curl</button>
+                                            <a
+                                                href={proxyGatewayGuideHref}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
+                                            >
+                                                <FileText className="h-4 w-4" />
+                                                文档
+                                            </a>
+                                            <button
+                                                onClick={() => setExampleAccount(item)}
+                                                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
+                                            >
+                                                <Copy className="h-4 w-4" />
+                                                代码示例
+                                            </button>
                                             <RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} />
                                         </div>
                                     </td>
@@ -1034,12 +1051,12 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                     </table>
                 </TableShell>
             </Panel>
-            <AccountCurlModal account={curlAccount} onClose={() => setCurlAccount(null)} />
+            <AccountCodeExamplesModal account={exampleAccount} onClose={() => setExampleAccount(null)} />
         </>
     )
 }
 
-function AccountCurlModal({ account, onClose }: {
+function AccountCodeExamplesModal({ account, onClose }: {
     account: ProxyGatewayAccount | null
     onClose: () => void
 }) {
@@ -1090,10 +1107,16 @@ function AccountCurlModal({ account, onClose }: {
 
     const selectedGateway = allowedGateways.find(item => item.id === gatewayId) || allowedGateways[0]
     const gatewayOptions = toSearchOptions(allowedGateways, item => `${gatewayHostPort(item)} · ${item.protocol.toUpperCase()}`)
+    const proxyUrls = selectedGateway ? buildGatewayProxyUrlExamples(account, selectedGateway) : []
     const commands = selectedGateway ? buildGatewayCurlCommands(account, selectedGateway) : []
-    const commandText = commands.map(item => item.command).join('\n\n')
+    const codeSnippets = selectedGateway ? buildGatewayCodeSnippets(account, selectedGateway) : []
+    const exampleText = [
+        ...proxyUrls.map(item => `${item.label}\n${item.value}`),
+        ...commands.map(item => `${item.label}\n${item.command}`),
+        ...codeSnippets.map(item => `${item.label}\n${item.command}`),
+    ].join('\n\n')
 
-    const copyText = async (text: string, successMessage = 'curl 命令已复制') => {
+    const copyText = async (text: string, successMessage = '内容已复制') => {
         try {
             await navigator.clipboard.writeText(text)
             toast.success(successMessage)
@@ -1104,10 +1127,10 @@ function AccountCurlModal({ account, onClose }: {
 
     return (
         <Modal open={!!account} onOpenChange={open => !open && onClose()}>
-            <ModalContent size="2xl">
+            <ModalContent size="6xl">
                 <ModalHeader>
-                    <ModalTitle>生成测试 curl</ModalTitle>
-                    <ModalDescription>选择该用户可用的网关，生成用于测试代理入口的 curl 命令。</ModalDescription>
+                    <ModalTitle>代理接入代码示例</ModalTitle>
+                    <ModalDescription>选择该用户可用的网关，生成可直接复制的代理 URL、curl 和程序接入片段。</ModalDescription>
                 </ModalHeader>
                 <ModalBody className="space-y-4">
                     <div className="grid gap-3 md:grid-cols-2">
@@ -1118,7 +1141,7 @@ function AccountCurlModal({ account, onClose }: {
                         </div>
                         <div className="space-y-2">
                             <div className="flex items-center justify-between gap-3">
-                                <FieldLabel label="测试网关" help="打开弹窗时实时调用接口获取网关，再按该账号授权范围过滤。" />
+                                <FieldLabel label="示例网关" help="打开弹窗时实时调用接口获取网关，再按该账号授权范围过滤。" />
                                 <button onClick={loadLiveGateways} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
                                     <RefreshCw className={cn('h-3.5 w-3.5', loadingGateways && 'animate-spin')} />
                                     重新获取
@@ -1144,37 +1167,37 @@ function AccountCurlModal({ account, onClose }: {
                             </div>
                             <div>
                                 <div className="mb-2 flex items-center justify-between gap-3">
-                                    <FieldLabel label="curl 命令" help="Mixed 网关同时提供 HTTP 和 SOCKS5 示例；HTTP 使用 -x，SOCKS5 使用 --socks5-hostname。" />
-                                    <button disabled={!commands.length} onClick={() => copyText(commandText)} className={cn('inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm dark:border-gray-700', commands.length ? 'hover:bg-gray-50 dark:hover:bg-gray-800' : 'cursor-not-allowed opacity-60')}>
+                                    <FieldLabel label="代理 URL" help="用于需要直接填写完整代理地址的工具；用户名和密码已按 URL 规则编码。" />
+                                    <button disabled={!exampleText} onClick={() => copyText(exampleText, '全部示例已复制')} className={cn('inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm dark:border-gray-700', exampleText ? 'hover:bg-gray-50 dark:hover:bg-gray-800' : 'cursor-not-allowed opacity-60')}>
                                         <Copy className="h-4 w-4" />
                                         复制全部
                                     </button>
                                 </div>
-                                <div className="space-y-3">
+                                <div className="grid gap-3 lg:grid-cols-2">
+                                    {proxyUrls.map(item => (
+                                        <CopyExampleBlock key={item.label} item={{ ...item, command: item.value }} copyText={copyText} />
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <FieldLabel label="curl 测试命令" help="curl 示例继续使用 --proxy-user 传递原始凭据，适合排查代理连通性。" />
+                                <div className="mt-2 grid gap-3 lg:grid-cols-2">
                                     {commands.map(item => (
-                                        <div key={item.label} className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
-                                            <div className="flex items-center justify-between gap-3 border-b border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-300">
-                                                <span>{item.label}</span>
-                                                <span>{item.description}</span>
-                                                <button
-                                                    type="button"
-                                                    onClick={() => copyText(item.command, `${item.label}命令已复制`)}
-                                                    className="inline-flex items-center gap-1 rounded border border-gray-700 px-2 py-1 text-gray-200 hover:bg-gray-800"
-                                                >
-                                                    <Copy className="h-3.5 w-3.5" />
-                                                    复制
-                                                </button>
-                                            </div>
-                                            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all bg-gray-950 p-3 text-xs text-gray-100">
-                                                <code>{item.command}</code>
-                                            </pre>
-                                        </div>
+                                        <CopyExampleBlock key={item.label} item={item} copyText={copyText} />
+                                    ))}
+                                </div>
+                            </div>
+                            <div>
+                                <FieldLabel label="程序接入片段" help="给脚本、自动化和运行环境配置使用，可按实际协议复制其中一种。" />
+                                <div className="mt-2 grid gap-3 lg:grid-cols-2">
+                                    {codeSnippets.map(item => (
+                                        <CopyExampleBlock key={item.label} item={item} copyText={copyText} />
                                     ))}
                                 </div>
                             </div>
                         </>
                     ) : (
-                        <EmptyState label={loadingGateways ? '正在实时获取网关' : '该账号暂无可用网关，无法生成测试命令'} />
+                        <EmptyState label={loadingGateways ? '正在实时获取网关' : '该账号暂无可用网关，无法生成代码示例'} />
                     )}
                 </ModalBody>
                 <ModalFooter>
@@ -1182,6 +1205,33 @@ function AccountCurlModal({ account, onClose }: {
                 </ModalFooter>
             </ModalContent>
         </Modal>
+    )
+}
+
+function CopyExampleBlock({ item, copyText }: {
+    item: { label: string; description: string; command: string }
+    copyText: (text: string, successMessage?: string) => void
+}) {
+    return (
+        <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+            <div className="flex items-center justify-between gap-3 border-b border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-300">
+                <div className="min-w-0">
+                    <div className="font-medium text-gray-100">{item.label}</div>
+                    <div className="mt-0.5 truncate text-gray-400">{item.description}</div>
+                </div>
+                <button
+                    type="button"
+                    onClick={() => copyText(item.command, `${item.label}已复制`)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded border border-gray-700 px-2 py-1 text-gray-200 hover:bg-gray-800"
+                >
+                    <Copy className="h-3.5 w-3.5" />
+                    复制
+                </button>
+            </div>
+            <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-all bg-gray-950 p-3 text-xs text-gray-100">
+                <code>{item.command}</code>
+            </pre>
+        </div>
     )
 }
 
@@ -1197,10 +1247,47 @@ function shellQuote(value: string) {
     return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+function urlCredential(value: string) {
+    return encodeURIComponent(value)
+}
+
+function jsonString(value: string) {
+    return JSON.stringify(value)
+}
+
 function gatewayHostPort(gateway: ProxyGatewayListener) {
     const host = gatewayExternalHost(gateway)
     if (/:\d+$/.test(host)) return host
     return `${host}:${gatewayExternalPort(gateway)}`
+}
+
+function gatewayProxyServer(gateway: ProxyGatewayListener, scheme: 'http' | 'socks5') {
+    return `${scheme}://${gatewayHostPort(gateway)}`
+}
+
+function gatewayProxyUrl(account: ProxyGatewayAccount, gateway: ProxyGatewayListener, scheme: 'http' | 'socks5') {
+    const hostPort = gatewayHostPort(gateway)
+    if (gateway.requireAuth === false) return `${scheme}://${hostPort}`
+    return `${scheme}://${urlCredential(account.username)}:${urlCredential(account.password || '')}@${hostPort}`
+}
+
+function buildGatewayProxyUrlExamples(account: ProxyGatewayAccount, gateway: ProxyGatewayListener) {
+    const examples: Array<{ label: string; description: string; value: string }> = []
+    if (gateway.protocol === 'http' || gateway.protocol === 'mixed') {
+        examples.push({
+            label: 'HTTP 代理 URL',
+            description: 'http://用户名:密码@ip:端口',
+            value: gatewayProxyUrl(account, gateway, 'http'),
+        })
+    }
+    if (gateway.protocol === 'socks5' || gateway.protocol === 'mixed') {
+        examples.push({
+            label: 'SOCKS5 代理 URL',
+            description: 'socks5://用户名:密码@ip:端口',
+            value: gatewayProxyUrl(account, gateway, 'socks5'),
+        })
+    }
+    return examples
 }
 
 function buildGatewayCurlCommands(account: ProxyGatewayAccount, gateway: ProxyGatewayListener) {
@@ -1223,6 +1310,40 @@ function buildGatewayCurlCommands(account: ProxyGatewayAccount, gateway: ProxyGa
         })
     }
     return commands
+}
+
+function buildGatewayCodeSnippets(account: ProxyGatewayAccount, gateway: ProxyGatewayListener) {
+    const httpUrl = gateway.protocol === 'http' || gateway.protocol === 'mixed' ? gatewayProxyUrl(account, gateway, 'http') : ''
+    const socks5Url = gateway.protocol === 'socks5' || gateway.protocol === 'mixed' ? gatewayProxyUrl(account, gateway, 'socks5') : ''
+    const preferredScheme: 'http' | 'socks5' = httpUrl ? 'http' : 'socks5'
+    const preferredUrl = httpUrl || socks5Url
+    const snippets: Array<{ label: string; description: string; command: string }> = []
+    if (preferredUrl) {
+        const envLines = httpUrl
+            ? `HTTP_PROXY=${shellQuote(httpUrl)}\nHTTPS_PROXY=${shellQuote(httpUrl)}`
+            : `ALL_PROXY=${shellQuote(socks5Url)}`
+        snippets.push({
+            label: '环境变量',
+            description: httpUrl ? 'HTTP_PROXY / HTTPS_PROXY' : 'ALL_PROXY',
+            command: envLines,
+        })
+        snippets.push({
+            label: 'Python requests',
+            description: 'proxies 字典示例',
+            command: `import requests\n\nproxy = ${jsonString(preferredUrl)}\nproxies = { "http": proxy, "https": proxy }\nprint(requests.get("https://api.ipify.org?format=json", proxies=proxies, timeout=20).text)`,
+        })
+        snippets.push({
+            label: 'Playwright',
+            description: `${preferredScheme.toUpperCase()} 代理配置`,
+            command: buildPlaywrightProxySnippet(account, gateway, preferredScheme),
+        })
+    }
+    return snippets
+}
+
+function buildPlaywrightProxySnippet(account: ProxyGatewayAccount, gateway: ProxyGatewayListener, scheme: 'http' | 'socks5') {
+    const authLines = gateway.requireAuth === false ? '' : `,\n    username: ${jsonString(account.username)},\n    password: ${jsonString(account.password || '')}`
+    return `import { chromium } from 'playwright'\n\nconst browser = await chromium.launch({\n  proxy: {\n    server: ${jsonString(gatewayProxyServer(gateway, scheme))}${authLines},\n  },\n})`
 }
 
 function RouteStrategiesView({ strategies, accounts, onCreate, onEdit, onDelete }: {
@@ -1623,7 +1744,7 @@ function ListenerModal({ draft, setDraft, securityPolicies, dnsPolicies, onSave 
                                 ))}
                             </div>
                         </div>
-                        <TextField label="外部访问 IP/域名" help="不参与监听和校验，只用于列表展示和一键生成测试 curl 示例。" value={draft.externalHost || ''} onChange={value => setDraft({ ...draft, externalHost: value })} />
+                        <TextField label="外部访问 IP/域名" help="不参与监听和校验，只用于列表展示和生成代理接入代码示例。" value={draft.externalHost || ''} onChange={value => setDraft({ ...draft, externalHost: value })} />
                         <OptionalNumberField label="外部访问端口" help="可选。Docker 或负载均衡把外部端口映射到监听端口时填写；留空则使用监听端口。" value={draft.externalPort} onChange={value => setDraft({ ...draft, externalPort: value })} />
                         <NumberField label="端口" help="该端口会提供 HTTP、SOCKS5 或混合代理入口。" value={draft.port || 0} onChange={value => setDraft({ ...draft, port: value })} />
                         <SelectField label="协议" help="Mixed 会自动识别 HTTP 代理请求和 SOCKS5 握手。" value={draft.protocol || 'mixed'} onChange={value => setDraft({ ...draft, protocol: value as any })} options={[['mixed', 'Mixed'], ['http', 'HTTP'], ['socks5', 'SOCKS5']]} />
