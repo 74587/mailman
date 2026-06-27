@@ -1,22 +1,23 @@
 'use client'
 
-import { useCallback, useEffect, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import { closestCenter, DndContext, DragOverlay, PointerSensor, type DragEndEvent, type DragStartEvent, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove, rectSortingStrategy, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { BookOpen, Briefcase, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, GripVertical, ImagePlus, Loader2, MailCheck, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Tag, Trash2, Workflow, X } from 'lucide-react'
+import { Ban, BookOpen, Briefcase, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock, Code2, Copy, Eye, ExternalLink, FileCode2, GripVertical, ImagePlus, KeyRound, LayoutDashboard, Loader2, Mail, MailCheck, PanelRightClose, PanelRightOpen, Pencil, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Tag, Terminal, Trash2, Unlock, UserPlus, Workflow, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { businessAccountService, BusinessClaimDefaults, BusinessCustomFieldType, BusinessEmailClaimPayload, BusinessEmailConstraints, BusinessModule, BusinessModulePayload, BusinessScenario, BusinessScenarioPayload, BusinessStatusOption } from '@/services/business-account.service'
+import { businessAccountService, BusinessAccount, BusinessAccountStatus, BusinessClaimDefaults, BusinessCustomFieldType, BusinessEmailClaimPayload, BusinessEmailClaimResponse, BusinessEmailConstraints, BusinessModule, BusinessModulePayload, BusinessScenario, BusinessScenarioPayload, BusinessStatusOption, CompleteBusinessRegistrationPayload } from '@/services/business-account.service'
+import { pickupService, PickupPollRequest } from '@/services/pickup.service'
 import { extractorTemplateV2Service } from '@/services/extractor-template-v2.service'
 import { Modal, ModalBody, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '@/components/ui/modal'
 import { Switch } from '@/components/ui/switch'
 import ExtractorCreationWizard from '@/components/extractor-v2/extractor-creation-wizard'
 import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
 import { registerRefreshCallback, unregisterRefreshCallback } from '@/lib/tab-utils'
-import { getApiBaseUrl } from '@/lib/runtime-url'
-import type { ExtractorTemplateV2 } from '@/types'
+import { getApiBaseUrl, getBrowserAuthToken } from '@/lib/runtime-url'
+import type { Email, ExtractorTemplateV2 } from '@/types'
 
 type ModuleFieldDraft = {
     key: string
@@ -81,6 +82,100 @@ type ScenarioDraft = {
 type ModuleEditorScene = 'profile' | 'email-policy' | 'scenarios'
 type GuideEndpointKey = 'claim' | 'pickup' | 'complete' | 'release' | 'renew'
 type GuideLanguage = 'curl' | 'node' | 'python' | 'go'
+type BusinessModuleDetailSection = 'overview' | 'guide' | 'accounts' | 'email-policy' | 'scenarios' | 'create-account' | 'debug'
+type CreateAccountPickupMode = 'scenario' | 'custom'
+type TraceStatus = 'pending' | 'success' | 'error'
+type PickupMonitorStatus = 'idle' | 'listening' | 'found' | 'empty' | 'cancelled' | 'error'
+
+type BusinessTraceEntry = {
+    id: string
+    label: string
+    method: string
+    path: string
+    startedAt: string
+    completedAt?: string
+    status: TraceStatus
+    request: {
+        url: string
+        headers: Record<string, string>
+        body?: unknown
+    }
+    response?: unknown
+    error?: string
+}
+
+type PickupMonitorState = {
+    open: boolean
+    hidden: boolean
+    status: PickupMonitorStatus
+    startedAt?: string
+    checks: number
+    elapsedSeconds: number
+    emails: Email[]
+    lastResult?: unknown
+    error?: string
+    selectedEmailId?: number
+}
+
+const emptyPickupMonitorState = (): PickupMonitorState => ({
+    open: false,
+    hidden: false,
+    status: 'idle',
+    checks: 0,
+    elapsedSeconds: 0,
+    emails: []
+})
+
+type CredentialPolicy = {
+    usernamePrefix: string
+    usernameLength: number
+    passwordLength: number
+    includeLowercase: boolean
+    includeUppercase: boolean
+    includeDigits: boolean
+    includeUnderscore: boolean
+    includeSymbols: boolean
+}
+
+type CreateAccountDraft = {
+    displayName: string
+    username: string
+    password: string
+    totpSecret: string
+    phoneNumber: string
+    recoveryEmail: string
+    recoveryCodes: string
+    note: string
+    customFieldsText: string
+    extraDataText: string
+    useCustomClaimPolicy: boolean
+    ttlSeconds: string
+    emailMode: BusinessEmailMode
+    emailSuffixes: string
+    blockedEmailSuffixes: string
+    prefixStrategy: NonNullable<BusinessClaimDefaults['prefixStrategy']>
+    prefixTemplate: string
+    builtinPrefix: string
+    randomLength: string
+    pickupMode: CreateAccountPickupMode
+    scenarioKey: string
+    keepAliveSeconds: string
+    syncInterval: string
+    pickupLimit: string
+    sinceMinutes: string
+    customExtractorMode: ScenarioExtractorMode
+    customTemplateId: string
+    customSimpleField: string
+    customSimpleType: string
+    customSimplePattern: string
+    completeStatus: string
+    releaseReason: string
+    releaseMessage: string
+    releaseDeletePending: boolean
+    releaseExclusionType: 'cooldown' | 'blacklist'
+    releaseExclusionTarget: 'email_account' | 'registration_email' | 'both'
+    releaseDurationSeconds: string
+}
 
 const moduleColors = ['#2563eb', '#10b981', '#f97316', '#8b5cf6', '#ec4899', '#06b6d4', '#64748b']
 const statusColors = ['#10b981', '#f59e0b', '#64748b', '#94a3b8', '#ef4444', '#8b5cf6', '#06b6d4']
@@ -139,6 +234,27 @@ const builtinStatuses: BusinessStatusOption[] = [
     { value: 'archived', label: '归档', color: '#94a3b8' }
 ]
 
+const detailSections: Array<{ id: BusinessModuleDetailSection; label: string; description: string; icon: any }> = [
+    { id: 'overview', label: '概览', description: '模块摘要与关键状态', icon: LayoutDashboard },
+    { id: 'guide', label: '使用手册', description: '接口路径与接入顺序', icon: BookOpen },
+    { id: 'accounts', label: '账户列表', description: '当前模块业务账户', icon: Briefcase },
+    { id: 'email-policy', label: '邮箱申请策略配置', description: '默认申请策略', icon: MailCheck },
+    { id: 'scenarios', label: '业务场景配置', description: '场景取件配置', icon: Workflow },
+    { id: 'create-account', label: '创建账号', description: '申请邮箱、取件、回填', icon: UserPlus },
+    { id: 'debug', label: '请求响应', description: '本次操作 trace', icon: Terminal }
+]
+
+const defaultCredentialPolicy: CredentialPolicy = {
+    usernamePrefix: 'user',
+    usernameLength: 10,
+    passwordLength: 16,
+    includeLowercase: true,
+    includeUppercase: true,
+    includeDigits: true,
+    includeUnderscore: true,
+    includeSymbols: false
+}
+
 function emptyDraft(): ModuleDraft {
     return {
         name: '',
@@ -168,6 +284,102 @@ function emptyDraft(): ModuleDraft {
         randomLength: '8',
         scenarios: []
     }
+}
+
+function emptyCreateAccountDraft(module?: BusinessModule | null): CreateAccountDraft {
+    const defaults = module?.claimDefaults || {}
+    const constraints = module?.emailConstraints || {}
+    const allowedSuffixes = normalizeSuffixList(constraints.allowedSuffixes || defaults.emailSuffixes || (defaults.emailSuffix ? [defaults.emailSuffix] : []))
+    const blockedSuffixes = normalizeSuffixList(constraints.blockedSuffixes || defaults.blockedEmailSuffixes || [])
+    return {
+        displayName: module ? `${module.name} 账号` : '',
+        username: '',
+        password: '',
+        totpSecret: '',
+        phoneNumber: '',
+        recoveryEmail: '',
+        recoveryCodes: '',
+        note: '',
+        customFieldsText: '{}',
+        extraDataText: '{}',
+        useCustomClaimPolicy: false,
+        ttlSeconds: String(defaults.ttlSeconds || 600),
+        emailMode: normalizeDraftEmailMode(defaults.emailMode),
+        emailSuffixes: allowedSuffixes.join('\n'),
+        blockedEmailSuffixes: blockedSuffixes.join('\n'),
+        prefixStrategy: normalizeDraftPrefixStrategy(defaults.prefixStrategy),
+        prefixTemplate: String(defaults.prefixTemplate || '{module}-{hex4}'),
+        builtinPrefix: String(defaults.builtinPrefix || 'module'),
+        randomLength: String(defaults.randomLength || 8),
+        pickupMode: 'scenario',
+        scenarioKey: '',
+        keepAliveSeconds: '90',
+        syncInterval: '5',
+        pickupLimit: '10',
+        sinceMinutes: '10',
+        customExtractorMode: 'none',
+        customTemplateId: '',
+        customSimpleField: 'body',
+        customSimpleType: 'regex',
+        customSimplePattern: '',
+        completeStatus: getGuideCompletionStatus(module || ({ id: 0, name: '' } as BusinessModule)),
+        releaseReason: 'registration_failed',
+        releaseMessage: '注册失败，释放本次占用的注册邮箱',
+        releaseDeletePending: true,
+        releaseExclusionType: 'cooldown',
+        releaseExclusionTarget: 'both',
+        releaseDurationSeconds: '1800'
+    }
+}
+
+function randomIndex(max: number) {
+    if (max <= 0) return 0
+    if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+        const value = new Uint32Array(1)
+        window.crypto.getRandomValues(value)
+        return value[0] % max
+    }
+    return Math.floor(Math.random() * max)
+}
+
+function randomStringFromCharset(length: number, charset: string) {
+    return Array.from({ length }, () => charset[randomIndex(charset.length)]).join('')
+}
+
+function generateCredentialPair(policy: CredentialPolicy) {
+    const usernameChars = 'abcdefghijklmnopqrstuvwxyz0123456789_'
+    const username = `${policy.usernamePrefix || 'user'}_${randomStringFromCharset(Math.max(4, policy.usernameLength), usernameChars)}`
+    const pools = [
+        policy.includeLowercase ? 'abcdefghijklmnopqrstuvwxyz' : '',
+        policy.includeUppercase ? 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' : '',
+        policy.includeDigits ? '0123456789' : '',
+        policy.includeUnderscore ? '_' : '',
+        policy.includeSymbols ? '!@#$%^&*.-+=' : ''
+    ].filter(Boolean)
+    const charset = pools.join('') || 'abcdefghijklmnopqrstuvwxyz0123456789'
+    const required = pools.map(pool => pool[randomIndex(pool.length)])
+    const rest = Array.from({ length: Math.max(0, policy.passwordLength - required.length) }, () => charset[randomIndex(charset.length)])
+    const chars = [...required, ...rest]
+    for (let index = chars.length - 1; index > 0; index--) {
+        const swapIndex = randomIndex(index + 1)
+        const current = chars[index]
+        chars[index] = chars[swapIndex]
+        chars[swapIndex] = current
+    }
+    return {
+        username,
+        password: chars.join('')
+    }
+}
+
+function parseJSONObject(value: string, label: string): Record<string, any> {
+    const trimmed = value.trim()
+    if (!trimmed) return {}
+    const parsed = JSON.parse(trimmed)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`${label} 必须是 JSON 对象`)
+    }
+    return parsed
 }
 
 function readModuleFields(module: BusinessModule): ModuleFieldDraft[] {
@@ -1167,6 +1379,8 @@ export default function BusinessModulesTab() {
     const [modalOpen, setModalOpen] = useState(false)
     const [editing, setEditing] = useState<BusinessModule | null>(null)
     const [guideModule, setGuideModule] = useState<BusinessModule | null>(null)
+    const [detailModule, setDetailModule] = useState<BusinessModule | null>(null)
+    const [detailSection, setDetailSection] = useState<BusinessModuleDetailSection>('overview')
     const [editorScene, setEditorScene] = useState<ModuleEditorScene>('profile')
     const [draft, setDraft] = useState<ModuleDraft>(emptyDraft)
     const [originalScenarios, setOriginalScenarios] = useState<BusinessScenario[]>([])
@@ -1305,6 +1519,11 @@ export default function BusinessModulesTab() {
             .finally(() => setScenariosLoading(false))
     }
 
+    const openDetail = (module: BusinessModule, section: BusinessModuleDetailSection = 'overview') => {
+        setDetailModule(module)
+        setDetailSection(section)
+    }
+
     const saveModule = async () => {
         const payload = draftToPayload(draft)
         if (!payload.name) {
@@ -1331,6 +1550,7 @@ export default function BusinessModulesTab() {
             let savedModule: BusinessModule
             if (editing) {
                 savedModule = await businessAccountService.updateModule(editing.id, payload)
+                if (detailModule?.id === editing.id) setDetailModule(savedModule)
                 toast.success('业务模块已更新')
             } else {
                 savedModule = await businessAccountService.createModule(payload)
@@ -1416,7 +1636,29 @@ export default function BusinessModulesTab() {
     }
 
     return (
-        <div className="h-full min-h-0 overflow-y-auto bg-gray-50/70 p-5 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+        <div className={cn('h-full min-h-0 text-gray-900 dark:text-gray-100', detailModule ? 'overflow-hidden bg-gray-50/80 dark:bg-gray-950' : 'overflow-y-auto bg-gray-50/70 p-5 dark:bg-gray-950')}>
+            {detailModule ? (
+                <BusinessModuleDetailWorkspace
+                    module={detailModule}
+                    section={detailSection}
+                    setSection={setDetailSection}
+                    onBack={() => setDetailModule(null)}
+                    onEdit={() => openEdit(detailModule)}
+                    onEditPolicy={() => {
+                        openEdit(detailModule)
+                        setEditorScene('email-policy')
+                    }}
+                    onEditScenarios={() => {
+                        openEdit(detailModule)
+                        setEditorScene('scenarios')
+                    }}
+                    onOpenGuide={() => setGuideModule(detailModule)}
+                    onModuleUpdated={setDetailModule}
+                    extractorTemplates={extractorTemplates}
+                    loadExtractorTemplates={loadExtractorTemplates}
+                />
+            ) : (
+                <>
             <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-950/40 dark:text-indigo-300">
@@ -1569,6 +1811,9 @@ export default function BusinessModulesTab() {
                                                     <button type="button" onClick={() => setGuideModule(module)} title="接入手册" aria-label={`${module.name} 接入手册`} className="rounded-lg p-2 text-gray-500 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-950/30">
                                                         <BookOpen className="h-4 w-4" />
                                                     </button>
+                                                    <button onClick={() => openDetail(module)} title="详情工作台" aria-label={`${module.name} 详情工作台`} className="rounded-lg p-2 text-gray-500 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-950/30">
+                                                        <Eye className="h-4 w-4" />
+                                                    </button>
                                                     <button onClick={() => openEdit(module)} className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-blue-600 dark:hover:bg-gray-800">
                                                         <Pencil className="h-4 w-4" />
                                                     </button>
@@ -1601,6 +1846,9 @@ export default function BusinessModulesTab() {
                     </div>
                 )}
             </div>
+
+                </>
+            )}
 
             <BusinessIntegrationGuideModal module={guideModule} open={Boolean(guideModule)} onOpenChange={open => !open && setGuideModule(null)} />
 
@@ -2009,6 +2257,1791 @@ export default function BusinessModulesTab() {
     )
 }
 
+function BusinessModuleDetailWorkspace({
+    module,
+    section,
+    setSection,
+    onBack,
+    onEdit,
+    onEditPolicy,
+    onEditScenarios,
+    onOpenGuide,
+    onModuleUpdated,
+    extractorTemplates,
+    loadExtractorTemplates
+}: {
+    module: BusinessModule
+    section: BusinessModuleDetailSection
+    setSection: (section: BusinessModuleDetailSection) => void
+    onBack: () => void
+    onEdit: () => void
+    onEditPolicy: () => void
+    onEditScenarios: () => void
+    onOpenGuide: () => void
+    onModuleUpdated: (module: BusinessModule) => void
+    extractorTemplates: Array<{ id: number; name: string; category?: string; enabled?: boolean }>
+    loadExtractorTemplates: (showSuccess?: boolean) => Promise<void>
+}) {
+    const [accounts, setAccounts] = useState<BusinessAccount[]>([])
+    const [accountsLoading, setAccountsLoading] = useState(false)
+    const [scenarios, setScenarios] = useState<BusinessScenario[]>([])
+    const [scenariosLoading, setScenariosLoading] = useState(false)
+    const [traces, setTraces] = useState<BusinessTraceEntry[]>([])
+    const [traceReturnSection, setTraceReturnSection] = useState<BusinessModuleDetailSection>('create-account')
+    const [createFlowActive, setCreateFlowActive] = useState(false)
+    const [createFlowHasOpenClaim, setCreateFlowHasOpenClaim] = useState(false)
+    const { confirm } = useConfirmDialog()
+
+    const loadAccounts = useCallback(async () => {
+        setAccountsLoading(true)
+        try {
+            const response = await businessAccountService.listAccounts({ moduleId: module.id, page: 1, limit: 80 })
+            setAccounts(response.data || [])
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '加载业务账户失败')
+        } finally {
+            setAccountsLoading(false)
+        }
+    }, [module.id])
+
+    const loadScenarios = useCallback(async () => {
+        setScenariosLoading(true)
+        try {
+            setScenarios(await businessAccountService.listScenarios(module.id))
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '加载业务场景失败')
+        } finally {
+            setScenariosLoading(false)
+        }
+    }, [module.id])
+
+    useEffect(() => {
+        loadAccounts()
+        loadScenarios()
+    }, [loadAccounts, loadScenarios])
+
+    useEffect(() => {
+        setTraceReturnSection('create-account')
+        setCreateFlowActive(false)
+        setCreateFlowHasOpenClaim(false)
+    }, [module.id])
+
+    useEffect(() => {
+        if (section === 'create-account') {
+            void loadExtractorTemplates()
+        }
+    }, [loadExtractorTemplates, section])
+
+    const statuses = readModuleStatuses(module)
+    const fields = readModuleFields(module).filter(field => field.key.trim())
+    const guide = buildBusinessIntegrationGuide(module)
+    const goToSection = useCallback(
+        (nextSection: BusinessModuleDetailSection) => {
+            if (nextSection === 'debug') {
+                setTraceReturnSection(section === 'debug' ? traceReturnSection : section)
+            } else {
+                setTraceReturnSection(nextSection)
+            }
+            setSection(nextSection)
+        },
+        [section, setSection, traceReturnSection]
+    )
+    const openTraceSection = useCallback(() => {
+        setTraceReturnSection(section === 'debug' ? traceReturnSection : section)
+        setSection('debug')
+    }, [section, setSection, traceReturnSection])
+    const handleHeaderBack = useCallback(async () => {
+        if (section === 'debug') {
+            setSection(traceReturnSection === 'debug' ? 'create-account' : traceReturnSection)
+            return
+        }
+        if (section !== 'overview') {
+            setSection('overview')
+            return
+        }
+        if (createFlowActive) {
+            const ok = await confirm({
+                title: '离开业务模块详情',
+                description: createFlowHasOpenClaim
+                    ? '当前创建账号流程里还有已申请但未完成/释放的邮箱 claim。建议先返回创建账号完成注册或释放/拉黑，否则只能等待 claim 到期。'
+                    : '当前创建账号流程里已有临时数据或请求响应记录。离开详情页后这些页面状态会被清空。',
+                confirmText: '离开详情页',
+                cancelText: '继续操作',
+                variant: 'destructive'
+            })
+            if (!ok) return
+        }
+        onBack()
+    }, [confirm, createFlowActive, createFlowHasOpenClaim, onBack, section, setSection, traceReturnSection])
+    const headerBackTitle = section === 'debug' ? `返回${detailSections.find(item => item.id === traceReturnSection)?.label || '上一页'}` : section === 'overview' ? '返回列表' : '返回概览'
+
+    return (
+        <div className="flex h-full min-h-0 flex-col bg-gray-50/80 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-200 bg-white px-5 py-4 dark:border-gray-800 dark:bg-gray-900">
+                <div className="flex min-w-0 items-center gap-3">
+                    <button onClick={() => void handleHeaderBack()} className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800" title={headerBackTitle}>
+                        <ArrowLeftIcon />
+                    </button>
+                    {module.logo ? (
+                        <img src={module.logo} alt="" className="h-11 w-11 rounded-lg border border-gray-200 object-cover dark:border-gray-800" />
+                    ) : (
+                        <div className="flex h-11 w-11 items-center justify-center rounded-lg text-sm font-semibold text-white" style={{ backgroundColor: module.color || moduleColors[0] }}>
+                            {module.name.slice(0, 1)}
+                        </div>
+                    )}
+                    <div className="min-w-0">
+                        <h1 className="truncate text-lg font-semibold">{module.name}</h1>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                            <span>业务模块 #{module.id}</span>
+                            {module.website && <span className="truncate">{module.website}</span>}
+                            <span>{accounts.length} 个账户</span>
+                            <span>{scenarios.length} 个场景</span>
+                        </div>
+                    </div>
+                </div>
+                <div className="flex items-center gap-2">
+                    <button onClick={onOpenGuide} className="inline-flex h-9 items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800">
+                        <BookOpen className="h-4 w-4" />
+                        手册
+                    </button>
+                    <button onClick={onEdit} className="inline-flex h-9 items-center gap-2 rounded-lg bg-gray-900 px-3 text-sm font-medium text-white hover:bg-gray-800 dark:bg-white dark:text-gray-900">
+                        <Pencil className="h-4 w-4" />
+                        编辑模块
+                    </button>
+                </div>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)]">
+                <aside className="min-h-0 border-b border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900 lg:border-b-0 lg:border-r">
+                    <div className="flex gap-1 overflow-x-auto lg:block lg:space-y-1">
+                        {detailSections.map(item => {
+                            const Icon = item.icon
+                            const active = section === item.id
+                            return (
+                                <button
+                                    key={item.id}
+                                    onClick={() => goToSection(item.id)}
+                                    className={cn(
+                                        'flex min-w-[172px] items-start gap-3 rounded-lg px-3 py-2.5 text-left transition lg:w-full lg:min-w-0',
+                                        active ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-200' : 'text-gray-600 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800'
+                                    )}
+                                >
+                                    <Icon className="mt-0.5 h-4 w-4 shrink-0" />
+                                    <span className="min-w-0">
+                                        <span className="block text-sm font-medium">{item.label}</span>
+                                        <span className="mt-0.5 block truncate text-xs opacity-70">{item.description}</span>
+                                    </span>
+                                </button>
+                            )
+                        })}
+                    </div>
+                    <div className="mt-4 hidden rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300 lg:block">
+                        <div className="mb-2 font-semibold">最近 trace</div>
+                        {traces.length ? (
+                            <div className="space-y-1.5">
+                                {traces.slice(0, 4).map(trace => (
+                                    <div key={trace.id} className="flex items-center justify-between gap-2">
+                                        <span className="truncate">{trace.label}</span>
+                                        <TraceStatusBadge status={trace.status} />
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-gray-400">创建账号流程执行后显示</div>
+                        )}
+                    </div>
+                </aside>
+
+                <main className="min-h-0 overflow-y-auto p-5">
+                    {createFlowActive && section !== 'create-account' && (
+                        <div className={cn('mb-4 flex flex-col gap-3 rounded-lg border p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between', createFlowHasOpenClaim ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200' : 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200')}>
+                            <div>
+                                <div className="text-sm font-semibold">{createFlowHasOpenClaim ? '有邮箱 claim 等待处理' : '创建账号流程正在保留'}</div>
+                                <div className="mt-0.5 text-xs opacity-80">{createFlowHasOpenClaim ? '已申请邮箱尚未完成或释放，离开详情页前建议回到创建账号处理。' : '已填写资料、监听状态或请求响应记录会留在创建账号操作台中。'}</div>
+                            </div>
+                            <button onClick={() => goToSection('create-account')} className={cn('inline-flex h-9 items-center justify-center gap-2 rounded-lg px-3 text-sm font-medium text-white', createFlowHasOpenClaim ? 'bg-amber-600 hover:bg-amber-700' : 'bg-blue-600 hover:bg-blue-700')}>
+                                <UserPlus className="h-4 w-4" />
+                                {createFlowHasOpenClaim ? '处理邮箱 claim' : '返回创建账号'}
+                            </button>
+                        </div>
+                    )}
+                    {section === 'overview' && <ModuleOverview module={module} statuses={statuses} fields={fields} scenarios={scenarios} accounts={accounts} onSection={goToSection} />}
+                    {section === 'guide' && <ModuleGuideInline guide={guide} onOpenGuide={onOpenGuide} />}
+                    {section === 'accounts' && <ModuleAccountsPanel module={module} statuses={statuses} />}
+                    {section === 'email-policy' && <ModuleEmailPolicyPanel module={module} onEdit={onEditPolicy} />}
+                    {section === 'scenarios' && <ModuleScenariosPanel scenarios={scenarios} loading={scenariosLoading} onRefresh={loadScenarios} onEdit={onEditScenarios} />}
+                    <div className={cn(section === 'create-account' ? 'block' : 'hidden')} aria-hidden={section !== 'create-account'}>
+                        <CreateBusinessAccountPanel
+                            module={module}
+                            statuses={statuses}
+                            scenarios={scenarios}
+                            extractorTemplates={extractorTemplates}
+                            traces={traces}
+                            setTraces={setTraces}
+                            onTraceFocus={openTraceSection}
+                            onFlowActiveChange={setCreateFlowActive}
+                            onOpenClaimChange={setCreateFlowHasOpenClaim}
+                            onAccountChanged={() => {
+                                loadAccounts()
+                                onModuleUpdated(module)
+                            }}
+                        />
+                    </div>
+                    {section === 'debug' && <TraceDebuggerPanel traces={traces} setTraces={setTraces} module={module} />}
+                </main>
+            </div>
+        </div>
+    )
+}
+
+function ArrowLeftIcon() {
+    return <ChevronLeft className="h-4 w-4" />
+}
+
+function ModuleOverview({ module, statuses, fields, scenarios, accounts, onSection }: { module: BusinessModule; statuses: BusinessStatusOption[]; fields: ModuleFieldDraft[]; scenarios: BusinessScenario[]; accounts: BusinessAccount[]; onSection: (section: BusinessModuleDetailSection) => void }) {
+    const allowedSuffixes = getModuleAllowedSuffixes(module)
+    const blockedSuffixes = getModuleBlockedSuffixes(module)
+    return (
+        <div className="space-y-5">
+            <div className="grid gap-4 md:grid-cols-4">
+                <MetricCard label="业务账户" value={String(accounts.length)} icon={<Briefcase className="h-4 w-4" />} />
+                <MetricCard label="业务场景" value={String(scenarios.length)} icon={<Workflow className="h-4 w-4" />} />
+                <MetricCard label="字段模板" value={String(fields.length)} icon={<SlidersHorizontal className="h-4 w-4" />} />
+                <MetricCard label="状态选项" value={String(statuses.length)} icon={<ShieldCheck className="h-4 w-4" />} />
+            </div>
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+                <Panel title="模块资料" description="业务模块的站点信息与默认账户模板。">
+                    <div className="grid gap-4 md:grid-cols-2">
+                        <InfoLine label="官网" value={module.website || '-'} />
+                        <InfoLine label="登录地址" value={module.loginUrl || '-'} />
+                        <InfoLine label="描述" value={module.description || '-'} className="md:col-span-2" />
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                        <button onClick={() => onSection('create-account')} className="inline-flex h-9 items-center gap-2 rounded-lg bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700">
+                            <UserPlus className="h-4 w-4" />
+                            创建账号
+                        </button>
+                        <button onClick={() => onSection('guide')} className="inline-flex h-9 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
+                            <BookOpen className="h-4 w-4" />
+                            查看手册
+                        </button>
+                    </div>
+                </Panel>
+                <Panel title="邮箱申请策略" description="当前模块默认 claim 参数摘要。">
+                    <div className="space-y-3 text-sm">
+                        <InfoLine label="有效期" value={`${getGuideClaimTtl(module)} 秒`} />
+                        <InfoLine label="允许后缀" value={allowedSuffixes.join('、') || '不限制'} />
+                        <InfoLine label="禁止后缀" value={blockedSuffixes.join('、') || '未配置'} />
+                        <InfoLine label="能力" value={`${module.emailConstraints?.allowAliases === false ? '禁用别名' : '允许别名'} / ${module.emailConstraints?.allowDomainMail === false ? '禁用域名' : '允许域名'} / ${module.emailConstraints?.allowForwarded === false ? '禁用转发' : '允许转发'}`} />
+                    </div>
+                </Panel>
+            </div>
+            <Panel title="字段与状态" description="创建业务账户时会继承这些字段与状态选项。">
+                <div className="grid gap-4 lg:grid-cols-2">
+                    <div>
+                        <div className="mb-2 text-sm font-semibold">状态</div>
+                        <div className="flex flex-wrap gap-2">
+                            {statuses.map(status => (
+                                <span key={status.value} className="rounded-full border px-2 py-1 text-xs" style={{ color: status.color, borderColor: `${status.color || '#64748b'}55`, backgroundColor: `${status.color || '#64748b'}14` }}>
+                                    {status.label} · {status.value}
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                    <div>
+                        <div className="mb-2 text-sm font-semibold">字段模板</div>
+                        <div className="flex flex-wrap gap-2">
+                            {fields.length ? fields.map(field => <span key={field.key} className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">{field.key} · {field.type}</span>) : <span className="text-sm text-gray-400">未配置字段模板</span>}
+                        </div>
+                    </div>
+                </div>
+            </Panel>
+        </div>
+    )
+}
+
+function MetricCard({ label, value, icon }: { label: string; value: string; icon: ReactNode }) {
+    return (
+        <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="flex items-center justify-between text-xs text-gray-500">
+                <span>{label}</span>
+                <span className="text-gray-400">{icon}</span>
+            </div>
+            <div className="mt-2 text-2xl font-semibold">{value}</div>
+        </div>
+    )
+}
+
+function InfoLine({ label, value, className }: { label: string; value: ReactNode; className?: string }) {
+    return (
+        <div className={className}>
+            <div className="text-xs text-gray-500">{label}</div>
+            <div className="mt-1 break-words text-sm text-gray-900 dark:text-gray-100">{value}</div>
+        </div>
+    )
+}
+
+function ModuleGuideInline({ guide, onOpenGuide }: { guide: BusinessIntegrationGuide; onOpenGuide: () => void }) {
+    return (
+        <div className="space-y-5">
+            <Panel title="使用手册" description="基于当前模块配置生成的接入顺序和核心接口。">
+                <div className="grid gap-3 md:grid-cols-3">
+                    <GuideStep index={1} title="申请邮箱" description="按模块策略 claim 一个注册邮箱。" />
+                    <GuideStep index={2} title="监听取件" description="使用业务场景或自定义取件读取验证码。" />
+                    <GuideStep index={3} title="完成或释放" description="保存账号资料，或释放/拉黑邮箱。" />
+                </div>
+                <button onClick={onOpenGuide} className="mt-4 inline-flex h-9 items-center gap-2 rounded-lg bg-gray-900 px-3 text-sm font-medium text-white dark:bg-white dark:text-gray-900">
+                    <BookOpen className="h-4 w-4" />
+                    打开完整手册
+                </button>
+            </Panel>
+            <Panel title="接口路径" description="创建账号小控制台会把真实请求响应补全成可复制 trace。">
+                <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+                    <table className="min-w-full divide-y divide-gray-100 text-sm dark:divide-gray-800">
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                            {guide.endpoints.map(endpoint => (
+                                <tr key={endpoint.key}>
+                                    <td className="w-20 px-3 py-2 font-mono text-xs text-blue-600">{endpoint.method}</td>
+                                    <td className="px-3 py-2 font-mono text-xs">{endpoint.path}</td>
+                                    <td className="px-3 py-2 text-xs text-gray-500">{endpoint.label}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </Panel>
+        </div>
+    )
+}
+
+function getDetailAccountStatusMeta(status: string | undefined, statuses: BusinessStatusOption[]) {
+    const value = status || 'active'
+    return statuses.find(item => item.value === value) || builtinStatuses.find(item => item.value === value) || { value, label: value, color: '#64748b' }
+}
+
+function formatDetailDate(value?: string) {
+    if (!value) return '-'
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function ModuleAccountsPanel({ module, statuses }: { module: BusinessModule; statuses: BusinessStatusOption[] }) {
+    const [accounts, setAccounts] = useState<BusinessAccount[]>([])
+    const [selectedAccount, setSelectedAccount] = useState<BusinessAccount | null>(null)
+    const [search, setSearch] = useState('')
+    const [status, setStatus] = useState<BusinessAccountStatus | ''>('')
+    const [page, setPage] = useState(1)
+    const [pageSize] = useState(30)
+    const [total, setTotal] = useState(0)
+    const [loading, setLoading] = useState(false)
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+    const loadAccounts = useCallback(async () => {
+        setLoading(true)
+        try {
+            const response = await businessAccountService.listAccounts({
+                moduleId: module.id,
+                page,
+                limit: pageSize,
+                search,
+                status
+            })
+            setAccounts(response.data || [])
+            setTotal(response.total || 0)
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '加载业务账户失败')
+        } finally {
+            setLoading(false)
+        }
+    }, [module.id, page, pageSize, search, status])
+
+    useEffect(() => {
+        loadAccounts()
+    }, [loadAccounts])
+
+    return (
+        <>
+        <section className="flex min-h-[520px] min-w-0 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+            <div className="flex shrink-0 flex-col gap-2 border-b border-gray-200 bg-white p-3 dark:border-gray-800 dark:bg-gray-900 lg:flex-row lg:items-center">
+                <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                    <input
+                        value={search}
+                        onChange={event => {
+                            setSearch(event.target.value)
+                            setPage(1)
+                        }}
+                        placeholder="搜索账号、邮箱、用户名、备注..."
+                        className="h-9 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
+                    />
+                </div>
+                <select
+                    value={status}
+                    onChange={event => {
+                        setStatus(event.target.value as BusinessAccountStatus | '')
+                        setPage(1)
+                    }}
+                    className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950"
+                >
+                    <option value="">全部状态</option>
+                    {statuses.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+                <button onClick={loadAccounts} className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800">
+                    <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+                    刷新
+                </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto">
+                <table className="min-w-full divide-y divide-gray-100 text-[13px] dark:divide-gray-800">
+                    <thead className="sticky top-0 z-10 bg-gray-50 text-xs text-gray-500 shadow-[0_1px_0_0_rgba(229,231,235,1)] dark:bg-gray-950 dark:text-gray-400 dark:shadow-[0_1px_0_0_rgba(31,41,55,1)]">
+                        <tr>
+                            <th className="px-3 py-2 text-left font-medium">账号</th>
+                            <th className="px-3 py-2 text-left font-medium">关联邮箱</th>
+                            <th className="px-3 py-2 text-left font-medium">凭据</th>
+                            <th className="px-3 py-2 text-left font-medium">状态</th>
+                            <th className="px-3 py-2 text-left font-medium">更新时间</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                        {loading ? (
+                            <tr>
+                                <td colSpan={5} className="px-3 py-16 text-center text-gray-500">
+                                    <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin" />
+                                    正在加载业务账户
+                                </td>
+                            </tr>
+                        ) : accounts.length === 0 ? (
+                            <tr>
+                                <td colSpan={5} className="px-3 py-16 text-center">
+                                    <Briefcase className="mx-auto mb-3 h-9 w-9 text-gray-300" />
+                                    <p className="text-sm font-medium">该模块暂无业务账户</p>
+                                    <p className="mt-1 text-xs text-gray-500">可以在“创建账号”里申请邮箱并回填账号资料。</p>
+                                </td>
+                            </tr>
+                        ) : accounts.map(account => {
+                            const meta = getDetailAccountStatusMeta(account.status, statuses)
+                            return (
+                                <tr key={account.id} onClick={() => setSelectedAccount(account)} className="cursor-pointer hover:bg-gray-50/80 dark:hover:bg-gray-800/50">
+                                    <td className="px-3 py-2 align-top">
+                                        <div className="font-medium">{account.displayName || account.username || `${module.name} #${account.id}`}</div>
+                                        <div className="mt-0.5 text-xs text-gray-500">ID #{account.id}</div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <div className="max-w-[260px] truncate font-medium">{account.registrationEmail || account.emailAccount?.emailAddress || '-'}</div>
+                                        <div className="mt-0.5 text-xs text-gray-500">EmailAccount #{account.emailAccountId || account.emailAccount?.id || '-'}</div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <div className="space-y-1 text-xs">
+                                            <button type="button" onClick={event => { event.stopPropagation(); void copyToClipboard(account.username || '') }} className="flex max-w-[260px] items-center gap-1 truncate text-left text-gray-700 hover:text-blue-600 dark:text-gray-200">
+                                                <KeyRound className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+                                                <span className="truncate">{account.username || '-'}</span>
+                                            </button>
+                                            <button type="button" onClick={event => { event.stopPropagation(); void copyToClipboard(account.password || '') }} className="flex max-w-[260px] items-center gap-1 truncate text-left text-gray-500 hover:text-blue-600">
+                                                <Copy className="h-3.5 w-3.5 shrink-0 text-gray-400" />
+                                                <span className="truncate">{account.password || '-'}</span>
+                                            </button>
+                                        </div>
+                                    </td>
+                                    <td className="px-3 py-2 align-top">
+                                        <span className="inline-flex rounded-full border px-2 py-1 text-xs" style={{ color: meta.color, borderColor: `${meta.color || '#64748b'}55`, backgroundColor: `${meta.color || '#64748b'}14` }}>
+                                            {meta.label}
+                                        </span>
+                                    </td>
+                                    <td className="px-3 py-2 align-top text-xs text-gray-500">{formatDetailDate(account.updatedAt)}</td>
+                                </tr>
+                            )
+                        })}
+                    </tbody>
+                </table>
+            </div>
+            <div className="flex shrink-0 flex-col gap-2 border-t border-gray-100 bg-white px-3 py-2 text-sm text-gray-500 shadow-[0_-6px_16px_rgba(15,23,42,0.04)] dark:border-gray-800 dark:bg-gray-900 sm:flex-row sm:items-center sm:justify-between">
+                <span>显示第 {total === 0 ? 0 : (page - 1) * pageSize + 1} - {Math.min(page * pageSize, total)} 条，共 {total} 条</span>
+                <div className="flex items-center gap-2">
+                    <button disabled={page <= 1} onClick={() => setPage(prev => Math.max(1, prev - 1))} className="rounded-lg border border-gray-200 px-3 py-1.5 disabled:opacity-50 dark:border-gray-700">上一页</button>
+                    <span className="text-xs">{page} / {totalPages}</span>
+                    <button disabled={page >= totalPages} onClick={() => setPage(prev => Math.min(totalPages, prev + 1))} className="rounded-lg border border-gray-200 px-3 py-1.5 disabled:opacity-50 dark:border-gray-700">下一页</button>
+                </div>
+            </div>
+        </section>
+        <BusinessAccountDetailModal account={selectedAccount} statuses={statuses} open={Boolean(selectedAccount)} onOpenChange={open => !open && setSelectedAccount(null)} />
+        </>
+    )
+}
+
+function BusinessAccountDetailModal({ account, statuses, open, onOpenChange }: { account: BusinessAccount | null; statuses: BusinessStatusOption[]; open: boolean; onOpenChange: (open: boolean) => void }) {
+    if (!account) return null
+    const meta = getDetailAccountStatusMeta(account.status, statuses)
+    const email = account.registrationEmail || account.emailAccount?.emailAddress || ''
+    return (
+        <Modal open={open} onOpenChange={onOpenChange}>
+            <ModalContent size="6xl" className="max-h-[92vh]">
+                <ModalHeader>
+                    <ModalTitle>{account.displayName || account.username || `业务账户 #${account.id}`}</ModalTitle>
+                    <ModalDescription>业务账户详情、凭据、邮箱关联和扩展信息。</ModalDescription>
+                </ModalHeader>
+                <ModalBody>
+                    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+                        <div className="space-y-4">
+                            <Panel title="基础信息" description="账户与模块关联信息。">
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <InfoLine label="业务账户 ID" value={account.id} />
+                                    <InfoLine label="模块" value={account.module?.name || account.moduleName || account.moduleId || '-'} />
+                                    <InfoLine label="显示名称" value={account.displayName || '-'} />
+                                    <InfoLine label="状态" value={<span className="inline-flex rounded-full border px-2 py-1 text-xs" style={{ color: meta.color, borderColor: `${meta.color || '#64748b'}55`, backgroundColor: `${meta.color || '#64748b'}14` }}>{meta.label}</span>} />
+                                    <InfoLine label="注册邮箱" value={email ? <button onClick={() => copyToClipboard(email)} className="break-all text-left font-mono text-blue-600 hover:underline">{email}</button> : '-'} className="md:col-span-2" />
+                                    <InfoLine label="Claim Token" value={account.claimToken ? <button onClick={() => copyToClipboard(account.claimToken || '')} className="break-all text-left font-mono text-blue-600 hover:underline">{account.claimToken}</button> : '-'} className="md:col-span-2" />
+                                </div>
+                            </Panel>
+                            <Panel title="凭据" description="敏感字段按明文显示，可直接复制。">
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <InfoLine label="用户名" value={account.username ? <button onClick={() => copyToClipboard(account.username || '')} className="break-all text-left font-mono text-blue-600 hover:underline">{account.username}</button> : '-'} />
+                                    <InfoLine label="密码" value={account.password ? <button onClick={() => copyToClipboard(account.password || '')} className="break-all text-left font-mono text-blue-600 hover:underline">{account.password}</button> : '-'} />
+                                    <InfoLine label="TOTP Secret" value={account.totpSecret ? <button onClick={() => copyToClipboard(account.totpSecret || '')} className="break-all text-left font-mono text-blue-600 hover:underline">{account.totpSecret}</button> : '-'} />
+                                    <InfoLine label="手机号" value={account.phoneNumber || '-'} />
+                                    <InfoLine label="恢复邮箱" value={account.recoveryEmail || '-'} />
+                                    <InfoLine label="恢复码" value={account.recoveryCodes?.join('\n') || '-'} />
+                                </div>
+                            </Panel>
+                            <Panel title="备注" description="账户备注内容。">
+                                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{account.note || '无备注'}</pre>
+                            </Panel>
+                        </div>
+                        <div className="space-y-4">
+                            <Panel title="时间" description="创建、更新和远端时间。">
+                                <div className="space-y-3">
+                                    <InfoLine label="创建时间" value={formatDetailDate(account.createdAt)} />
+                                    <InfoLine label="更新时间" value={formatDetailDate(account.updatedAt)} />
+                                    <InfoLine label="Claim 到期" value={formatDetailDate(account.claimExpiresAt)} />
+                                    <InfoLine label="远端创建" value={formatDetailDate(account.remoteCreatedAt)} />
+                                    <InfoLine label="最后登录" value={formatDetailDate(account.lastLoginAt)} />
+                                </div>
+                            </Panel>
+                            <Panel title="扩展信息" description="customFields / extraData 原始内容。">
+                                <pre className="max-h-[520px] overflow-auto rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{toPrettyJson({ customFields: account.customFields || {}, extraData: account.extraData || {}, emailAccount: account.emailAccount || null, tags: account.tags || [] })}</pre>
+                            </Panel>
+                        </div>
+                    </div>
+                </ModalBody>
+            </ModalContent>
+        </Modal>
+    )
+}
+
+function ModuleEmailPolicyPanel({ module, onEdit }: { module: BusinessModule; onEdit: () => void }) {
+    const draft = moduleToDraft(module)
+    return (
+        <div className="space-y-5">
+            <Panel title="邮箱申请策略配置" description="当前详情页先展示模块策略，点击编辑可修改完整配置。" actions={<button onClick={onEdit} className="rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-gray-900">编辑策略</button>}>
+                <EmailPolicyReadOnly draft={draft} />
+            </Panel>
+        </div>
+    )
+}
+
+function EmailPolicyReadOnly({ draft }: { draft: ModuleDraft }) {
+    return (
+        <div className="grid gap-4 md:grid-cols-2">
+            <InfoLine label="默认邮箱模式" value={emailModes.find(mode => mode.value === draft.claimEmailMode)?.label || draft.claimEmailMode} />
+            <InfoLine label="Claim TTL" value={`${draft.claimTTL} 秒`} />
+            <InfoLine label="允许后缀" value={draft.allowedSuffixes.join('、') || '不限制'} />
+            <InfoLine label="禁止后缀" value={draft.blockedSuffixes.join('、') || '未配置'} />
+            <InfoLine label="前缀策略" value={`${draft.prefixStrategy}${draft.prefixStrategy === 'template' ? ` · ${draft.prefixTemplate}` : ''}`} />
+            <InfoLine label="能力" value={`${draft.allowAliases ? '允许别名' : '禁用别名'} / ${draft.allowDomainMail ? '允许域名' : '禁用域名'} / ${draft.allowForwarded ? '允许转发' : '禁用转发'}`} />
+        </div>
+    )
+}
+
+function ModuleScenariosPanel({ scenarios, loading, onRefresh, onEdit }: { scenarios: BusinessScenario[]; loading: boolean; onRefresh: () => void; onEdit: () => void }) {
+    return (
+        <Panel
+            title="业务场景配置"
+            description="场景可被创建账号流程直接调用，也可以作为接入脚本的一部分。"
+            actions={
+                <div className="flex items-center gap-2">
+                    <button onClick={onRefresh} className="inline-flex h-8 items-center gap-2 rounded-lg border border-gray-200 px-2 text-xs dark:border-gray-700"><RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />刷新</button>
+                    <button onClick={onEdit} className="h-8 rounded-lg bg-gray-900 px-3 text-xs font-medium text-white dark:bg-white dark:text-gray-900">编辑场景</button>
+                </div>
+            }
+        >
+            {loading ? (
+                <div className="py-12 text-center text-sm text-gray-500"><Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />正在加载场景</div>
+            ) : scenarios.length === 0 ? (
+                <div className="py-12 text-center text-sm text-gray-500">暂无业务场景</div>
+            ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                    {scenarios.map(scenario => (
+                        <div key={scenario.id || scenario.key} className="rounded-lg border border-gray-200 p-4 dark:border-gray-800">
+                            <div className="flex items-start justify-between gap-3">
+                                <div>
+                                    <div className="font-semibold">{scenario.name}</div>
+                                    <div className="mt-1 font-mono text-xs text-blue-600">/{scenario.key}/pickup</div>
+                                </div>
+                                <span className={cn('rounded-full px-2 py-1 text-xs', scenario.enabled ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200' : 'bg-gray-100 text-gray-500 dark:bg-gray-800')}>{scenario.enabled ? '启用' : '停用'}</span>
+                            </div>
+                            <div className="mt-3 text-xs text-gray-500">{scenario.description || '暂无描述'}</div>
+                            <pre className="mt-3 max-h-40 overflow-auto rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{toPrettyJson({ pickupConfig: scenario.pickupConfig || {}, extractorConfig: scenario.extractorConfig || {} })}</pre>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </Panel>
+    )
+}
+
+function CreateBusinessAccountPanel({
+    module,
+    statuses,
+    scenarios,
+    extractorTemplates,
+    traces,
+    setTraces,
+    onTraceFocus,
+    onFlowActiveChange,
+    onOpenClaimChange,
+    onAccountChanged
+}: {
+    module: BusinessModule
+    statuses: BusinessStatusOption[]
+    scenarios: BusinessScenario[]
+    extractorTemplates: Array<{ id: number; name: string; category?: string; enabled?: boolean }>
+    traces: BusinessTraceEntry[]
+    setTraces: Dispatch<SetStateAction<BusinessTraceEntry[]>>
+    onTraceFocus: () => void
+    onFlowActiveChange: (active: boolean) => void
+    onOpenClaimChange: (active: boolean) => void
+    onAccountChanged: () => void
+}) {
+    const [draft, setDraft] = useState<CreateAccountDraft>(() => emptyCreateAccountDraft(module))
+    const [credentialPolicy, setCredentialPolicy] = useState<CredentialPolicy>(defaultCredentialPolicy)
+    const [claim, setClaim] = useState<BusinessEmailClaimResponse | null>(null)
+    const [pickupResult, setPickupResult] = useState<unknown>(null)
+    const [completedAccount, setCompletedAccount] = useState<BusinessAccount | null>(null)
+    const [releasedClaim, setReleasedClaim] = useState(false)
+    const [busyAction, setBusyAction] = useState<string>('')
+    const [consoleCollapsed, setConsoleCollapsed] = useState(false)
+    const [consoleTab, setConsoleTab] = useState<'account' | 'flow' | 'trace' | 'code'>('account')
+    const pickupIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+    const pickupRunIdRef = useRef(0)
+    const pickupCheckInFlightRef = useRef(false)
+    const [pickupMonitor, setPickupMonitor] = useState<PickupMonitorState>(() => emptyPickupMonitorState())
+    const enabledScenarios = useMemo(() => scenarios.filter(scenario => scenario.enabled), [scenarios])
+
+    useEffect(() => {
+        setDraft(emptyCreateAccountDraft(module))
+        setClaim(null)
+        setPickupResult(null)
+        setCompletedAccount(null)
+        setReleasedClaim(false)
+        stopPickupMonitor('cancelled', false)
+        setPickupMonitor(emptyPickupMonitorState())
+    }, [module.id])
+
+    useEffect(
+        () => () => {
+            pickupRunIdRef.current += 1
+            pickupCheckInFlightRef.current = false
+            if (pickupIntervalRef.current) {
+                clearInterval(pickupIntervalRef.current)
+                pickupIntervalRef.current = null
+            }
+        },
+        []
+    )
+
+    useEffect(() => {
+        const selectedScenarioAvailable = enabledScenarios.some(scenario => scenario.key === draft.scenarioKey)
+        if (!selectedScenarioAvailable) {
+            setDraft(prev => ({ ...prev, scenarioKey: enabledScenarios[0]?.key || '' }))
+        }
+    }, [draft.scenarioKey, enabledScenarios])
+
+    const traceCall = useCallback(
+        async <T,>(label: string, method: string, path: string, body: unknown, action: () => Promise<T>): Promise<T> => {
+            const token = getBrowserAuthToken() || ''
+            const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+            const entry: BusinessTraceEntry = {
+                id,
+                label,
+                method,
+                path,
+                startedAt: new Date().toISOString(),
+                status: 'pending',
+                request: {
+                    url: `${getApiBaseUrl()}${path}`,
+                    headers: {
+                        Authorization: token ? `Bearer ${token}` : '',
+                        'Content-Type': 'application/json'
+                    },
+                    body
+                }
+            }
+            setTraces(prev => [entry, ...prev])
+            try {
+                const response = await action()
+                setTraces(prev => prev.map(item => (item.id === id ? { ...item, status: 'success', completedAt: new Date().toISOString(), response } : item)))
+                return response
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                setTraces(prev => prev.map(item => (item.id === id ? { ...item, status: 'error', completedAt: new Date().toISOString(), error: message } : item)))
+                throw error
+            }
+        },
+        [setTraces]
+    )
+
+    const generatedFlowCode = useMemo(() => buildTraceCodeSamples(traces), [traces])
+
+    function stopPickupMonitor(status: PickupMonitorStatus = 'cancelled', showToast = true) {
+        pickupRunIdRef.current += 1
+        pickupCheckInFlightRef.current = false
+        if (pickupIntervalRef.current) {
+            clearInterval(pickupIntervalRef.current)
+            pickupIntervalRef.current = null
+        }
+        setBusyAction(prev => (prev === 'pickup' ? '' : prev))
+        setPickupMonitor(prev => ({
+            ...prev,
+            status,
+            open: prev.open,
+            hidden: status === 'cancelled' ? prev.hidden : false,
+            elapsedSeconds: prev.startedAt ? Math.round((Date.now() - new Date(prev.startedAt).getTime()) / 1000) : prev.elapsedSeconds
+        }))
+        if (showToast && status === 'cancelled') toast.info('已停止监听取件')
+    }
+
+    const readPickupEnvelope = (value: unknown) => (value && typeof value === 'object' && 'pickup' in (value as Record<string, unknown>) ? (value as any).pickup : (value as any))
+    const readPickupEmails = (value: unknown): Email[] => {
+        const envelope = readPickupEnvelope(value)
+        return Array.isArray(envelope?.emails) ? envelope.emails : []
+    }
+
+    const generateCredentials = () => {
+        const generated = generateCredentialPair(credentialPolicy)
+        setDraft(prev => ({ ...prev, username: generated.username, password: generated.password }))
+    }
+
+    const buildClaimPayloadFromDraft = () => {
+        const customFields = parseJSONObject(draft.customFieldsText, '扩展字段')
+        const extraData = parseJSONObject(draft.extraDataText, '扩展信息')
+        const payload: BusinessEmailClaimPayload = draft.useCustomClaimPolicy ? {} : buildGuideClaimPayload(module)
+        payload.ttlSeconds = Number(draft.ttlSeconds || payload.ttlSeconds || 600)
+        if (draft.useCustomClaimPolicy) {
+            payload.emailMode = draft.emailMode
+            const suffixes = normalizeSuffixList(draft.emailSuffixes)
+            const blocked = normalizeSuffixList(draft.blockedEmailSuffixes)
+            if (suffixes.length) payload.emailSuffixes = suffixes
+            if (blocked.length) payload.blockedEmailSuffixes = blocked
+            payload.prefixStrategy = draft.prefixStrategy
+            if (draft.prefixStrategy === 'template') payload.prefixTemplate = draft.prefixTemplate
+            if (draft.prefixStrategy === 'builtin') payload.builtinPrefix = draft.builtinPrefix
+            if (draft.prefixStrategy === 'random') payload.randomLength = Number(draft.randomLength || 8)
+        }
+        payload.businessAccount = {
+            ...(payload.businessAccount || {}),
+            displayName: draft.displayName,
+            username: draft.username,
+            note: draft.note,
+            customFields,
+            extraData: {
+                ...extraData,
+                generatedPassword: draft.password,
+                createdFrom: 'business-module-create-account-console'
+            }
+        }
+        return payload
+    }
+
+    const handleClaim = async () => {
+        try {
+            setBusyAction('claim')
+            const payload = buildClaimPayloadFromDraft()
+            const response = await traceCall('申请邮箱', 'POST', `/business-modules/${module.id}/email-accounts/claim`, payload, () => businessAccountService.claimModuleEmailAccount(module.id, payload))
+            setClaim(response)
+            setCompletedAccount(null)
+            setPickupResult(null)
+            setReleasedClaim(false)
+            setPickupMonitor(emptyPickupMonitorState())
+            setConsoleTab('account')
+            toast.success(`已申请邮箱：${response.recipient.emailAddress}`)
+            onAccountChanged()
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '申请邮箱失败')
+        } finally {
+            setBusyAction('')
+        }
+    }
+
+    const buildPickupPayload = () => {
+        if (!claim) throw new Error('请先申请邮箱')
+        const since = new Date(Date.now() - Math.max(1, Number(draft.sinceMinutes || 10)) * 60 * 1000).toISOString()
+        const payload: any = {
+            claimToken: claim.claimToken,
+            keep_alive_seconds: Number(draft.keepAliveSeconds || 90),
+            sync_interval: Number(draft.syncInterval || 5),
+            limit: Number(draft.pickupLimit || 10),
+            since,
+            to_query: claim.pickup.to_query
+        }
+        if (draft.pickupMode === 'custom') {
+            payload.account_id = claim.pickup.account_id
+            if (draft.customExtractorMode === 'template' && draft.customTemplateId) payload.template_id = Number(draft.customTemplateId)
+            if (draft.customExtractorMode === 'simple' && draft.customSimplePattern.trim()) {
+                payload.simple_extract = {
+                    field: draft.customSimpleField,
+                    type: draft.customSimpleType,
+                    pattern: draft.customSimplePattern,
+                    match_mode: 'first'
+                }
+            }
+        }
+        return payload
+    }
+
+    const runPickupCheck = useCallback(async (runId: number, startedAt: string) => {
+        if (!claim || pickupRunIdRef.current !== runId || pickupCheckInFlightRef.current) {
+            return
+        }
+        pickupCheckInFlightRef.current = true
+        try {
+            setBusyAction('pickup')
+            setPickupMonitor(prev => ({
+                ...prev,
+                status: prev.status === 'found' ? prev.status : 'listening',
+                checks: prev.checks + 1,
+                elapsedSeconds: Math.round((Date.now() - new Date(startedAt).getTime()) / 1000)
+            }))
+            const payload = buildPickupPayload()
+            let response: unknown
+            if (draft.pickupMode === 'scenario' && draft.scenarioKey) {
+                const path = `/business-accounts/${claim.businessAccountId}/scenarios/${draft.scenarioKey}/pickup`
+                response = await traceCall('业务场景取件', 'POST', path, payload, () => businessAccountService.pickupScenario(claim.businessAccountId, draft.scenarioKey, payload))
+            } else {
+                const { claimToken, ...pickupPayload } = payload
+                const path = '/pickup/poll'
+                response = await traceCall('自定义取件', 'POST', path, pickupPayload, () => pickupService.poll(pickupPayload as PickupPollRequest))
+            }
+            if (pickupRunIdRef.current !== runId) return
+            const emails = readPickupEmails(response)
+            setPickupMonitor(prev => {
+                const byId = new Map<number, Email>()
+                prev.emails.forEach(email => byId.set(email.ID, email))
+                emails.forEach(email => byId.set(email.ID, email))
+                const merged = Array.from(byId.values()).sort((left, right) => new Date(right.Date || right.CreatedAt).getTime() - new Date(left.Date || left.CreatedAt).getTime())
+                return {
+                    ...prev,
+                    status: emails.length > 0 ? 'found' : 'empty',
+                    hidden: false,
+                    lastResult: response,
+                    emails: merged,
+                    selectedEmailId: prev.selectedEmailId || merged[0]?.ID,
+                    elapsedSeconds: Math.round((Date.now() - new Date(startedAt).getTime()) / 1000)
+                }
+            })
+            if (emails.length > 0) {
+                setPickupResult(response)
+                setConsoleTab('trace')
+                if (pickupIntervalRef.current) {
+                    clearInterval(pickupIntervalRef.current)
+                    pickupIntervalRef.current = null
+                }
+                toast.success(`已取到 ${emails.length} 封邮件`)
+            }
+        } catch (error) {
+            if (pickupRunIdRef.current !== runId) return
+            const message = error instanceof Error ? error.message : '取件失败'
+            setPickupMonitor(prev => ({ ...prev, status: 'error', error: message }))
+            toast.error(message)
+        } finally {
+            pickupCheckInFlightRef.current = false
+            if (pickupRunIdRef.current === runId) setBusyAction('')
+        }
+    }, [claim, draft, traceCall])
+
+    const handlePickup = async () => {
+        if (!claim) {
+            toast.error('请先申请邮箱')
+            return
+        }
+        if (draft.pickupMode === 'scenario' && !enabledScenarios.some(scenario => scenario.key === draft.scenarioKey)) {
+            toast.error('请先配置或选择业务场景；没有场景时请切换到自定义取件')
+            return
+        }
+        stopPickupMonitor('cancelled', false)
+        const runId = pickupRunIdRef.current + 1
+        pickupRunIdRef.current = runId
+        const startedAt = new Date().toISOString()
+        setPickupResult(null)
+        setPickupMonitor({
+            open: true,
+            hidden: false,
+            status: 'listening',
+            startedAt,
+            checks: 0,
+            elapsedSeconds: 0,
+            emails: []
+        })
+        toast.info('已开始监听取件，命中邮件前会持续轮询')
+        void runPickupCheck(runId, startedAt)
+        const intervalMs = Math.max(2, Number(draft.syncInterval || 5)) * 1000
+        pickupIntervalRef.current = setInterval(() => void runPickupCheck(runId, startedAt), intervalMs)
+    }
+
+    const buildCompletePayload = (): CompleteBusinessRegistrationPayload => {
+        if (!claim) throw new Error('请先申请邮箱')
+        const customFields = parseJSONObject(draft.customFieldsText, '扩展字段')
+        const extraData = parseJSONObject(draft.extraDataText, '扩展信息')
+        return {
+            claimToken: claim.claimToken,
+            username: draft.username,
+            password: draft.password,
+            totpSecret: draft.totpSecret || undefined,
+            phoneNumber: draft.phoneNumber || undefined,
+            recoveryEmail: draft.recoveryEmail || undefined,
+            recoveryCodes: draft.recoveryCodes.split(/[\n,;]/).map(item => item.trim()).filter(Boolean),
+            status: draft.completeStatus,
+            note: draft.note,
+            customFields,
+            extraData
+        }
+    }
+
+    const handleComplete = async () => {
+        if (!claim) {
+            toast.error('请先申请邮箱')
+            return
+        }
+        stopPickupMonitor('cancelled', false)
+        try {
+            setBusyAction('complete')
+            const payload = buildCompletePayload()
+            const response = await traceCall('完成注册', 'POST', `/business-accounts/${claim.businessAccountId}/complete-registration`, payload, () => businessAccountService.completeRegistration(claim.businessAccountId, payload))
+            setCompletedAccount(response)
+            setReleasedClaim(false)
+            setPickupMonitor(emptyPickupMonitorState())
+            setConsoleTab('flow')
+            toast.success('业务账户已完成')
+            onAccountChanged()
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '完成注册失败')
+        } finally {
+            setBusyAction('')
+        }
+    }
+
+    const handleRelease = async () => {
+        if (!claim) {
+            toast.error('请先申请邮箱')
+            return
+        }
+        stopPickupMonitor('cancelled', false)
+        try {
+            setBusyAction('release')
+            const payload = {
+                claimToken: claim.claimToken,
+                reason: draft.releaseReason,
+                message: draft.releaseMessage,
+                deletePendingAccount: draft.releaseDeletePending,
+                exclusion: {
+                    type: draft.releaseExclusionType,
+                    target: draft.releaseExclusionTarget,
+                    scope: 'module' as const,
+                    durationSeconds: Number(draft.releaseDurationSeconds || 1800),
+                    reason: draft.releaseReason,
+                    message: draft.releaseMessage
+                }
+            }
+            await traceCall('释放/拉黑邮箱', 'POST', `/business-accounts/${claim.businessAccountId}/release-registration-claim`, payload, () => businessAccountService.releaseRegistrationClaim(claim.businessAccountId, payload))
+            setReleasedClaim(true)
+            setPickupResult(null)
+            setCompletedAccount(null)
+            setPickupMonitor(emptyPickupMonitorState())
+            setConsoleTab('flow')
+            toast.success('已释放本次邮箱 claim')
+            onAccountChanged()
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '释放失败')
+        } finally {
+            setBusyAction('')
+        }
+    }
+
+    const handleRenew = async () => {
+        if (!claim) {
+            toast.error('请先申请邮箱')
+            return
+        }
+        try {
+            setBusyAction('renew')
+            const payload = { claimToken: claim.claimToken, ttlSeconds: Number(draft.ttlSeconds || 600), message: '创建账号页面手动续租' }
+            const response = await traceCall('续租邮箱 claim', 'POST', `/business-accounts/${claim.businessAccountId}/renew-registration-claim`, payload, () => businessAccountService.renewRegistrationClaim(claim.businessAccountId, payload))
+            setClaim(prev => (prev ? { ...prev, claimExpiresAt: response.claimExpiresAt, ttlSeconds: response.ttlSeconds } : prev))
+            toast.success('已续租邮箱 claim')
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '续租失败')
+        } finally {
+            setBusyAction('')
+        }
+    }
+
+    const resetFlow = () => {
+        stopPickupMonitor('cancelled', false)
+        setDraft(emptyCreateAccountDraft(module))
+        setClaim(null)
+        setPickupResult(null)
+        setCompletedAccount(null)
+        setReleasedClaim(false)
+        setBusyAction('')
+        setConsoleTab('account')
+        setTraces([])
+        setPickupMonitor(emptyPickupMonitorState())
+    }
+
+    const pickupEnvelope = readPickupEnvelope(pickupResult)
+    const pickupEmails = Array.isArray(pickupEnvelope?.emails) ? pickupEnvelope.emails : []
+    const pickupStarted = pickupMonitor.status !== 'idle' && pickupMonitor.status !== 'cancelled'
+    const currentStep = completedAccount || releasedClaim ? 4 : pickupResult ? 4 : pickupStarted ? 3 : claim ? 2 : 1
+    const openClaimActive = Boolean(claim && !completedAccount && !releasedClaim)
+    const hasEditedDraftData = Boolean(
+        draft.username.trim() ||
+            draft.password ||
+            draft.totpSecret.trim() ||
+            draft.phoneNumber.trim() ||
+            draft.recoveryEmail.trim() ||
+            draft.recoveryCodes.trim() ||
+            draft.note.trim() ||
+            draft.customFieldsText.trim() !== '{}' ||
+            draft.extraDataText.trim() !== '{}' ||
+            draft.useCustomClaimPolicy
+    )
+    const flowActive = Boolean(claim || pickupResult || completedAccount || releasedClaim || pickupStarted || busyAction || traces.length || hasEditedDraftData)
+
+    useEffect(() => {
+        onFlowActiveChange(flowActive)
+    }, [flowActive, onFlowActiveChange])
+
+    useEffect(() => {
+        onOpenClaimChange(openClaimActive)
+    }, [onOpenClaimChange, openClaimActive])
+
+    useEffect(() => () => onFlowActiveChange(false), [onFlowActiveChange])
+    useEffect(() => () => onOpenClaimChange(false), [onOpenClaimChange])
+
+    return (
+        <div className="space-y-5 pb-28">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <h2 className="text-lg font-semibold">创建账号</h2>
+                    <p className="mt-1 text-sm text-gray-500">从业务模块上下文里完成申请邮箱、监听取件、账号资料回填和释放/拉黑。</p>
+                </div>
+                <button onClick={onTraceFocus} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700">
+                    <Terminal className="h-4 w-4" />
+                    查看请求响应
+                </button>
+            </div>
+            <div className="grid gap-2 md:grid-cols-4">
+                {[
+                    [1, '账号资料', '准备凭据与申请策略'],
+                    [2, '申请邮箱', '展示邮箱与 claim token'],
+                    [3, '监听取件', '配置并执行取件'],
+                    [4, '完成/释放', '保存账号或释放邮箱']
+                ].map(([step, title, description]) => (
+                    <div key={String(step)} className={cn('rounded-lg border p-3', Number(step) <= currentStep ? 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200' : 'border-gray-200 bg-white text-gray-500 dark:border-gray-800 dark:bg-gray-900')}>
+                        <div className="flex items-center gap-2 text-sm font-semibold">
+                            <span className={cn('flex h-6 w-6 items-center justify-center rounded-full text-xs', Number(step) <= currentStep ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 dark:bg-gray-800')}>{step}</span>
+                            {title}
+                        </div>
+                        <div className="mt-1 text-xs opacity-75">{description}</div>
+                    </div>
+                ))}
+            </div>
+
+            {!claim && (
+                <div className="space-y-4">
+                    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+                        <Panel title="账号资料" description="申请邮箱前只准备必要资料；取件与注册完成字段会在后续步骤出现。">
+                            <div className="space-y-4">
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <Field label="显示名称">
+                                        <input value={draft.displayName} onChange={event => setDraft(prev => ({ ...prev, displayName: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                    <Field label="完成状态">
+                                        <select value={draft.completeStatus} onChange={event => setDraft(prev => ({ ...prev, completeStatus: event.target.value }))} className={inputClass}>
+                                            {statuses.map(status => <option key={status.value} value={status.value}>{status.label} · {status.value}</option>)}
+                                        </select>
+                                    </Field>
+                                    <Field label="用户名">
+                                        <input value={draft.username} onChange={event => setDraft(prev => ({ ...prev, username: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                    <Field label="密码">
+                                        <input value={draft.password} onChange={event => setDraft(prev => ({ ...prev, password: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                </div>
+                                <CredentialGenerator policy={credentialPolicy} setPolicy={setCredentialPolicy} onGenerate={generateCredentials} />
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <Field label="扩展字段 JSON">
+                                        <textarea value={draft.customFieldsText} onChange={event => setDraft(prev => ({ ...prev, customFieldsText: event.target.value }))} className={cn(textareaClass, 'font-mono text-xs')} />
+                                    </Field>
+                                    <Field label="扩展信息 JSON">
+                                        <textarea value={draft.extraDataText} onChange={event => setDraft(prev => ({ ...prev, extraDataText: event.target.value }))} className={cn(textareaClass, 'font-mono text-xs')} />
+                                    </Field>
+                                </div>
+                                <Field label="备注">
+                                    <textarea value={draft.note} onChange={event => setDraft(prev => ({ ...prev, note: event.target.value }))} className={textareaClass} />
+                                </Field>
+                            </div>
+                        </Panel>
+                        <Panel title="邮箱申请策略" description="默认使用模块策略；只有本次需要特殊约束时才开启临时覆盖。">
+                            <div className="space-y-3">
+                                <label className="flex items-center justify-between gap-3 text-sm">
+                                    <span>自定义临时申请策略</span>
+                                    <Switch checked={draft.useCustomClaimPolicy} onCheckedChange={checked => setDraft(prev => ({ ...prev, useCustomClaimPolicy: checked }))} />
+                                </label>
+                                <Field label="Claim TTL 秒">
+                                    <input value={draft.ttlSeconds} onChange={event => setDraft(prev => ({ ...prev, ttlSeconds: event.target.value }))} className={inputClass} />
+                                </Field>
+                                {draft.useCustomClaimPolicy ? (
+                                    <>
+                                        <Field label="邮箱模式">
+                                            <select value={draft.emailMode} onChange={event => setDraft(prev => ({ ...prev, emailMode: event.target.value as BusinessEmailMode }))} className={inputClass}>
+                                                {emailModes.map(mode => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+                                            </select>
+                                        </Field>
+                                        <Field label="允许后缀">
+                                            <textarea value={draft.emailSuffixes} onChange={event => setDraft(prev => ({ ...prev, emailSuffixes: event.target.value }))} className={cn(textareaClass, 'min-h-[74px]')} />
+                                        </Field>
+                                        <Field label="禁止后缀">
+                                            <textarea value={draft.blockedEmailSuffixes} onChange={event => setDraft(prev => ({ ...prev, blockedEmailSuffixes: event.target.value }))} className={cn(textareaClass, 'min-h-[74px]')} />
+                                        </Field>
+                                    </>
+                                ) : (
+                                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300">
+                                        使用模块默认策略：{getModuleAllowedSuffixes(module).join('、') || '不限后缀'}，TTL {getGuideClaimTtl(module)} 秒。
+                                    </div>
+                                )}
+                            </div>
+                        </Panel>
+                    </div>
+                    <div className="sticky bottom-4 z-30 flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3 shadow-lg shadow-blue-950/5 dark:border-blue-900 dark:bg-blue-950">
+                        <div>
+                            <div className="text-sm font-semibold text-blue-800 dark:text-blue-200">下一步：申请注册邮箱</div>
+                            <div className="mt-0.5 text-xs text-blue-600 dark:text-blue-300">申请成功后会显示邮箱、claim token，并展开监听取件。</div>
+                        </div>
+                        <ActionButton icon={<MailCheck className="h-4 w-4" />} loading={busyAction === 'claim'} onClick={handleClaim}>下一步：申请邮箱</ActionButton>
+                    </div>
+                </div>
+            )}
+
+            {claim && (
+                <Panel
+                    title={releasedClaim ? '邮箱 claim 已释放' : '已申请邮箱'}
+                    description={releasedClaim ? '本次邮箱占用已终止，不再继续监听或完成注册。' : '申请结果会用于后续监听取件、完成注册或释放/拉黑。'}
+                    actions={
+                        <div className="flex flex-wrap gap-2">
+                            {!releasedClaim && (
+                                <>
+                                    <ActionButton icon={<Clock className="h-4 w-4" />} loading={busyAction === 'renew'} onClick={handleRenew} variant="secondary">续租</ActionButton>
+                                    <ActionButton icon={<Ban className="h-4 w-4" />} loading={busyAction === 'release'} onClick={handleRelease} variant="danger">释放/拉黑</ActionButton>
+                                </>
+                            )}
+                            <button onClick={resetFlow} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700">
+                                <RefreshCw className="h-4 w-4" />
+                                重新开始
+                            </button>
+                        </div>
+                    }
+                >
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                        <InfoLine label="申请到的邮箱" value={<button onClick={() => copyToClipboard(claim.recipient.emailAddress)} className="break-all text-left font-mono text-blue-600 hover:underline">{claim.recipient.emailAddress}</button>} />
+                        <InfoLine label="业务账户 ID" value={claim.businessAccountId} />
+                        <InfoLine label="取件邮箱账户" value={`#${claim.pickup.account_id}`} />
+                        <InfoLine label="到期时间" value={formatDetailDate(claim.claimExpiresAt)} />
+                        <InfoLine label="取件 To Query" value={<button onClick={() => copyToClipboard(claim.pickup.to_query)} className="break-all text-left font-mono text-blue-600 hover:underline">{claim.pickup.to_query}</button>} className="xl:col-span-2" />
+                        <InfoLine label="Claim Token" value={<button onClick={() => copyToClipboard(claim.claimToken)} className="break-all text-left font-mono text-blue-600 hover:underline">{claim.claimToken}</button>} className="xl:col-span-2" />
+                    </div>
+                    {releasedClaim && (
+                        <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-200">
+                            已释放或拉黑本次注册邮箱。可以在请求响应里查看释放接口的完整明文 trace，或点击“重新开始”进入下一次创建流程。
+                        </div>
+                    )}
+                </Panel>
+            )}
+
+            {claim && !completedAccount && !releasedClaim && (
+                <Panel title="监听取件" description="申请邮箱后再配置取件参数；可以选择已配置业务场景，也可以临时自定义取件。">
+                    <div className="space-y-4">
+                        <div className="grid max-w-md grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm dark:bg-gray-800">
+                            <button onClick={() => setDraft(prev => ({ ...prev, pickupMode: 'scenario' }))} className={cn('rounded-md px-3 py-2', draft.pickupMode === 'scenario' && 'bg-white shadow-sm dark:bg-gray-950')}>业务场景</button>
+                            <button onClick={() => setDraft(prev => ({ ...prev, pickupMode: 'custom' }))} className={cn('rounded-md px-3 py-2', draft.pickupMode === 'custom' && 'bg-white shadow-sm dark:bg-gray-950')}>自定义取件</button>
+                        </div>
+                        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+                            <div className="space-y-4">
+                                {draft.pickupMode === 'scenario' ? (
+                                    <Field label="业务场景">
+                                        <select value={draft.scenarioKey} onChange={event => setDraft(prev => ({ ...prev, scenarioKey: event.target.value }))} className={inputClass}>
+                                            {enabledScenarios.length ? enabledScenarios.map(scenario => <option key={scenario.key} value={scenario.key}>{scenario.name} / {scenario.key}</option>) : <option value="">暂无可用业务场景</option>}
+                                        </select>
+                                        {!enabledScenarios.length && <div className="mt-2 text-xs text-amber-600">当前模块没有可用业务场景，请切换到自定义取件，或先到“业务场景配置”添加并启用场景。</div>}
+                                    </Field>
+                                ) : (
+                                    <div className="grid gap-4 md:grid-cols-2">
+                                        <Field label="提取模式">
+                                            <select value={draft.customExtractorMode} onChange={event => setDraft(prev => ({ ...prev, customExtractorMode: event.target.value as ScenarioExtractorMode }))} className={inputClass}>
+                                                <option value="none">只取邮件</option>
+                                                <option value="template">V2 模板</option>
+                                                <option value="simple">简单正则</option>
+                                            </select>
+                                        </Field>
+                                        {draft.customExtractorMode === 'template' && (
+                                            <Field label="取件模板">
+                                                <select value={draft.customTemplateId} onChange={event => setDraft(prev => ({ ...prev, customTemplateId: event.target.value }))} className={inputClass}>
+                                                    <option value="">选择模板</option>
+                                                    {extractorTemplates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
+                                                </select>
+                                            </Field>
+                                        )}
+                                        {draft.customExtractorMode === 'simple' && (
+                                            <Field label="简单提取 Pattern" className="md:col-span-2">
+                                                <textarea value={draft.customSimplePattern} onChange={event => setDraft(prev => ({ ...prev, customSimplePattern: event.target.value }))} className={cn(textareaClass, 'font-mono text-xs')} />
+                                            </Field>
+                                        )}
+                                    </div>
+                                )}
+                                <div className="grid gap-4 md:grid-cols-4">
+                                    <Field label="Keep Alive 秒">
+                                        <input value={draft.keepAliveSeconds} onChange={event => setDraft(prev => ({ ...prev, keepAliveSeconds: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                    <Field label="同步间隔 秒">
+                                        <input value={draft.syncInterval} onChange={event => setDraft(prev => ({ ...prev, syncInterval: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                    <Field label="最近分钟数">
+                                        <input value={draft.sinceMinutes} onChange={event => setDraft(prev => ({ ...prev, sinceMinutes: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                    <Field label="邮件数量">
+                                        <input value={draft.pickupLimit} onChange={event => setDraft(prev => ({ ...prev, pickupLimit: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                </div>
+                            </div>
+                            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300">
+                                <div className="font-semibold text-gray-800 dark:text-gray-100">本次取件目标</div>
+                                <div className="mt-2 space-y-2">
+                                    <InfoLine label="account_id" value={claim.pickup.account_id} />
+                                    <InfoLine label="to_query" value={claim.pickup.to_query} />
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <ActionButton icon={<Mail className="h-4 w-4" />} loading={busyAction === 'pickup'} onClick={handlePickup} disabled={draft.pickupMode === 'scenario' && !enabledScenarios.some(scenario => scenario.key === draft.scenarioKey)}>打开监听窗口并开始取件</ActionButton>
+                            {(pickupMonitor.status === 'listening' || pickupMonitor.status === 'empty') && (
+                                <button onClick={() => stopPickupMonitor('cancelled')} className="inline-flex h-10 items-center gap-2 rounded-lg border border-rose-200 px-3 text-sm text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30">
+                                    <X className="h-4 w-4" />
+                                    停止监听
+                                </button>
+                            )}
+                            {pickupMonitor.open && pickupMonitor.hidden && (
+                                <button onClick={() => setPickupMonitor(prev => ({ ...prev, hidden: false }))} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700">
+                                    <Eye className="h-4 w-4" />
+                                    重新打开监听窗口
+                                </button>
+                            )}
+                            <button onClick={onTraceFocus} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700">
+                                <Terminal className="h-4 w-4" />
+                                请求响应
+                            </button>
+                        </div>
+                        {Boolean(pickupResult) && (
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950/20">
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">取件已返回</div>
+                                    <span className="text-xs text-emerald-700 dark:text-emerald-300">邮件 {pickupEmails.length} 封</span>
+                                </div>
+                                <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{toPrettyJson(pickupResult)}</pre>
+                            </div>
+                        )}
+                    </div>
+                </Panel>
+            )}
+
+            {claim && !releasedClaim && (pickupResult || completedAccount) && (
+                <Panel title="完成注册或释放邮箱" description="外部站点注册成功后回填账号；失败或不用时释放 claim，并可同时冷却/拉黑邮箱。">
+                    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+                        <div className="space-y-4">
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <Field label="用户名">
+                                    <input value={draft.username} onChange={event => setDraft(prev => ({ ...prev, username: event.target.value }))} className={inputClass} />
+                                </Field>
+                                <Field label="密码">
+                                    <input value={draft.password} onChange={event => setDraft(prev => ({ ...prev, password: event.target.value }))} className={inputClass} />
+                                </Field>
+                                <Field label="TOTP Secret">
+                                    <input value={draft.totpSecret} onChange={event => setDraft(prev => ({ ...prev, totpSecret: event.target.value }))} className={inputClass} />
+                                </Field>
+                                <Field label="手机号">
+                                    <input value={draft.phoneNumber} onChange={event => setDraft(prev => ({ ...prev, phoneNumber: event.target.value }))} className={inputClass} />
+                                </Field>
+                                <Field label="恢复邮箱">
+                                    <input value={draft.recoveryEmail} onChange={event => setDraft(prev => ({ ...prev, recoveryEmail: event.target.value }))} className={inputClass} />
+                                </Field>
+                                <Field label="完成状态">
+                                    <select value={draft.completeStatus} onChange={event => setDraft(prev => ({ ...prev, completeStatus: event.target.value }))} className={inputClass}>
+                                        {statuses.map(status => <option key={status.value} value={status.value}>{status.label} · {status.value}</option>)}
+                                    </select>
+                                </Field>
+                            </div>
+                            <Field label="恢复码">
+                                <textarea value={draft.recoveryCodes} onChange={event => setDraft(prev => ({ ...prev, recoveryCodes: event.target.value }))} className={textareaClass} />
+                            </Field>
+                        </div>
+                        <div className="space-y-3">
+                            <ActionButton icon={<CheckCircle2 className="h-4 w-4" />} loading={busyAction === 'complete'} onClick={handleComplete}>完成注册并保存</ActionButton>
+                            <details className="rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+                                <summary className="cursor-pointer text-sm font-semibold">释放/拉黑设置</summary>
+                                <div className="mt-3 space-y-3">
+                                    <Field label="原因">
+                                        <input value={draft.releaseReason} onChange={event => setDraft(prev => ({ ...prev, releaseReason: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                    <Field label="消息">
+                                        <input value={draft.releaseMessage} onChange={event => setDraft(prev => ({ ...prev, releaseMessage: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                    <div className="grid gap-3 md:grid-cols-2">
+                                        <Field label="类型">
+                                            <select value={draft.releaseExclusionType} onChange={event => setDraft(prev => ({ ...prev, releaseExclusionType: event.target.value as 'cooldown' | 'blacklist' }))} className={inputClass}>
+                                                <option value="cooldown">冷却</option>
+                                                <option value="blacklist">拉黑</option>
+                                            </select>
+                                        </Field>
+                                        <Field label="目标">
+                                            <select value={draft.releaseExclusionTarget} onChange={event => setDraft(prev => ({ ...prev, releaseExclusionTarget: event.target.value as 'email_account' | 'registration_email' | 'both' }))} className={inputClass}>
+                                                <option value="both">邮箱账户 + 注册地址</option>
+                                                <option value="email_account">邮箱账户</option>
+                                                <option value="registration_email">注册地址</option>
+                                            </select>
+                                        </Field>
+                                    </div>
+                                    <Field label="冷却秒数">
+                                        <input value={draft.releaseDurationSeconds} onChange={event => setDraft(prev => ({ ...prev, releaseDurationSeconds: event.target.value }))} className={inputClass} />
+                                    </Field>
+                                    <label className="flex items-center gap-2 text-sm">
+                                        <input type="checkbox" checked={draft.releaseDeletePending} onChange={event => setDraft(prev => ({ ...prev, releaseDeletePending: event.target.checked }))} />
+                                        删除 pending 业务账户
+                                    </label>
+                                    <ActionButton icon={<Ban className="h-4 w-4" />} loading={busyAction === 'release'} onClick={handleRelease} variant="danger">释放/拉黑邮箱</ActionButton>
+                                </div>
+                            </details>
+                            {completedAccount && (
+                                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-200">
+                                    已保存业务账户 #{completedAccount.id}，状态 {completedAccount.status}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </Panel>
+            )}
+
+            <PickupMonitorWindow
+                monitor={pickupMonitor}
+                setMonitor={setPickupMonitor}
+                onStop={() => stopPickupMonitor('cancelled')}
+                onTraceFocus={onTraceFocus}
+            />
+
+            <BusinessAccountConsole
+                module={module}
+                draft={draft}
+                claim={claim}
+                pickupResult={pickupResult}
+                completedAccount={completedAccount}
+                releasedClaim={releasedClaim}
+                traces={traces}
+                codeSamples={generatedFlowCode}
+                collapsed={consoleCollapsed}
+                setCollapsed={setConsoleCollapsed}
+                activeTab={consoleTab}
+                setActiveTab={setConsoleTab}
+            />
+        </div>
+    )
+}
+
+function PickupMonitorWindow({
+    monitor,
+    setMonitor,
+    onStop,
+    onTraceFocus
+}: {
+    monitor: PickupMonitorState
+    setMonitor: Dispatch<SetStateAction<PickupMonitorState>>
+    onStop: () => void
+    onTraceFocus: () => void
+}) {
+    if (!monitor.open || monitor.hidden) return null
+    const selectedEmail = monitor.emails.find(email => email.ID === monitor.selectedEmailId) || monitor.emails[0]
+    const isListening = monitor.status === 'listening' || monitor.status === 'empty'
+    const statusText =
+        monitor.status === 'found'
+            ? `已取到 ${monitor.emails.length} 封邮件`
+            : monitor.status === 'empty'
+              ? '暂未取到邮件，继续监听中'
+              : monitor.status === 'error'
+                ? '监听出错'
+                : monitor.status === 'cancelled'
+                  ? '已停止'
+                  : '监听中'
+    return (
+        <div
+            className="fixed bottom-5 left-5 z-40 flex resize flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-gray-800 dark:bg-gray-900"
+            style={{ width: 'min(860px, calc(100vw - 3rem))', height: 'min(620px, calc(100vh - 3rem))', minWidth: 420, minHeight: 300, maxWidth: 'calc(100vw - 3rem)', maxHeight: 'calc(100vh - 3rem)' }}
+        >
+            <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-3 py-2 dark:border-gray-800">
+                <div className="flex min-w-0 items-center gap-2">
+                    <div className={cn('h-2.5 w-2.5 rounded-full', isListening ? 'animate-pulse bg-emerald-500' : monitor.status === 'found' ? 'bg-blue-500' : monitor.status === 'error' ? 'bg-rose-500' : 'bg-gray-400')} />
+                    <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold">取件监听窗口</div>
+                        <div className="truncate text-xs text-gray-500">{statusText} · 检查 {monitor.checks} 次 · {monitor.elapsedSeconds} 秒</div>
+                    </div>
+                </div>
+                <div className="flex items-center gap-1">
+                    <button onClick={onTraceFocus} className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="查看请求响应">
+                        <Terminal className="h-4 w-4" />
+                    </button>
+                    <button onClick={() => setMonitor(prev => ({ ...prev, hidden: true }))} className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="临时隐藏">
+                        <PanelRightClose className="h-4 w-4" />
+                    </button>
+                    <button onClick={onStop} className="rounded-md p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30" title="停止监听">
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+            </div>
+            <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)]">
+                <div className="min-h-0 overflow-auto border-r border-gray-100 dark:border-gray-800">
+                    {monitor.emails.length ? (
+                        monitor.emails.map(email => (
+                            <button
+                                key={email.ID}
+                                onClick={() => setMonitor(prev => ({ ...prev, selectedEmailId: email.ID }))}
+                                className={cn('block w-full border-b border-gray-100 px-3 py-2 text-left text-sm dark:border-gray-800', selectedEmail?.ID === email.ID ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-200' : 'hover:bg-gray-50 dark:hover:bg-gray-800')}
+                            >
+                                <div className="truncate font-medium">{email.Subject || '无主题'}</div>
+                                <div className="mt-1 truncate text-xs opacity-70">{Array.isArray(email.From) ? email.From.join(', ') : email.From}</div>
+                                <div className="mt-1 text-xs opacity-60">{formatDetailDate(email.Date || email.CreatedAt)}</div>
+                            </button>
+                        ))
+                    ) : (
+                        <div className="p-4 text-sm text-gray-500">
+                            {monitor.status === 'error' ? monitor.error || '监听失败' : '还没有取到邮件。窗口可以隐藏，监听会继续执行。'}
+                        </div>
+                    )}
+                </div>
+                <div className="min-h-0 overflow-auto p-4">
+                    {selectedEmail ? (
+                        <div className="space-y-4">
+                            <div>
+                                <div className="text-lg font-semibold">{selectedEmail.Subject || '无主题'}</div>
+                                <div className="mt-1 text-xs text-gray-500">
+                                    From: {Array.isArray(selectedEmail.From) ? selectedEmail.From.join(', ') : selectedEmail.From || '-'} · To: {Array.isArray(selectedEmail.To) ? selectedEmail.To.join(', ') : selectedEmail.To || '-'}
+                                </div>
+                            </div>
+                            <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{selectedEmail.Body || selectedEmail.HTMLBody || selectedEmail.RawMessage || '无正文'}</pre>
+                            <details className="rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+                                <summary className="cursor-pointer text-sm font-semibold">完整邮件 JSON</summary>
+                                <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{toPrettyJson(selectedEmail)}</pre>
+                            </details>
+                        </div>
+                    ) : (
+                        <div className="flex h-full items-center justify-center text-sm text-gray-500">
+                            {isListening ? '正在监听邮件，取到后会显示完整内容。' : '暂无邮件内容'}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    )
+}
+
+function CredentialGenerator({ policy, setPolicy, onGenerate }: { policy: CredentialPolicy; setPolicy: Dispatch<SetStateAction<CredentialPolicy>>; onGenerate: () => void }) {
+    return (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+            <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold">凭据生成</div>
+                <button onClick={onGenerate} className="inline-flex h-8 items-center gap-2 rounded-lg bg-blue-600 px-3 text-xs font-medium text-white">
+                    <KeyRound className="h-3.5 w-3.5" />
+                    生成账号密码
+                </button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-4">
+                <Field label="用户名前缀">
+                    <input value={policy.usernamePrefix} onChange={event => setPolicy(prev => ({ ...prev, usernamePrefix: event.target.value }))} className={inputClass} />
+                </Field>
+                <Field label="用户名长度">
+                    <input type="number" value={policy.usernameLength} onChange={event => setPolicy(prev => ({ ...prev, usernameLength: Number(event.target.value || 10) }))} className={inputClass} />
+                </Field>
+                <Field label="密码长度">
+                    <input type="number" value={policy.passwordLength} onChange={event => setPolicy(prev => ({ ...prev, passwordLength: Number(event.target.value || 16) }))} className={inputClass} />
+                </Field>
+                <div className="flex flex-wrap items-end gap-2 text-xs">
+                    {[
+                        ['includeLowercase', '小写'],
+                        ['includeUppercase', '大写'],
+                        ['includeDigits', '数字'],
+                        ['includeUnderscore', '下划线'],
+                        ['includeSymbols', '符号']
+                    ].map(([key, label]) => (
+                        <label key={key} className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-1 dark:bg-gray-900">
+                            <input type="checkbox" checked={Boolean(policy[key as keyof CredentialPolicy])} onChange={event => setPolicy(prev => ({ ...prev, [key]: event.target.checked }))} />
+                            {label}
+                        </label>
+                    ))}
+                </div>
+            </div>
+        </div>
+    )
+}
+
+function ActionButton({ children, icon, loading, disabled, onClick, variant = 'primary' }: { children: ReactNode; icon: ReactNode; loading?: boolean; disabled?: boolean; onClick: () => void; variant?: 'primary' | 'secondary' | 'danger' }) {
+    return (
+        <button
+            onClick={onClick}
+            disabled={disabled || loading}
+            className={cn(
+                'inline-flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-medium disabled:opacity-50',
+                variant === 'primary' && 'bg-blue-600 text-white hover:bg-blue-700',
+                variant === 'secondary' && 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100',
+                variant === 'danger' && 'bg-rose-600 text-white hover:bg-rose-700'
+            )}
+        >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : icon}
+            {children}
+        </button>
+    )
+}
+
+function BusinessAccountConsole({
+    module,
+    draft,
+    claim,
+    pickupResult,
+    completedAccount,
+    releasedClaim,
+    traces,
+    codeSamples,
+    collapsed,
+    setCollapsed,
+    activeTab,
+    setActiveTab
+}: {
+    module: BusinessModule
+    draft: CreateAccountDraft
+    claim: BusinessEmailClaimResponse | null
+    pickupResult: unknown
+    completedAccount: BusinessAccount | null
+    releasedClaim: boolean
+    traces: BusinessTraceEntry[]
+    codeSamples: Array<{ label: string; code: string }>
+    collapsed: boolean
+    setCollapsed: (collapsed: boolean) => void
+    activeTab: 'account' | 'flow' | 'trace' | 'code'
+    setActiveTab: (tab: 'account' | 'flow' | 'trace' | 'code') => void
+}) {
+    return (
+        <div
+            className={cn('fixed bottom-5 right-5 z-40 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-gray-800 dark:bg-gray-900', collapsed ? 'w-[260px]' : 'resize')}
+            style={collapsed ? undefined : { width: 'min(760px, calc(100vw - 3rem))', height: 560, minWidth: 380, minHeight: 280, maxWidth: 'calc(100vw - 3rem)', maxHeight: 'calc(100vh - 3rem)' }}
+        >
+            <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 dark:border-gray-800">
+                <div className="flex min-w-0 items-center gap-2">
+                    <Terminal className="h-4 w-4 text-blue-600" />
+                    <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold">业务账户小控制台</div>
+                        <div className="truncate text-xs text-gray-500">{module.name} · {releasedClaim ? '已释放' : claim?.recipient.emailAddress || '等待申请邮箱'}</div>
+                    </div>
+                </div>
+                <button onClick={() => setCollapsed(!collapsed)} className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">
+                    {collapsed ? <PanelRightOpen className="h-4 w-4" /> : <PanelRightClose className="h-4 w-4" />}
+                </button>
+            </div>
+            {!collapsed && (
+                <>
+                    <div className="grid grid-cols-4 gap-1 border-b border-gray-100 p-2 text-xs dark:border-gray-800">
+                        {[
+                            ['account', '账户信息', KeyRound],
+                            ['flow', '操作流程', Play],
+                            ['trace', '请求响应', Terminal],
+                            ['code', '接入示例', Code2]
+                        ].map(([id, label, Icon]) => (
+                            <button key={String(id)} onClick={() => setActiveTab(id as any)} className={cn('inline-flex items-center justify-center gap-1 rounded-md px-2 py-1.5', activeTab === id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-200' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800')}>
+                                <Icon className="h-3.5 w-3.5" />
+                                {label as string}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="h-[calc(100%-92px)] overflow-auto p-3">
+                        {activeTab === 'account' && (
+                            <div className="grid gap-3 md:grid-cols-2">
+                                <InfoLine label="业务模块" value={module.name} />
+                                <InfoLine label="业务账户 ID" value={claim?.businessAccountId || completedAccount?.id || '-'} />
+                                <InfoLine label="关联邮箱" value={claim?.recipient.emailAddress || '-'} />
+                                <InfoLine label="取件账户" value={claim ? `#${claim.pickup.account_id} · ${claim.pickup.to_query}` : '-'} />
+                                <InfoLine label="用户名" value={draft.username || '-'} />
+                                <InfoLine label="密码" value={draft.password || '-'} />
+                                <InfoLine label="Claim Token" value={claim?.claimToken || '-'} className="md:col-span-2" />
+                            </div>
+                        )}
+                        {activeTab === 'flow' && (
+                            <div className="space-y-2">
+                                <FlowLine done={Boolean(claim)} label="申请邮箱" detail={claim?.recipient.emailAddress || '未执行'} />
+                                <FlowLine done={Boolean(pickupResult)} label="监听取件" detail={pickupResult ? '已返回结果' : '未执行'} />
+                                <FlowLine done={Boolean(completedAccount)} label="完成注册" detail={completedAccount?.status || '未完成'} />
+                                <FlowLine done={releasedClaim} label="释放/拉黑" detail={releasedClaim ? '本次 claim 已终止' : '未执行'} />
+                            </div>
+                        )}
+                        {activeTab === 'trace' && <TraceList traces={traces} compact />}
+                        {activeTab === 'code' && <CodeSamples samples={codeSamples} />}
+                    </div>
+                </>
+            )}
+        </div>
+    )
+}
+
+function FlowLine({ done, label, detail }: { done: boolean; label: string; detail: string }) {
+    return (
+        <div className="flex items-center gap-3 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+            <div className={cn('flex h-7 w-7 items-center justify-center rounded-full', done ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/30' : 'bg-gray-100 text-gray-400 dark:bg-gray-800')}>
+                {done ? <Check className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
+            </div>
+            <div className="min-w-0">
+                <div className="text-sm font-medium">{label}</div>
+                <div className="truncate text-xs text-gray-500">{detail}</div>
+            </div>
+        </div>
+    )
+}
+
+function TraceDebuggerPanel({ traces, setTraces, module }: { traces: BusinessTraceEntry[]; setTraces: Dispatch<SetStateAction<BusinessTraceEntry[]>>; module: BusinessModule }) {
+    const samples = useMemo(() => buildTraceCodeSamples(traces), [traces])
+    return (
+        <div className="space-y-5">
+            <Panel
+                title="请求响应"
+                description={`${module.name} 当前页面操作产生的完整明文请求/响应。`}
+                actions={traces.length ? <button onClick={() => setTraces([])} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs dark:border-gray-700">清空</button> : null}
+            >
+                <TraceList traces={traces} />
+            </Panel>
+            <Panel title="接入示例" description="由实际 trace 生成，可直接复制为自动化接入脚本。">
+                <CodeSamples samples={samples} />
+            </Panel>
+        </div>
+    )
+}
+
+function TraceList({ traces, compact = false }: { traces: BusinessTraceEntry[]; compact?: boolean }) {
+    if (!traces.length) return <div className="py-8 text-center text-sm text-gray-500">暂无请求响应，先在“创建账号”里执行一次操作。</div>
+    return (
+        <div className="space-y-3">
+            {traces.map(trace => (
+                <details key={trace.id} open={!compact && trace === traces[0]} className="rounded-lg border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+                    <summary className="flex cursor-pointer items-center justify-between gap-3 px-3 py-2">
+                        <span className="flex min-w-0 items-center gap-2">
+                            <TraceStatusBadge status={trace.status} />
+                            <span className="truncate text-sm font-medium">{trace.label}</span>
+                            <span className="font-mono text-xs text-gray-500">{trace.method} {trace.path}</span>
+                        </span>
+                        <span className="text-xs text-gray-400">{new Date(trace.startedAt).toLocaleTimeString()}</span>
+                    </summary>
+                    <div className="grid gap-3 border-t border-gray-100 p-3 dark:border-gray-800 lg:grid-cols-2">
+                        <TraceBlock title="Request" value={trace.request} />
+                        <TraceBlock title={trace.status === 'error' ? 'Error' : 'Response'} value={trace.status === 'error' ? trace.error : trace.response} />
+                    </div>
+                </details>
+            ))}
+        </div>
+    )
+}
+
+function TraceStatusBadge({ status }: { status: TraceStatus }) {
+    return <span className={cn('rounded-full px-2 py-0.5 text-[11px]', status === 'success' && 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-200', status === 'error' && 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-200', status === 'pending' && 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-200')}>{status}</span>
+}
+
+function TraceBlock({ title, value }: { title: string; value: unknown }) {
+    const text = typeof value === 'string' ? value : toPrettyJson(value ?? null)
+    return (
+        <div className="min-w-0">
+            <div className="mb-2 flex items-center justify-between">
+                <div className="text-xs font-semibold text-gray-500">{title}</div>
+                <button onClick={() => copyToClipboard(text)} className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-800">
+                    <Copy className="h-3.5 w-3.5" />
+                </button>
+            </div>
+            <pre className="max-h-80 overflow-auto rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{text}</pre>
+        </div>
+    )
+}
+
+function CodeSamples({ samples }: { samples: Array<{ label: string; code: string }> }) {
+    const [active, setActive] = useState(samples[0]?.label || 'curl')
+    useEffect(() => {
+        if (samples.length && !samples.some(sample => sample.label === active)) setActive(samples[0].label)
+    }, [active, samples])
+    if (!samples.length) return <div className="py-8 text-center text-sm text-gray-500">执行流程后会生成接入示例。</div>
+    const sample = samples.find(item => item.label === active) || samples[0]
+    return (
+        <div>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+                {samples.map(item => (
+                    <button key={item.label} onClick={() => setActive(item.label)} className={cn('rounded-lg px-3 py-1.5 text-xs', active === item.label ? 'bg-blue-600 text-white' : 'border border-gray-200 dark:border-gray-700')}>{item.label}</button>
+                ))}
+                <button onClick={() => copyToClipboard(sample.code)} className="ml-auto inline-flex items-center gap-1 rounded-lg border border-gray-200 px-3 py-1.5 text-xs dark:border-gray-700">
+                    <Copy className="h-3.5 w-3.5" />
+                    复制
+                </button>
+            </div>
+            <pre className="max-h-[520px] overflow-auto rounded-lg bg-gray-950 p-4 text-xs text-gray-100">{sample.code}</pre>
+        </div>
+    )
+}
+
+function buildTraceCodeSamples(traces: BusinessTraceEntry[]) {
+    if (!traces.length) return []
+    const ordered = [...traces].reverse().filter(trace => trace.status === 'success' || trace.status === 'pending')
+    const apiBase = getApiBaseUrl()
+    const curl = [`export MAILMAN_API_BASE="${apiBase}"`]
+    ordered.forEach(trace => {
+        curl.push('', `# ${trace.label}`, `curl -sS -X ${trace.method} "$MAILMAN_API_BASE${trace.path}" \\`, `  -H ${shellSingleQuote(`Authorization: ${trace.request.headers.Authorization || 'Bearer replace-with-your-token'}`)} \\`, `  -H 'Content-Type: application/json' \\`, `  -d ${shellSingleQuote(toPrettyJson(trace.request.body || {}))}`)
+    })
+    const node = `const API_BASE = ${JSON.stringify(apiBase)};
+
+async function request(path, body, token) {
+  const response = await fetch(API_BASE + path, {
+    method: "POST",
+    headers: { Authorization: token, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(response.status + " " + await response.text());
+  return response.json();
+}
+
+const token = ${JSON.stringify(ordered[0]?.request.headers.Authorization || 'Bearer replace-with-your-token')};
+${ordered.map((trace, index) => `const step${index + 1} = await request(${JSON.stringify(trace.path)}, ${toPrettyJson(trace.request.body || {})}, token);
+console.log(${JSON.stringify(trace.label)}, step${index + 1});`).join('\n\n')}`
+    const python = `import requests
+
+API_BASE = ${JSON.stringify(apiBase)}
+TOKEN = ${JSON.stringify(ordered[0]?.request.headers.Authorization || 'Bearer replace-with-your-token')}
+
+def post(path, payload):
+    response = requests.post(API_BASE + path, headers={"Authorization": TOKEN, "Content-Type": "application/json"}, json=payload, timeout=120)
+    response.raise_for_status()
+    return response.json()
+
+${ordered.map((trace, index) => `step_${index + 1} = post(${JSON.stringify(trace.path)}, ${toPrettyJson(trace.request.body || {})})
+print(${JSON.stringify(trace.label)}, step_${index + 1})`).join('\n\n')}`
+    return [
+        { label: 'curl', code: curl.join('\n') },
+        { label: 'Node.js', code: node },
+        { label: 'Python', code: python }
+    ]
+}
+
 const inputClass = 'h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950'
 const textareaClass = 'min-h-[96px] w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950'
 
@@ -2194,15 +4227,18 @@ function Field({ label, children, className }: { label: string; children: ReactN
     )
 }
 
-function Panel({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+function Panel({ title, description, actions, children }: { title: string; description: string; actions?: ReactNode; children: ReactNode }) {
     return (
         <div className="rounded-lg border border-gray-200 p-4 dark:border-gray-800">
-            <div className="mb-3">
-                <h3 className="flex items-center gap-2 text-sm font-semibold">
-                    <Tag className="h-4 w-4 text-blue-500" />
-                    {title}
-                </h3>
-                <p className="mt-1 text-xs text-gray-500">{description}</p>
+            <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold">
+                        <Tag className="h-4 w-4 text-blue-500" />
+                        {title}
+                    </h3>
+                    <p className="mt-1 text-xs text-gray-500">{description}</p>
+                </div>
+                {actions}
             </div>
             {children}
         </div>
