@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api-client'
 import type { AccountNoteFormat, EmailAccount } from '@/types'
+import type { PickupPollResponse } from '@/services/pickup.service'
 
 export type BusinessAccountStatus = string
 export type BusinessCustomFieldType = 'text' | 'username' | 'password' | 'totp' | 'url' | 'email' | 'phone' | 'date' | 'number' | 'note'
@@ -59,6 +60,10 @@ export interface BusinessAccount {
     tags?: string[]
     customFields?: Record<string, string | BusinessCustomFieldValue>
     extraData?: Record<string, any>
+    registrationEmail?: string
+    claimToken?: string
+    claimExpiresAt?: string
+    claimedBy?: string
     remoteCreatedAt?: string
     lastLoginAt?: string
     createdAt?: string
@@ -266,6 +271,88 @@ export interface BusinessScenarioPayload {
     sortOrder?: number
 }
 
+export interface CompleteBusinessRegistrationPayload {
+    claimToken: string
+    username?: string
+    password?: string
+    totpSecret?: string
+    phoneNumber?: string
+    recoveryEmail?: string
+    recoveryCodes?: string[]
+    status?: BusinessAccountStatus
+    description?: string
+    note?: string
+    noteFormat?: AccountNoteFormat
+    tags?: string[]
+    customFields?: Record<string, string | BusinessCustomFieldValue>
+    extraData?: Record<string, any>
+    remoteCreatedAt?: string
+    lastLoginAt?: string
+}
+
+export interface BusinessEmailExclusionReleasePayload {
+    type?: 'cooldown' | 'blacklist'
+    scope?: 'module' | 'global'
+    target?: 'email_account' | 'registration_email' | 'both'
+    durationSeconds?: number
+    reason?: string
+    message?: string
+    emailAccountId?: number
+    registrationEmail?: string
+}
+
+export interface ReleaseBusinessRegistrationPayload {
+    claimToken: string
+    reason?: string
+    message?: string
+    deletePendingAccount?: boolean
+    exclusion?: BusinessEmailExclusionReleasePayload
+    exclusions?: BusinessEmailExclusionReleasePayload[]
+}
+
+export interface RenewBusinessRegistrationPayload {
+    claimToken: string
+    ttlSeconds?: number
+    message?: string
+}
+
+export interface RenewBusinessRegistrationResponse {
+    businessAccountId: number
+    claimExpiresAt: string
+    ttlSeconds: number
+    status: BusinessAccountStatus
+}
+
+export interface BusinessScenarioPickupPayload {
+    claimToken?: string
+    keep_alive_seconds?: number
+    keepAliveSeconds?: number
+    sync_interval?: number
+    syncInterval?: number
+    limit?: number
+    since?: string
+    to_query?: string
+    toQuery?: string
+    template_id?: number
+    templateId?: number
+    inline_actions?: unknown
+    inlineActions?: unknown
+    simple_extract?: unknown
+    simpleExtract?: unknown
+}
+
+export interface BusinessScenarioPickupResponse {
+    businessAccount: {
+        id: number
+        status: BusinessAccountStatus
+        emailAccountId?: number
+        moduleId?: number
+        registrationEmail?: string
+    }
+    scenario: BusinessScenario
+    pickup: PickupPollResponse
+}
+
 class BusinessAccountService {
     async listModules(search?: string, params?: { page?: number; limit?: number }): Promise<BusinessModule[]> {
         const response = await apiClient.get<BusinessModule[] | BusinessModulesListResponse>('/business-modules', {
@@ -318,6 +405,22 @@ class BusinessAccountService {
 
     async claimModuleEmailAccount(moduleId: number, payload: BusinessEmailClaimPayload = {}): Promise<BusinessEmailClaimResponse> {
         return apiClient.post<BusinessEmailClaimResponse>(`/business-modules/${moduleId}/email-accounts/claim`, payload)
+    }
+
+    async completeRegistration(id: number, payload: CompleteBusinessRegistrationPayload): Promise<BusinessAccount> {
+        return apiClient.post<BusinessAccount>(`/business-accounts/${id}/complete-registration`, payload)
+    }
+
+    async releaseRegistrationClaim(id: number, payload: ReleaseBusinessRegistrationPayload): Promise<BusinessAccount | { businessAccountId: number; released: boolean; deleted?: boolean }> {
+        return apiClient.post<BusinessAccount | { businessAccountId: number; released: boolean; deleted?: boolean }>(`/business-accounts/${id}/release-registration-claim`, payload)
+    }
+
+    async renewRegistrationClaim(id: number, payload: RenewBusinessRegistrationPayload): Promise<RenewBusinessRegistrationResponse> {
+        return apiClient.post<RenewBusinessRegistrationResponse>(`/business-accounts/${id}/renew-registration-claim`, payload)
+    }
+
+    async pickupScenario(id: number, scenarioKey: string, payload: BusinessScenarioPickupPayload = {}): Promise<BusinessScenarioPickupResponse> {
+        return apiClient.post<BusinessScenarioPickupResponse>(`/business-accounts/${id}/scenarios/${encodeURIComponent(scenarioKey)}/pickup`, payload)
     }
 
     async updateAccount(id: number, payload: BusinessAccountPayload): Promise<BusinessAccount> {
