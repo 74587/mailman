@@ -1,11 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type ReactNode, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type Dispatch, type PointerEvent as ReactPointerEvent, type ReactNode, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import { closestCenter, DndContext, DragOverlay, PointerSensor, type DragEndEvent, type DragStartEvent, useSensor, useSensors } from '@dnd-kit/core'
 import { arrayMove, rectSortingStrategy, SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Ban, BookOpen, Briefcase, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock, Code2, Copy, Eye, ExternalLink, FileCode2, GripVertical, ImagePlus, KeyRound, LayoutDashboard, Loader2, Mail, MailCheck, PanelRightClose, PanelRightOpen, Pencil, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Tag, Terminal, Trash2, Unlock, UserPlus, Workflow, X } from 'lucide-react'
+import { Ban, BookOpen, Briefcase, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock, Code2, Copy, Eye, ExternalLink, FileCode2, GripVertical, ImagePlus, KeyRound, LayoutDashboard, Loader2, Mail, MailCheck, PanelRightClose, PanelRightOpen, Pencil, Play, Plus, Radio, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Tag, Terminal, Trash2, Unlock, UserPlus, Workflow, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { businessAccountService, BusinessAccount, BusinessAccountStatus, BusinessClaimDefaults, BusinessCustomFieldType, BusinessEmailClaimPayload, BusinessEmailClaimResponse, BusinessEmailConstraints, BusinessModule, BusinessModulePayload, BusinessScenario, BusinessScenarioPayload, BusinessStatusOption, CompleteBusinessRegistrationPayload } from '@/services/business-account.service'
@@ -84,6 +84,8 @@ type GuideEndpointKey = 'claim' | 'pickup' | 'complete' | 'release' | 'renew'
 type GuideLanguage = 'curl' | 'node' | 'python' | 'go'
 type BusinessModuleDetailSection = 'overview' | 'guide' | 'accounts' | 'email-policy' | 'scenarios' | 'create-account' | 'debug'
 type CreateAccountPickupMode = 'scenario' | 'custom'
+type CreateAccountStep = 1 | 2 | 3
+type BusinessConsoleTab = 'account' | 'pickup' | 'flow' | 'trace' | 'code'
 type TraceStatus = 'pending' | 'success' | 'error'
 type PickupMonitorStatus = 'idle' | 'listening' | 'found' | 'empty' | 'cancelled' | 'error'
 
@@ -135,6 +137,23 @@ type CredentialPolicy = {
     includeDigits: boolean
     includeUnderscore: boolean
     includeSymbols: boolean
+}
+
+type MockUsIdentity = {
+    fullName: string
+    firstName: string
+    lastName: string
+    birthDate: string
+    gender: 'female' | 'male' | 'non-binary'
+    company: string
+    companyWebsite: string
+    addressLine1: string
+    city: string
+    state: string
+    postalCode: string
+    phone: string
+    country: 'US'
+    locale: 'en-US'
 }
 
 type CreateAccountDraft = {
@@ -369,6 +388,54 @@ function generateCredentialPair(policy: CredentialPolicy) {
     return {
         username,
         password: chars.join('')
+    }
+}
+
+function generateMockUsIdentity(): MockUsIdentity {
+    const firstNames = ['Avery', 'Cameron', 'Jordan', 'Morgan', 'Riley', 'Taylor', 'Casey', 'Parker', 'Quinn', 'Reese', 'Alex', 'Drew']
+    const lastNames = ['Bennett', 'Carter', 'Collins', 'Foster', 'Hayes', 'Morgan', 'Perry', 'Reed', 'Sullivan', 'Turner', 'Walker', 'Young']
+    const locations = [
+        { city: 'Austin', state: 'TX', postalPrefixes: ['78701', '78702', '78704'], areaCode: '512' },
+        { city: 'Seattle', state: 'WA', postalPrefixes: ['98101', '98103', '98109'], areaCode: '206' },
+        { city: 'Denver', state: 'CO', postalPrefixes: ['80202', '80205', '80211'], areaCode: '303' },
+        { city: 'Portland', state: 'OR', postalPrefixes: ['97205', '97209', '97214'], areaCode: '503' },
+        { city: 'Boston', state: 'MA', postalPrefixes: ['02108', '02110', '02116'], areaCode: '617' },
+        { city: 'San Diego', state: 'CA', postalPrefixes: ['92101', '92103', '92109'], areaCode: '619' }
+    ]
+    const streetNames = ['Cedar', 'Lakeview', 'Maple', 'Park', 'Pine', 'Ridge', 'Sunset', 'Willow']
+    const streetTypes = ['Ave', 'Blvd', 'Ln', 'Rd', 'St', 'Way']
+    const companies = [
+        { name: 'Northstar Studio', domain: 'northstar-studio.example' },
+        { name: 'Cedar Labs', domain: 'cedar-labs.example' },
+        { name: 'Brightline Works', domain: 'brightline-works.example' },
+        { name: 'Juniper Systems', domain: 'juniper-systems.example' },
+        { name: 'Harbor & Field', domain: 'harbor-field.example' },
+        { name: 'Summit Grove', domain: 'summit-grove.example' }
+    ]
+    const genders: MockUsIdentity['gender'][] = ['female', 'male', 'non-binary']
+    const firstName = firstNames[randomIndex(firstNames.length)]
+    const lastName = lastNames[randomIndex(lastNames.length)]
+    const location = locations[randomIndex(locations.length)]
+    const company = companies[randomIndex(companies.length)]
+    const now = new Date()
+    const age = 21 + randomIndex(35)
+    const birthDate = new Date(Date.UTC(now.getUTCFullYear() - age, randomIndex(12), 1 + randomIndex(28))).toISOString().slice(0, 10)
+    const reservedSubscriber = String(randomIndex(100)).padStart(2, '0')
+    return {
+        fullName: `${firstName} ${lastName}`,
+        firstName,
+        lastName,
+        birthDate,
+        gender: genders[randomIndex(genders.length)],
+        company: company.name,
+        companyWebsite: `https://${company.domain}`,
+        addressLine1: `${100 + randomIndex(9800)} ${streetNames[randomIndex(streetNames.length)]} ${streetTypes[randomIndex(streetTypes.length)]}`,
+        city: location.city,
+        state: location.state,
+        postalCode: location.postalPrefixes[randomIndex(location.postalPrefixes.length)],
+        phone: `+1 (${location.areaCode}) 555-01${reservedSubscriber}`,
+        country: 'US',
+        locale: 'en-US'
     }
 }
 
@@ -2918,8 +2985,10 @@ function CreateBusinessAccountPanel({
     const [completedAccount, setCompletedAccount] = useState<BusinessAccount | null>(null)
     const [releasedClaim, setReleasedClaim] = useState(false)
     const [busyAction, setBusyAction] = useState<string>('')
+    const [activeCreateStep, setActiveCreateStep] = useState<CreateAccountStep>(1)
+    const [mockIdentity, setMockIdentity] = useState<MockUsIdentity | null>(null)
     const [consoleCollapsed, setConsoleCollapsed] = useState(false)
-    const [consoleTab, setConsoleTab] = useState<'account' | 'flow' | 'trace' | 'code'>('account')
+    const [consoleTab, setConsoleTab] = useState<BusinessConsoleTab>('account')
     const pickupIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
     const pickupRunIdRef = useRef(0)
     const pickupCheckInFlightRef = useRef(false)
@@ -2932,6 +3001,8 @@ function CreateBusinessAccountPanel({
         setPickupResult(null)
         setCompletedAccount(null)
         setReleasedClaim(false)
+        setActiveCreateStep(1)
+        setMockIdentity(null)
         stopPickupMonitor('cancelled', false)
         setPickupMonitor(emptyPickupMonitorState())
     }, [module.id])
@@ -3020,6 +3091,40 @@ function CreateBusinessAccountPanel({
         setDraft(prev => ({ ...prev, username: generated.username, password: generated.password }))
     }
 
+    const generateIdentity = () => {
+        try {
+            const currentExtraData = parseJSONObject(draft.extraDataText, '扩展信息')
+            const generated = generateMockUsIdentity()
+            setMockIdentity(generated)
+            setDraft(prev => ({
+                ...prev,
+                displayName: generated.fullName,
+                phoneNumber: generated.phone,
+                extraDataText: JSON.stringify({ ...currentExtraData, mockIdentity: generated }, null, 2)
+            }))
+            toast.success('已生成一份 Mock 美国身份资料')
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '生成身份资料失败')
+        }
+    }
+
+    const clearIdentity = () => {
+        try {
+            const currentExtraData = parseJSONObject(draft.extraDataText, '扩展信息')
+            const rest = { ...currentExtraData }
+            delete rest.mockIdentity
+            setDraft(prev => ({
+                ...prev,
+                displayName: mockIdentity && prev.displayName === mockIdentity.fullName ? `${module.name} 账号` : prev.displayName,
+                phoneNumber: mockIdentity && prev.phoneNumber === mockIdentity.phone ? '' : prev.phoneNumber,
+                extraDataText: JSON.stringify(rest, null, 2)
+            }))
+            setMockIdentity(null)
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : '清除身份资料失败')
+        }
+    }
+
     const buildClaimPayloadFromDraft = () => {
         const customFields = parseJSONObject(draft.customFieldsText, '扩展字段')
         const extraData = parseJSONObject(draft.extraDataText, '扩展信息')
@@ -3062,6 +3167,7 @@ function CreateBusinessAccountPanel({
             setReleasedClaim(false)
             setPickupMonitor(emptyPickupMonitorState())
             setConsoleTab('account')
+            setActiveCreateStep(2)
             toast.success(`已申请邮箱：${response.recipient.emailAddress}`)
             onAccountChanged()
         } catch (error) {
@@ -3139,7 +3245,8 @@ function CreateBusinessAccountPanel({
             })
             if (emails.length > 0) {
                 setPickupResult(response)
-                setConsoleTab('trace')
+                setConsoleTab('pickup')
+                setActiveCreateStep(3)
                 if (pickupIntervalRef.current) {
                     clearInterval(pickupIntervalRef.current)
                     pickupIntervalRef.current = null
@@ -3180,6 +3287,8 @@ function CreateBusinessAccountPanel({
             elapsedSeconds: 0,
             emails: []
         })
+        setConsoleCollapsed(false)
+        setConsoleTab('pickup')
         toast.info('已开始监听取件，命中邮件前会持续轮询')
         void runPickupCheck(runId, startedAt)
         const intervalMs = Math.max(2, Number(draft.syncInterval || 5)) * 1000
@@ -3219,6 +3328,7 @@ function CreateBusinessAccountPanel({
             setReleasedClaim(false)
             setPickupMonitor(emptyPickupMonitorState())
             setConsoleTab('flow')
+            setActiveCreateStep(3)
             toast.success('业务账户已完成')
             onAccountChanged()
         } catch (error) {
@@ -3256,6 +3366,7 @@ function CreateBusinessAccountPanel({
             setCompletedAccount(null)
             setPickupMonitor(emptyPickupMonitorState())
             setConsoleTab('flow')
+            setActiveCreateStep(3)
             toast.success('已释放本次邮箱 claim')
             onAccountChanged()
         } catch (error) {
@@ -3291,6 +3402,8 @@ function CreateBusinessAccountPanel({
         setCompletedAccount(null)
         setReleasedClaim(false)
         setBusyAction('')
+        setActiveCreateStep(1)
+        setMockIdentity(null)
         setConsoleTab('account')
         setTraces([])
         setPickupMonitor(emptyPickupMonitorState())
@@ -3299,7 +3412,7 @@ function CreateBusinessAccountPanel({
     const pickupEnvelope = readPickupEnvelope(pickupResult)
     const pickupEmails = Array.isArray(pickupEnvelope?.emails) ? pickupEnvelope.emails : []
     const pickupStarted = pickupMonitor.status !== 'idle' && pickupMonitor.status !== 'cancelled'
-    const currentStep = completedAccount || releasedClaim ? 4 : pickupResult ? 4 : pickupStarted ? 3 : claim ? 2 : 1
+    const currentStep = pickupStarted || pickupResult || completedAccount || releasedClaim ? 3 : claim ? 2 : 1
     const openClaimActive = Boolean(claim && !completedAccount && !releasedClaim)
     const hasEditedDraftData = Boolean(
         draft.username.trim() ||
@@ -3338,26 +3451,47 @@ function CreateBusinessAccountPanel({
                     查看请求响应
                 </button>
             </div>
-            <div className="grid gap-2 md:grid-cols-4">
-                {[
-                    [1, '账号资料', '准备凭据与申请策略'],
-                    [2, '申请邮箱', '展示邮箱与 claim token'],
-                    [3, '监听取件', '配置并执行取件'],
-                    [4, '完成/释放', '保存账号或释放邮箱']
-                ].map(([step, title, description]) => (
-                    <div key={String(step)} className={cn('rounded-lg border p-3', Number(step) <= currentStep ? 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200' : 'border-gray-200 bg-white text-gray-500 dark:border-gray-800 dark:bg-gray-900')}>
-                        <div className="flex items-center gap-2 text-sm font-semibold">
-                            <span className={cn('flex h-6 w-6 items-center justify-center rounded-full text-xs', Number(step) <= currentStep ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500 dark:bg-gray-800')}>{step}</span>
-                            {title}
-                        </div>
-                        <div className="mt-1 text-xs opacity-75">{description}</div>
+            <div className="grid items-start gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">
+                <nav aria-label="创建账号步骤" className="rounded-lg border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-800 dark:bg-gray-900 lg:sticky lg:top-4">
+                    <div className="space-y-1">
+                        {([
+                            { step: 1, title: '账号资料', description: '准备凭据与身份资料', icon: KeyRound },
+                            { step: 2, title: '申请邮箱', description: '配置策略并申请邮箱', icon: MailCheck },
+                            { step: 3, title: '监听与完成', description: '取件、保存或释放', icon: Radio }
+                        ] as Array<{ step: CreateAccountStep; title: string; description: string; icon: any }>).map(item => {
+                            const numericStep = item.step
+                            const Icon = item.icon
+                            const active = activeCreateStep === numericStep
+                            const reached = numericStep <= currentStep
+                            return (
+                                <button
+                                    key={String(item.step)}
+                                    type="button"
+                                    aria-current={active ? 'step' : undefined}
+                                    onClick={() => setActiveCreateStep(numericStep)}
+                                    className={cn(
+                                        'group flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition',
+                                        active ? 'bg-blue-50 text-blue-800 ring-1 ring-blue-200 dark:bg-blue-950/40 dark:text-blue-100 dark:ring-blue-900' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800/70',
+                                        reached && !active && 'text-gray-800 dark:text-gray-200'
+                                    )}
+                                >
+                                    <span className={cn('mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-xs font-semibold', active ? 'border-blue-600 bg-blue-600 text-white' : reached ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200' : 'border-gray-200 bg-white text-gray-400 dark:border-gray-700 dark:bg-gray-950')}>
+                                        {numericStep < currentStep ? <Check className="h-3.5 w-3.5" /> : <Icon className="h-3.5 w-3.5" />}
+                                    </span>
+                                    <span className="min-w-0">
+                                        <span className="block text-sm font-semibold">{item.step}. {item.title}</span>
+                                        <span className="mt-0.5 block text-xs leading-5 opacity-70">{item.description}</span>
+                                    </span>
+                                </button>
+                            )
+                        })}
                     </div>
-                ))}
-            </div>
+                </nav>
 
-            {!claim && (
+                <div className="min-w-0 space-y-5">
+            {activeCreateStep === 1 && (
                 <div className="space-y-4">
-                    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+                    <div>
                         <Panel title="账号资料" description="申请邮箱前只准备必要资料；取件与注册完成字段会在后续步骤出现。">
                             <div className="space-y-4">
                                 <div className="grid gap-4 md:grid-cols-2">
@@ -3377,6 +3511,7 @@ function CreateBusinessAccountPanel({
                                     </Field>
                                 </div>
                                 <CredentialGenerator policy={credentialPolicy} setPolicy={setCredentialPolicy} onGenerate={generateCredentials} />
+                                <MockIdentityGenerator identity={mockIdentity} onGenerate={generateIdentity} onClear={clearIdentity} />
                                 <div className="grid gap-4 md:grid-cols-2">
                                     <Field label="扩展字段 JSON">
                                         <textarea value={draft.customFieldsText} onChange={event => setDraft(prev => ({ ...prev, customFieldsText: event.target.value }))} className={cn(textareaClass, 'font-mono text-xs')} />
@@ -3390,58 +3525,43 @@ function CreateBusinessAccountPanel({
                                 </Field>
                             </div>
                         </Panel>
-                        <Panel title="邮箱申请策略" description="默认使用模块策略；只有本次需要特殊约束时才开启临时覆盖。">
-                            <div className="space-y-3">
-                                <label className="flex items-center justify-between gap-3 text-sm">
-                                    <span>自定义临时申请策略</span>
-                                    <Switch checked={draft.useCustomClaimPolicy} onCheckedChange={checked => setDraft(prev => ({ ...prev, useCustomClaimPolicy: checked }))} />
-                                </label>
-                                <Field label="Claim TTL 秒">
-                                    <input value={draft.ttlSeconds} onChange={event => setDraft(prev => ({ ...prev, ttlSeconds: event.target.value }))} className={inputClass} />
-                                </Field>
-                                {draft.useCustomClaimPolicy ? (
-                                    <>
-                                        <Field label="邮箱模式">
-                                            <select value={draft.emailMode} onChange={event => setDraft(prev => ({ ...prev, emailMode: event.target.value as BusinessEmailMode }))} className={inputClass}>
-                                                {emailModes.map(mode => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
-                                            </select>
-                                        </Field>
-                                        <Field label="允许后缀">
-                                            <textarea value={draft.emailSuffixes} onChange={event => setDraft(prev => ({ ...prev, emailSuffixes: event.target.value }))} className={cn(textareaClass, 'min-h-[74px]')} />
-                                        </Field>
-                                        <Field label="禁止后缀">
-                                            <textarea value={draft.blockedEmailSuffixes} onChange={event => setDraft(prev => ({ ...prev, blockedEmailSuffixes: event.target.value }))} className={cn(textareaClass, 'min-h-[74px]')} />
-                                        </Field>
-                                    </>
-                                ) : (
-                                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300">
-                                        使用模块默认策略：{getModuleAllowedSuffixes(module).join('、') || '不限后缀'}，TTL {getGuideClaimTtl(module)} 秒。
-                                    </div>
-                                )}
-                            </div>
-                        </Panel>
                     </div>
                     <div className="sticky bottom-4 z-30 flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3 shadow-lg shadow-blue-950/5 dark:border-blue-900 dark:bg-blue-950">
                         <div>
-                            <div className="text-sm font-semibold text-blue-800 dark:text-blue-200">下一步：申请注册邮箱</div>
-                            <div className="mt-0.5 text-xs text-blue-600 dark:text-blue-300">申请成功后会显示邮箱、claim token，并展开监听取件。</div>
+                            <div className="text-sm font-semibold text-blue-800 dark:text-blue-200">{claim ? '注册邮箱已经申请' : '下一步：配置邮箱申请'}</div>
+                            <div className="mt-0.5 text-xs text-blue-600 dark:text-blue-300">{claim ? '账号资料仍可继续调整，当前 claim 与监听上下文不会丢失。' : '进入邮箱申请步骤后配置本次策略，再发起申请。'}</div>
                         </div>
-                        <ActionButton icon={<MailCheck className="h-4 w-4" />} loading={busyAction === 'claim'} onClick={handleClaim}>下一步：申请邮箱</ActionButton>
+                        {claim ? (
+                            <ActionButton icon={<ChevronRight className="h-4 w-4" />} onClick={() => setActiveCreateStep(2)}>查看申请结果</ActionButton>
+                        ) : (
+                            <ActionButton icon={<ChevronRight className="h-4 w-4" />} onClick={() => setActiveCreateStep(2)}>下一步：申请邮箱</ActionButton>
+                        )}
                     </div>
                 </div>
             )}
 
-            {claim && (
+            {activeCreateStep === 2 && !claim && (
+                <div className="space-y-4">
+                    <EmailClaimPolicyEditor module={module} draft={draft} setDraft={setDraft} />
+                    <div className="sticky bottom-4 z-30 flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3 shadow-lg shadow-blue-950/5 dark:border-blue-900 dark:bg-blue-950">
+                        <div>
+                            <div className="text-sm font-semibold text-blue-800 dark:text-blue-200">确认策略并申请邮箱</div>
+                            <div className="mt-0.5 text-xs text-blue-600 dark:text-blue-300">申请成功后会保留邮箱、Claim Token 和取件目标。</div>
+                        </div>
+                        <ActionButton icon={<MailCheck className="h-4 w-4" />} loading={busyAction === 'claim'} onClick={handleClaim}>申请邮箱</ActionButton>
+                    </div>
+                </div>
+            )}
+
+            {activeCreateStep === 2 && claim && (
+                <div className="space-y-4">
                 <Panel
                     title={releasedClaim ? '邮箱 claim 已释放' : '已申请邮箱'}
                     description={releasedClaim ? '本次邮箱占用已终止，不再继续监听或完成注册。' : '申请结果会用于后续监听取件、完成注册或释放/拉黑。'}
                     actions={
                         <div className="flex flex-wrap gap-2">
                             {!releasedClaim && (
-                                <>
-                                    <ActionButton icon={<Clock className="h-4 w-4" />} loading={busyAction === 'renew'} onClick={handleRenew} variant="secondary">续租</ActionButton>
-                                    <ActionButton icon={<Ban className="h-4 w-4" />} loading={busyAction === 'release'} onClick={handleRelease} variant="danger">释放/拉黑</ActionButton>
-                                </>
+                                <ActionButton icon={<Clock className="h-4 w-4" />} loading={busyAction === 'renew'} onClick={handleRenew} variant="secondary">续租</ActionButton>
                             )}
                             <button onClick={resetFlow} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700">
                                 <RefreshCw className="h-4 w-4" />
@@ -3464,9 +3584,21 @@ function CreateBusinessAccountPanel({
                         </div>
                     )}
                 </Panel>
+                {!releasedClaim && (
+                    <div className="sticky bottom-4 z-30 flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3 shadow-lg shadow-blue-950/5 dark:border-blue-900 dark:bg-blue-950">
+                        <div>
+                            <div className="text-sm font-semibold text-blue-800 dark:text-blue-200">下一步：监听取件与完成账号</div>
+                            <div className="mt-0.5 text-xs text-blue-600 dark:text-blue-300">进入监听配置；取到邮件后可以直接保存账号或释放邮箱。</div>
+                        </div>
+                        <ActionButton icon={<ChevronRight className="h-4 w-4" />} onClick={() => setActiveCreateStep(3)}>下一步：监听取件</ActionButton>
+                    </div>
+                )}
+                </div>
             )}
 
-            {claim && !completedAccount && !releasedClaim && (
+            {activeCreateStep === 3 && !claim && <CreateStepPrerequisite step={2} label="请先申请注册邮箱，再配置监听取件" onGo={() => setActiveCreateStep(2)} />}
+
+            {activeCreateStep === 3 && claim && !completedAccount && !releasedClaim && (
                 <Panel title="监听取件" description="申请邮箱后再配置取件参数；可以选择已配置业务场景，也可以临时自定义取件。">
                     <div className="space-y-4">
                         <div className="grid max-w-md grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm dark:bg-gray-800">
@@ -3530,17 +3662,17 @@ function CreateBusinessAccountPanel({
                             </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                            <ActionButton icon={<Mail className="h-4 w-4" />} loading={busyAction === 'pickup'} onClick={handlePickup} disabled={draft.pickupMode === 'scenario' && !enabledScenarios.some(scenario => scenario.key === draft.scenarioKey)}>打开监听窗口并开始取件</ActionButton>
+                            <ActionButton icon={<Mail className="h-4 w-4" />} loading={busyAction === 'pickup'} onClick={handlePickup} disabled={draft.pickupMode === 'scenario' && !enabledScenarios.some(scenario => scenario.key === draft.scenarioKey)}>在小控制台中开始取件</ActionButton>
                             {(pickupMonitor.status === 'listening' || pickupMonitor.status === 'empty') && (
                                 <button onClick={() => stopPickupMonitor('cancelled')} className="inline-flex h-10 items-center gap-2 rounded-lg border border-rose-200 px-3 text-sm text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30">
                                     <X className="h-4 w-4" />
                                     停止监听
                                 </button>
                             )}
-                            {pickupMonitor.open && pickupMonitor.hidden && (
-                                <button onClick={() => setPickupMonitor(prev => ({ ...prev, hidden: false }))} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700">
-                                    <Eye className="h-4 w-4" />
-                                    重新打开监听窗口
+                            {pickupMonitor.open && (
+                                <button onClick={() => { setConsoleCollapsed(false); setConsoleTab('pickup') }} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700">
+                                    <PanelRightOpen className="h-4 w-4" />
+                                    打开取件控制台
                                 </button>
                             )}
                             <button onClick={onTraceFocus} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700">
@@ -3561,7 +3693,17 @@ function CreateBusinessAccountPanel({
                 </Panel>
             )}
 
-            {claim && !releasedClaim && (pickupResult || completedAccount) && (
+            {activeCreateStep === 3 && claim && releasedClaim && (
+                <Panel title="本次创建流程已释放" description="邮箱 claim 已终止，账号资料、请求响应和释放结果仍保留在当前页面上下文中。">
+                    <div className="flex flex-wrap items-center gap-3">
+                        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-200">{claim.recipient.emailAddress}</div>
+                        <button onClick={resetFlow} className="inline-flex h-10 items-center gap-2 rounded-lg border border-gray-200 px-3 text-sm dark:border-gray-700"><RefreshCw className="h-4 w-4" />重新开始</button>
+                    </div>
+                </Panel>
+            )}
+
+            {activeCreateStep === 3 && claim && !releasedClaim && (pickupResult || completedAccount) && (
+                <div className="space-y-4">
                 <Panel title="完成注册或释放邮箱" description="外部站点注册成功后回填账号；失败或不用时释放 claim，并可同时冷却/拉黑邮箱。">
                     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
                         <div className="space-y-4">
@@ -3592,7 +3734,6 @@ function CreateBusinessAccountPanel({
                             </Field>
                         </div>
                         <div className="space-y-3">
-                            <ActionButton icon={<CheckCircle2 className="h-4 w-4" />} loading={busyAction === 'complete'} onClick={handleComplete}>完成注册并保存</ActionButton>
                             <details className="rounded-lg border border-gray-200 p-3 dark:border-gray-800">
                                 <summary className="cursor-pointer text-sm font-semibold">释放/拉黑设置</summary>
                                 <div className="mt-3 space-y-3">
@@ -3624,7 +3765,6 @@ function CreateBusinessAccountPanel({
                                         <input type="checkbox" checked={draft.releaseDeletePending} onChange={event => setDraft(prev => ({ ...prev, releaseDeletePending: event.target.checked }))} />
                                         删除 pending 业务账户
                                     </label>
-                                    <ActionButton icon={<Ban className="h-4 w-4" />} loading={busyAction === 'release'} onClick={handleRelease} variant="danger">释放/拉黑邮箱</ActionButton>
                                 </div>
                             </details>
                             {completedAccount && (
@@ -3635,18 +3775,23 @@ function CreateBusinessAccountPanel({
                         </div>
                     </div>
                 </Panel>
+                </div>
             )}
 
-            <PickupMonitorWindow
-                monitor={pickupMonitor}
-                setMonitor={setPickupMonitor}
-                onStop={() => stopPickupMonitor('cancelled')}
-                onTraceFocus={onTraceFocus}
-            />
+            {activeCreateStep === 3 && claim && !releasedClaim && !completedAccount && (
+                <div className="sticky bottom-4 z-30 flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white p-3 shadow-lg shadow-gray-950/10 dark:border-gray-700 dark:bg-gray-900">
+                    <ActionButton icon={<Ban className="h-4 w-4" />} loading={busyAction === 'release'} onClick={handleRelease} variant="danger">释放/拉黑邮箱</ActionButton>
+                    <ActionButton icon={<CheckCircle2 className="h-4 w-4" />} loading={busyAction === 'complete'} disabled={!pickupResult} onClick={handleComplete}>完成注册并保存</ActionButton>
+                </div>
+            )}
+
+                </div>
+            </div>
 
             <BusinessAccountConsole
                 module={module}
                 draft={draft}
+                mockIdentity={mockIdentity}
                 claim={claim}
                 pickupResult={pickupResult}
                 completedAccount={completedAccount}
@@ -3657,100 +3802,164 @@ function CreateBusinessAccountPanel({
                 setCollapsed={setConsoleCollapsed}
                 activeTab={consoleTab}
                 setActiveTab={setConsoleTab}
+                monitor={pickupMonitor}
+                setMonitor={setPickupMonitor}
+                onStopPickup={() => stopPickupMonitor('cancelled')}
             />
         </div>
     )
 }
 
-function PickupMonitorWindow({
-    monitor,
-    setMonitor,
-    onStop,
-    onTraceFocus
-}: {
-    monitor: PickupMonitorState
-    setMonitor: Dispatch<SetStateAction<PickupMonitorState>>
-    onStop: () => void
-    onTraceFocus: () => void
-}) {
-    if (!monitor.open || monitor.hidden) return null
+function CreateStepPrerequisite({ step, label, onGo }: { step: CreateAccountStep; label: string; onGo: () => void }) {
+    return (
+        <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-6 py-12 text-center dark:border-gray-700 dark:bg-gray-900/50">
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-white text-gray-500 shadow-sm dark:bg-gray-800"><ChevronLeft className="h-5 w-5" /></div>
+            <div className="mt-3 text-sm font-semibold text-gray-800 dark:text-gray-100">{label}</div>
+            <button onClick={onGo} className="mt-4 inline-flex h-9 items-center gap-2 rounded-lg bg-gray-900 px-3 text-sm font-medium text-white dark:bg-white dark:text-gray-900">
+                返回第 {step} 步
+            </button>
+        </div>
+    )
+}
+
+function EmailClaimPolicyEditor({ module, draft, setDraft }: { module: BusinessModule; draft: CreateAccountDraft; setDraft: Dispatch<SetStateAction<CreateAccountDraft>> }) {
+    return (
+        <Panel title="邮箱申请策略" description="先确认本次邮箱策略，再发起申请；默认值来自当前业务模块。">
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="space-y-4">
+                    <label className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 px-3 py-2.5 text-sm dark:border-gray-800">
+                        <span>
+                            <span className="block font-medium">自定义临时申请策略</span>
+                            <span className="mt-0.5 block text-xs text-gray-500">仅影响本次邮箱申请，不修改模块默认配置。</span>
+                        </span>
+                        <Switch checked={draft.useCustomClaimPolicy} onCheckedChange={checked => setDraft(prev => ({ ...prev, useCustomClaimPolicy: checked }))} />
+                    </label>
+                    {draft.useCustomClaimPolicy ? (
+                        <div className="grid gap-4 md:grid-cols-2">
+                            <Field label="邮箱模式">
+                                <select value={draft.emailMode} onChange={event => setDraft(prev => ({ ...prev, emailMode: event.target.value as BusinessEmailMode }))} className={inputClass}>
+                                    {emailModes.map(mode => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+                                </select>
+                            </Field>
+                            <Field label="Claim TTL 秒">
+                                <input value={draft.ttlSeconds} onChange={event => setDraft(prev => ({ ...prev, ttlSeconds: event.target.value }))} className={inputClass} />
+                            </Field>
+                            <Field label="允许后缀">
+                                <textarea value={draft.emailSuffixes} onChange={event => setDraft(prev => ({ ...prev, emailSuffixes: event.target.value }))} className={cn(textareaClass, 'min-h-[88px]')} />
+                            </Field>
+                            <Field label="禁止后缀">
+                                <textarea value={draft.blockedEmailSuffixes} onChange={event => setDraft(prev => ({ ...prev, blockedEmailSuffixes: event.target.value }))} className={cn(textareaClass, 'min-h-[88px]')} />
+                            </Field>
+                        </div>
+                    ) : (
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-600 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300">
+                            本次将直接使用模块默认申请策略。
+                        </div>
+                    )}
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-950">
+                    <div className="text-sm font-semibold">本次生效策略</div>
+                    <div className="mt-3 space-y-3">
+                        <InfoLine label="策略来源" value={draft.useCustomClaimPolicy ? '本次临时覆盖' : '业务模块默认'} />
+                        <InfoLine label="邮箱模式" value={draft.useCustomClaimPolicy ? emailModes.find(mode => mode.value === draft.emailMode)?.label || draft.emailMode : '按模块配置'} />
+                        <InfoLine label="Claim TTL" value={`${draft.useCustomClaimPolicy ? draft.ttlSeconds : getGuideClaimTtl(module)} 秒`} />
+                        <InfoLine label="允许后缀" value={draft.useCustomClaimPolicy ? normalizeSuffixList(draft.emailSuffixes).join('、') || '不限后缀' : getModuleAllowedSuffixes(module).join('、') || '不限后缀'} />
+                    </div>
+                </div>
+            </div>
+        </Panel>
+    )
+}
+
+function MockIdentityGenerator({ identity, onGenerate, onClear }: { identity: MockUsIdentity | null; onGenerate: () => void; onClear: () => void }) {
+    return (
+        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900/70 dark:bg-amber-950/20">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold text-amber-900 dark:text-amber-100"><Sparkles className="h-4 w-4" />Mock 美国身份</div>
+                    <div className="mt-1 text-xs text-amber-700/80 dark:text-amber-200/70">生成后写入显示名称、手机号与扩展信息 JSON。</div>
+                </div>
+                <div className="flex items-center gap-2">
+                    {identity && <button onClick={onClear} className="h-8 rounded-lg border border-amber-300 px-3 text-xs text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950/50">清除</button>}
+                    <button onClick={onGenerate} className="inline-flex h-8 items-center gap-2 rounded-lg bg-amber-600 px-3 text-xs font-medium text-white hover:bg-amber-700"><RefreshCw className="h-3.5 w-3.5" />{identity ? '重新生成' : '生成身份资料'}</button>
+                </div>
+            </div>
+            {identity && (
+                <div className="mt-3 border-t border-amber-200 pt-3 dark:border-amber-900/60"><MockIdentityDetails identity={identity} /></div>
+            )}
+        </div>
+    )
+}
+
+function MockIdentityDetails({ identity, compact = false }: { identity: MockUsIdentity; compact?: boolean }) {
+    const items = [
+        { label: '姓名', value: identity.fullName },
+        { label: '出生日期', value: identity.birthDate },
+        { label: '性别', value: identity.gender },
+        { label: '公司', value: identity.company },
+        { label: '公司网址', value: identity.companyWebsite },
+        { label: '电话', value: identity.phone },
+        { label: '地址', value: identity.addressLine1 },
+        { label: '城市 / 州 / 邮编', value: `${identity.city}, ${identity.state} ${identity.postalCode}` }
+    ]
+    return (
+        <div className={cn('grid gap-2', compact ? 'sm:grid-cols-2' : 'sm:grid-cols-2 xl:grid-cols-3')}>
+            {items.map(item => (
+                <button key={item.label} type="button" onClick={() => void copyToClipboard(item.value)} className="group min-w-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-left outline-none transition hover:border-blue-300 hover:bg-blue-50/60 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-200 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-blue-800 dark:hover:bg-blue-950/20 dark:focus-visible:ring-blue-900" title={`点击复制${item.label}`}>
+                    <span className="flex items-center justify-between gap-2 text-[11px] text-gray-500"><span>{item.label}</span><Copy className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" /></span>
+                    <span className="mt-1 block break-words text-xs font-medium text-gray-800 dark:text-gray-100">{item.value}</span>
+                </button>
+            ))}
+        </div>
+    )
+}
+
+function PickupConsolePanel({ monitor, setMonitor, onStop }: { monitor: PickupMonitorState; setMonitor: Dispatch<SetStateAction<PickupMonitorState>>; onStop: () => void }) {
+    if (!monitor.open) {
+        return (
+            <div className="flex min-h-[320px] flex-col items-center justify-center px-6 text-center text-sm text-gray-500">
+                <Radio className="mb-3 h-8 w-8 text-gray-300" />
+                <div className="font-medium text-gray-700 dark:text-gray-200">尚未开始监听</div>
+                <div className="mt-1 text-xs">在第 3 步配置参数并开始取件，运行状态会留在这里。</div>
+            </div>
+        )
+    }
     const selectedEmail = monitor.emails.find(email => email.ID === monitor.selectedEmailId) || monitor.emails[0]
     const isListening = monitor.status === 'listening' || monitor.status === 'empty'
-    const statusText =
-        monitor.status === 'found'
-            ? `已取到 ${monitor.emails.length} 封邮件`
-            : monitor.status === 'empty'
-              ? '暂未取到邮件，继续监听中'
-              : monitor.status === 'error'
-                ? '监听出错'
-                : monitor.status === 'cancelled'
-                  ? '已停止'
-                  : '监听中'
+    const statusText = monitor.status === 'found' ? `已取到 ${monitor.emails.length} 封邮件` : monitor.status === 'empty' ? '暂未取到邮件，继续监听中' : monitor.status === 'error' ? '监听出错' : monitor.status === 'cancelled' ? '已停止' : '监听中'
     return (
-        <div
-            className="fixed bottom-5 left-5 z-40 flex resize flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-gray-800 dark:bg-gray-900"
-            style={{ width: 'min(860px, calc(100vw - 3rem))', height: 'min(620px, calc(100vh - 3rem))', minWidth: 420, minHeight: 300, maxWidth: 'calc(100vw - 3rem)', maxHeight: 'calc(100vh - 3rem)' }}
-        >
-            <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-3 py-2 dark:border-gray-800">
+        <div className="flex min-h-[380px] flex-col">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-3 py-2 dark:border-gray-800">
                 <div className="flex min-w-0 items-center gap-2">
                     <div className={cn('h-2.5 w-2.5 rounded-full', isListening ? 'animate-pulse bg-emerald-500' : monitor.status === 'found' ? 'bg-blue-500' : monitor.status === 'error' ? 'bg-rose-500' : 'bg-gray-400')} />
                     <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold">取件监听窗口</div>
-                        <div className="truncate text-xs text-gray-500">{statusText} · 检查 {monitor.checks} 次 · {monitor.elapsedSeconds} 秒</div>
+                        <div className="text-sm font-semibold">{statusText}</div>
+                        <div className="text-xs text-gray-500">检查 {monitor.checks} 次 · {monitor.elapsedSeconds} 秒</div>
                     </div>
                 </div>
-                <div className="flex items-center gap-1">
-                    <button onClick={onTraceFocus} className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="查看请求响应">
-                        <Terminal className="h-4 w-4" />
-                    </button>
-                    <button onClick={() => setMonitor(prev => ({ ...prev, hidden: true }))} className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" title="临时隐藏">
-                        <PanelRightClose className="h-4 w-4" />
-                    </button>
-                    <button onClick={onStop} className="rounded-md p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30" title="停止监听">
-                        <X className="h-4 w-4" />
-                    </button>
-                </div>
+                {isListening && <button onClick={onStop} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-rose-200 px-2.5 text-xs text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30"><X className="h-3.5 w-3.5" />停止监听</button>}
             </div>
-            <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(0,1fr)]">
-                <div className="min-h-0 overflow-auto border-r border-gray-100 dark:border-gray-800">
-                    {monitor.emails.length ? (
-                        monitor.emails.map(email => (
-                            <button
-                                key={email.ID}
-                                onClick={() => setMonitor(prev => ({ ...prev, selectedEmailId: email.ID }))}
-                                className={cn('block w-full border-b border-gray-100 px-3 py-2 text-left text-sm dark:border-gray-800', selectedEmail?.ID === email.ID ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-200' : 'hover:bg-gray-50 dark:hover:bg-gray-800')}
-                            >
-                                <div className="truncate font-medium">{email.Subject || '无主题'}</div>
-                                <div className="mt-1 truncate text-xs opacity-70">{Array.isArray(email.From) ? email.From.join(', ') : email.From}</div>
-                                <div className="mt-1 text-xs opacity-60">{formatDetailDate(email.Date || email.CreatedAt)}</div>
-                            </button>
-                        ))
-                    ) : (
-                        <div className="p-4 text-sm text-gray-500">
-                            {monitor.status === 'error' ? monitor.error || '监听失败' : '还没有取到邮件。窗口可以隐藏，监听会继续执行。'}
-                        </div>
-                    )}
+            <div className="grid min-h-0 flex-1 md:grid-cols-[220px_minmax(0,1fr)]">
+                <div className="max-h-[430px] min-h-[140px] overflow-auto border-b border-gray-100 md:border-b-0 md:border-r dark:border-gray-800">
+                    {monitor.emails.length ? monitor.emails.map(email => (
+                        <button key={email.ID} onClick={() => setMonitor(prev => ({ ...prev, selectedEmailId: email.ID }))} className={cn('block w-full border-b border-gray-100 px-3 py-2 text-left text-sm dark:border-gray-800', selectedEmail?.ID === email.ID ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-200' : 'hover:bg-gray-50 dark:hover:bg-gray-800')}>
+                            <div className="truncate font-medium">{email.Subject || '无主题'}</div>
+                            <div className="mt-1 truncate text-xs opacity-70">{Array.isArray(email.From) ? email.From.join(', ') : email.From}</div>
+                            <div className="mt-1 text-xs opacity-60">{formatDetailDate(email.Date || email.CreatedAt)}</div>
+                        </button>
+                    )) : <div className="p-4 text-sm text-gray-500">{monitor.status === 'error' ? monitor.error || '监听失败' : '还没有取到邮件，监听会在后台继续。'}</div>}
                 </div>
-                <div className="min-h-0 overflow-auto p-4">
+                <div className="max-h-[430px] min-h-0 overflow-auto p-4">
                     {selectedEmail ? (
                         <div className="space-y-4">
                             <div>
-                                <div className="text-lg font-semibold">{selectedEmail.Subject || '无主题'}</div>
-                                <div className="mt-1 text-xs text-gray-500">
-                                    From: {Array.isArray(selectedEmail.From) ? selectedEmail.From.join(', ') : selectedEmail.From || '-'} · To: {Array.isArray(selectedEmail.To) ? selectedEmail.To.join(', ') : selectedEmail.To || '-'}
-                                </div>
+                                <div className="text-base font-semibold">{selectedEmail.Subject || '无主题'}</div>
+                                <div className="mt-1 text-xs text-gray-500">From: {Array.isArray(selectedEmail.From) ? selectedEmail.From.join(', ') : selectedEmail.From || '-'} · To: {Array.isArray(selectedEmail.To) ? selectedEmail.To.join(', ') : selectedEmail.To || '-'}</div>
                             </div>
-                            <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{selectedEmail.Body || selectedEmail.HTMLBody || selectedEmail.RawMessage || '无正文'}</pre>
-                            <details className="rounded-lg border border-gray-200 p-3 dark:border-gray-800">
-                                <summary className="cursor-pointer text-sm font-semibold">完整邮件 JSON</summary>
-                                <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{toPrettyJson(selectedEmail)}</pre>
-                            </details>
+                            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{selectedEmail.Body || selectedEmail.HTMLBody || selectedEmail.RawMessage || '无正文'}</pre>
+                            <details className="rounded-lg border border-gray-200 p-3 dark:border-gray-800"><summary className="cursor-pointer text-sm font-semibold">完整邮件 JSON</summary><pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-gray-950 p-3 text-xs text-gray-100">{toPrettyJson(selectedEmail)}</pre></details>
                         </div>
-                    ) : (
-                        <div className="flex h-full items-center justify-center text-sm text-gray-500">
-                            {isListening ? '正在监听邮件，取到后会显示完整内容。' : '暂无邮件内容'}
-                        </div>
-                    )}
+                    ) : <div className="flex h-full min-h-[180px] items-center justify-center text-sm text-gray-500">{isListening ? '正在监听邮件，取到后会显示完整内容。' : '暂无邮件内容'}</div>}
                 </div>
             </div>
         </div>
@@ -3817,6 +4026,7 @@ function ActionButton({ children, icon, loading, disabled, onClick, variant = 'p
 function BusinessAccountConsole({
     module,
     draft,
+    mockIdentity,
     claim,
     pickupResult,
     completedAccount,
@@ -3826,10 +4036,14 @@ function BusinessAccountConsole({
     collapsed,
     setCollapsed,
     activeTab,
-    setActiveTab
+    setActiveTab,
+    monitor,
+    setMonitor,
+    onStopPickup
 }: {
     module: BusinessModule
     draft: CreateAccountDraft
+    mockIdentity: MockUsIdentity | null
     claim: BusinessEmailClaimResponse | null
     pickupResult: unknown
     completedAccount: BusinessAccount | null
@@ -3838,43 +4052,113 @@ function BusinessAccountConsole({
     codeSamples: Array<{ label: string; code: string }>
     collapsed: boolean
     setCollapsed: (collapsed: boolean) => void
-    activeTab: 'account' | 'flow' | 'trace' | 'code'
-    setActiveTab: (tab: 'account' | 'flow' | 'trace' | 'code') => void
+    activeTab: BusinessConsoleTab
+    setActiveTab: (tab: BusinessConsoleTab) => void
+    monitor: PickupMonitorState
+    setMonitor: Dispatch<SetStateAction<PickupMonitorState>>
+    onStopPickup: () => void
 }) {
+    const panelRef = useRef<HTMLDivElement>(null)
+    const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 })
+    const consoleItems: Array<{ id: BusinessConsoleTab; label: string; description: string; icon: any }> = [
+        { id: 'account', label: '账户信息', description: '凭据与 Claim', icon: KeyRound },
+        { id: 'pickup', label: '监听取件', description: '状态与邮件', icon: Radio },
+        { id: 'flow', label: '操作流程', description: '执行进度', icon: Play },
+        { id: 'trace', label: '请求响应', description: '本次 Trace', icon: Terminal },
+        { id: 'code', label: '接入示例', description: '可复制代码', icon: Code2 }
+    ]
+
+    useEffect(() => {
+        const keepPanelInViewport = () => {
+            const rect = panelRef.current?.getBoundingClientRect()
+            if (!rect) return
+            const deltaX = rect.left < 8 ? 8 - rect.left : rect.right > window.innerWidth - 8 ? window.innerWidth - 8 - rect.right : 0
+            const deltaY = rect.top < 8 ? 8 - rect.top : rect.bottom > window.innerHeight - 8 ? window.innerHeight - 8 - rect.bottom : 0
+            if (deltaX || deltaY) setDragOffset(prev => ({ x: prev.x + deltaX, y: prev.y + deltaY }))
+        }
+        const frame = window.requestAnimationFrame(keepPanelInViewport)
+        window.addEventListener('resize', keepPanelInViewport)
+        return () => {
+            window.cancelAnimationFrame(frame)
+            window.removeEventListener('resize', keepPanelInViewport)
+        }
+    }, [collapsed])
+
+    const handleDragStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+        if (event.button !== 0 || !panelRef.current) return
+        event.preventDefault()
+        const rect = panelRef.current.getBoundingClientRect()
+        const origin = { pointerX: event.clientX, pointerY: event.clientY, offsetX: dragOffset.x, offsetY: dragOffset.y }
+        const previousUserSelect = document.body.style.userSelect
+        document.body.style.userSelect = 'none'
+        const handleMove = (moveEvent: PointerEvent) => {
+            const rawDeltaX = moveEvent.clientX - origin.pointerX
+            const rawDeltaY = moveEvent.clientY - origin.pointerY
+            const deltaX = Math.min(window.innerWidth - 8 - rect.right, Math.max(8 - rect.left, rawDeltaX))
+            const deltaY = Math.min(window.innerHeight - 8 - rect.bottom, Math.max(8 - rect.top, rawDeltaY))
+            setDragOffset({ x: origin.offsetX + deltaX, y: origin.offsetY + deltaY })
+        }
+        const handleUp = () => {
+            document.body.style.userSelect = previousUserSelect
+            window.removeEventListener('pointermove', handleMove)
+            window.removeEventListener('pointerup', handleUp)
+        }
+        window.addEventListener('pointermove', handleMove)
+        window.addEventListener('pointerup', handleUp, { once: true })
+    }
+
     return (
         <div
-            className={cn('fixed bottom-5 right-5 z-40 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-2xl dark:border-gray-800 dark:bg-gray-900', collapsed ? 'w-[260px]' : 'resize')}
-            style={collapsed ? undefined : { width: 'min(760px, calc(100vw - 3rem))', height: 560, minWidth: 380, minHeight: 280, maxWidth: 'calc(100vw - 3rem)', maxHeight: 'calc(100vh - 3rem)' }}
+            ref={panelRef}
+            className={cn('fixed z-40 overflow-hidden rounded-xl bg-gray-300 p-px shadow-2xl dark:bg-gray-700', !collapsed && 'resize')}
+            style={{
+                top: '50%',
+                left: '50%',
+                transform: `translate3d(calc(-50% + ${dragOffset.x}px), calc(-50% + ${dragOffset.y}px), 0)`,
+                width: collapsed ? 276 : 'min(760px, calc(100vw - 1rem))',
+                height: collapsed ? undefined : 'min(560px, calc(100vh - 1.5rem))',
+                minWidth: collapsed ? undefined : 'min(360px, calc(100vw - 1rem))',
+                minHeight: collapsed ? undefined : 300,
+                maxWidth: 'calc(100vw - 1rem)',
+                maxHeight: 'calc(100vh - 1rem)'
+            }}
         >
-            <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 dark:border-gray-800">
-                <div className="flex min-w-0 items-center gap-2">
-                    <Terminal className="h-4 w-4 text-blue-600" />
-                    <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold">业务账户小控制台</div>
-                        <div className="truncate text-xs text-gray-500">{module.name} · {releasedClaim ? '已释放' : claim?.recipient.emailAddress || '等待申请邮箱'}</div>
+            <div aria-hidden className="pointer-events-none absolute -inset-[170%] animate-[spin_4s_linear_infinite] bg-[conic-gradient(from_90deg,transparent_0deg,transparent_250deg,#2563eb_282deg,#22d3ee_312deg,transparent_345deg)] motion-reduce:animate-none" />
+            <div className="relative flex h-full w-full flex-col overflow-hidden rounded-[11px] bg-white dark:bg-gray-900">
+                <div onPointerDown={handleDragStart} className="flex cursor-grab touch-none items-center justify-between border-b border-gray-100 px-3 py-2 active:cursor-grabbing dark:border-gray-800" title="拖拽移动控制台">
+                    <div className="flex min-w-0 items-center gap-2">
+                        <GripVertical className="h-4 w-4 shrink-0 text-gray-400" />
+                        <div className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950/40 dark:text-blue-200">
+                            <Terminal className="h-4 w-4" />
+                            {monitor.status === 'listening' || monitor.status === 'empty' ? <span className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500 ring-2 ring-white dark:ring-gray-900" /> : null}
+                        </div>
+                        <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold">业务账户小控制台</div>
+                            <div className="truncate text-xs text-gray-500">{module.name} · {releasedClaim ? '已释放' : claim?.recipient.emailAddress || '等待申请邮箱'}</div>
+                        </div>
                     </div>
+                    <button onPointerDown={event => event.stopPropagation()} onClick={() => setCollapsed(!collapsed)} className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800" aria-label={collapsed ? '展开业务账户小控制台' : '收起业务账户小控制台'}>
+                        {collapsed ? <PanelRightOpen className="h-4 w-4" /> : <PanelRightClose className="h-4 w-4" />}
+                    </button>
                 </div>
-                <button onClick={() => setCollapsed(!collapsed)} className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800">
-                    {collapsed ? <PanelRightOpen className="h-4 w-4" /> : <PanelRightClose className="h-4 w-4" />}
-                </button>
-            </div>
-            {!collapsed && (
-                <>
-                    <div className="grid grid-cols-4 gap-1 border-b border-gray-100 p-2 text-xs dark:border-gray-800">
-                        {[
-                            ['account', '账户信息', KeyRound],
-                            ['flow', '操作流程', Play],
-                            ['trace', '请求响应', Terminal],
-                            ['code', '接入示例', Code2]
-                        ].map(([id, label, Icon]) => (
-                            <button key={String(id)} onClick={() => setActiveTab(id as any)} className={cn('inline-flex items-center justify-center gap-1 rounded-md px-2 py-1.5', activeTab === id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-200' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800')}>
-                                <Icon className="h-3.5 w-3.5" />
-                                {label as string}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="h-[calc(100%-92px)] overflow-auto p-3">
+                {!collapsed && (
+                    <div className="flex min-h-0 flex-1">
+                        <nav aria-label="小控制台菜单" className="w-[138px] shrink-0 border-r border-gray-100 p-2 dark:border-gray-800 sm:w-[158px]">
+                            <div className="space-y-1">
+                                {consoleItems.map(item => {
+                                    const Icon = item.icon
+                                    return (
+                                        <button key={item.id} onClick={() => setActiveTab(item.id)} className={cn('flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left transition', activeTab === item.id ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-200' : 'text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800')}>
+                                            <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                            <span className="min-w-0"><span className="block text-xs font-semibold">{item.label}</span><span className="mt-0.5 hidden text-[10px] opacity-65 sm:block">{item.description}</span></span>
+                                        </button>
+                                    )
+                                })}
+                            </div>
+                        </nav>
+                        <div className={cn('min-w-0 flex-1 overflow-auto', activeTab === 'pickup' ? 'p-0' : 'p-3')}>
                         {activeTab === 'account' && (
+                            <div className="space-y-4">
                             <div className="grid gap-3 md:grid-cols-2">
                                 <InfoLine label="业务模块" value={module.name} />
                                 <InfoLine label="业务账户 ID" value={claim?.businessAccountId || completedAccount?.id || '-'} />
@@ -3884,7 +4168,15 @@ function BusinessAccountConsole({
                                 <InfoLine label="密码" value={draft.password || '-'} />
                                 <InfoLine label="Claim Token" value={claim?.claimToken || '-'} className="md:col-span-2" />
                             </div>
+                            {mockIdentity && (
+                                <div className="border-t border-gray-100 pt-3 dark:border-gray-800">
+                                    <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-gray-700 dark:text-gray-200"><Sparkles className="h-3.5 w-3.5 text-amber-500" />Mock 身份资料 <span className="font-normal text-gray-400">点击任意项复制</span></div>
+                                    <MockIdentityDetails identity={mockIdentity} compact />
+                                </div>
+                            )}
+                            </div>
                         )}
+                        {activeTab === 'pickup' && <PickupConsolePanel monitor={monitor} setMonitor={setMonitor} onStop={onStopPickup} />}
                         {activeTab === 'flow' && (
                             <div className="space-y-2">
                                 <FlowLine done={Boolean(claim)} label="申请邮箱" detail={claim?.recipient.emailAddress || '未执行'} />
@@ -3895,9 +4187,10 @@ function BusinessAccountConsole({
                         )}
                         {activeTab === 'trace' && <TraceList traces={traces} compact />}
                         {activeTab === 'code' && <CodeSamples samples={codeSamples} />}
+                        </div>
                     </div>
-                </>
-            )}
+                )}
+            </div>
         </div>
     )
 }
