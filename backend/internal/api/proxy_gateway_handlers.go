@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/services"
@@ -115,6 +117,17 @@ type proxyGatewayRouteStrategyRequest struct {
 	SecurityPolicyID    *uint                                 `json:"securityPolicyId"`
 	DNSPolicyID         *uint                                 `json:"dnsPolicyId"`
 	Metadata            models.JSONMapInterface               `json:"metadata"`
+}
+
+type proxyGatewayTargetRouteRequest struct {
+	GatewayID       uint     `json:"gatewayId"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description"`
+	Enabled         bool     `json:"enabled"`
+	IsDefault       bool     `json:"isDefault"`
+	SortOrder       int      `json:"sortOrder"`
+	Matchers        []string `json:"matchers"`
+	RouteStrategyID uint     `json:"routeStrategyId"`
 }
 
 type proxyGatewayMetaRequest struct {
@@ -541,6 +554,10 @@ func (h *ProxyGatewayHandlers) CreateRouteStrategy(w http.ResponseWriter, r *htt
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if err := h.service.RefreshTargetRoutesByStrategy(orgID, item.ID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	h.audit(r, "create", "route_strategy", &item.ID, item.Name)
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, item)
@@ -563,6 +580,10 @@ func (h *ProxyGatewayHandlers) UpdateRouteStrategy(w http.ResponseWriter, r *htt
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if req.GatewayID != 0 && req.GatewayID != item.GatewayID {
+		http.Error(w, "route strategy cannot be moved to another gateway", http.StatusBadRequest)
+		return
+	}
 	if req.GatewayID == 0 {
 		req.GatewayID = item.GatewayID
 	}
@@ -571,7 +592,22 @@ func (h *ProxyGatewayHandlers) UpdateRouteStrategy(w http.ResponseWriter, r *htt
 		http.Error(w, "name and positive flagNo are required", http.StatusBadRequest)
 		return
 	}
+	if !item.Enabled {
+		count, err := h.repo.CountEnabledTargetRoutesByStrategy(orgID, item.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if count > 0 {
+			http.Error(w, "route strategy is used by an enabled target route", http.StatusConflict)
+			return
+		}
+	}
 	if err := h.repo.SaveRouteStrategy(item); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.service.RefreshTargetRoutesByStrategy(orgID, item.ID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -591,6 +627,183 @@ func (h *ProxyGatewayHandlers) DeleteRouteStrategy(w http.ResponseWriter, r *htt
 		return
 	}
 	h.audit(r, "delete", "route_strategy", &id, "")
+	writeJSON(w, map[string]bool{"success": true})
+}
+
+func (h *ProxyGatewayHandlers) ListTargetRoutes(w http.ResponseWriter, r *http.Request) {
+	gatewayID := gatewayIDFromRequest(r)
+	items, err := h.repo.ListTargetRoutes(GetCurrentOrgID(r), gatewayID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, items)
+}
+
+func applyTargetRouteRequest(item *models.ProxyGatewayTargetRoute, req proxyGatewayTargetRouteRequest) error {
+	if req.GatewayID != 0 {
+		item.GatewayID = req.GatewayID
+	}
+	item.Name = strings.TrimSpace(req.Name)
+	item.Description = strings.TrimSpace(req.Description)
+	item.Enabled = req.Enabled
+	item.IsDefault = req.IsDefault
+	item.SortOrder = req.SortOrder
+	item.RouteStrategyID = req.RouteStrategyID
+	if item.Name == "" || item.GatewayID == 0 || item.RouteStrategyID == 0 {
+		return errors.New("name, gatewayId and routeStrategyId are required")
+	}
+	if item.SortOrder < 0 {
+		return errors.New("sortOrder must not be negative")
+	}
+	if item.IsDefault {
+		item.Matchers = models.StringSlice{}
+		return nil
+	}
+	seen := map[string]struct{}{}
+	normalized := make(models.StringSlice, 0, len(req.Matchers))
+	for _, raw := range req.Matchers {
+		matcher, err := models.NormalizeProxyGatewayTargetMatcher(raw)
+		if err != nil {
+			return fmt.Errorf("invalid target matcher %q: %w", raw, err)
+		}
+		if _, ok := seen[matcher]; ok {
+			continue
+		}
+		seen[matcher] = struct{}{}
+		normalized = append(normalized, matcher)
+	}
+	if len(normalized) == 0 {
+		return errors.New("a non-default target route requires at least one domain, IP, or CIDR matcher")
+	}
+	item.Matchers = normalized
+	return nil
+}
+
+func (h *ProxyGatewayHandlers) validateTargetRouteReferences(orgID uint, item *models.ProxyGatewayTargetRoute) error {
+	if _, err := h.repo.GetListener(orgID, item.GatewayID); err != nil {
+		return fmt.Errorf("gateway %d is unavailable", item.GatewayID)
+	}
+	strategy, err := h.repo.GetRouteStrategy(orgID, item.RouteStrategyID)
+	if err != nil {
+		return fmt.Errorf("route strategy %d is unavailable", item.RouteStrategyID)
+	}
+	if strategy.GatewayID != 0 && strategy.GatewayID != item.GatewayID {
+		return errors.New("route strategy belongs to another gateway")
+	}
+	if item.Enabled && !strategy.Enabled {
+		return errors.New("an enabled target route requires an enabled route strategy")
+	}
+	return nil
+}
+
+func (h *ProxyGatewayHandlers) CreateTargetRoute(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+	var req proxyGatewayTargetRouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.GatewayID == 0 {
+		req.GatewayID = gatewayIDFromRequestValue(r)
+	}
+	item := models.ProxyGatewayTargetRoute{OrgID: orgID, GatewayID: req.GatewayID}
+	if err := applyTargetRouteRequest(&item, req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.validateTargetRouteReferences(orgID, &item); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.repo.SaveTargetRoute(&item); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.service.RefreshTargetRoutes(orgID, item.GatewayID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.audit(r, "create", "target_route", &item.ID, item.Name)
+	created, err := h.repo.GetTargetRoute(orgID, item.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, created)
+}
+
+func (h *ProxyGatewayHandlers) UpdateTargetRoute(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+	id, err := parseMuxUint(r, "id")
+	if err != nil {
+		http.Error(w, "Invalid target route ID", http.StatusBadRequest)
+		return
+	}
+	item, err := h.repo.GetTargetRoute(orgID, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	var req proxyGatewayTargetRouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.GatewayID != 0 && req.GatewayID != item.GatewayID {
+		http.Error(w, "target route cannot be moved to another gateway", http.StatusBadRequest)
+		return
+	}
+	if req.GatewayID == 0 {
+		req.GatewayID = item.GatewayID
+	}
+	if err := applyTargetRouteRequest(item, req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.validateTargetRouteReferences(orgID, item); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.repo.SaveTargetRoute(item); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.service.RefreshTargetRoutes(orgID, item.GatewayID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.audit(r, "update", "target_route", &item.ID, item.Name)
+	updated, err := h.repo.GetTargetRoute(orgID, item.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, updated)
+}
+
+func (h *ProxyGatewayHandlers) DeleteTargetRoute(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+	id, err := parseMuxUint(r, "id")
+	if err != nil {
+		http.Error(w, "Invalid target route ID", http.StatusBadRequest)
+		return
+	}
+	item, err := h.repo.GetTargetRoute(orgID, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if err := h.repo.DeleteTargetRoute(orgID, id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.service.RefreshTargetRoutes(orgID, item.GatewayID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.audit(r, "delete", "target_route", &id, item.Name)
 	writeJSON(w, map[string]bool{"success": true})
 }
 
@@ -898,6 +1111,10 @@ func (h *ProxyGatewayHandlers) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/proxy-gateway/route-strategies", h.CreateRouteStrategy).Methods("POST")
 	router.HandleFunc("/proxy-gateway/route-strategies/{id}", h.UpdateRouteStrategy).Methods("PUT")
 	router.HandleFunc("/proxy-gateway/route-strategies/{id}", h.DeleteRouteStrategy).Methods("DELETE")
+	router.HandleFunc("/proxy-gateway/target-routes", h.ListTargetRoutes).Methods("GET")
+	router.HandleFunc("/proxy-gateway/target-routes", h.CreateTargetRoute).Methods("POST")
+	router.HandleFunc("/proxy-gateway/target-routes/{id}", h.UpdateTargetRoute).Methods("PUT")
+	router.HandleFunc("/proxy-gateway/target-routes/{id}", h.DeleteTargetRoute).Methods("DELETE")
 	router.HandleFunc("/proxy-gateway/account-groups", h.ListAccountGroups).Methods("GET")
 	router.HandleFunc("/proxy-gateway/account-groups", h.CreateAccountGroup).Methods("POST")
 	router.HandleFunc("/proxy-gateway/account-groups/{id}", h.UpdateAccountGroup).Methods("PUT")

@@ -41,6 +41,7 @@ import {
     ProxyGatewayRouteStrategy,
     ProxyGatewaySecurityPolicy,
     ProxyGatewayStatus,
+    ProxyGatewayTargetRoute,
     ProxyGatewayValidationResult,
     toStringList,
 } from '@/services/proxy-gateway.service'
@@ -48,7 +49,7 @@ import { ProxyGroup, ProxyPoolItem, ProxyTag } from '@/types'
 
 type ProxyGatewaySection = 'gateways' | 'listeners' | 'accounts' | 'account-groups' | 'account-tags' | 'routes' | 'security' | 'dns' | 'logs' | 'status'
 type NormalizedSection = 'gateways' | 'accounts' | 'account-groups' | 'account-tags' | 'logs'
-type GatewayDetailSection = 'overview' | 'routes' | 'security' | 'dns' | 'logs'
+type GatewayDetailSection = 'overview' | 'target-routes' | 'routes' | 'security' | 'dns' | 'logs'
 type AccountStep = 'identity' | 'authorization' | 'routing' | 'proxy' | 'fallback'
 type RouteStep = 'basic' | 'proxy' | 'fallback' | 'overrides'
 type SecurityStep = 'basic' | 'sources' | 'targets' | 'boundaries'
@@ -157,6 +158,17 @@ const defaultRouteStrategy = (gatewayId: number): Partial<ProxyGatewayRouteStrat
     fallbackTagIds: [],
 })
 
+const defaultTargetRoute = (gatewayId: number, routeStrategyId?: number): Partial<ProxyGatewayTargetRoute> => ({
+    gatewayId,
+    name: '目标路由',
+    description: '',
+    enabled: true,
+    isDefault: false,
+    sortOrder: 100,
+    matchers: [],
+    routeStrategyId,
+})
+
 const defaultSecurityPolicy = (gatewayId: number): Partial<ProxyGatewaySecurityPolicy> => ({
     gatewayId,
     name: '自定义安全策略',
@@ -254,6 +266,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
     const [accountGroups, setAccountGroups] = useState<ProxyGatewayAccountGroup[]>([])
     const [accountTags, setAccountTags] = useState<ProxyGatewayAccountTag[]>([])
     const [routeStrategies, setRouteStrategies] = useState<ProxyGatewayRouteStrategy[]>([])
+    const [targetRoutes, setTargetRoutes] = useState<ProxyGatewayTargetRoute[]>([])
     const [securityPolicies, setSecurityPolicies] = useState<ProxyGatewaySecurityPolicy[]>([])
     const [dnsPolicies, setDnsPolicies] = useState<ProxyGatewayDNSPolicy[]>([])
     const [logs, setLogs] = useState<ProxyGatewayAccessLog[]>([])
@@ -266,6 +279,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
     const [listenerDraft, setListenerDraft] = useState<Partial<ProxyGatewayListener> | null>(null)
     const [accountDraft, setAccountDraft] = useState<AccountDraft | null>(null)
     const [routeDraft, setRouteDraft] = useState<Partial<ProxyGatewayRouteStrategy> | null>(null)
+    const [targetRouteDraft, setTargetRouteDraft] = useState<Partial<ProxyGatewayTargetRoute> | null>(null)
     const [securityDraft, setSecurityDraft] = useState<Partial<ProxyGatewaySecurityPolicy> | null>(null)
     const [dnsDraft, setDNSDraft] = useState<Partial<ProxyGatewayDNSPolicy> | null>(null)
     const [metaDraft, setMetaDraft] = useState<MetaDraft | null>(null)
@@ -275,6 +289,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
     const safeAccountGroups = useMemo(() => asArray<ProxyGatewayAccountGroup>(accountGroups), [accountGroups])
     const safeAccountTags = useMemo(() => asArray<ProxyGatewayAccountTag>(accountTags), [accountTags])
     const safeRouteStrategies = useMemo(() => asArray<ProxyGatewayRouteStrategy>(routeStrategies), [routeStrategies])
+    const safeTargetRoutes = useMemo(() => asArray<ProxyGatewayTargetRoute>(targetRoutes), [targetRoutes])
     const safeSecurityPolicies = useMemo(() => asArray<ProxyGatewaySecurityPolicy>(securityPolicies), [securityPolicies])
     const safeDNSPolicies = useMemo(() => asArray<ProxyGatewayDNSPolicy>(dnsPolicies), [dnsPolicies])
     const safeLogs = useMemo(() => asArray<ProxyGatewayAccessLog>(logs), [logs])
@@ -321,13 +336,14 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
             const nextGatewayId = selectedGatewayId && listenerItems.some(item => item.id === selectedGatewayId)
                 ? selectedGatewayId
                 : listenerItems.find(item => item.isDefault)?.id || listenerItems[0]?.id || 0
-            const [nextRoutes, nextSecurity, nextDNS] = nextGatewayId
+            const [nextRoutes, nextTargetRoutes, nextSecurity, nextDNS] = nextGatewayId
                 ? await Promise.all([
                     proxyGatewayService.listRouteStrategies(),
+                    proxyGatewayService.listTargetRoutes({ gatewayId: nextGatewayId }),
                     proxyGatewayService.listSecurityPolicies({ gatewayId: nextGatewayId }),
                     proxyGatewayService.listDNSPolicies({ gatewayId: nextGatewayId }),
                 ])
-                : [[], [], []]
+                : [[], [], [], []]
 
             setListeners(listenerItems)
             setSelectedGatewayId(nextGatewayId)
@@ -335,6 +351,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
             setAccountGroups(asArray<ProxyGatewayAccountGroup>(nextAccountGroups))
             setAccountTags(asArray<ProxyGatewayAccountTag>(nextAccountTags))
             setRouteStrategies(asArray<ProxyGatewayRouteStrategy>(nextRoutes))
+            setTargetRoutes(asArray<ProxyGatewayTargetRoute>(nextTargetRoutes))
             setSecurityPolicies(asArray<ProxyGatewaySecurityPolicy>(nextSecurity))
             setDnsPolicies(asArray<ProxyGatewayDNSPolicy>(nextDNS))
             setLogs(logItems)
@@ -413,7 +430,32 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
             }
             setRouteDraft(null)
             await loadData()
-            toast.success('路由策略已保存')
+            toast.success('出口策略已保存')
+        } catch (error: any) {
+            toast.error(error.message || '保存失败')
+        }
+    }
+
+    const saveTargetRoute = async () => {
+        if (!targetRouteDraft) return
+        const payload = { ...targetRouteDraft, gatewayId: targetRouteDraft.gatewayId || currentGatewayId }
+        if (!payload.routeStrategyId) {
+            toast.error('请选择出口策略')
+            return
+        }
+        if (!payload.isDefault && !(payload.matchers || []).length) {
+            toast.error('非默认规则至少需要一个域名、IP 或 CIDR')
+            return
+        }
+        try {
+            if (payload.id) {
+                await proxyGatewayService.updateTargetRoute(payload.id, payload)
+            } else {
+                await proxyGatewayService.createTargetRoute(payload)
+            }
+            setTargetRouteDraft(null)
+            await loadData()
+            toast.success('目标路由已保存并生效')
         } catch (error: any) {
             toast.error(error.message || '保存失败')
         }
@@ -528,6 +570,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                     onDetailSectionChange={setGatewayDetailSection}
                                     statusByListener={statusByListener}
                                     routeStrategies={safeRouteStrategies}
+                                    targetRoutes={safeTargetRoutes}
                                     securityPolicies={safeSecurityPolicies}
                                     dnsPolicies={safeDNSPolicies}
                                     logs={safeLogs}
@@ -542,8 +585,19 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                     onCreateRoute={() => currentGatewayId && setRouteDraft(defaultRouteStrategy(currentGatewayId))}
                                     onEditRoute={item => setRouteDraft({ ...item })}
                                     onDeleteRoute={async item => {
-                                        if (!(await confirm.confirm({ title: '删除路由策略', description: `确认删除 ${item.name}？已授权账号将无法继续使用 #${item.flagNo}。` }))) return
+                                        if (!(await confirm.confirm({ title: '删除出口策略', description: `确认删除 ${item.name}？引用它的目标路由需要先删除，已授权账号也将无法继续使用 #${item.flagNo}。` }))) return
                                         await proxyGatewayService.deleteRouteStrategy(item.id)
+                                        await loadData()
+                                    }}
+                                    onCreateTargetRoute={() => {
+                                        if (!currentGatewayId) return
+                                        const firstStrategy = safeRouteStrategies.find(item => item.enabled && (item.gatewayId === currentGatewayId || item.gatewayId === 0))
+                                        setTargetRouteDraft(defaultTargetRoute(currentGatewayId, firstStrategy?.id))
+                                    }}
+                                    onEditTargetRoute={item => setTargetRouteDraft({ ...item, matchers: [...(item.matchers || [])] })}
+                                    onDeleteTargetRoute={async item => {
+                                        if (!(await confirm.confirm({ title: '删除目标路由', description: `确认删除 ${item.name}？新的连接将不再使用这条规则。` }))) return
+                                        await proxyGatewayService.deleteTargetRoute(item.id)
                                         await loadData()
                                     }}
                                     onCreateSecurity={() => currentGatewayId && setSecurityDraft(defaultSecurityPolicy(currentGatewayId))}
@@ -622,6 +676,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                     onSave={saveAccount}
                 />
                 <RouteStrategyModal draft={routeDraft} setDraft={setRouteDraft} proxyGroups={safeProxyGroups} proxyTags={safeProxyTags} proxies={safeProxies} securityPolicies={safeSecurityPolicies} dnsPolicies={safeDNSPolicies} onSave={saveRouteStrategy} />
+                <TargetRouteModal draft={targetRouteDraft} setDraft={setTargetRouteDraft} routeStrategies={safeRouteStrategies.filter(item => item.gatewayId === currentGatewayId || item.gatewayId === 0)} onSave={saveTargetRoute} />
                 <SecurityModal draft={securityDraft} setDraft={setSecurityDraft} onSave={saveSecurity} />
                 <DNSModal draft={dnsDraft} setDraft={setDNSDraft} onSave={saveDNS} />
                 <MetaModal draft={metaDraft} setDraft={setMetaDraft} onSave={saveMeta} />
@@ -673,6 +728,7 @@ function GatewaysView({
     onDetailSectionChange,
     statusByListener,
     routeStrategies,
+    targetRoutes,
     securityPolicies,
     dnsPolicies,
     logs,
@@ -683,6 +739,9 @@ function GatewaysView({
     onCreateRoute,
     onEditRoute,
     onDeleteRoute,
+    onCreateTargetRoute,
+    onEditTargetRoute,
+    onDeleteTargetRoute,
     onCreateSecurity,
     onEditSecurity,
     onCreateDNS,
@@ -698,6 +757,7 @@ function GatewaysView({
     onDetailSectionChange: (section: GatewayDetailSection) => void
     statusByListener: Map<number, ProxyGatewayStatus>
     routeStrategies: ProxyGatewayRouteStrategy[]
+    targetRoutes: ProxyGatewayTargetRoute[]
     securityPolicies: ProxyGatewaySecurityPolicy[]
     dnsPolicies: ProxyGatewayDNSPolicy[]
     logs: ProxyGatewayAccessLog[]
@@ -708,6 +768,9 @@ function GatewaysView({
     onCreateRoute: () => void
     onEditRoute: (item: ProxyGatewayRouteStrategy) => void
     onDeleteRoute: (item: ProxyGatewayRouteStrategy) => void
+    onCreateTargetRoute: () => void
+    onEditTargetRoute: (item: ProxyGatewayTargetRoute) => void
+    onDeleteTargetRoute: (item: ProxyGatewayTargetRoute) => void
     onCreateSecurity: () => void
     onEditSecurity: (item: ProxyGatewaySecurityPolicy) => void
     onCreateDNS: () => void
@@ -719,6 +782,7 @@ function GatewaysView({
 
     if (detailGateway) {
         const gatewayRoutes = routeStrategies.filter(item => item.gatewayId === detailGateway.id || item.gatewayId === 0)
+        const gatewayTargetRoutes = targetRoutes.filter(item => item.gatewayId === detailGateway.id)
         const gatewaySecurity = securityPolicies.filter(item => item.gatewayId === detailGateway.id || item.gatewayId === 0)
         const gatewayDNS = dnsPolicies.filter(item => item.gatewayId === detailGateway.id || item.gatewayId === 0)
         const gatewayLogs = logs.filter(item => !item.listenerId || item.listenerId === detailGateway.id)
@@ -726,7 +790,8 @@ function GatewaysView({
         const allowedAccounts = accounts.filter(account => account.allowAllGateways || !account.allowedGatewayIds?.length || account.allowedGatewayIds.includes(detailGateway.id))
         const detailMenuItems: Array<{ id: GatewayDetailSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
             { id: 'overview', label: '概览', icon: Server },
-            { id: 'routes', label: '用户名路由', icon: GitBranch },
+            { id: 'target-routes', label: '目标路由', icon: ListFilter },
+            { id: 'routes', label: '出口策略', icon: GitBranch },
             { id: 'security', label: '安全策略', icon: ShieldCheck },
             { id: 'dns', label: 'DNS 策略', icon: Network },
             { id: 'logs', label: '网关日志', icon: FileText },
@@ -781,11 +846,19 @@ function GatewaysView({
                             status={gatewayStatus}
                             allowedAccounts={allowedAccounts}
                             routeCount={gatewayRoutes.length}
+                            targetRouteCount={gatewayTargetRoutes.length}
                             securityCount={gatewaySecurity.length}
                             dnsCount={gatewayDNS.length}
                             onEdit={() => onEditGateway(detailGateway)}
                             onReload={onReload}
                         />
+                    )}
+                    {detailSection === 'target-routes' && (
+                        <Panel>
+                            <div className="p-4">
+                                <TargetRoutesView routes={gatewayTargetRoutes} strategies={gatewayRoutes} onCreate={onCreateTargetRoute} onEdit={onEditTargetRoute} onDelete={onDeleteTargetRoute} />
+                            </div>
+                        </Panel>
                     )}
                     {detailSection === 'routes' && (
                         <Panel>
@@ -879,11 +952,12 @@ function GatewaysView({
     )
 }
 
-function GatewayOverview({ gateway, status, allowedAccounts, routeCount, securityCount, dnsCount, onEdit, onReload }: {
+function GatewayOverview({ gateway, status, allowedAccounts, routeCount, targetRouteCount, securityCount, dnsCount, onEdit, onReload }: {
     gateway: ProxyGatewayListener
     status?: ProxyGatewayStatus
     allowedAccounts: ProxyGatewayAccount[]
     routeCount: number
+    targetRouteCount: number
     securityCount: number
     dnsCount: number
     onEdit: () => void
@@ -910,7 +984,8 @@ function GatewayOverview({ gateway, status, allowedAccounts, routeCount, securit
                 </div>
                 <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
                     <Metric label="授权用户" value={allowedAccounts.length} />
-                    <Metric label="用户名路由" value={routeCount} />
+                    <Metric label="目标路由" value={targetRouteCount} />
+                    <Metric label="出口策略" value={routeCount} />
                     <Metric label="安全策略" value={securityCount} />
                     <Metric label="DNS 策略" value={dnsCount} />
                     <Metric label="活跃连接" value={status?.activeConns || 0} />
@@ -1346,6 +1421,119 @@ function buildPlaywrightProxySnippet(account: ProxyGatewayAccount, gateway: Prox
     return `import { chromium } from 'playwright'\n\nconst browser = await chromium.launch({\n  proxy: {\n    server: ${jsonString(gatewayProxyServer(gateway, scheme))}${authLines},\n  },\n})`
 }
 
+function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
+    routes: ProxyGatewayTargetRoute[]
+    strategies: ProxyGatewayRouteStrategy[]
+    onCreate: () => void
+    onEdit: (item: ProxyGatewayTargetRoute) => void
+    onDelete: (item: ProxyGatewayTargetRoute) => void
+}) {
+    const strategyById = new Map(strategies.map(item => [item.id, item]))
+    const hasDefault = routes.some(item => item.isDefault && item.enabled)
+    return (
+        <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-sm text-gray-500 dark:text-gray-400">按顺序匹配目标，首条命中后使用对应出口策略。</div>
+                <CreateButton onClick={onCreate} label="新增目标路由" />
+            </div>
+            {!!routes.length && !hasDefault && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                    尚未配置启用的默认出口；未命中规则时会沿用网关用户的代理策略。
+                </div>
+            )}
+            {!routes.length ? <EmptyState label="当前网关还没有目标路由，所有请求沿用网关用户的代理策略" /> : (
+                <>
+                    <div className="space-y-3 md:hidden">
+                        {routes.map(item => {
+                            const strategy = item.routeStrategy || strategyById.get(item.routeStrategyId)
+                            return (
+                                <div key={item.id} className="rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <span className="font-medium text-gray-900 dark:text-white">{item.name}</span>
+                                                <Badge tone={item.enabled ? (strategy?.enabled === false ? 'amber' : 'green') : 'gray'}>
+                                                    {!item.enabled ? '已停用' : strategy?.enabled === false ? '出口策略已停用' : '已启用'}
+                                                </Badge>
+                                            </div>
+                                            {item.description && <div className="mt-1 text-xs text-gray-500">{item.description}</div>}
+                                        </div>
+                                        <RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} />
+                                    </div>
+                                    <dl className="mt-3 grid grid-cols-[72px_minmax(0,1fr)] gap-x-2 gap-y-2 text-sm">
+                                        <dt className="text-gray-500">匹配顺序</dt>
+                                        <dd className="font-mono text-xs text-gray-700 dark:text-gray-300">{item.isDefault ? '默认兜底' : item.sortOrder}</dd>
+                                        <dt className="text-gray-500">目标</dt>
+                                        <dd>
+                                            {item.isDefault ? <Badge tone="amber">未命中时默认</Badge> : (
+                                                <div className="flex flex-wrap gap-1">
+                                                    {(item.matchers || []).map(matcher => <Badge key={matcher}>{matcher}</Badge>)}
+                                                </div>
+                                            )}
+                                        </dd>
+                                        <dt className="text-gray-500">出口策略</dt>
+                                        <dd>
+                                            <div className="font-medium text-gray-800 dark:text-gray-200">{strategy?.name || `#${item.routeStrategyId}`}</div>
+                                            {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge></div>}
+                                        </dd>
+                                    </dl>
+                                </div>
+                            )
+                        })}
+                    </div>
+                    <div className="hidden md:block">
+                    <TableShell>
+                    <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-800">
+                        <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/60">
+                            <tr>
+                                <th className="w-20 px-4 py-3 text-left">顺序</th>
+                                <th className="px-4 py-3 text-left">规则</th>
+                                <th className="px-4 py-3 text-left">目标</th>
+                                <th className="px-4 py-3 text-left">出口策略</th>
+                                <th className="px-4 py-3 text-left">状态</th>
+                                <th className="px-4 py-3 text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                            {routes.map(item => {
+                                const strategy = item.routeStrategy || strategyById.get(item.routeStrategyId)
+                                return (
+                                    <tr key={item.id} className="hover:bg-gray-50/80 dark:hover:bg-gray-800/40">
+                                        <td className="px-4 py-3 font-mono text-xs text-gray-500">{item.isDefault ? '—' : item.sortOrder}</td>
+                                        <td className="px-4 py-3">
+                                            <div className="font-medium text-gray-900 dark:text-white">{item.name}</div>
+                                            {item.description && <div className="mt-0.5 text-xs text-gray-500">{item.description}</div>}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            {item.isDefault ? <Badge tone="amber">未命中时默认</Badge> : (
+                                                <div className="flex max-w-xl flex-wrap gap-1">
+                                                    {(item.matchers || []).map(matcher => <Badge key={matcher}>{matcher}</Badge>)}
+                                                </div>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <div className="font-medium text-gray-800 dark:text-gray-200">{strategy?.name || `#${item.routeStrategyId}`}</div>
+                                            {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge></div>}
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <Badge tone={item.enabled ? (strategy?.enabled === false ? 'amber' : 'green') : 'gray'}>
+                                                {!item.enabled ? '已停用' : strategy?.enabled === false ? '出口策略已停用' : '已启用'}
+                                            </Badge>
+                                        </td>
+                                        <td className="px-4 py-3 text-right"><RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} /></td>
+                                    </tr>
+                                )
+                            })}
+                        </tbody>
+                    </table>
+                    </TableShell>
+                    </div>
+                </>
+            )}
+        </div>
+    )
+}
+
 function RouteStrategiesView({ strategies, accounts, onCreate, onEdit, onDelete }: {
     strategies: ProxyGatewayRouteStrategy[]
     accounts: ProxyGatewayAccount[]
@@ -1357,9 +1545,9 @@ function RouteStrategiesView({ strategies, accounts, onCreate, onEdit, onDelete 
     return (
         <div className="space-y-3">
             <div className="flex justify-end">
-                <CreateButton onClick={onCreate} label="新增路由策略" />
+                <CreateButton onClick={onCreate} label="新增出口策略" />
             </div>
-            {!strategies.length ? <EmptyState label="当前网关还没有用户名路由策略" /> : (
+            {!strategies.length ? <EmptyState label="当前网关还没有出口策略" /> : (
                 <TableShell>
                     <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-800">
                         <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/60">
@@ -1617,7 +1805,7 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                     <td className="px-4 py-3 text-gray-500">{formatTime(item.createdAt)}</td>
                                     <td className="px-4 py-3">
                                         <div>{item.username || '-'}</div>
-                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo) && (
+                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo || item.targetRouteId) && (
                                             <div className="mt-1 flex flex-wrap gap-1 text-xs text-gray-500">
                                                 {item.requestedUsername && <span>{item.requestedUsername}</span>}
                                                 {item.clientIp && (
@@ -1626,6 +1814,7 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                                     </span>
                                                 )}
                                                 {item.routeStrategyFlagNo ? <Badge tone="blue">#{item.routeStrategyFlagNo}</Badge> : null}
+                                                {item.targetRouteId ? <Badge tone="amber">目标路由 #{item.targetRouteId}{item.targetRouteDefault ? ' 默认' : item.targetRouteMatcher ? ` · ${item.targetRouteMatcher}` : ''}</Badge> : null}
                                             </div>
                                         )}
                                     </td>
@@ -2059,6 +2248,55 @@ function ProxyStrategyFields({ draft, setDraft, proxyGroups, proxyTags, proxies,
     )
 }
 
+function TargetRouteModal({ draft, setDraft, routeStrategies, onSave }: {
+    draft: Partial<ProxyGatewayTargetRoute> | null
+    setDraft: (draft: Partial<ProxyGatewayTargetRoute> | null) => void
+    routeStrategies: ProxyGatewayRouteStrategy[]
+    onSave: () => void
+}) {
+    if (!draft) return null
+    const strategyOptions = toSearchOptions(routeStrategies, item => `${item.selectionMode} · ${item.selectionAlgorithm}${item.enabled ? '' : ' · 已停用'}`)
+    return (
+        <Modal open={!!draft} onOpenChange={open => !open && setDraft(null)}>
+            <ModalContent size="2xl">
+                <ModalHeader>
+                    <ModalTitle>{draft.id ? '编辑目标路由' : '新增目标路由'}</ModalTitle>
+                    <ModalDescription>域名、IP 和 CIDR 使用同一张有序规则表；第一条匹配规则决定出口。</ModalDescription>
+                </ModalHeader>
+                <ModalBody className="space-y-5">
+                    <div className="grid gap-3 md:grid-cols-2">
+                        <TextField label="规则名称" help="用于规则列表和访问日志识别。" value={draft.name || ''} onChange={value => setDraft({ ...draft, name: value })} />
+                        <NumberField label="匹配顺序" help="数值越小越先匹配；默认规则不参与顺序。" value={draft.sortOrder ?? 100} onChange={value => setDraft({ ...draft, sortOrder: value })} />
+                        <SearchSelect label="出口策略" help="命中后使用该策略配置的代理池、调度算法和 fallback。" items={strategyOptions} value={draft.routeStrategyId} onChange={value => setDraft({ ...draft, routeStrategyId: value })} noneLabel="请选择出口策略" placeholder="搜索出口策略" />
+                        <div className="grid gap-2 sm:grid-cols-2">
+                            <Toggle label="启用规则" help="停用后不参与匹配。" checked={draft.enabled !== false} onChange={value => setDraft({ ...draft, enabled: value })} />
+                            <Toggle label="设为默认出口" help="仅在没有其他规则命中时使用；同一网关只保留一个默认出口。" checked={!!draft.isDefault} onChange={value => setDraft({ ...draft, isDefault: value, matchers: value ? [] : draft.matchers })} />
+                        </div>
+                    </div>
+                    {!draft.isDefault && (
+                        <ListField
+                            label="目标匹配项"
+                            help="每行一个：example.com、*.example.com、203.0.113.7、203.0.113.0/24 或 IPv6/CIDR。通配域名不包含根域名。"
+                            value={draft.matchers || []}
+                            onChange={value => setDraft({ ...draft, matchers: value })}
+                        />
+                    )}
+                    {draft.isDefault && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                            默认出口没有匹配项，只在所有有序规则都未命中时使用。
+                        </div>
+                    )}
+                    <TextareaField label="描述" help="记录该规则适用的服务或出口要求。" value={draft.description || ''} onChange={value => setDraft({ ...draft, description: value })} />
+                </ModalBody>
+                <ModalFooter>
+                    <button onClick={() => setDraft(null)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm dark:border-gray-700">取消</button>
+                    <button onClick={onSave} className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white">保存并生效</button>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
+    )
+}
+
 function RouteStrategyModal({ draft, setDraft, proxyGroups, proxyTags, proxies, securityPolicies, dnsPolicies, onSave }: {
     draft: Partial<ProxyGatewayRouteStrategy> | null
     setDraft: (draft: Partial<ProxyGatewayRouteStrategy> | null) => void
@@ -2090,8 +2328,8 @@ function RouteStrategyModal({ draft, setDraft, proxyGroups, proxyTags, proxies, 
         <Modal open={!!draft} onOpenChange={open => !open && setDraft(null)}>
             <ModalContent size="6xl">
                 <ModalHeader>
-                    <ModalTitle>{draft.id ? '编辑路由策略' : '新增路由策略'}</ModalTitle>
-                    <ModalDescription>配置当前网关下可由用户名标志号调用的路由策略。</ModalDescription>
+                    <ModalTitle>{draft.id ? '编辑出口策略' : '新增出口策略'}</ModalTitle>
+                    <ModalDescription>配置可由目标路由自动选择、也可由用户名标志号手动调用的代理出口。</ModalDescription>
                 </ModalHeader>
                 <ModalBody className="grid gap-5 xl:grid-cols-[240px_minmax(0,1fr)]">
                     <WizardRail steps={steps} current={step} onChange={setStep} />

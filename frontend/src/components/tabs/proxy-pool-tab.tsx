@@ -158,6 +158,20 @@ function compactDateTime(value?: string) {
     return new Date(value).toLocaleString()
 }
 
+function formatTrafficBytes(value?: number) {
+    const bytes = Math.max(0, Number(value || 0))
+    if (bytes < 1024) return `${bytes} B`
+    const units = ['KB', 'MB', 'GB', 'TB', 'PB']
+    let amount = bytes / 1024
+    let unitIndex = 0
+    while (amount >= 1024 && unitIndex < units.length - 1) {
+        amount /= 1024
+        unitIndex++
+    }
+    const digits = amount >= 100 ? 0 : amount >= 10 ? 1 : 2
+    return `${amount.toFixed(digits)} ${units[unitIndex]}`
+}
+
 function safeDecode(value: string) {
     try {
         return decodeURIComponent(value)
@@ -322,6 +336,7 @@ export default function ProxyPoolTab() {
     const [tagMode, setTagMode] = useState<ProxyTagFilterMode>('or')
     const [page, setPage] = useState(1)
     const [total, setTotal] = useState(0)
+    const [trafficSummary, setTrafficSummary] = useState({ trafficBytesIn: 0, trafficBytesOut: 0 })
     const [bulkText, setBulkText] = useState('')
     const [bulkDefaultType, setBulkDefaultType] = useState<ProxyType>('socks5')
     const [bulkGroupId, setBulkGroupId] = useState<number | undefined>()
@@ -357,6 +372,10 @@ export default function ProxyPoolTab() {
             ])
             setProxies(proxyData.items)
             setTotal(proxyData.total)
+            setTrafficSummary({
+                trafficBytesIn: Number(proxyData.trafficSummary?.trafficBytesIn || 0),
+                trafficBytesOut: Number(proxyData.trafficSummary?.trafficBytesOut || 0),
+            })
             setChannels(channelData)
         } catch (error: any) {
             toast.error(error.message || '加载代理池失败')
@@ -878,10 +897,18 @@ export default function ProxyPoolTab() {
 
                     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 dark:border-gray-800">
-                            <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-                                <input type="checkbox" checked={proxies.length > 0 && proxies.every(proxy => selectedIds.includes(proxy.id))} onChange={toggleAllVisible} />
-                                已选 {selectedIds.length} / 共 {total}
-                            </label>
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                                <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                                    <input type="checkbox" checked={proxies.length > 0 && proxies.every(proxy => selectedIds.includes(proxy.id))} onChange={toggleAllVisible} />
+                                    已选 {selectedIds.length} / 共 {total}
+                                </label>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" title="当前筛选结果经代理网关转发的累计流量，不受分页影响">
+                                    <span className="font-medium text-gray-500 dark:text-gray-400">当前筛选流量</span>
+                                    <span className="text-gray-600 dark:text-gray-300">流入 <strong className="font-mono font-semibold text-gray-900 dark:text-white">{formatTrafficBytes(trafficSummary.trafficBytesIn)}</strong></span>
+                                    <span className="text-gray-600 dark:text-gray-300">流出 <strong className="font-mono font-semibold text-gray-900 dark:text-white">{formatTrafficBytes(trafficSummary.trafficBytesOut)}</strong></span>
+                                    <span className="text-gray-600 dark:text-gray-300">合计 <strong className="font-mono font-semibold text-gray-900 dark:text-white">{formatTrafficBytes(trafficSummary.trafficBytesIn + trafficSummary.trafficBytesOut)}</strong></span>
+                                </div>
+                            </div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <button onClick={() => setShowDeleteModal(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 px-3 py-1.5 text-sm text-rose-600 transition hover:-translate-y-0.5 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30">
                                     <Trash2 className="h-4 w-4" />
@@ -1914,6 +1941,14 @@ function ProxyDetailDrawerContent({ proxy, onClose, onEdit, onTest, onDelete }: 
                     <DetailMetric icon={<CheckCircle2 className="h-4 w-4" />} label="成功" value={proxy.successCount || 0} />
                     <DetailMetric icon={<XCircle className="h-4 w-4" />} label="失败" value={proxy.failureCount || 0} />
                 </div>
+
+                <section className="space-y-3">
+                    <DetailSectionTitle icon={<Activity className="h-4 w-4" />} title="累计网关流量" />
+                    <div className="grid grid-cols-2 gap-3">
+                        <DetailMetric icon={<ArrowRight className="h-4 w-4" />} label="流入" value={formatTrafficBytes(proxy.trafficBytesIn)} />
+                        <DetailMetric icon={<ArrowLeft className="h-4 w-4" />} label="流出" value={formatTrafficBytes(proxy.trafficBytesOut)} />
+                    </div>
+                </section>
 
                 <section className="space-y-3">
                     <DetailSectionTitle icon={<Server className="h-4 w-4" />} title="连接信息" />

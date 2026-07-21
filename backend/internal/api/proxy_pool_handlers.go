@@ -24,10 +24,11 @@ func NewProxyPoolHandlers(repo *repository.ProxyPoolRepository, service *service
 }
 
 type proxyListResponse struct {
-	Items []models.ProxyPoolItem `json:"items"`
-	Total int64                  `json:"total"`
-	Page  int                    `json:"page"`
-	Limit int                    `json:"limit"`
+	Items          []models.ProxyPoolItem         `json:"items"`
+	Total          int64                          `json:"total"`
+	Page           int                            `json:"page"`
+	Limit          int                            `json:"limit"`
+	TrafficSummary repository.ProxyTrafficSummary `json:"trafficSummary"`
 }
 
 type proxyCreateRequest struct {
@@ -88,7 +89,12 @@ func (h *ProxyPoolHandlers) ListProxies(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, proxyListResponse{Items: items, Total: total, Page: filter.Page, Limit: filter.Limit})
+	trafficSummary, err := h.repo.SumTraffic(orgID, filter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, proxyListResponse{Items: items, Total: total, Page: filter.Page, Limit: filter.Limit, TrafficSummary: trafficSummary})
 }
 
 func (h *ProxyPoolHandlers) GetProxy(w http.ResponseWriter, r *http.Request) {

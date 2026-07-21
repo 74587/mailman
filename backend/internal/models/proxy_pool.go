@@ -106,38 +106,40 @@ type ProxyTag struct {
 }
 
 type ProxyPoolItem struct {
-	ID             uint        `gorm:"primaryKey" json:"id"`
-	OrgID          uint        `gorm:"not null;index;default:1" json:"orgId"`
-	Type           ProxyType   `gorm:"not null;type:varchar(16);index" json:"type"`
-	Host           string      `gorm:"not null;type:varchar(255);index" json:"host"`
-	Port           int         `gorm:"not null;index" json:"port"`
-	Username       string      `gorm:"type:varchar(255)" json:"username,omitempty"`
-	Password       string      `gorm:"type:varchar(255)" json:"password,omitempty"`
-	RefreshURL     string      `gorm:"type:text" json:"refreshUrl,omitempty"`
-	Remark         string      `gorm:"type:text" json:"remark,omitempty"`
-	GroupID        *uint       `gorm:"index" json:"groupId,omitempty"`
-	Group          *ProxyGroup `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"group,omitempty"`
-	Tags           []ProxyTag  `gorm:"many2many:proxy_pool_item_tags;foreignKey:ID;joinForeignKey:ProxyID;References:ID;joinReferences:TagID" json:"tags,omitempty"`
-	Status         ProxyStatus `gorm:"not null;default:'unknown';type:varchar(24);index" json:"status"`
-	LastCheckAt    *time.Time  `json:"lastCheckAt,omitempty"`
-	LastSuccessAt  *time.Time  `json:"lastSuccessAt,omitempty"`
-	LastFailureAt  *time.Time  `json:"lastFailureAt,omitempty"`
-	LastError      string      `gorm:"type:text" json:"lastError,omitempty"`
-	CheckLatencyMs int64       `gorm:"default:0" json:"checkLatencyMs"`
-	ExitIP         string      `gorm:"type:varchar(128);index" json:"exitIp,omitempty"`
-	Country        string      `gorm:"type:varchar(100)" json:"country,omitempty"`
-	Region         string      `gorm:"type:varchar(100)" json:"region,omitempty"`
-	City           string      `gorm:"type:varchar(100)" json:"city,omitempty"`
-	ISP            string      `gorm:"type:varchar(255)" json:"isp,omitempty"`
-	CheckCount     int         `gorm:"default:0" json:"checkCount"`
-	SuccessCount   int         `gorm:"default:0" json:"successCount"`
-	FailureCount   int         `gorm:"default:0" json:"failureCount"`
-	UsageScope     string      `gorm:"type:varchar(64);default:'shared';index" json:"usageScope"`
-	Source         string      `gorm:"type:varchar(64)" json:"source,omitempty"`
-	Metadata       JSONMap     `gorm:"type:json" json:"metadata,omitempty"`
-	CreatedAt      time.Time   `json:"createdAt"`
-	UpdatedAt      time.Time   `json:"updatedAt"`
-	DeletedAt      DeletedAt   `gorm:"index" json:"deletedAt,omitempty"`
+	ID              uint        `gorm:"primaryKey" json:"id"`
+	OrgID           uint        `gorm:"not null;index;default:1" json:"orgId"`
+	Type            ProxyType   `gorm:"not null;type:varchar(16);index" json:"type"`
+	Host            string      `gorm:"not null;type:varchar(255);index" json:"host"`
+	Port            int         `gorm:"not null;index" json:"port"`
+	Username        string      `gorm:"type:varchar(255)" json:"username,omitempty"`
+	Password        string      `gorm:"type:varchar(255)" json:"password,omitempty"`
+	RefreshURL      string      `gorm:"type:text" json:"refreshUrl,omitempty"`
+	Remark          string      `gorm:"type:text" json:"remark,omitempty"`
+	GroupID         *uint       `gorm:"index" json:"groupId,omitempty"`
+	Group           *ProxyGroup `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"group,omitempty"`
+	Tags            []ProxyTag  `gorm:"many2many:proxy_pool_item_tags;foreignKey:ID;joinForeignKey:ProxyID;References:ID;joinReferences:TagID" json:"tags,omitempty"`
+	Status          ProxyStatus `gorm:"not null;default:'unknown';type:varchar(24);index" json:"status"`
+	LastCheckAt     *time.Time  `json:"lastCheckAt,omitempty"`
+	LastSuccessAt   *time.Time  `json:"lastSuccessAt,omitempty"`
+	LastFailureAt   *time.Time  `json:"lastFailureAt,omitempty"`
+	LastError       string      `gorm:"type:text" json:"lastError,omitempty"`
+	CheckLatencyMs  int64       `gorm:"default:0" json:"checkLatencyMs"`
+	ExitIP          string      `gorm:"type:varchar(128);index" json:"exitIp,omitempty"`
+	Country         string      `gorm:"type:varchar(100)" json:"country,omitempty"`
+	Region          string      `gorm:"type:varchar(100)" json:"region,omitempty"`
+	City            string      `gorm:"type:varchar(100)" json:"city,omitempty"`
+	ISP             string      `gorm:"type:varchar(255)" json:"isp,omitempty"`
+	CheckCount      int         `gorm:"default:0" json:"checkCount"`
+	SuccessCount    int         `gorm:"default:0" json:"successCount"`
+	FailureCount    int         `gorm:"default:0" json:"failureCount"`
+	TrafficBytesIn  int64       `gorm:"not null;default:0" json:"trafficBytesIn"`
+	TrafficBytesOut int64       `gorm:"not null;default:0" json:"trafficBytesOut"`
+	UsageScope      string      `gorm:"type:varchar(64);default:'shared';index" json:"usageScope"`
+	Source          string      `gorm:"type:varchar(64)" json:"source,omitempty"`
+	Metadata        JSONMap     `gorm:"type:json" json:"metadata,omitempty"`
+	CreatedAt       time.Time   `json:"createdAt"`
+	UpdatedAt       time.Time   `json:"updatedAt"`
+	DeletedAt       DeletedAt   `gorm:"index" json:"deletedAt,omitempty"`
 }
 
 type ProxyPoolItemTag struct {

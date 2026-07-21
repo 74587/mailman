@@ -29,15 +29,16 @@ type ProxyGatewayService struct {
 	proxyRepo *repository.ProxyPoolRepository
 	logger    *utils.Logger
 
-	mu          sync.RWMutex
-	runtimes    map[uint]*proxyGatewayRuntime
-	roundRobin  map[string]int
-	lastSuccess map[string]uint
-	sticky      map[string]stickyProxyEntry
-	active      map[uint]int
-	rateWindows map[uint]rateWindow
-	dnsCache    map[string]dnsCacheEntry
-	rand        *rand.Rand
+	mu           sync.RWMutex
+	runtimes     map[uint]*proxyGatewayRuntime
+	roundRobin   map[string]int
+	lastSuccess  map[string]uint
+	sticky       map[string]stickyProxyEntry
+	active       map[uint]int
+	rateWindows  map[uint]rateWindow
+	dnsCache     map[string]dnsCacheEntry
+	targetRoutes map[uint][]models.ProxyGatewayTargetRoute
+	rand         *rand.Rand
 }
 
 type proxyGatewayRuntime struct {
@@ -106,6 +107,9 @@ type gatewaySession struct {
 	routeStrategyID     *uint
 	routeStrategyFlagNo int
 	routeParams         models.JSONMapInterface
+	targetRouteID       *uint
+	targetRouteMatcher  string
+	targetRouteDefault  bool
 }
 
 type gatewayAuthResult struct {
@@ -117,17 +121,18 @@ type gatewayAuthResult struct {
 
 func NewProxyGatewayService(repo *repository.ProxyGatewayRepository, proxyRepo *repository.ProxyPoolRepository) *ProxyGatewayService {
 	return &ProxyGatewayService{
-		repo:        repo,
-		proxyRepo:   proxyRepo,
-		logger:      utils.NewLogger("ProxyGateway"),
-		runtimes:    map[uint]*proxyGatewayRuntime{},
-		roundRobin:  map[string]int{},
-		lastSuccess: map[string]uint{},
-		sticky:      map[string]stickyProxyEntry{},
-		active:      map[uint]int{},
-		rateWindows: map[uint]rateWindow{},
-		dnsCache:    map[string]dnsCacheEntry{},
-		rand:        rand.New(rand.NewSource(time.Now().UnixNano())),
+		repo:         repo,
+		proxyRepo:    proxyRepo,
+		logger:       utils.NewLogger("ProxyGateway"),
+		runtimes:     map[uint]*proxyGatewayRuntime{},
+		roundRobin:   map[string]int{},
+		lastSuccess:  map[string]uint{},
+		sticky:       map[string]stickyProxyEntry{},
+		active:       map[uint]int{},
+		rateWindows:  map[uint]rateWindow{},
+		dnsCache:     map[string]dnsCacheEntry{},
+		targetRoutes: map[uint][]models.ProxyGatewayTargetRoute{},
+		rand:         rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -161,8 +166,14 @@ func (s *ProxyGatewayService) Reload(ctx context.Context) error {
 	}
 
 	nextByID := map[uint]models.ProxyGatewayListener{}
+	nextTargetRoutes := map[uint][]models.ProxyGatewayTargetRoute{}
 	for _, listener := range listeners {
 		nextByID[listener.ID] = listener
+		routes, err := s.repo.ListEnabledTargetRoutes(listener.OrgID, listener.ID)
+		if err != nil {
+			return fmt.Errorf("load target routes for gateway %d: %w", listener.ID, err)
+		}
+		nextTargetRoutes[listener.ID] = routes
 	}
 
 	s.mu.Lock()
@@ -195,6 +206,7 @@ func (s *ProxyGatewayService) Reload(ctx context.Context) error {
 		}
 	}
 	s.runtimes = next
+	s.targetRoutes = nextTargetRoutes
 	s.mu.Unlock()
 
 	for _, runtime := range toStop {
@@ -219,6 +231,36 @@ func (s *ProxyGatewayService) Reload(ctx context.Context) error {
 	default:
 		return nil
 	}
+}
+
+// RefreshTargetRoutes updates the in-memory ordered route table without
+// restarting the listener. API handlers call this after route or strategy
+// changes so new connections observe the configuration immediately.
+func (s *ProxyGatewayService) RefreshTargetRoutes(orgID, gatewayID uint) error {
+	routes, err := s.repo.ListEnabledTargetRoutes(orgID, gatewayID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.targetRoutes[gatewayID] = routes
+	s.mu.Unlock()
+	return nil
+}
+
+// RefreshTargetRoutesByStrategy refreshes every gateway whose enabled target
+// routes reference a strategy. This matters for reusable global strategies,
+// whose own GatewayID is zero rather than the ID of any listener cache.
+func (s *ProxyGatewayService) RefreshTargetRoutesByStrategy(orgID, strategyID uint) error {
+	gatewayIDs, err := s.repo.ListEnabledTargetRouteGatewayIDsByStrategy(orgID, strategyID)
+	if err != nil {
+		return err
+	}
+	for _, gatewayID := range gatewayIDs {
+		if err := s.RefreshTargetRoutes(orgID, gatewayID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *ProxyGatewayService) Status() []ProxyGatewayRuntimeStatus {
@@ -430,7 +472,7 @@ func (s *ProxyGatewayService) handleHTTPProxy(conn net.Conn, reader *bufio.Reade
 
 func (s *ProxyGatewayService) handleHTTPConnect(client net.Conn, req *http.Request, session gatewaySession) error {
 	targetAddr := net.JoinHostPort(session.targetHost, strconv.Itoa(session.targetPort))
-	upstreamConn, proxyItem, policy, dnsPolicy, err := s.dialWithPolicy(context.Background(), session, targetAddr)
+	upstreamConn, proxyItem, policy, dnsPolicy, err := s.dialWithPolicy(context.Background(), &session, targetAddr)
 	if err != nil {
 		s.writeHTTPError(client, http.StatusBadGateway, "proxy gateway connect failed", false)
 		s.finishSession(session, session.account, proxyItem, "failed", "", err)
@@ -458,13 +500,21 @@ func (s *ProxyGatewayService) handleHTTPForward(client net.Conn, req *http.Reque
 		return errors.New("unsupported HTTP forward scheme")
 	}
 	targetAddr := net.JoinHostPort(session.targetHost, strconv.Itoa(session.targetPort))
-	upstreamConn, proxyItem, policy, dnsPolicy, err := s.dialWithPolicy(context.Background(), session, targetAddr)
+	upstreamConn, proxyItem, policy, dnsPolicy, err := s.dialWithPolicy(context.Background(), &session, targetAddr)
 	if err != nil {
 		s.writeHTTPError(client, http.StatusBadGateway, "proxy gateway request failed", false)
 		s.finishSession(session, session.account, proxyItem, "failed", "", err)
 		return err
 	}
-	defer upstreamConn.Close()
+	countedUpstream := &countingConn{Conn: upstreamConn}
+	defer countedUpstream.Close()
+	captureTraffic := func() {
+		// countingConn names fields from the connection's perspective. Writes
+		// travel from the gateway client toward the target (gateway bytes-in),
+		// while reads return toward the client (gateway bytes-out).
+		session.bytesIn = countedUpstream.bytesOut
+		session.bytesOut = countedUpstream.bytesIn
+	}
 
 	outReq := req.Clone(req.Context())
 	outReq.RequestURI = ""
@@ -473,22 +523,26 @@ func (s *ProxyGatewayService) handleHTTPForward(client net.Conn, req *http.Reque
 	outReq.Header.Del("Proxy-Authorization")
 	outReq.Header.Del("Proxy-Connection")
 	outReq.Host = req.URL.Host
-	if err := outReq.Write(upstreamConn); err != nil {
+	if err := outReq.Write(countedUpstream); err != nil {
+		captureTraffic()
 		s.finishSessionWithPolicies(session, session.account, proxyItem, "failed", "", err, policy, dnsPolicy)
 		return err
 	}
-	respReader := bufio.NewReader(upstreamConn)
+	respReader := bufio.NewReader(countedUpstream)
 	resp, err := http.ReadResponse(respReader, outReq)
 	if err != nil {
+		captureTraffic()
 		s.finishSessionWithPolicies(session, session.account, proxyItem, "failed", "", err, policy, dnsPolicy)
 		return err
 	}
 	defer resp.Body.Close()
 	err = resp.Write(client)
 	if err != nil {
+		captureTraffic()
 		s.finishSessionWithPolicies(session, session.account, proxyItem, "failed", "", err, policy, dnsPolicy)
 		return err
 	}
+	captureTraffic()
 	s.finishSessionWithPolicies(session, session.account, proxyItem, "success", "", nil, policy, dnsPolicy)
 	return nil
 }
@@ -537,22 +591,22 @@ func (s *ProxyGatewayService) handleSocks5(conn net.Conn, reader *bufio.Reader, 
 	defer s.leaveAccount(account)
 
 	targetAddr := net.JoinHostPort(host, strconv.Itoa(port))
-	upstreamConn, proxyItem, policy, dnsPolicy, err := s.dialWithPolicy(context.Background(), session, targetAddr)
+	upstreamConn, proxyItem, policy, dnsPolicy, err := s.dialWithPolicy(context.Background(), &session, targetAddr)
 	if err != nil {
 		_ = writeSocks5Reply(conn, 0x05)
-		s.finishSession(session, account, proxyItem, "failed", "", err)
+		s.finishSession(session, session.account, proxyItem, "failed", "", err)
 		return
 	}
 	defer upstreamConn.Close()
 
 	if err := writeSocks5Reply(conn, 0x00); err != nil {
-		s.finishSessionWithPolicies(session, account, proxyItem, "failed", "", err, policy, dnsPolicy)
+		s.finishSessionWithPolicies(session, session.account, proxyItem, "failed", "", err, policy, dnsPolicy)
 		return
 	}
 	bytesIn, bytesOut := proxyPipe(conn, upstreamConn, session)
 	session.bytesIn += bytesIn
 	session.bytesOut += bytesOut
-	s.finishSessionWithPolicies(session, account, proxyItem, "success", "", nil, policy, dnsPolicy)
+	s.finishSessionWithPolicies(session, session.account, proxyItem, "success", "", nil, policy, dnsPolicy)
 }
 
 func (s *ProxyGatewayService) performSocks5Handshake(conn net.Conn, reader *bufio.Reader, listener models.ProxyGatewayListener) (gatewayAuthResult, error) {
@@ -915,22 +969,95 @@ func (s *ProxyGatewayService) anonymousAccount(orgID uint) *models.ProxyGatewayA
 	}
 }
 
-func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session gatewaySession, targetAddr string) (net.Conn, *models.ProxyPoolItem, *models.ProxyGatewaySecurityPolicy, *models.ProxyGatewayDNSPolicy, error) {
+func (s *ProxyGatewayService) targetRoutesForListener(listener models.ProxyGatewayListener) ([]models.ProxyGatewayTargetRoute, error) {
+	s.mu.RLock()
+	routes, ok := s.targetRoutes[listener.ID]
+	if ok {
+		routes = append([]models.ProxyGatewayTargetRoute(nil), routes...)
+	}
+	s.mu.RUnlock()
+	if ok {
+		return routes, nil
+	}
+	if err := s.RefreshTargetRoutes(listener.OrgID, listener.ID); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	routes = append([]models.ProxyGatewayTargetRoute(nil), s.targetRoutes[listener.ID]...)
+	s.mu.RUnlock()
+	return routes, nil
+}
+
+func (s *ProxyGatewayService) applyTargetRoute(session *gatewaySession) error {
+	routes, err := s.targetRoutesForListener(session.listener)
+	if err != nil {
+		return fmt.Errorf("load target route table: %w", err)
+	}
+	defaultIndex := -1
+	for i := range routes {
+		route := &routes[i]
+		if route.IsDefault {
+			if defaultIndex == -1 {
+				defaultIndex = i
+			}
+			continue
+		}
+		for _, matcher := range route.Matchers {
+			if models.ProxyGatewayTargetMatches(session.targetHost, matcher) {
+				return applyTargetRouteStrategy(session, route, matcher)
+			}
+		}
+	}
+	if defaultIndex >= 0 {
+		return applyTargetRouteStrategy(session, &routes[defaultIndex], "")
+	}
+	return nil
+}
+
+func applyTargetRouteStrategy(session *gatewaySession, route *models.ProxyGatewayTargetRoute, matcher string) error {
+	if route == nil {
+		return nil
+	}
+	id := route.ID
+	session.targetRouteID = &id
+	session.targetRouteMatcher = matcher
+	session.targetRouteDefault = route.IsDefault
+	strategy := route.RouteStrategy
+	if strategy == nil || strategy.ID == 0 {
+		return fmt.Errorf("target route %s references an unavailable route strategy", route.Name)
+	}
+	if !strategy.Enabled {
+		return fmt.Errorf("target route %s references disabled route strategy %s", route.Name, strategy.Name)
+	}
+	if strategy.GatewayID != 0 && strategy.GatewayID != session.listener.ID {
+		return fmt.Errorf("target route %s references a strategy from another gateway", route.Name)
+	}
+	session.account = applyRouteStrategyToAccount(session.account, strategy)
+	return nil
+}
+
+func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session *gatewaySession, targetAddr string) (net.Conn, *models.ProxyPoolItem, *models.ProxyGatewaySecurityPolicy, *models.ProxyGatewayDNSPolicy, error) {
+	if session == nil {
+		return nil, nil, nil, nil, errors.New("missing proxy gateway session")
+	}
+	targetHost, targetPort, err := splitHostPortWithDefault(targetAddr, 80)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	session.targetHost = targetHost
+	session.targetPort = targetPort
+	if err := s.applyTargetRoute(session); err != nil {
+		return nil, nil, nil, nil, err
+	}
 	securityPolicy, dnsPolicy, err := s.effectivePolicies(session.listener, session.account)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	targetHost, targetPort, err := splitHostPortWithDefault(targetAddr, 80)
-	if err != nil {
-		return nil, nil, securityPolicy, dnsPolicy, err
-	}
-	session.targetHost = targetHost
-	session.targetPort = targetPort
 	if err := s.authorizeTarget(ctx, *securityPolicy, *dnsPolicy, session.clientIP, targetHost, targetPort); err != nil {
 		return nil, nil, securityPolicy, dnsPolicy, err
 	}
 
-	targetForDial, httpConnectHostHeader, err := s.targetForDNSMode(ctx, *dnsPolicy, session, targetHost, targetPort)
+	targetForDial, httpConnectHostHeader, err := s.targetForDNSMode(ctx, *dnsPolicy, *session, targetHost, targetPort)
 	if err != nil {
 		return nil, nil, securityPolicy, dnsPolicy, err
 	}
@@ -942,7 +1069,7 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session gatewa
 	}
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		proxyItem, direct, err := s.selectProxy(session.account, session, exclude, false)
+		proxyItem, direct, err := s.selectProxy(session.account, *session, exclude, false)
 		if err != nil {
 			lastErr = err
 			break
@@ -950,30 +1077,30 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session gatewa
 		conn, err := s.dialTarget(ctx, targetForDial, httpConnectHostHeader, proxyItem, direct, session.account)
 		if err == nil {
 			if proxyItem != nil {
-				s.rememberProxySuccess(session.account, session, proxyItem.ID)
+				s.rememberProxySuccess(session.account, *session, proxyItem.ID)
 			}
 			return conn, proxyItem, securityPolicy, dnsPolicy, nil
 		}
 		lastErr = err
 		if proxyItem != nil {
-			s.forgetStickySelection(session.account, session, proxyItem.ID)
+			s.forgetStickySelection(session.account, *session, proxyItem.ID)
 			exclude = append(exclude, proxyItem.ID)
 		}
 	}
 
 	if session.account.FallbackMode == models.ProxyGatewayFallbackBackup {
-		proxyItem, direct, err := s.selectProxy(session.account, session, exclude, true)
+		proxyItem, direct, err := s.selectProxy(session.account, *session, exclude, true)
 		if err == nil {
 			conn, dialErr := s.dialTarget(ctx, targetForDial, httpConnectHostHeader, proxyItem, direct, session.account)
 			if dialErr == nil {
 				if proxyItem != nil {
-					s.rememberProxySuccess(session.account, session, proxyItem.ID)
+					s.rememberProxySuccess(session.account, *session, proxyItem.ID)
 				}
 				return conn, proxyItem, securityPolicy, dnsPolicy, nil
 			}
 			lastErr = dialErr
 			if proxyItem != nil {
-				s.forgetStickySelection(session.account, session, proxyItem.ID)
+				s.forgetStickySelection(session.account, *session, proxyItem.ID)
 			}
 		}
 	}
@@ -1377,6 +1504,9 @@ func (s *ProxyGatewayService) routeRuntimeKey(account *models.ProxyGatewayAccoun
 	if account == nil {
 		return "account:0"
 	}
+	if session.targetRouteID != nil {
+		return fmt.Sprintf("account:%d:target-route:%d", account.ID, *session.targetRouteID)
+	}
 	if session.routeStrategyID != nil {
 		return fmt.Sprintf("account:%d:route:%d", account.ID, *session.routeStrategyID)
 	}
@@ -1733,6 +1863,9 @@ func (s *ProxyGatewayService) finishSessionWithPolicies(session gatewaySession, 
 	if proxyItem != nil {
 		id := proxyItem.ID
 		proxyID = &id
+		if trafficErr := s.proxyRepo.AddTraffic(session.listener.OrgID, proxyItem.ID, session.bytesIn, session.bytesOut); trafficErr != nil {
+			s.logger.Warn("failed to persist traffic for upstream proxy %d: %v", proxyItem.ID, trafficErr)
+		}
 	}
 	var securityID *uint
 	if security != nil && security.ID != 0 {
@@ -1777,6 +1910,9 @@ func (s *ProxyGatewayService) finishSessionWithPolicies(session gatewaySession, 
 		RouteStrategyID:     session.routeStrategyID,
 		RouteStrategyFlagNo: session.routeStrategyFlagNo,
 		RouteParams:         session.routeParams,
+		TargetRouteID:       session.targetRouteID,
+		TargetRouteMatcher:  session.targetRouteMatcher,
+		TargetRouteDefault:  session.targetRouteDefault,
 	})
 }
 

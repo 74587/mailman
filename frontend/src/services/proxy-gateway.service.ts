@@ -122,6 +122,21 @@ export interface ProxyGatewayRouteStrategy {
     updatedAt?: string
 }
 
+export interface ProxyGatewayTargetRoute {
+    id: number
+    gatewayId: number
+    name: string
+    description?: string
+    enabled: boolean
+    isDefault: boolean
+    sortOrder: number
+    matchers?: string[]
+    routeStrategyId: number
+    routeStrategy?: ProxyGatewayRouteStrategy
+    createdAt?: string
+    updatedAt?: string
+}
+
 export interface ProxyGatewaySecurityPolicy {
     id: number
     gatewayId: number
@@ -189,6 +204,9 @@ export interface ProxyGatewayAccessLog {
     routeStrategyId?: number
     routeStrategyFlagNo?: number
     routeParams?: Record<string, any>
+    targetRouteId?: number
+    targetRouteMatcher?: string
+    targetRouteDefault?: boolean
     createdAt: string
 }
 
@@ -288,6 +306,22 @@ class ProxyGatewayService {
 
     deleteRouteStrategy(id: number): Promise<void> {
         return apiClient.delete(`${this.basePath}/route-strategies/${id}`)
+    }
+
+    listTargetRoutes(params: Record<string, any> = {}): Promise<ProxyGatewayTargetRoute[]> {
+        return apiClient.get(`${this.basePath}/target-routes`, { params })
+    }
+
+    createTargetRoute(payload: Partial<ProxyGatewayTargetRoute>): Promise<ProxyGatewayTargetRoute> {
+        return apiClient.post(`${this.basePath}/target-routes`, payload)
+    }
+
+    updateTargetRoute(id: number, payload: Partial<ProxyGatewayTargetRoute>): Promise<ProxyGatewayTargetRoute> {
+        return apiClient.put(`${this.basePath}/target-routes/${id}`, payload)
+    }
+
+    deleteTargetRoute(id: number): Promise<void> {
+        return apiClient.delete(`${this.basePath}/target-routes/${id}`)
     }
 
     validateAccountUsername(payload: { username: string; excludeId?: number }): Promise<ProxyGatewayValidationResult> {

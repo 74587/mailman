@@ -61,6 +61,8 @@ export interface ProxyPoolItem {
     checkCount?: number;
     successCount?: number;
     failureCount?: number;
+    trafficBytesIn?: number;
+    trafficBytesOut?: number;
     usageScope?: string;
     source?: string;
     metadata?: Record<string, any>;

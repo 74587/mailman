@@ -166,3 +166,41 @@ func TestProxyPoolBulkImportCanSkipDuplicates(t *testing.T) {
 		t.Fatalf("created=%d errors=%d summary=%v, want created=1 errors=0 skipped=1", len(response.Created), len(response.Errors), response.Summary)
 	}
 }
+
+func TestProxyPoolListReturnsFilteredTrafficSummaryAcrossPages(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open sqlite test db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.ProxyPoolItem{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+
+	repo := repository.NewProxyPoolRepository(db)
+	handler := NewProxyPoolHandlers(repo, services.NewProxyPoolService(repo, nil))
+	items := []models.ProxyPoolItem{
+		{OrgID: defaultOrgID, Type: models.ProxyTypeSocks5, Host: "summary-a.example", Port: 1080, Status: models.ProxyStatusAvailable, TrafficBytesIn: 100, TrafficBytesOut: 200},
+		{OrgID: defaultOrgID, Type: models.ProxyTypeHTTP, Host: "summary-b.example", Port: 8080, Status: models.ProxyStatusAvailable, TrafficBytesIn: 300, TrafficBytesOut: 400},
+		{OrgID: defaultOrgID, Type: models.ProxyTypeHTTP, Host: "summary-c.example", Port: 8081, Status: models.ProxyStatusUnavailable, TrafficBytesIn: 500, TrafficBytesOut: 600},
+	}
+	if err := db.Create(&items).Error; err != nil {
+		t.Fatalf("create proxies: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/proxy-pool?status=available&page=1&limit=1", nil)
+	rec := httptest.NewRecorder()
+	handler.ListProxies(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ListProxies status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response proxyListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode proxy list: %v", err)
+	}
+	if len(response.Items) != 1 || response.Total != 2 {
+		t.Fatalf("page items=%d total=%d, want 1 and 2", len(response.Items), response.Total)
+	}
+	if response.TrafficSummary.TrafficBytesIn != 400 || response.TrafficSummary.TrafficBytesOut != 600 {
+		t.Fatalf("traffic summary = %+v, want in=400 out=600", response.TrafficSummary)
+	}
+}

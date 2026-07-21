@@ -29,6 +29,10 @@ export interface ProxyListResponse {
     total: number
     page: number
     limit: number
+    trafficSummary?: {
+        trafficBytesIn: number
+        trafficBytesOut: number
+    }
 }
 
 export interface ProxyCheckChannel {

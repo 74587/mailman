@@ -122,6 +122,23 @@ func TestProxyGatewayMixedListenerSupportsHTTPConnectAndSocks5(t *testing.T) {
 	if err := db.Create(&listener).Error; err != nil {
 		t.Fatalf("create listener: %v", err)
 	}
+	targetStrategy := models.ProxyGatewayRouteStrategy{
+		OrgID: 1, GatewayID: listener.ID, Name: "loopback target route", FlagNo: 71, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{proxyItem.ID},
+		SelectionAlgorithm: models.ProxyGatewayAlgorithmRoundRobin,
+		FallbackMode:       models.ProxyGatewayFallbackInterrupt,
+	}
+	if err := db.Create(&targetStrategy).Error; err != nil {
+		t.Fatalf("create target route strategy: %v", err)
+	}
+	targetHost, _, _ := net.SplitHostPort(targetHostPort)
+	targetRoute := models.ProxyGatewayTargetRoute{
+		OrgID: 1, GatewayID: listener.ID, Name: "SOCKS IP route", Enabled: true, SortOrder: 10,
+		Matchers: models.StringSlice{targetHost}, RouteStrategyID: targetStrategy.ID,
+	}
+	if err := db.Create(&targetRoute).Error; err != nil {
+		t.Fatalf("create target route: %v", err)
+	}
 
 	service := NewProxyGatewayService(gatewayRepo, proxyRepo)
 	if err := service.Start(context.Background()); err != nil {
@@ -142,7 +159,7 @@ func TestProxyGatewayMixedListenerSupportsHTTPConnectAndSocks5(t *testing.T) {
 		targetPort: 80,
 		startedAt:  time.Now(),
 	}
-	conn, _, _, _, err := service.dialWithPolicy(context.Background(), testSession, targetHostPort)
+	conn, _, _, _, err := service.dialWithPolicy(context.Background(), &testSession, targetHostPort)
 	if err != nil {
 		t.Fatalf("direct dialWithPolicy failed: %v", err)
 	}
@@ -150,7 +167,34 @@ func TestProxyGatewayMixedListenerSupportsHTTPConnectAndSocks5(t *testing.T) {
 
 	gatewayAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	assertHTTPConnectTunnel(t, db, gatewayAddr, targetHostPort)
+	assertHTTPForward(t, gatewayAddr, target.URL)
 	assertSocks5Tunnel(t, gatewayAddr, targetHostPort)
+	var targetRouteLogs []models.ProxyGatewayAccessLog
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := db.Where("target_route_id = ? AND status = ?", targetRoute.ID, "success").Find(&targetRouteLogs).Error; err != nil {
+			t.Fatalf("load target route logs: %v", err)
+		}
+		if len(targetRouteLogs) >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(targetRouteLogs) != 3 {
+		t.Fatalf("target route success logs=%d, want HTTP CONNECT, HTTP forward, and SOCKS5 logs", len(targetRouteLogs))
+	}
+	for _, logEntry := range targetRouteLogs {
+		if logEntry.TargetRouteMatcher != targetHost || logEntry.TargetRouteDefault {
+			t.Fatalf("unexpected target route log: %+v", logEntry)
+		}
+	}
+	var trafficProxy models.ProxyPoolItem
+	if err := db.First(&trafficProxy, proxyItem.ID).Error; err != nil {
+		t.Fatalf("reload proxy traffic: %v", err)
+	}
+	if trafficProxy.TrafficBytesIn <= 0 || trafficProxy.TrafficBytesOut <= 0 {
+		t.Fatalf("proxy traffic was not counted: in=%d out=%d", trafficProxy.TrafficBytesIn, trafficProxy.TrafficBytesOut)
+	}
 }
 
 func TestProxyGatewaySmartUsernameRoutingRequiresPermission(t *testing.T) {
@@ -251,6 +295,129 @@ func TestProxyGatewaySmartUsernameRoutingRequiresPermission(t *testing.T) {
 
 	if _, err := service.authenticateAccount(listener, "route-user#18", "secret"); err == nil {
 		t.Fatal("expected unauthorized route strategy to be rejected")
+	}
+}
+
+func TestProxyGatewayTargetRoutingUsesFirstMatchIPAndDefault(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	gatewayRepo := repository.NewProxyGatewayRepository(db)
+	proxyRepo := repository.NewProxyPoolRepository(db)
+	service := NewProxyGatewayService(gatewayRepo, proxyRepo)
+
+	listener := models.ProxyGatewayListener{OrgID: 1, Name: "target route gateway", ListenIP: "127.0.0.1", Port: 18082, Protocol: models.ProxyGatewayProtocolMixed}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	account := &models.ProxyGatewayAccount{
+		ID: 41, OrgID: 1, Username: "route-account", Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{900},
+		SelectionAlgorithm: models.ProxyGatewayAlgorithmRandom,
+		FallbackMode:       models.ProxyGatewayFallbackInterrupt,
+	}
+
+	createStrategy := func(name string, flag int, proxyID uint) models.ProxyGatewayRouteStrategy {
+		strategy := models.ProxyGatewayRouteStrategy{
+			OrgID: 1, GatewayID: listener.ID, Name: name, FlagNo: flag, Enabled: true,
+			SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{proxyID},
+			SelectionAlgorithm: models.ProxyGatewayAlgorithmRoundRobin,
+			FallbackMode:       models.ProxyGatewayFallbackInterrupt,
+		}
+		if err := db.Create(&strategy).Error; err != nil {
+			t.Fatalf("create strategy %s: %v", name, err)
+		}
+		return strategy
+	}
+	wildcardStrategy := createStrategy("wildcard", 31, 101)
+	exactStrategy := createStrategy("exact", 32, 102)
+	ipStrategy := createStrategy("ip", 33, 103)
+	defaultStrategy := createStrategy("default", 34, 104)
+
+	routes := []models.ProxyGatewayTargetRoute{
+		{OrgID: 1, GatewayID: listener.ID, Name: "wildcard first", Enabled: true, SortOrder: 10, Matchers: models.StringSlice{"*.example.com"}, RouteStrategyID: wildcardStrategy.ID},
+		{OrgID: 1, GatewayID: listener.ID, Name: "exact later", Enabled: true, SortOrder: 20, Matchers: models.StringSlice{"api.example.com"}, RouteStrategyID: exactStrategy.ID},
+		{OrgID: 1, GatewayID: listener.ID, Name: "ip range", Enabled: true, SortOrder: 5, Matchers: models.StringSlice{"203.0.113.0/24"}, RouteStrategyID: ipStrategy.ID},
+		{OrgID: 1, GatewayID: listener.ID, Name: "default", Enabled: true, IsDefault: true, SortOrder: 999, RouteStrategyID: defaultStrategy.ID},
+	}
+	for i := range routes {
+		if err := db.Create(&routes[i]).Error; err != nil {
+			t.Fatalf("create target route: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name        string
+		target      string
+		wantProxyID uint
+		wantRouteID uint
+		wantMatcher string
+		wantDefault bool
+	}{
+		{name: "first domain match wins", target: "api.example.com", wantProxyID: 101, wantRouteID: routes[0].ID, wantMatcher: "*.example.com"},
+		{name: "socks client supplied IP", target: "203.0.113.25", wantProxyID: 103, wantRouteID: routes[2].ID, wantMatcher: "203.0.113.0/24"},
+		{name: "unmatched uses default", target: "other.example.net", wantProxyID: 104, wantRouteID: routes[3].ID, wantDefault: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := gatewaySession{listener: listener, account: account, targetHost: test.target}
+			if err := service.applyTargetRoute(&session); err != nil {
+				t.Fatalf("apply target route: %v", err)
+			}
+			if len(session.account.ProxyIDs) != 1 || session.account.ProxyIDs[0] != test.wantProxyID {
+				t.Fatalf("selected proxy IDs = %v, want [%d]", session.account.ProxyIDs, test.wantProxyID)
+			}
+			if session.targetRouteID == nil || *session.targetRouteID != test.wantRouteID {
+				t.Fatalf("target route = %v, want %d", session.targetRouteID, test.wantRouteID)
+			}
+			if session.targetRouteMatcher != test.wantMatcher || session.targetRouteDefault != test.wantDefault {
+				t.Fatalf("route context matcher=%q default=%v", session.targetRouteMatcher, session.targetRouteDefault)
+			}
+		})
+	}
+}
+
+func TestProxyGatewayRefreshesEveryGatewayUsingGlobalRouteStrategy(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	gatewayRepo := repository.NewProxyGatewayRepository(db)
+	service := NewProxyGatewayService(gatewayRepo, repository.NewProxyPoolRepository(db))
+
+	listener := models.ProxyGatewayListener{OrgID: 1, Name: "global strategy gateway", ListenIP: "127.0.0.1", Port: 18084, Protocol: models.ProxyGatewayProtocolMixed}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	strategy := models.ProxyGatewayRouteStrategy{
+		OrgID: 1, GatewayID: 0, Name: "global IPv4", FlagNo: 81, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{501},
+		SelectionAlgorithm: models.ProxyGatewayAlgorithmRoundRobin,
+		FallbackMode:       models.ProxyGatewayFallbackInterrupt,
+	}
+	if err := db.Create(&strategy).Error; err != nil {
+		t.Fatalf("create global strategy: %v", err)
+	}
+	route := models.ProxyGatewayTargetRoute{
+		OrgID: 1, GatewayID: listener.ID, Name: "global strategy route", Enabled: true,
+		SortOrder: 10, Matchers: models.StringSlice{"legacy.example"}, RouteStrategyID: strategy.ID,
+	}
+	if err := db.Create(&route).Error; err != nil {
+		t.Fatalf("create target route: %v", err)
+	}
+	if err := service.RefreshTargetRoutes(1, listener.ID); err != nil {
+		t.Fatalf("initial refresh: %v", err)
+	}
+
+	strategy.ProxyIDs = models.UintSlice{502}
+	if err := gatewayRepo.SaveRouteStrategy(&strategy); err != nil {
+		t.Fatalf("update global strategy: %v", err)
+	}
+	if err := service.RefreshTargetRoutesByStrategy(1, strategy.ID); err != nil {
+		t.Fatalf("refresh by strategy: %v", err)
+	}
+
+	routes, err := service.targetRoutesForListener(listener)
+	if err != nil {
+		t.Fatalf("read refreshed routes: %v", err)
+	}
+	if len(routes) != 1 || routes[0].RouteStrategy == nil || len(routes[0].RouteStrategy.ProxyIDs) != 1 || routes[0].RouteStrategy.ProxyIDs[0] != 502 {
+		t.Fatalf("global strategy cache was not refreshed: %+v", routes)
 	}
 }
 
@@ -505,12 +672,21 @@ func newProxyGatewayTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("open sqlite connection pool: %v", err)
+	}
+	// Gateway protocol tests write access logs from connection goroutines.
+	// A single SQLite connection avoids table-lock errors that do not occur on
+	// the production database and makes race-mode assertions deterministic.
+	sqlDB.SetMaxOpenConns(1)
 	if err := db.AutoMigrate(
 		&models.ProxyPoolItem{},
 		&models.ProxyPoolItemTag{},
 		&models.ProxyGatewayListener{},
 		&models.ProxyGatewayAccount{},
 		&models.ProxyGatewayRouteStrategy{},
+		&models.ProxyGatewayTargetRoute{},
 		&models.ProxyGatewayAccountGroup{},
 		&models.ProxyGatewayAccountTag{},
 		&models.ProxyGatewayAccountTagLink{},
@@ -611,6 +787,26 @@ func assertHTTPConnectTunnel(t *testing.T, db *gorm.DB, gatewayAddr, targetHostP
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "gateway-ok" {
 		t.Fatalf("HTTP tunnel body = %q", body)
+	}
+}
+
+func assertHTTPForward(t *testing.T, gatewayAddr, targetURL string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", gatewayAddr, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial gateway HTTP forward: %v", err)
+	}
+	defer conn.Close()
+	auth := base64.StdEncoding.EncodeToString([]byte("gateway-user:secret"))
+	_, _ = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\nConnection: close\r\n\r\n", targetURL, strings.TrimPrefix(targetURL, "http://"), auth)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read forwarded HTTP response: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "gateway-ok" {
+		t.Fatalf("HTTP forward body = %q", body)
 	}
 }
 

@@ -133,6 +133,7 @@ func Migrate() error {
 		&models.ProxyGatewayListener{},
 		&models.ProxyGatewayAccount{},
 		&models.ProxyGatewayRouteStrategy{},
+		&models.ProxyGatewayTargetRoute{},
 		&models.ProxyGatewayAccountGroup{},
 		&models.ProxyGatewayAccountTag{},
 		&models.ProxyGatewayAccountTagLink{},

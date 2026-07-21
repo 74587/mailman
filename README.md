@@ -105,7 +105,7 @@ npm run dev
 
 ### 代理池与代理网关
 
-通过 Web 界面「代理池管理」维护上游代理、HTTP / SOCKS5 网关、网关用户、安全策略、DNS 策略和用户名路由。
+通过 Web 界面「代理池管理」维护上游代理、HTTP / SOCKS5 网关、网关用户、安全策略、DNS 策略、出口策略，以及按域名、IPv4、IPv6 或 CIDR 第一匹配的目标路由。
 
 📖 详见 [docs/proxy-pool-management-guide.md](./docs/proxy-pool-management-guide.md)
 

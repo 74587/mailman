@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ProxyGatewayRepository struct {
@@ -313,7 +314,93 @@ func (r *ProxyGatewayRepository) SaveRouteStrategy(item *models.ProxyGatewayRout
 }
 
 func (r *ProxyGatewayRepository) DeleteRouteStrategy(orgID, id uint) error {
+	var targetRouteCount int64
+	if err := r.db.Model(&models.ProxyGatewayTargetRoute{}).
+		Where("org_id = ? AND route_strategy_id = ?", orgID, id).
+		Count(&targetRouteCount).Error; err != nil {
+		return err
+	}
+	if targetRouteCount > 0 {
+		return errors.New("route strategy is still referenced by a target route")
+	}
 	return r.db.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGatewayRouteStrategy{}).Error
+}
+
+func (r *ProxyGatewayRepository) CountEnabledTargetRoutesByStrategy(orgID, strategyID uint) (int64, error) {
+	var count int64
+	err := r.db.Model(&models.ProxyGatewayTargetRoute{}).
+		Where("org_id = ? AND route_strategy_id = ? AND enabled = ?", orgID, strategyID, true).
+		Count(&count).Error
+	return count, err
+}
+
+func (r *ProxyGatewayRepository) ListEnabledTargetRouteGatewayIDsByStrategy(orgID, strategyID uint) ([]uint, error) {
+	var gatewayIDs []uint
+	err := r.db.Model(&models.ProxyGatewayTargetRoute{}).
+		Where("org_id = ? AND route_strategy_id = ? AND enabled = ?", orgID, strategyID, true).
+		Distinct("gateway_id").
+		Order("gateway_id ASC").
+		Pluck("gateway_id", &gatewayIDs).Error
+	return gatewayIDs, err
+}
+
+func (r *ProxyGatewayRepository) ListTargetRoutes(orgID uint, gatewayID *uint) ([]models.ProxyGatewayTargetRoute, error) {
+	var items []models.ProxyGatewayTargetRoute
+	query := r.db.
+		Preload("RouteStrategy.SecurityPolicy").
+		Preload("RouteStrategy.DNSPolicy").
+		Where("org_id = ?", orgID)
+	if gatewayID != nil {
+		query = query.Where("gateway_id = ?", *gatewayID)
+	}
+	err := query.Order("is_default ASC, sort_order ASC, id ASC").Find(&items).Error
+	return items, err
+}
+
+func (r *ProxyGatewayRepository) ListEnabledTargetRoutes(orgID, gatewayID uint) ([]models.ProxyGatewayTargetRoute, error) {
+	var items []models.ProxyGatewayTargetRoute
+	err := r.db.
+		Preload("RouteStrategy.SecurityPolicy").
+		Preload("RouteStrategy.DNSPolicy").
+		Where("org_id = ? AND gateway_id = ? AND enabled = ?", orgID, gatewayID, true).
+		Order("is_default ASC, sort_order ASC, id ASC").
+		Find(&items).Error
+	return items, err
+}
+
+func (r *ProxyGatewayRepository) GetTargetRoute(orgID, id uint) (*models.ProxyGatewayTargetRoute, error) {
+	var item models.ProxyGatewayTargetRoute
+	err := r.db.
+		Preload("RouteStrategy.SecurityPolicy").
+		Preload("RouteStrategy.DNSPolicy").
+		First(&item, "org_id = ? AND id = ?", orgID, id).Error
+	return &item, err
+}
+
+func (r *ProxyGatewayRepository) SaveTargetRoute(item *models.ProxyGatewayTargetRoute) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if item.IsDefault {
+			// Serialize default-route changes for the same gateway. This prevents
+			// concurrent writers from both clearing the old default and then
+			// committing two new defaults on databases with row-level locking.
+			var gateway models.ProxyGatewayListener
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Select("id").
+				First(&gateway, "org_id = ? AND id = ?", item.OrgID, item.GatewayID).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&models.ProxyGatewayTargetRoute{}).
+				Where("org_id = ? AND gateway_id = ? AND id <> ?", item.OrgID, item.GatewayID, item.ID).
+				Update("is_default", false).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Select("*").Save(item).Error
+	})
+}
+
+func (r *ProxyGatewayRepository) DeleteTargetRoute(orgID, id uint) error {
+	return r.db.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGatewayTargetRoute{}).Error
 }
 
 func (r *ProxyGatewayRepository) SetAccountTags(accountID uint, tagIDs []uint) error {

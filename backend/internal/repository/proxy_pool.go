@@ -29,6 +29,11 @@ type ProxyPoolFilter struct {
 	OnlyHealthy bool
 }
 
+type ProxyTrafficSummary struct {
+	TrafficBytesIn  int64 `gorm:"column:traffic_bytes_in" json:"trafficBytesIn"`
+	TrafficBytesOut int64 `gorm:"column:traffic_bytes_out" json:"trafficBytesOut"`
+}
+
 type ProxyDeleteReplacement struct {
 	Mode          string
 	ProxyID       *uint
@@ -143,6 +148,34 @@ func (r *ProxyPoolRepository) ListIDs(orgID uint, filter ProxyPoolFilter) ([]uin
 		return nil, err
 	}
 	return ids, nil
+}
+
+// SumTraffic returns totals for every proxy matched by the filter, independent
+// of list pagination. Traffic is counted from the gateway perspective:
+// bytes-in comes from downstream clients and bytes-out returns to them.
+func (r *ProxyPoolRepository) SumTraffic(orgID uint, filter ProxyPoolFilter) (ProxyTrafficSummary, error) {
+	var summary ProxyTrafficSummary
+	err := r.applyProxyFilter(r.db.Model(&models.ProxyPoolItem{}), orgID, filter).
+		Select("COALESCE(SUM(traffic_bytes_in), 0) AS traffic_bytes_in, COALESCE(SUM(traffic_bytes_out), 0) AS traffic_bytes_out").
+		Scan(&summary).Error
+	return summary, err
+}
+
+// AddTraffic atomically persists one completed gateway session without
+// rewriting proxy configuration fields or their UpdatedAt timestamp.
+func (r *ProxyPoolRepository) AddTraffic(orgID, proxyID uint, bytesIn, bytesOut int64) error {
+	if bytesIn < 0 || bytesOut < 0 {
+		return errors.New("proxy traffic counters must not be negative")
+	}
+	if proxyID == 0 || bytesIn == 0 && bytesOut == 0 {
+		return nil
+	}
+	return r.db.Model(&models.ProxyPoolItem{}).
+		Where("org_id = ? AND id = ?", orgID, proxyID).
+		UpdateColumns(map[string]interface{}{
+			"traffic_bytes_in":  gorm.Expr("traffic_bytes_in + ?", bytesIn),
+			"traffic_bytes_out": gorm.Expr("traffic_bytes_out + ?", bytesOut),
+		}).Error
 }
 
 func (r *ProxyPoolRepository) applyProxyFilter(query *gorm.DB, orgID uint, filter ProxyPoolFilter) *gorm.DB {

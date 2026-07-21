@@ -295,6 +295,9 @@ type ProxyGatewayAccessLog struct {
 	RouteStrategyID     *uint            `gorm:"index" json:"routeStrategyId,omitempty"`
 	RouteStrategyFlagNo int              `gorm:"index" json:"routeStrategyFlagNo,omitempty"`
 	RouteParams         JSONMapInterface `gorm:"type:json" json:"routeParams,omitempty"`
+	TargetRouteID       *uint            `gorm:"index" json:"targetRouteId,omitempty"`
+	TargetRouteMatcher  string           `gorm:"type:varchar(255);index" json:"targetRouteMatcher,omitempty"`
+	TargetRouteDefault  bool             `gorm:"not null;default:false" json:"targetRouteDefault"`
 	CreatedAt           time.Time        `gorm:"index" json:"createdAt"`
 }
 

@@ -176,3 +176,45 @@ func TestProxyPoolRepositoryDeleteByIDsValidatesAndAppliesReplacement(t *testing
 		t.Fatalf("fallback replacement id = %v, want %d", savedFallback.ProxyFallbackProxyID, replacement.ID)
 	}
 }
+
+func TestProxyPoolRepositoryTrafficCountersAndFilteredSummary(t *testing.T) {
+	db := mustOpenRealSyncConfigTestDB(t)
+	if err := db.AutoMigrate(&models.ProxyPoolItem{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+
+	repo := NewProxyPoolRepository(db)
+	available := models.ProxyPoolItem{OrgID: 1, Type: models.ProxyTypeSocks5, Host: "traffic-a.example", Port: 1080, Status: models.ProxyStatusAvailable}
+	unavailable := models.ProxyPoolItem{OrgID: 1, Type: models.ProxyTypeHTTP, Host: "traffic-b.example", Port: 8080, Status: models.ProxyStatusUnavailable, TrafficBytesIn: 1000, TrafficBytesOut: 2000}
+	otherOrg := models.ProxyPoolItem{OrgID: 2, Type: models.ProxyTypeHTTP, Host: "traffic-other.example", Port: 8081, Status: models.ProxyStatusAvailable, TrafficBytesIn: 9000, TrafficBytesOut: 9000}
+	for _, item := range []*models.ProxyPoolItem{&available, &unavailable, &otherOrg} {
+		if err := db.Create(item).Error; err != nil {
+			t.Fatalf("create proxy: %v", err)
+		}
+	}
+
+	if err := repo.AddTraffic(1, available.ID, 100, 200); err != nil {
+		t.Fatalf("add first traffic sample: %v", err)
+	}
+	if err := repo.AddTraffic(1, available.ID, 50, 25); err != nil {
+		t.Fatalf("add second traffic sample: %v", err)
+	}
+	if err := repo.AddTraffic(1, available.ID, -1, 0); err == nil {
+		t.Fatal("negative traffic sample should be rejected")
+	}
+
+	filtered, err := repo.SumTraffic(1, ProxyPoolFilter{Status: string(models.ProxyStatusAvailable), Page: 9, Limit: 1})
+	if err != nil {
+		t.Fatalf("sum filtered traffic: %v", err)
+	}
+	if filtered.TrafficBytesIn != 150 || filtered.TrafficBytesOut != 225 {
+		t.Fatalf("filtered traffic = %+v, want in=150 out=225", filtered)
+	}
+	all, err := repo.SumTraffic(1, ProxyPoolFilter{})
+	if err != nil {
+		t.Fatalf("sum all traffic: %v", err)
+	}
+	if all.TrafficBytesIn != 1150 || all.TrafficBytesOut != 2225 {
+		t.Fatalf("all traffic = %+v, want in=1150 out=2225", all)
+	}
+}
