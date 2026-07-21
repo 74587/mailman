@@ -49,6 +49,7 @@ type proxyGatewayListenerRequest struct {
 	HandshakeTimeoutSeconds int                         `json:"handshakeTimeoutSeconds"`
 	IdleTimeoutSeconds      int                         `json:"idleTimeoutSeconds"`
 	ConnectTimeoutSeconds   int                         `json:"connectTimeoutSeconds"`
+	UsernameRouteSeparators *[]string                   `json:"usernameRouteSeparators"`
 	Metadata                models.JSONMapInterface     `json:"metadata"`
 }
 
@@ -63,6 +64,7 @@ type proxyGatewayAccountRequest struct {
 	AllowedGatewayIDs       []uint                                `json:"allowedGatewayIds"`
 	GroupID                 *uint                                 `json:"groupId"`
 	TagIDs                  []uint                                `json:"tagIds"`
+	ProxySelectionSource    *models.ProxyGatewaySelectionSource   `json:"proxySelectionSource"`
 	SelectionMode           models.ProxyGatewaySelectionMode      `json:"selectionMode"`
 	ProxyIDs                []uint                                `json:"proxyIds"`
 	ProxyMatchGroupIDs      []uint                                `json:"proxyMatchGroupIds"`
@@ -186,7 +188,10 @@ func (h *ProxyGatewayHandlers) CreateListener(w http.ResponseWriter, r *http.Req
 		return
 	}
 	h.audit(r, "create", "listener", &item.ID, item.Name)
-	_ = h.service.Reload(context.Background())
+	if err := h.service.Reload(context.Background()); err != nil {
+		http.Error(w, fmt.Sprintf("listener saved but proxy gateway reload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, item)
 }
@@ -222,7 +227,10 @@ func (h *ProxyGatewayHandlers) UpdateListener(w http.ResponseWriter, r *http.Req
 		return
 	}
 	h.audit(r, "update", "listener", &item.ID, item.Name)
-	_ = h.service.Reload(context.Background())
+	if err := h.service.Reload(context.Background()); err != nil {
+		http.Error(w, fmt.Sprintf("listener saved but proxy gateway reload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, item)
 }
 
@@ -238,7 +246,10 @@ func (h *ProxyGatewayHandlers) DeleteListener(w http.ResponseWriter, r *http.Req
 		return
 	}
 	h.audit(r, "delete", "listener", &id, "")
-	_ = h.service.Reload(context.Background())
+	if err := h.service.Reload(context.Background()); err != nil {
+		http.Error(w, fmt.Sprintf("listener deleted but proxy gateway reload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, map[string]bool{"success": true})
 }
 
@@ -264,6 +275,15 @@ func applyListenerRequest(item *models.ProxyGatewayListener, req proxyGatewayLis
 	item.HandshakeTimeoutSeconds = nonZeroAPI(req.HandshakeTimeoutSeconds, 10)
 	item.IdleTimeoutSeconds = nonZeroAPI(req.IdleTimeoutSeconds, 120)
 	item.ConnectTimeoutSeconds = nonZeroAPI(req.ConnectTimeoutSeconds, 30)
+	if req.UsernameRouteSeparators != nil {
+		if normalized, err := models.NormalizeProxyGatewayUsernameRouteSeparators(*req.UsernameRouteSeparators); err == nil {
+			item.UsernameRouteSeparators = normalized
+		} else {
+			item.UsernameRouteSeparators = models.StringSlice(*req.UsernameRouteSeparators)
+		}
+	} else if len(item.UsernameRouteSeparators) == 0 {
+		item.UsernameRouteSeparators = models.StringSlice{models.ProxyGatewayDefaultUsernameRouteSeparator}
+	}
 	item.Metadata = req.Metadata
 }
 
@@ -301,6 +321,10 @@ func (h *ProxyGatewayHandlers) CreateAccount(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if valid, _, message := validateGatewayPasswordShape(req.Password); !valid {
+		http.Error(w, message, http.StatusBadRequest)
+		return
+	}
+	if message := validateProxySelectionSource(req.ProxySelectionSource); message != "" {
 		http.Error(w, message, http.StatusBadRequest)
 		return
 	}
@@ -358,6 +382,10 @@ func (h *ProxyGatewayHandlers) UpdateAccount(w http.ResponseWriter, r *http.Requ
 			http.Error(w, message, http.StatusBadRequest)
 			return
 		}
+	}
+	if message := validateProxySelectionSource(req.ProxySelectionSource); message != "" {
+		http.Error(w, message, http.StatusBadRequest)
+		return
 	}
 	applyAccountRequest(item, req)
 	if req.Password != "" {
@@ -438,6 +466,13 @@ func applyAccountRequest(item *models.ProxyGatewayAccount, req proxyGatewayAccou
 	item.AllowAllGateways = req.AllowAllGateways
 	item.AllowedGatewayIDs = models.UintSlice(req.AllowedGatewayIDs)
 	item.GroupID = req.GroupID
+	if req.ProxySelectionSource != nil {
+		item.ProxySelectionSource = *req.ProxySelectionSource
+	} else if item.ProxySelectionSource == "" {
+		// Older API clients omit this field. New records therefore keep the old
+		// account-level behavior, while updates preserve the stored source.
+		item.ProxySelectionSource = models.ProxyGatewaySelectionSourceAccount
+	}
 	item.SelectionMode = req.SelectionMode
 	if item.SelectionMode == "" {
 		item.SelectionMode = models.ProxyGatewaySelectionFiltered
@@ -477,6 +512,13 @@ func applyAccountRequest(item *models.ProxyGatewayAccount, req proxyGatewayAccou
 	item.EnableUsernameRouting = req.EnableUsernameRouting
 	item.AllowAllRouteStrategies = req.AllowAllRouteStrategies
 	item.AllowedRouteStrategyIDs = models.UintSlice(req.AllowedRouteStrategyIDs)
+}
+
+func validateProxySelectionSource(source *models.ProxyGatewaySelectionSource) string {
+	if source == nil || source.IsValid() {
+		return ""
+	}
+	return "proxySelectionSource must be account or gateway"
 }
 
 func applyRouteStrategyRequest(item *models.ProxyGatewayRouteStrategy, req proxyGatewayRouteStrategyRequest) {
@@ -976,7 +1018,10 @@ func (h *ProxyGatewayHandlers) SaveSecurityPolicy(w http.ResponseWriter, r *http
 		return
 	}
 	h.audit(r, "save", "security_policy", &item.ID, item.Name)
-	_ = h.service.Reload(context.Background())
+	if err := h.service.Reload(context.Background()); err != nil {
+		http.Error(w, fmt.Sprintf("security policy saved but proxy gateway reload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, item)
 }
 
@@ -991,7 +1036,10 @@ func (h *ProxyGatewayHandlers) DeleteSecurityPolicy(w http.ResponseWriter, r *ht
 		return
 	}
 	h.audit(r, "delete", "security_policy", &id, "")
-	_ = h.service.Reload(context.Background())
+	if err := h.service.Reload(context.Background()); err != nil {
+		http.Error(w, fmt.Sprintf("security policy deleted but proxy gateway reload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, map[string]bool{"success": true})
 }
 
@@ -1042,7 +1090,10 @@ func (h *ProxyGatewayHandlers) SaveDNSPolicy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	h.audit(r, "save", "dns_policy", &item.ID, item.Name)
-	_ = h.service.Reload(context.Background())
+	if err := h.service.Reload(context.Background()); err != nil {
+		http.Error(w, fmt.Sprintf("DNS policy saved but proxy gateway reload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, item)
 }
 
@@ -1057,7 +1108,10 @@ func (h *ProxyGatewayHandlers) DeleteDNSPolicy(w http.ResponseWriter, r *http.Re
 		return
 	}
 	h.audit(r, "delete", "dns_policy", &id, "")
-	_ = h.service.Reload(context.Background())
+	if err := h.service.Reload(context.Background()); err != nil {
+		http.Error(w, fmt.Sprintf("DNS policy deleted but proxy gateway reload failed: %v", err), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, map[string]bool{"success": true})
 }
 
@@ -1236,6 +1290,9 @@ func validateProxyGatewayListener(item models.ProxyGatewayListener) string {
 	}
 	if !item.AllowPublicListen && !isLoopbackListenIP(item.ListenIP) {
 		return "非本机监听需要先启用公开监听确认"
+	}
+	if _, err := models.NormalizeProxyGatewayUsernameRouteSeparators(item.UsernameRouteSeparators); err != nil {
+		return "智能用户名分隔符无效: " + err.Error()
 	}
 	return ""
 }

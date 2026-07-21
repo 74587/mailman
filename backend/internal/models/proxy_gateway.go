@@ -22,6 +22,21 @@ const (
 	ProxyGatewaySelectionExplicit ProxyGatewaySelectionMode = "explicit"
 )
 
+type ProxyGatewaySelectionSource string
+
+const (
+	// Account mode preserves the original account-level proxy pool, scheduling,
+	// and fallback behavior for existing clients.
+	ProxyGatewaySelectionSourceAccount ProxyGatewaySelectionSource = "account"
+	// Gateway mode requires the gateway route table (or an explicitly requested
+	// username route strategy) to choose the proxy policy.
+	ProxyGatewaySelectionSourceGateway ProxyGatewaySelectionSource = "gateway"
+)
+
+func (source ProxyGatewaySelectionSource) IsValid() bool {
+	return source == ProxyGatewaySelectionSourceAccount || source == ProxyGatewaySelectionSourceGateway
+}
+
 type ProxyGatewaySelectionAlgorithm string
 
 const (
@@ -102,6 +117,7 @@ type ProxyGatewayListener struct {
 	HandshakeTimeoutSeconds int                         `gorm:"not null;default:10" json:"handshakeTimeoutSeconds"`
 	IdleTimeoutSeconds      int                         `gorm:"not null;default:120" json:"idleTimeoutSeconds"`
 	ConnectTimeoutSeconds   int                         `gorm:"not null;default:30" json:"connectTimeoutSeconds"`
+	UsernameRouteSeparators StringSlice                 `gorm:"type:json" json:"usernameRouteSeparators,omitempty"`
 	Metadata                JSONMapInterface            `gorm:"type:json" json:"metadata,omitempty"`
 	CreatedAt               time.Time                   `json:"createdAt"`
 	UpdatedAt               time.Time                   `json:"updatedAt"`
@@ -123,6 +139,7 @@ type ProxyGatewayAccount struct {
 	GroupID                 *uint                          `gorm:"index" json:"groupId,omitempty"`
 	Group                   *ProxyGatewayAccountGroup      `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"group,omitempty"`
 	Tags                    []ProxyGatewayAccountTag       `gorm:"many2many:proxy_gateway_account_tag_links;foreignKey:ID;joinForeignKey:AccountID;References:ID;joinReferences:TagID" json:"tags,omitempty"`
+	ProxySelectionSource    ProxyGatewaySelectionSource    `gorm:"type:varchar(16);not null;default:'account'" json:"proxySelectionSource"`
 	SelectionMode           ProxyGatewaySelectionMode      `gorm:"type:varchar(24);not null;default:'filtered'" json:"selectionMode"`
 	ProxyIDs                UintSlice                      `gorm:"type:json" json:"proxyIds,omitempty"`
 	ProxyMatchGroupIDs      UintSlice                      `gorm:"type:json" json:"proxyMatchGroupIds,omitempty"`

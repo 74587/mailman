@@ -64,7 +64,7 @@
           <tbody>
             <tr><td>顶级</td><td>代理列表</td><td>保存上游 HTTP、SOCKS5、SSH 等代理，是真实访问目标网站的出口。</td></tr>
             <tr><td>顶级</td><td>代理网关</td><td>Mailman 自己监听的 HTTP / SOCKS5 / Mixed 代理入口。</td></tr>
-            <tr><td>顶级</td><td>网关用户</td><td>外部客户端连接 Mailman 代理网关时使用的账号，独立于 Mailman 登录账号。</td></tr>
+            <tr><td>顶级</td><td>网关用户</td><td>外部客户端使用的账号，并选择遵循网关配置或兼容的账号独立代理策略。</td></tr>
             <tr><td>网关级</td><td>用户名路由</td><td>用户通过用户名后缀临时切换不同代理池、fallback、安全或 DNS 策略。</td></tr>
             <tr><td>网关级</td><td>安全策略</td><td>限制来源 IP、目标 Host、目标端口，并阻断内网、回环和 metadata 地址。</td></tr>
             <tr><td>网关级</td><td>DNS 策略</td><td>控制远端解析、本地解析、自定义 resolver、缓存 TTL 和 DNS 安全检查。</td></tr>
@@ -188,14 +188,16 @@ curl -X POST "$BASE_URL/api/proxy-pool/bulk-import" \
           <p>用户名路由允许用户在用户名后携带标志号，临时切换策略。标志号会在页面中显示，用户必须被授权才能使用。</p>
           <pre><code>proxy_user#17
 proxy_user?route=17
+proxy_user?router=17
 proxy_user?rs=17
 proxy_user?strategy=17
 proxy_user#17;purpose=signup;batch=202606</code></pre>
+          <p><code>#</code> 是兼容默认值。网关编辑页可以逐行配置多个符号分隔符，例如 <code>#</code>、<code>~</code>、<code>--</code>；较长的分隔符优先匹配。分隔符不能包含 ASCII 冒号，因为 HTTP Basic 用户名不能包含冒号。查询参数 <code>route</code>、<code>router</code>、<code>rs</code>、<code>strategy</code> 始终可用。</p>
           <ul>
             <li>网关用户必须开启“允许用户名携带路由标志”。</li>
             <li>网关用户必须被授权使用当前网关。</li>
             <li>网关用户必须被授权使用该路由策略，或开启“允许全部路由策略”。</li>
-            <li>未携带标志号时，使用网关用户自己的默认策略。</li>
+            <li>未携带标志号时，按网关用户的代理策略来源使用网关默认出口或账号独立策略。</li>
           </ul>
         </div>
       </div>
@@ -210,14 +212,16 @@ proxy_user#17;purpose=signup;batch=202606</code></pre>
           <p class="muted">用户名和密码可一键生成；分组和标签从已有项中搜索选择；可用网关通过搜索下拉选择后以标签回显。</p>
         </div>
         <div class="card">
-          <h3>代理选择</h3>
-          <p class="muted">支持全部可用、按组/标签、临时代理池。临时代理池通过代理列表子弹窗筛选并多选。</p>
+          <h3>代理策略来源</h3>
+          <p class="muted">新用户默认遵循网关的目标路由和默认出口；存量用户保持账号独立代理策略。切换来源不会删除旧配置。</p>
         </div>
       </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>策略</th><th>选项</th><th>建议</th></tr></thead>
           <tbody>
+            <tr><td>策略来源</td><td>遵循网关、独立代理策略</td><td>新用户推荐遵循网关；独立策略用于兼容现有接入。</td></tr>
+            <tr><td>独立代理池</td><td>全部可用、按组/标签、临时代理池</td><td>仅在独立代理策略模式下参与选路。</td></tr>
             <tr><td>调度算法</td><td>随机、轮询、权重、最低延迟、优先复用最近成功</td><td>通用场景用随机或轮询；会话稳定场景用优先复用。</td></tr>
             <tr><td>粘性策略</td><td>账号、客户端 IP、目标域名、客户端 IP + 目标域名</td><td>登录和浏览器会话建议按账号或客户端 IP 粘性。</td></tr>
             <tr><td>Fallback</td><td>中断、重试换代理、备用池、直连</td><td>生产谨慎开启直连 fallback。</td></tr>
@@ -225,7 +229,7 @@ proxy_user#17;purpose=signup;batch=202606</code></pre>
           </tbody>
         </table>
       </div>
-      <div class="callout success">创建完成后，在网关用户列表点击“代码示例”，选择可用网关，页面会实时拉取网关信息并生成代理 URL、curl 和程序接入片段。</div>
+      <div class="callout success">创建完成后，在网关用户列表点击“代码示例”，选择可用网关，页面会实时拉取网关信息并生成代理 URL、curl 和程序接入片段。开启智能用户名路由的用户还可以点击批量导出按钮，按网关、协议、分隔符和策略数量生成 URL、CSV 或 JSON Lines，并一键复制。</div>
     </section>
 
     <section id="usage" class="section">

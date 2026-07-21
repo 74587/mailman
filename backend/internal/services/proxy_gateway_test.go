@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -187,6 +188,14 @@ func TestProxyGatewayMixedListenerSupportsHTTPConnectAndSocks5(t *testing.T) {
 		if logEntry.TargetRouteMatcher != targetHost || logEntry.TargetRouteDefault {
 			t.Fatalf("unexpected target route log: %+v", logEntry)
 		}
+		_, targetPortText, _ := net.SplitHostPort(targetHostPort)
+		targetPort, _ := strconv.Atoi(targetPortText)
+		if logEntry.TargetHost != targetHost || logEntry.TargetPort != targetPort {
+			t.Fatalf("access log target=%s:%d, want %s:%d", logEntry.TargetHost, logEntry.TargetPort, targetHost, targetPort)
+		}
+		if logEntry.BytesIn <= 0 || logEntry.BytesOut <= 0 {
+			t.Fatalf("access log did not record bidirectional traffic: in=%d out=%d protocol=%s", logEntry.BytesIn, logEntry.BytesOut, logEntry.Protocol)
+		}
 	}
 	var trafficProxy models.ProxyPoolItem
 	if err := db.First(&trafficProxy, proxyItem.ID).Error; err != nil {
@@ -197,6 +206,294 @@ func TestProxyGatewayMixedListenerSupportsHTTPConnectAndSocks5(t *testing.T) {
 	}
 }
 
+func TestProxyGatewayFallbackModesHaveDistinctAttemptSemantics(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	service := NewProxyGatewayService(repository.NewProxyGatewayRepository(db), repository.NewProxyPoolRepository(db))
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fallback-ok"))
+	}))
+	defer target.Close()
+	targetAddr := strings.TrimPrefix(target.URL, "http://")
+
+	upstream := newConnectProxyServer(t)
+	defer upstream.Close()
+	upstreamHost, upstreamPortText, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	upstreamPort, _ := strconv.Atoi(upstreamPortText)
+	closedPort := freeTCPPort(t)
+	badProxy := models.ProxyPoolItem{
+		OrgID: 1, Type: models.ProxyTypeHTTP, Host: "127.0.0.1", Port: closedPort,
+		Status: models.ProxyStatusAvailable, CheckLatencyMs: 1,
+	}
+	goodProxy := models.ProxyPoolItem{
+		OrgID: 1, Type: models.ProxyTypeHTTP, Host: upstreamHost, Port: upstreamPort,
+		Status: models.ProxyStatusAvailable, CheckLatencyMs: 2,
+	}
+	if err := db.Create(&badProxy).Error; err != nil {
+		t.Fatalf("create unavailable proxy: %v", err)
+	}
+	if err := db.Create(&goodProxy).Error; err != nil {
+		t.Fatalf("create working proxy: %v", err)
+	}
+
+	security := &models.ProxyGatewaySecurityPolicy{
+		ID: 900001, OrgID: 1, Name: "fallback permissive", NoMatchAction: models.ProxyGatewayPolicyAllow,
+		TargetHostAllowlist: models.StringSlice{"*"},
+	}
+	dns := &models.ProxyGatewayDNSPolicy{
+		ID: 900002, OrgID: 1, Name: "fallback remote", Mode: models.ProxyGatewayDNSRemote,
+		Socks5RemoteResolve: true, HTTPConnectPreserveHost: true,
+		ResolveFailureAction: models.ProxyGatewayResolveFailureUseRemoteProxy,
+	}
+	securityID, dnsID := security.ID, dns.ID
+	account := &models.ProxyGatewayAccount{
+		ID: 900003, OrgID: 1, Username: "fallback-user", Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, SelectionAlgorithm: models.ProxyGatewayAlgorithmLowestLatency,
+		ProxyIDs: models.UintSlice{badProxy.ID, goodProxy.ID}, ProxyMatchTagMode: models.ProxyTagFilterOR,
+		StickyMode: models.ProxyGatewayStickyNone, SecurityPolicyID: &securityID, SecurityPolicy: security,
+		DNSPolicyID: &dnsID, DNSPolicy: dns, ConnectTimeoutSeconds: 1,
+	}
+	listener := models.ProxyGatewayListener{ID: 900004, OrgID: 1, ListenIP: "127.0.0.1", ConnectTimeoutSeconds: 5}
+
+	dial := func(t *testing.T) (*models.ProxyPoolItem, error) {
+		t.Helper()
+		session := gatewaySession{listener: listener, account: account, clientIP: "127.0.0.1", protocol: "http", command: "CONNECT"}
+		conn, proxyItem, _, _, err := service.dialWithPolicy(context.Background(), &session, targetAddr)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return proxyItem, err
+	}
+
+	t.Run("interrupt tries the primary pool once", func(t *testing.T) {
+		account.FallbackMode = models.ProxyGatewayFallbackInterrupt
+		account.MaxRetries = 5
+		if _, err := dial(t); err == nil {
+			t.Fatal("interrupt unexpectedly switched to the working proxy")
+		}
+	})
+
+	t.Run("retry switches within the primary pool", func(t *testing.T) {
+		account.FallbackMode = models.ProxyGatewayFallbackRetry
+		account.MaxRetries = 1
+		proxyItem, err := dial(t)
+		if err != nil {
+			t.Fatalf("retry failed: %v", err)
+		}
+		if proxyItem == nil || proxyItem.ID != goodProxy.ID {
+			t.Fatalf("retry selected proxy=%v, want %d", proxyItem, goodProxy.ID)
+		}
+	})
+
+	t.Run("backup retries only in the backup pool", func(t *testing.T) {
+		account.FallbackMode = models.ProxyGatewayFallbackBackup
+		account.MaxRetries = 1
+		account.ProxyIDs = models.UintSlice{badProxy.ID}
+		account.FallbackProxyIDs = models.UintSlice{goodProxy.ID}
+		proxyItem, err := dial(t)
+		if err != nil {
+			t.Fatalf("backup fallback failed: %v", err)
+		}
+		if proxyItem == nil || proxyItem.ID != goodProxy.ID {
+			t.Fatalf("backup selected proxy=%v, want %d", proxyItem, goodProxy.ID)
+		}
+	})
+
+	t.Run("direct requires explicit permission", func(t *testing.T) {
+		account.FallbackMode = models.ProxyGatewayFallbackDirect
+		account.MaxRetries = 9
+		account.ProxyIDs = models.UintSlice{badProxy.ID}
+		account.AllowDirectFallback = false
+		if _, err := dial(t); err == nil {
+			t.Fatal("direct fallback ran without permission")
+		}
+		account.AllowDirectFallback = true
+		proxyItem, err := dial(t)
+		if err != nil {
+			t.Fatalf("direct fallback failed: %v", err)
+		}
+		if proxyItem != nil {
+			t.Fatalf("direct fallback unexpectedly reported proxy %d", proxyItem.ID)
+		}
+	})
+}
+
+func TestProxyGatewayConnectTimeoutCoversUpstreamHandshakes(t *testing.T) {
+	service := &ProxyGatewayService{}
+	tests := []struct {
+		name      string
+		proxyType models.ProxyType
+		username  string
+		password  string
+	}{
+		{name: "HTTP CONNECT response", proxyType: models.ProxyTypeHTTP},
+		{name: "SOCKS5 handshake", proxyType: models.ProxyTypeSocks5},
+		{name: "SSH handshake", proxyType: models.ProxyTypeSSH, username: "user", password: "secret"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stallAddr := newStallingTCPServer(t)
+			host, portText, _ := net.SplitHostPort(stallAddr)
+			port, _ := strconv.Atoi(portText)
+			proxyItem := &models.ProxyPoolItem{Type: test.proxyType, Host: host, Port: port, Username: test.username, Password: test.password}
+			startedAt := time.Now()
+			conn, err := service.dialTarget(context.Background(), "example.com:443", "example.com:443", proxyItem, false, 1)
+			elapsed := time.Since(startedAt)
+			if conn != nil {
+				_ = conn.Close()
+				t.Fatal("stalling upstream unexpectedly connected")
+			}
+			if err == nil {
+				t.Fatal("stalling upstream did not time out")
+			}
+			if elapsed < 700*time.Millisecond || elapsed > 3*time.Second {
+				t.Fatalf("connect timeout elapsed=%s, want approximately 1s (err=%v)", elapsed, err)
+			}
+		})
+	}
+}
+
+func TestProxyGatewayReloadReportsStartFailureAndHealthRecovers(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	service := NewProxyGatewayService(repository.NewProxyGatewayRepository(db), repository.NewProxyPoolRepository(db))
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy listener port: %v", err)
+	}
+	_, portText, _ := net.SplitHostPort(occupied.Addr().String())
+	port, _ := strconv.Atoi(portText)
+	listener := models.ProxyGatewayListener{
+		OrgID: 1, Name: "reload collision", ListenIP: "127.0.0.1", Port: port,
+		Protocol: models.ProxyGatewayProtocolMixed, Enabled: true, RequireAuth: true,
+	}
+	if err := db.Create(&listener).Error; err != nil {
+		_ = occupied.Close()
+		t.Fatalf("create colliding listener: %v", err)
+	}
+
+	if err := service.Reload(context.Background()); err == nil {
+		_ = occupied.Close()
+		t.Fatal("reload swallowed listener start failure")
+	}
+	failedStatus, ok := findGatewayStatus(service.Status(), listener.ID)
+	if !ok {
+		_ = occupied.Close()
+		t.Fatalf("failed listener %d missing from runtime status", listener.ID)
+	}
+	if failedStatus.Running || failedStatus.LastError == "" || failedStatus.LastReloadedAt.IsZero() {
+		_ = occupied.Close()
+		t.Fatalf("failed listener health is incomplete: %+v", failedStatus)
+	}
+
+	if err := occupied.Close(); err != nil {
+		t.Fatalf("release listener port: %v", err)
+	}
+	if err := service.Reload(context.Background()); err != nil {
+		t.Fatalf("reload after port recovery: %v", err)
+	}
+	recoveredStatus, ok := findGatewayStatus(service.Status(), listener.ID)
+	if !ok || !recoveredStatus.Running || recoveredStatus.LastError != "" || recoveredStatus.LastStartedAt.IsZero() {
+		t.Fatalf("listener health did not recover: %+v", recoveredStatus)
+	}
+
+	service.mu.RLock()
+	runtime := service.runtimes[listener.ID]
+	service.mu.RUnlock()
+	if runtime == nil {
+		t.Fatalf("recovered listener %d has no runtime", listener.ID)
+	}
+	if err := runtime.listener.Close(); err != nil {
+		t.Fatalf("simulate unexpected listener failure: %v", err)
+	}
+	select {
+	case <-runtime.stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime did not stop after unexpected listener failure")
+	}
+	stoppedStatus, ok := findGatewayStatus(service.Status(), listener.ID)
+	if !ok || stoppedStatus.Running || stoppedStatus.LastError == "" {
+		t.Fatalf("unexpected runtime failure was not reflected in health: %+v", stoppedStatus)
+	}
+	if err := service.Reload(context.Background()); err != nil {
+		t.Fatalf("reload after unexpected runtime failure: %v", err)
+	}
+	restartedStatus, ok := findGatewayStatus(service.Status(), listener.ID)
+	if !ok || !restartedStatus.Running || restartedStatus.LastError != "" {
+		t.Fatalf("unexpected runtime failure did not recover: %+v", restartedStatus)
+	}
+	reloadErrors := make(chan error, 8)
+	var reloadWG sync.WaitGroup
+	for i := 0; i < cap(reloadErrors); i++ {
+		reloadWG.Add(1)
+		go func() {
+			defer reloadWG.Done()
+			reloadErrors <- service.Reload(context.Background())
+		}()
+	}
+	reloadWG.Wait()
+	close(reloadErrors)
+	for err := range reloadErrors {
+		if err != nil {
+			t.Fatalf("concurrent reload produced a false start failure: %v", err)
+		}
+	}
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := service.Stop(stopCtx); err != nil {
+		t.Fatalf("stop recovered listener: %v", err)
+	}
+}
+
+func TestProxyGatewayReloadAppliesUsernameSeparatorsWithoutRestart(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	service := NewProxyGatewayService(repository.NewProxyGatewayRepository(db), repository.NewProxyPoolRepository(db))
+	listener := models.ProxyGatewayListener{
+		OrgID: 1, Name: "separator hot reload", ListenIP: "127.0.0.1", Port: freeTCPPort(t),
+		Protocol: models.ProxyGatewayProtocolMixed, Enabled: true, RequireAuth: true,
+		UsernameRouteSeparators: models.StringSlice{"#"},
+	}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	if err := service.Reload(context.Background()); err != nil {
+		t.Fatalf("initial reload: %v", err)
+	}
+	defer service.Stop(context.Background())
+
+	service.mu.RLock()
+	runtimeBefore := service.runtimes[listener.ID]
+	service.mu.RUnlock()
+	if runtimeBefore == nil {
+		t.Fatal("initial runtime was not started")
+	}
+	if err := db.Model(&listener).Update("username_route_separators", models.StringSlice{"--"}).Error; err != nil {
+		t.Fatalf("update separators: %v", err)
+	}
+	if err := service.Reload(context.Background()); err != nil {
+		t.Fatalf("reload separators: %v", err)
+	}
+
+	service.mu.RLock()
+	runtimeAfter := service.runtimes[listener.ID]
+	service.mu.RUnlock()
+	if runtimeAfter != runtimeBefore {
+		t.Fatal("separator-only reload unexpectedly restarted the listener")
+	}
+	runtimeAfter.mu.RLock()
+	configured := append([]string(nil), runtimeAfter.listenerConfig.UsernameRouteSeparators...)
+	runtimeAfter.mu.RUnlock()
+	if len(configured) != 1 || configured[0] != "--" {
+		t.Fatalf("runtime separators=%v want=[--]", configured)
+	}
+	if _, ok := parseGatewayUsernameRoute("user#7", configured); ok {
+		t.Fatal("runtime kept accepting the removed separator")
+	}
+	request, ok := parseGatewayUsernameRoute("user--7", configured)
+	if !ok || request.baseUsername != "user" || request.flagNo != 7 {
+		t.Fatalf("runtime did not accept the reloaded separator: ok=%v request=%+v", ok, request)
+	}
+}
+
 func TestProxyGatewaySmartUsernameRoutingRequiresPermission(t *testing.T) {
 	db := newProxyGatewayTestDB(t)
 	gatewayRepo := repository.NewProxyGatewayRepository(db)
@@ -204,13 +501,14 @@ func TestProxyGatewaySmartUsernameRoutingRequiresPermission(t *testing.T) {
 	service := NewProxyGatewayService(gatewayRepo, proxyRepo)
 
 	listener := models.ProxyGatewayListener{
-		OrgID:     1,
-		Name:      "test gateway",
-		ListenIP:  "127.0.0.1",
-		Port:      18081,
-		Protocol:  models.ProxyGatewayProtocolMixed,
-		Enabled:   true,
-		IsDefault: true,
+		OrgID:                   1,
+		Name:                    "test gateway",
+		ListenIP:                "127.0.0.1",
+		Port:                    18081,
+		Protocol:                models.ProxyGatewayProtocolMixed,
+		Enabled:                 true,
+		IsDefault:               true,
+		UsernameRouteSeparators: models.StringSlice{"~", "--"},
 	}
 	if err := db.Create(&listener).Error; err != nil {
 		t.Fatalf("create listener: %v", err)
@@ -279,7 +577,7 @@ func TestProxyGatewaySmartUsernameRoutingRequiresPermission(t *testing.T) {
 		t.Fatalf("grant allowed strategy: %v", err)
 	}
 
-	auth, err := service.authenticateAccount(listener, "route-user#17;purpose=test", "secret")
+	auth, err := service.authenticateAccount(listener, "route-user~17;purpose=test", "secret")
 	if err != nil {
 		t.Fatalf("authenticate allowed route: %v", err)
 	}
@@ -293,8 +591,44 @@ func TestProxyGatewaySmartUsernameRoutingRequiresPermission(t *testing.T) {
 		t.Fatalf("route params not parsed: %+v", auth.routeParams)
 	}
 
-	if _, err := service.authenticateAccount(listener, "route-user#18", "secret"); err == nil {
+	queryAuth, err := service.authenticateAccount(listener, "route-user?route=17&purpose=query", "secret")
+	if err != nil || queryAuth.routeParams["purpose"] != "query" {
+		t.Fatalf("query route syntax failed: auth=%+v err=%v", queryAuth, err)
+	}
+	if _, err := service.authenticateAccount(listener, "route-user#17", "secret"); err == nil {
+		t.Fatal("expected an unconfigured separator to be rejected")
+	}
+	if _, err := service.authenticateAccount(listener, "route-user~18", "secret"); err == nil {
 		t.Fatal("expected unauthorized route strategy to be rejected")
+	}
+}
+
+func TestParseGatewayUsernameRouteSupportsConfiguredSeparators(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        string
+		separators []string
+		wantBase   string
+		wantFlag   int
+		wantOK     bool
+	}{
+		{name: "legacy default", raw: "user#7", wantBase: "user", wantFlag: 7, wantOK: true},
+		{name: "custom separator", raw: "user--8", separators: []string{"--"}, wantBase: "user", wantFlag: 8, wantOK: true},
+		{name: "longest overlapping separator wins", raw: "user##9", separators: []string{"#", "##"}, wantBase: "user", wantFlag: 9, wantOK: true},
+		{name: "router query alias", raw: "user?router=10", separators: []string{"~"}, wantBase: "user", wantFlag: 10, wantOK: true},
+		{name: "query syntax remains available", raw: "user?rs=10", separators: []string{"~"}, wantBase: "user", wantFlag: 10, wantOK: true},
+		{name: "unconfigured separator", raw: "user#11", separators: []string{"~"}, wantOK: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request, ok := parseGatewayUsernameRoute(test.raw, test.separators)
+			if ok != test.wantOK {
+				t.Fatalf("parse %q ok=%v want=%v request=%+v", test.raw, ok, test.wantOK, request)
+			}
+			if ok && (request.baseUsername != test.wantBase || request.flagNo != test.wantFlag) {
+				t.Fatalf("parse %q=%+v want base=%q flag=%d", test.raw, request, test.wantBase, test.wantFlag)
+			}
+		})
 	}
 }
 
@@ -310,7 +644,8 @@ func TestProxyGatewayTargetRoutingUsesFirstMatchIPAndDefault(t *testing.T) {
 	}
 	account := &models.ProxyGatewayAccount{
 		ID: 41, OrgID: 1, Username: "route-account", Enabled: true,
-		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{900},
+		ProxySelectionSource: models.ProxyGatewaySelectionSourceGateway,
+		SelectionMode:        models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{900},
 		SelectionAlgorithm: models.ProxyGatewayAlgorithmRandom,
 		FallbackMode:       models.ProxyGatewayFallbackInterrupt,
 	}
@@ -372,6 +707,44 @@ func TestProxyGatewayTargetRoutingUsesFirstMatchIPAndDefault(t *testing.T) {
 				t.Fatalf("route context matcher=%q default=%v", session.targetRouteMatcher, session.targetRouteDefault)
 			}
 		})
+	}
+}
+
+func TestProxyGatewaySelectionSourceControlsOnlyUnmatchedFallback(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	service := NewProxyGatewayService(repository.NewProxyGatewayRepository(db), repository.NewProxyPoolRepository(db))
+	listener := models.ProxyGatewayListener{OrgID: 1, Name: "selection source gateway", ListenIP: "127.0.0.1", Port: 18083, Protocol: models.ProxyGatewayProtocolMixed}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+
+	legacySession := gatewaySession{
+		listener:   listener,
+		targetHost: "unmatched.example",
+		account: &models.ProxyGatewayAccount{
+			ID: 51, OrgID: 1, Username: "legacy", ProxySelectionSource: models.ProxyGatewaySelectionSourceAccount,
+		},
+	}
+	if err := service.applyTargetRoute(&legacySession); err != nil {
+		t.Fatalf("legacy account fallback changed: %v", err)
+	}
+
+	gatewaySessionWithoutDefault := gatewaySession{
+		listener:   listener,
+		targetHost: "unmatched.example",
+		account: &models.ProxyGatewayAccount{
+			ID: 52, OrgID: 1, Username: "managed", ProxySelectionSource: models.ProxyGatewaySelectionSourceGateway,
+		},
+	}
+	if err := service.applyTargetRoute(&gatewaySessionWithoutDefault); err == nil || !strings.Contains(err.Error(), "requires a matching target route") {
+		t.Fatalf("gateway-managed account error=%v, want missing gateway route error", err)
+	}
+
+	manualStrategyID := uint(701)
+	gatewaySessionWithManualRoute := gatewaySessionWithoutDefault
+	gatewaySessionWithManualRoute.routeStrategyID = &manualStrategyID
+	if err := service.applyTargetRoute(&gatewaySessionWithManualRoute); err != nil {
+		t.Fatalf("explicit username route should satisfy gateway-managed selection: %v", err)
 	}
 }
 
@@ -698,6 +1071,43 @@ func newProxyGatewayTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate: %v", err)
 	}
 	return db
+}
+
+func newStallingTCPServer(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("start stalling TCP server: %v", err)
+	}
+	accepted := make(chan net.Conn, 1)
+	var acceptWG sync.WaitGroup
+	acceptWG.Add(1)
+	go func() {
+		defer acceptWG.Done()
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		acceptWG.Wait()
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+	})
+	return listener.Addr().String()
+}
+
+func findGatewayStatus(statuses []ProxyGatewayRuntimeStatus, listenerID uint) (ProxyGatewayRuntimeStatus, bool) {
+	for _, status := range statuses {
+		if status.ListenerID == listenerID {
+			return status, true
+		}
+	}
+	return ProxyGatewayRuntimeStatus{}, false
 }
 
 func newConnectProxyServer(t *testing.T) *httptest.Server {

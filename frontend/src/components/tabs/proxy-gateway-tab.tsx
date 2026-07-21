@@ -1,9 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
     ArrowLeft,
+    BookOpen,
+    Code2,
     Copy,
+    FileDown,
     FileText,
     GitBranch,
     HelpCircle,
@@ -11,9 +14,9 @@ import {
     ListFilter,
     Loader2,
     Network,
+    Pencil,
     Plus,
     RefreshCw,
-    Save,
     Search,
     Server,
     ShieldCheck,
@@ -50,7 +53,7 @@ import { ProxyGroup, ProxyPoolItem, ProxyTag } from '@/types'
 type ProxyGatewaySection = 'gateways' | 'listeners' | 'accounts' | 'account-groups' | 'account-tags' | 'routes' | 'security' | 'dns' | 'logs' | 'status'
 type NormalizedSection = 'gateways' | 'accounts' | 'account-groups' | 'account-tags' | 'logs'
 type GatewayDetailSection = 'overview' | 'target-routes' | 'routes' | 'security' | 'dns' | 'logs'
-type AccountStep = 'identity' | 'authorization' | 'routing' | 'proxy' | 'fallback'
+type AccountStep = 'identity' | 'authorization' | 'routing' | 'source' | 'proxy' | 'fallback' | 'limits'
 type RouteStep = 'basic' | 'proxy' | 'fallback' | 'overrides'
 type SecurityStep = 'basic' | 'sources' | 'targets' | 'boundaries'
 type StrategySection = 'selection' | 'fallback'
@@ -62,12 +65,14 @@ interface ProxyGatewayTabProps {
 type AccountDraft = Partial<ProxyGatewayAccount> & { password?: string; tagIds?: number[] }
 type MetaDraft = { id?: number; type: 'group' | 'tag'; name: string; description?: string; color?: string; sortOrder?: number }
 type SearchOption = { id: number; name: string; description?: string; color?: string; meta?: string }
+type ProxyExportProtocol = 'http' | 'socks5'
+type ProxyExportFormat = 'url' | 'csv' | 'jsonl'
 
 const proxyGatewayGuideHref = '/guide-html/proxy-pool-management.html#usage'
 
 const sectionMeta: Record<NormalizedSection, { title: string; subtitle: string; icon: any }> = {
     gateways: { title: '代理网关', subtitle: '先创建 HTTP / SOCKS5 / Mixed 网关，再在网关下维护路由、安全和 DNS 策略', icon: Network },
-    accounts: { title: '网关用户', subtitle: '独立于 Mailman 用户体系，配置账号、可用网关和代理选择策略', icon: KeyRound },
+    accounts: { title: '网关用户', subtitle: '独立于 Mailman 用户体系，配置认证、网关授权、出口来源和使用限制', icon: KeyRound },
     'account-groups': { title: '账号分组', subtitle: '独立维护网关用户分组，创建账号时只选择已有项', icon: Users },
     'account-tags': { title: '账号标签', subtitle: '独立维护网关用户标签，创建账号时只选择已有项', icon: Tags },
     logs: { title: '网关日志', subtitle: '查看访问日志、策略命中、拒绝原因和配置审计', icon: FileText },
@@ -96,6 +101,7 @@ const defaultListener = (): Partial<ProxyGatewayListener> => ({
     handshakeTimeoutSeconds: 10,
     idleTimeoutSeconds: 120,
     connectTimeoutSeconds: 30,
+    usernameRouteSeparators: ['#'],
 })
 
 const defaultAccount = (defaultGatewayId?: number): AccountDraft => ({
@@ -106,6 +112,7 @@ const defaultAccount = (defaultGatewayId?: number): AccountDraft => ({
     enabled: true,
     allowAllGateways: false,
     allowedGatewayIds: defaultGatewayId ? [defaultGatewayId] : [],
+    proxySelectionSource: 'gateway',
     selectionMode: 'filtered',
     selectionAlgorithm: 'random',
     proxyMatchTagMode: 'or',
@@ -977,7 +984,7 @@ function GatewayOverview({ gateway, status, allowedAccounts, routeCount, targetR
                             热加载
                         </button>
                         <button onClick={onEdit} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
-                            <Save className="h-4 w-4" />
+                            <Pencil className="h-4 w-4" />
                             编辑网关
                         </button>
                     </div>
@@ -1002,6 +1009,7 @@ function GatewayOverview({ gateway, status, allowedAccounts, routeCount, targetR
                     <SummaryRow label="协议" value={gateway.protocol.toUpperCase()} />
                     <SummaryRow label="公网监听" value={gateway.allowPublicListen ? '允许' : '不允许'} />
                     <SummaryRow label="默认网关" value={gateway.isDefault ? '是' : '否'} />
+                    <SummaryRow label="用户名路由分隔符" value={gatewayUsernameRouteSeparators(gateway).join('  ')} />
                     <SummaryRow label="握手超时" value={`${gateway.handshakeTimeoutSeconds}s`} />
                     <SummaryRow label="连接超时" value={`${gateway.connectTimeoutSeconds}s`} />
                     <SummaryRow label="空闲超时" value={`${gateway.idleTimeoutSeconds}s`} />
@@ -1030,6 +1038,7 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
     onDelete: (item: ProxyGatewayAccount) => void
 }) {
     const [exampleAccount, setExampleAccount] = useState<ProxyGatewayAccount | null>(null)
+    const [exportAccount, setExportAccount] = useState<ProxyGatewayAccount | null>(null)
     if (!accounts.length) return <EmptyState label="还没有网关用户" />
     const gatewayById = new Map(gateways.map(item => [item.id, item]))
     const strategyById = new Map(routeStrategies.map(item => [item.id, item]))
@@ -1043,7 +1052,7 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                                 <th className="px-4 py-3 text-left">用户</th>
                                 <th className="px-4 py-3 text-left">认证信息</th>
                                 <th className="px-4 py-3 text-left">可用网关</th>
-                                <th className="px-4 py-3 text-left">代理策略</th>
+                                <th className="px-4 py-3 text-left">出口来源</th>
                                 <th className="px-4 py-3 text-left">分组标签</th>
                                 <th className="px-4 py-3 text-left">限速</th>
                                 <th className="px-4 py-3 text-right">操作</th>
@@ -1074,12 +1083,23 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                                         </div>
                                     </td>
                                     <td className="px-4 py-3">
-                                        <div className="flex flex-wrap gap-1.5">
-                                            <Badge tone="blue">{item.selectionMode}</Badge>
-                                            <Badge>{item.selectionAlgorithm}</Badge>
-                                            {item.preferLastSuccess && <Badge tone="green">优先复用</Badge>}
-                                            {item.stickyMode !== 'none' && <Badge tone="amber">{item.stickyMode}</Badge>}
-                                        </div>
+                                        {(item.proxySelectionSource || 'account') === 'gateway' ? (
+                                            <div>
+                                                <Badge tone="green">遵循网关</Badge>
+                                                <div className="mt-1 text-xs text-gray-500">目标路由 / 默认出口</div>
+                                            </div>
+                                        ) : (
+                                            <div>
+                                                <div className="flex flex-wrap gap-1.5">
+                                                    <Badge tone="amber">独立配置</Badge>
+                                                    <Badge tone="blue">{item.selectionMode}</Badge>
+                                                    <Badge>{item.selectionAlgorithm}</Badge>
+                                                    {item.preferLastSuccess && <Badge tone="green">优先复用</Badge>}
+                                                    {item.stickyMode !== 'none' && <Badge tone="amber">{item.stickyMode}</Badge>}
+                                                </div>
+                                                <div className="mt-1 text-xs text-gray-500">兼容模式</div>
+                                            </div>
+                                        )}
                                         {item.enableUsernameRouting && !item.allowAllRouteStrategies && (
                                             <div className="mt-1 flex flex-wrap gap-1">
                                                 {(item.allowedRouteStrategyIds || []).map(id => {
@@ -1105,18 +1125,32 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                                                 href={proxyGatewayGuideHref}
                                                 target="_blank"
                                                 rel="noreferrer"
-                                                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
+                                                className="rounded-lg border border-gray-200 p-2 text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white"
+                                                title="打开使用文档"
+                                                aria-label="打开使用文档"
                                             >
-                                                <FileText className="h-4 w-4" />
-                                                文档
+                                                <BookOpen className="h-4 w-4" />
                                             </a>
                                             <button
+                                                type="button"
                                                 onClick={() => setExampleAccount(item)}
-                                                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800"
+                                                className="rounded-lg border border-gray-200 p-2 text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white"
+                                                title="查看接入代码"
+                                                aria-label="查看接入代码"
                                             >
-                                                <Copy className="h-4 w-4" />
-                                                代码示例
+                                                <Code2 className="h-4 w-4" />
                                             </button>
+                                            {item.enableUsernameRouting && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setExportAccount(item)}
+                                                    className="rounded-lg border border-blue-200 p-2 text-blue-600 hover:bg-blue-50 dark:border-blue-900 dark:text-blue-300 dark:hover:bg-blue-950/30"
+                                                    title="批量导出智能路由代理"
+                                                    aria-label="批量导出智能路由代理"
+                                                >
+                                                    <FileDown className="h-4 w-4" />
+                                                </button>
+                                            )}
                                             <RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} />
                                         </div>
                                     </td>
@@ -1127,7 +1161,218 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                 </TableShell>
             </Panel>
             <AccountCodeExamplesModal account={exampleAccount} onClose={() => setExampleAccount(null)} />
+            <AccountProxyExportModal account={exportAccount} gateways={gateways} routeStrategies={routeStrategies} onClose={() => setExportAccount(null)} />
         </>
+    )
+}
+
+function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }: {
+    account: ProxyGatewayAccount | null
+    gateways: ProxyGatewayListener[]
+    routeStrategies: ProxyGatewayRouteStrategy[]
+    onClose: () => void
+}) {
+    const [gatewayId, setGatewayId] = useState<number | undefined>()
+    const [protocols, setProtocols] = useState<ProxyExportProtocol[]>([])
+    const [separator, setSeparator] = useState('#')
+    const [quantity, setQuantity] = useState(0)
+    const [format, setFormat] = useState<ProxyExportFormat>('url')
+
+    const allowedGateways = useMemo(() => {
+        if (!account) return []
+        const allowedIds = new Set(account.allowedGatewayIds || [])
+        return gateways.filter(gateway => {
+            const authorized = account.allowAllGateways || !allowedIds.size || allowedIds.has(gateway.id)
+            return authorized && gateway.enabled && gateway.requireAuth !== false
+        })
+    }, [account, gateways])
+
+    useEffect(() => {
+        if (!account) {
+            setGatewayId(undefined)
+            return
+        }
+        setGatewayId(current => current && allowedGateways.some(gateway => gateway.id === current) ? current : allowedGateways[0]?.id)
+    }, [account, allowedGateways])
+
+    const selectedGateway = allowedGateways.find(gateway => gateway.id === gatewayId) || allowedGateways[0]
+    const supportedProtocols = selectedGateway ? gatewaySupportedExportProtocols(selectedGateway) : []
+    const supportedSeparators = selectedGateway ? gatewayUsernameRouteSeparators(selectedGateway) : ['#']
+    const selectedProtocols = supportedProtocols.filter(protocol => protocols.includes(protocol))
+    const effectiveProtocols = selectedProtocols.length ? selectedProtocols : supportedProtocols
+    const effectiveSeparator = supportedSeparators.includes(separator) ? separator : supportedSeparators[0] || '#'
+
+    useEffect(() => {
+        const nextProtocols = selectedGateway ? gatewaySupportedExportProtocols(selectedGateway) : []
+        const nextSeparators = selectedGateway ? gatewayUsernameRouteSeparators(selectedGateway) : ['#']
+        setProtocols(nextProtocols)
+        setSeparator(nextSeparators[0] || '#')
+    }, [selectedGateway])
+
+    const availableStrategies = useMemo(
+        () => account && selectedGateway ? accountExportRouteStrategies(account, selectedGateway, routeStrategies) : [],
+        [account, selectedGateway, routeStrategies]
+    )
+
+    useEffect(() => {
+        setQuantity(availableStrategies.length ? Math.min(availableStrategies.length, 20) : 0)
+    }, [account?.id, selectedGateway?.id, availableStrategies.length])
+
+    if (!account) return null
+
+    const exportedStrategies = availableStrategies.slice(0, Math.max(0, Math.min(quantity, availableStrategies.length)))
+    const exportLines = selectedGateway
+        ? exportedStrategies.flatMap(strategy => effectiveProtocols.map(protocol => formatSmartRouteProxyExport({
+            account,
+            gateway: selectedGateway,
+            protocol,
+            separator: effectiveSeparator,
+            flagNo: strategy.flagNo,
+            format,
+        })))
+        : []
+    const exportText = exportLines.join('\n')
+    const canCopy = !!exportText && (!!account.password || selectedGateway?.requireAuth === false)
+    const gatewayOptions = toSearchOptions(allowedGateways, gateway => `${gatewayHostPort(gateway)} · ${gateway.protocol.toUpperCase()}`)
+
+    const toggleProtocol = (protocol: ProxyExportProtocol) => {
+        setProtocols(current => {
+            const supportedCurrent = supportedProtocols.filter(item => current.includes(item))
+            const baseline = supportedCurrent.length ? supportedCurrent : supportedProtocols
+            if (!baseline.includes(protocol)) return [...baseline, protocol]
+            if (baseline.length === 1) return baseline
+            return baseline.filter(item => item !== protocol)
+        })
+    }
+
+    const copyExport = async () => {
+        if (!canCopy) return
+        try {
+            await writeClipboardText(exportText)
+            toast.success(`已复制 ${exportLines.length} 条代理链接`)
+        } catch (error: any) {
+            toast.error(error.message || '复制失败')
+        }
+    }
+
+    return (
+        <Modal open={!!account} onOpenChange={open => !open && onClose()}>
+            <ModalContent
+                size="2xl"
+                className="w-[calc(100%-1rem)] sm:w-full"
+                onOpenAutoFocus={event => event.preventDefault()}
+            >
+                <ModalHeader className="p-4 pr-12 sm:p-6 sm:pr-12">
+                    <ModalTitle>批量导出智能路由代理</ModalTitle>
+                    <ModalDescription>按已授权的策略编号生成代理配置；标准 URL 会自动编码用户名中的分隔符。</ModalDescription>
+                </ModalHeader>
+                <ModalBody className="space-y-5 p-4 sm:p-6">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                        <SearchSelect
+                            label="代理网关"
+                            help="仅显示已启用、需要认证且该用户有权访问的网关。"
+                            items={gatewayOptions}
+                            value={selectedGateway?.id}
+                            onChange={setGatewayId}
+                            placeholder="选择网关"
+                            emptyLabel="没有可用于导出的网关"
+                            clearable={false}
+                        />
+                        <SelectField
+                            label="导出格式"
+                            help="URL 适合直接粘贴；CSV 和 JSON Lines 适合批量导入其他系统。"
+                            value={format}
+                            onChange={value => setFormat(value as ProxyExportFormat)}
+                            options={[["url", "标准代理 URL"], ["csv", "CSV 五列"], ["jsonl", "JSON Lines"]]}
+                        />
+                        <SelectField
+                            label="用户名分隔符"
+                            help="只能选择该网关实际接受的智能用户名分隔符。"
+                            value={effectiveSeparator}
+                            onChange={setSeparator}
+                            options={supportedSeparators.map(value => [value, value])}
+                        />
+                        <NumberField
+                            label="策略数量"
+                            help="按标志号升序导出前 N 个已授权策略。"
+                            value={quantity}
+                            onChange={value => setQuantity(Math.max(0, Math.min(Math.trunc(value || 0), availableStrategies.length)))}
+                        />
+                    </div>
+
+                    <div>
+                        <FieldLabel label="代理协议" help="Mixed 网关可同时导出 HTTP 和 SOCKS5。" />
+                        <div className="mt-2 flex flex-wrap gap-2">
+                            {supportedProtocols.map(protocol => {
+                                const active = effectiveProtocols.includes(protocol)
+                                return (
+                                    <button
+                                        key={protocol}
+                                        type="button"
+                                        aria-pressed={active}
+                                        onClick={() => toggleProtocol(protocol)}
+                                        className={cn(
+                                            'rounded-lg border px-3 py-1.5 text-sm font-medium transition',
+                                            active
+                                                ? 'border-blue-600 bg-blue-600 text-white'
+                                                : 'border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800'
+                                        )}
+                                    >
+                                        {protocol.toUpperCase()}
+                                    </button>
+                                )
+                            })}
+                        </div>
+                    </div>
+
+                    {selectedGateway && availableStrategies.length > 0 ? (
+                        <>
+                            <div className="grid grid-cols-3 gap-3">
+                                <Metric label="可用策略" value={availableStrategies.length} />
+                                <Metric label="已选协议" value={effectiveProtocols.length} />
+                                <Metric label="导出条目" value={exportLines.length} />
+                            </div>
+                            <div>
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                    <div className="min-w-0">
+                                        <FieldLabel label="导出预览" />
+                                        <div className="mt-1 flex max-h-16 flex-wrap gap-1 overflow-auto">
+                                            {exportedStrategies.map(strategy => <Badge key={strategy.id} tone="blue">{effectiveSeparator}{strategy.flagNo}</Badge>)}
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        aria-label="复制导出的代理配置"
+                                        disabled={!canCopy}
+                                        onClick={copyExport}
+                                        className={cn(
+                                            'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-white',
+                                            canCopy ? 'bg-blue-600 hover:bg-blue-700' : 'cursor-not-allowed bg-gray-300 dark:bg-gray-700'
+                                        )}
+                                    >
+                                        <Copy className="h-4 w-4" />
+                                        一键复制
+                                    </button>
+                                </div>
+                                {!account.password && (
+                                    <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                                        当前用户没有可回显密码，无法生成可直接使用的认证链接。请先编辑用户并重新设置密码。
+                                    </div>
+                                )}
+                                <pre className="max-h-72 min-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-gray-800 bg-gray-950 p-3 text-xs leading-5 text-gray-100">
+                                    <code>{exportText || '请选择至少一个协议和策略。'}</code>
+                                </pre>
+                            </div>
+                        </>
+                    ) : (
+                        <EmptyState label={selectedGateway ? '该用户在当前网关没有可用的智能路由策略' : '没有可用于导出的已启用认证网关'} />
+                    )}
+                </ModalBody>
+                <ModalFooter className="p-4 sm:p-6">
+                    <button onClick={onClose} className="rounded-lg border border-gray-200 px-4 py-2 text-sm dark:border-gray-700">关闭</button>
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
     )
 }
 
@@ -1193,7 +1438,7 @@ function AccountCodeExamplesModal({ account, onClose }: {
 
     const copyText = async (text: string, successMessage = '内容已复制') => {
         try {
-            await navigator.clipboard.writeText(text)
+            await writeClipboardText(text)
             toast.success(successMessage)
         } catch (error: any) {
             toast.error(error.message || '复制失败')
@@ -1229,6 +1474,7 @@ function AccountCodeExamplesModal({ account, onClose }: {
                                 onChange={value => setGatewayId(value)}
                                 placeholder={loadingGateways ? '正在获取网关...' : '搜索网关'}
                                 emptyLabel={loadingGateways ? '正在获取网关...' : '该账号暂无可用网关'}
+                                clearable={false}
                             />
                             {gatewayError && <div className="text-xs text-rose-600">{gatewayError}</div>}
                         </div>
@@ -1310,6 +1556,67 @@ function CopyExampleBlock({ item, copyText }: {
     )
 }
 
+function gatewayUsernameRouteSeparators(gateway: ProxyGatewayListener) {
+    const normalized = (gateway.usernameRouteSeparators || []).map(value => value.trim()).filter(Boolean)
+    const unique = Array.from(new Set(normalized))
+    const valid = unique.length > 0 && unique.length <= 8 && unique.every(value => (
+        Array.from(value).length <= 8
+        && !/[\s\p{L}\p{Nd}:?;&,]/u.test(value)
+        && !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+    ))
+    return valid ? unique : ['#']
+}
+
+function gatewaySupportedExportProtocols(gateway: ProxyGatewayListener): ProxyExportProtocol[] {
+    if (gateway.protocol === 'mixed') return ['http', 'socks5']
+    return [gateway.protocol]
+}
+
+function accountExportRouteStrategies(account: ProxyGatewayAccount, gateway: ProxyGatewayListener, routeStrategies: ProxyGatewayRouteStrategy[]) {
+    const allowedIds = new Set(account.allowedRouteStrategyIds || [])
+    const candidates = routeStrategies
+        .filter(strategy => strategy.enabled && (strategy.gatewayId === gateway.id || strategy.gatewayId === 0))
+        .sort((left, right) => {
+            if (left.flagNo !== right.flagNo) return left.flagNo - right.flagNo
+            const leftScope = left.gatewayId === gateway.id ? 0 : 1
+            const rightScope = right.gatewayId === gateway.id ? 0 : 1
+            return leftScope - rightScope || left.id - right.id
+        })
+    const byFlag = new Map<number, ProxyGatewayRouteStrategy>()
+    for (const strategy of candidates) {
+        if (!byFlag.has(strategy.flagNo)) byFlag.set(strategy.flagNo, strategy)
+    }
+    return Array.from(byFlag.values())
+        .filter(strategy => account.allowAllRouteStrategies || allowedIds.has(strategy.id))
+        .sort((left, right) => left.flagNo - right.flagNo)
+}
+
+function csvCell(value: string | number) {
+    const text = String(value)
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+function formatSmartRouteProxyExport({ account, gateway, protocol, separator, flagNo, format }: {
+    account: ProxyGatewayAccount
+    gateway: ProxyGatewayListener
+    protocol: ProxyExportProtocol
+    separator: string
+    flagNo: number
+    format: ProxyExportFormat
+}) {
+    const username = `${account.username}${separator}${flagNo}`
+    const password = account.password || ''
+    const host = gatewayExternalHost(gateway)
+    const port = gatewayExternalPort(gateway)
+    if (format === 'csv') {
+        return [protocol, host, port, username, password].map(csvCell).join(',')
+    }
+    if (format === 'jsonl') {
+        return JSON.stringify({ protocol, host, port, username, password })
+    }
+    return `${protocol}://${urlCredential(username)}:${urlCredential(password)}@${gatewayHostPort(gateway)}`
+}
+
 function gatewayExternalHost(gateway: ProxyGatewayListener) {
     return (gateway.externalHost || gateway.listenIp || '127.0.0.1').trim()
 }
@@ -1326,13 +1633,39 @@ function urlCredential(value: string) {
     return encodeURIComponent(value)
 }
 
+async function writeClipboardText(value: string) {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(value)
+            return
+        } catch {
+            // Fall through for non-secure origins or denied clipboard access.
+        }
+    }
+    if (typeof document === 'undefined') throw new Error('当前环境不支持剪贴板')
+    const textarea = document.createElement('textarea')
+    textarea.value = value
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    try {
+        textarea.select()
+        if (!document.execCommand('copy')) throw new Error('浏览器拒绝复制')
+    } finally {
+        textarea.remove()
+    }
+}
+
 function jsonString(value: string) {
     return JSON.stringify(value)
 }
 
 function gatewayHostPort(gateway: ProxyGatewayListener) {
     const host = gatewayExternalHost(gateway)
-    if (/:\d+$/.test(host)) return host
+    if (/^\[[^\]]+\]:\d+$/.test(host) || /^[^:]+:\d+$/.test(host)) return host
+    if (host.includes(':')) return `[${host.replace(/^\[|\]$/g, '')}]:${gatewayExternalPort(gateway)}`
     return `${host}:${gatewayExternalPort(gateway)}`
 }
 
@@ -1641,7 +1974,7 @@ function SecurityView({ policies, onCreate, onEdit }: { policies: ProxyGatewaySe
                                     <td className="px-4 py-3"><Badge tone="blue">{item.noMatchAction}</Badge></td>
                                     <td className="px-4 py-3 text-right">
                                         <button onClick={() => onEdit(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
-                                            <Save className="h-4 w-4" />
+                                            <Pencil className="h-4 w-4" />
                                             编辑
                                         </button>
                                     </td>
@@ -1706,7 +2039,7 @@ function DNSView({ policies, onCreate, onEdit }: { policies: ProxyGatewayDNSPoli
                                     <td className="px-4 py-3"><Badge tone={item.resolveFailureAction === 'deny' ? 'red' : 'amber'}>{item.resolveFailureAction}</Badge></td>
                                     <td className="px-4 py-3 text-right">
                                         <button onClick={() => onEdit(item)} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
-                                            <Save className="h-4 w-4" />
+                                            <Pencil className="h-4 w-4" />
                                             编辑
                                         </button>
                                     </td>
@@ -1887,10 +2220,10 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
 function RowActions({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
     return (
         <div className="inline-flex items-center gap-1">
-            <button onClick={onEdit} className="rounded-lg border border-gray-200 p-2 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800" title="编辑">
-                <Save className="h-4 w-4" />
+            <button type="button" onClick={onEdit} className="rounded-lg border border-gray-200 p-2 text-gray-600 hover:bg-gray-50 hover:text-gray-900 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800 dark:hover:text-white" title="编辑" aria-label="编辑">
+                <Pencil className="h-4 w-4" />
             </button>
-            <button onClick={onDelete} className="rounded-lg border border-rose-200 p-2 text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30" title="删除">
+            <button type="button" onClick={onDelete} className="rounded-lg border border-rose-200 p-2 text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30" title="删除" aria-label="删除">
                 <Trash2 className="h-4 w-4" />
             </button>
         </div>
@@ -1939,6 +2272,14 @@ function ListenerModal({ draft, setDraft, securityPolicies, dnsPolicies, onSave 
                         <SelectField label="协议" help="Mixed 会自动识别 HTTP 代理请求和 SOCKS5 握手。" value={draft.protocol || 'mixed'} onChange={value => setDraft({ ...draft, protocol: value as any })} options={[['mixed', 'Mixed'], ['http', 'HTTP'], ['socks5', 'SOCKS5']]} />
                         <SearchSelect label="默认安全策略" help="网关未被路由策略覆盖时使用的访问边界。" items={securityOptions} value={draft.securityPolicyId} onChange={value => setDraft({ ...draft, securityPolicyId: value })} noneLabel="自动默认" placeholder="搜索安全策略" />
                         <SearchSelect label="默认 DNS 策略" help="网关未被路由策略覆盖时使用的 DNS 解析行为。" items={dnsOptions} value={draft.dnsPolicyId} onChange={value => setDraft({ ...draft, dnsPolicyId: value })} noneLabel="自动默认" placeholder="搜索 DNS 策略" />
+                        <div className="md:col-span-2">
+                            <ListField
+                                label="智能用户名分隔符"
+                                help="每行一个，仅允许不含冒号的符号，最多 8 个。留空时兼容使用 #；?route、?router、?rs、?strategy 查询语法始终可用。"
+                                value={draft.usernameRouteSeparators?.length ? draft.usernameRouteSeparators : ['#']}
+                                onChange={value => setDraft({ ...draft, usernameRouteSeparators: value })}
+                            />
+                        </div>
                     </div>
                     <div className="grid gap-3 md:grid-cols-4">
                         <Toggle label="启用网关" help="关闭后保存并热加载会停止该监听。" checked={!!draft.enabled} onChange={value => setDraft({ ...draft, enabled: value })} />
@@ -1982,6 +2323,14 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
     useEffect(() => {
         if (draft) setStep('identity')
     }, [draft?.id])
+
+    const proxySelectionSource = draft?.proxySelectionSource || (draft?.id ? 'account' : 'gateway')
+
+    useEffect(() => {
+        if (proxySelectionSource === 'gateway' && (step === 'proxy' || step === 'fallback')) {
+            setStep('source')
+        }
+    }, [proxySelectionSource, step])
 
     useEffect(() => {
         if (!draft) return
@@ -2035,8 +2384,12 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
         { id: 'identity', label: '账号信息', description: '用户名、密码、分组和标签' },
         { id: 'authorization', label: '网关授权', description: '选择账号可登录的网关' },
         { id: 'routing', label: '用户名路由', description: '授权可用的路由标志号' },
-        { id: 'proxy', label: '代理选择', description: '主代理池范围和调度策略' },
-        { id: 'fallback', label: 'Fallback/限速', description: '备用池、直连和速率限制' },
+        { id: 'source', label: '出口来源', description: '遵循网关或保留独立策略' },
+        ...(proxySelectionSource === 'account' ? [
+            { id: 'proxy' as AccountStep, label: '独立代理池', description: '兼容模式的范围和调度' },
+            { id: 'fallback' as AccountStep, label: '独立 Fallback', description: '兼容模式的失败处理' },
+        ] : []),
+        { id: 'limits', label: '使用限制', description: '并发、速率和会话边界' },
     ]
     const stepIndex = Math.max(0, steps.findIndex(item => item.id === step))
     const gatewayOptions = toSearchOptions(gateways, item => `${item.listenIp}:${item.port} · ${item.protocol.toUpperCase()}`)
@@ -2051,7 +2404,7 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
             <ModalContent size="6xl">
                 <ModalHeader>
                     <ModalTitle>{draft.id ? '编辑网关用户' : '新增网关用户'}</ModalTitle>
-                    <ModalDescription>配置可登录代理网关的账号、授权网关和代理选择策略。</ModalDescription>
+                    <ModalDescription>配置认证和网关授权，并明确出口由网关还是兼容的用户独立策略决定。</ModalDescription>
                 </ModalHeader>
                 <ModalBody className="grid gap-5 xl:grid-cols-[240px_minmax(0,1fr)]">
                     <WizardRail steps={steps} current={step} onChange={setStep} />
@@ -2129,8 +2482,10 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
                             </>
                         )}
 
+                        {step === 'source' && <ProxySelectionSourceFields draft={draft} setDraft={setDraft} />}
                         {step === 'proxy' && <ProxyStrategyFields draft={draft} setDraft={setDraft} proxyGroups={proxyGroups} proxyTags={proxyTags} proxies={proxies} section="selection" />}
-                        {step === 'fallback' && <ProxyStrategyFields draft={draft} setDraft={setDraft} proxyGroups={proxyGroups} proxyTags={proxyTags} proxies={proxies} section="fallback" showLimits />}
+                        {step === 'fallback' && <ProxyStrategyFields draft={draft} setDraft={setDraft} proxyGroups={proxyGroups} proxyTags={proxyTags} proxies={proxies} section="fallback" />}
+                        {step === 'limits' && <AccountLimitsFields draft={draft} setDraft={setDraft} />}
                     </div>
                 </ModalBody>
                 <ModalFooter>
@@ -2144,14 +2499,94 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
     )
 }
 
-function ProxyStrategyFields({ draft, setDraft, proxyGroups, proxyTags, proxies, section = 'selection', showLimits = false }: {
+function ProxySelectionSourceFields({ draft, setDraft }: {
+    draft: AccountDraft
+    setDraft: (draft: AccountDraft | null) => void
+}) {
+    const source = draft.proxySelectionSource || (draft.id ? 'account' : 'gateway')
+    const options = [
+        {
+            id: 'gateway' as const,
+            label: '遵循网关配置',
+            description: '由目标路由、默认出口或已授权的用户名路由策略决定代理池。',
+        },
+        {
+            id: 'account' as const,
+            label: '独立代理策略',
+            description: '保留账号自己的代理池、调度和 Fallback，适用于现有接入。',
+        },
+    ]
+    return (
+        <>
+            <SectionTitle label="代理策略来源" />
+            <fieldset>
+                <legend className="sr-only">代理策略来源</legend>
+                <div className="grid gap-3 md:grid-cols-2">
+                    {options.map(option => {
+                        const selected = source === option.id
+                        return (
+                            <button
+                                key={option.id}
+                                type="button"
+                                aria-pressed={selected}
+                                onClick={() => setDraft({ ...draft, proxySelectionSource: option.id })}
+                                className={cn(
+                                    'rounded-lg border px-4 py-3 text-left transition focus:outline-none focus:ring-4 focus:ring-primary-100 dark:focus:ring-primary-950/40',
+                                    selected
+                                        ? 'border-primary-500 bg-primary-50/70 dark:border-primary-500 dark:bg-primary-950/20'
+                                        : 'border-gray-200 bg-white hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900 dark:hover:border-gray-600',
+                                )}
+                            >
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-sm font-medium text-gray-900 dark:text-white">{option.label}</span>
+                                    {option.id === 'gateway' && !draft.id ? <Badge tone="green">新用户默认</Badge> : null}
+                                    {option.id === 'account' && draft.id ? <Badge tone="amber">兼容</Badge> : null}
+                                </div>
+                                <div className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{option.description}</div>
+                            </button>
+                        )
+                    })}
+                </div>
+            </fieldset>
+            {source === 'gateway' ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+                    用户级代理池配置会被保留但不参与选路。请求未命中目标路由时，网关必须提供默认出口，或由用户显式调用已授权的用户名路由策略。
+                </div>
+            ) : (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                    当前模式保持原有行为：网关目标路由优先；未决定出口时，继续使用该用户自己的代理池和 Fallback。切换到遵循网关不会删除下面的兼容配置。
+                </div>
+            )}
+        </>
+    )
+}
+
+function AccountLimitsFields({ draft, setDraft }: {
+    draft: AccountDraft
+    setDraft: (draft: AccountDraft | null) => void
+}) {
+    return (
+        <>
+            <SectionTitle label="限速与会话边界" />
+            <div className="grid gap-3 md:grid-cols-3">
+                <NumberField label="最大并发" help="该用户同时连接数上限，0 表示不限。" value={draft.maxConcurrent || 0} onChange={value => setDraft({ ...draft, maxConcurrent: value })} />
+                <NumberField label="每分钟连接" help="连接速率限制，0 表示不限。" value={draft.rateLimitPerMinute || 0} onChange={value => setDraft({ ...draft, rateLimitPerMinute: value })} />
+                <NumberField label="带宽 Kbps" help="带宽限制，0 表示不限。" value={draft.bandwidthLimitKbps || 0} onChange={value => setDraft({ ...draft, bandwidthLimitKbps: value })} />
+                <NumberField label="连接超时秒" help="连接上游代理或目标地址的超时时间。" value={draft.connectTimeoutSeconds || 30} onChange={value => setDraft({ ...draft, connectTimeoutSeconds: value })} />
+                <NumberField label="空闲超时秒" help="会话无流量达到该时间后关闭。" value={draft.idleTimeoutSeconds || 120} onChange={value => setDraft({ ...draft, idleTimeoutSeconds: value })} />
+                <NumberField label="最大会话秒" help="单个会话最长存活时间，0 表示不限。" value={draft.maxSessionSeconds || 0} onChange={value => setDraft({ ...draft, maxSessionSeconds: value })} />
+            </div>
+        </>
+    )
+}
+
+function ProxyStrategyFields({ draft, setDraft, proxyGroups, proxyTags, proxies, section = 'selection' }: {
     draft: AccountDraft | Partial<ProxyGatewayRouteStrategy>
     setDraft: (draft: any) => void
     proxyGroups: ProxyGroup[]
     proxyTags: ProxyTag[]
     proxies: ProxyPoolItem[]
     section?: StrategySection
-    showLimits?: boolean
 }) {
     const groupOptions = toSearchOptions(proxyGroups, item => item.description)
     const tagOptions = toSearchOptions(proxyTags)
@@ -2193,19 +2628,6 @@ function ProxyStrategyFields({ draft, setDraft, proxyGroups, proxyTags, proxies,
                     <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-gray-950/50 dark:text-gray-300">
                         上游代理失败时直接中断请求，不再切换代理或尝试直连。
                     </div>
-                )}
-                {showLimits && (
-                    <>
-                        <SectionTitle label="限速与会话边界" />
-                        <div className="grid gap-3 md:grid-cols-3">
-                            <NumberField label="最大并发" help="该用户同时连接数上限，0 表示不限。" value={(draft as AccountDraft).maxConcurrent || 0} onChange={value => setDraft({ ...draft, maxConcurrent: value })} />
-                            <NumberField label="每分钟连接" help="连接速率限制，0 表示不限。" value={(draft as AccountDraft).rateLimitPerMinute || 0} onChange={value => setDraft({ ...draft, rateLimitPerMinute: value })} />
-                            <NumberField label="带宽 Kbps" help="带宽限制，0 表示不限。" value={(draft as AccountDraft).bandwidthLimitKbps || 0} onChange={value => setDraft({ ...draft, bandwidthLimitKbps: value })} />
-                            <NumberField label="连接超时秒" help="连接上游代理或目标地址的超时时间。" value={(draft as AccountDraft).connectTimeoutSeconds || 30} onChange={value => setDraft({ ...draft, connectTimeoutSeconds: value })} />
-                            <NumberField label="空闲超时秒" help="会话无流量达到该时间后关闭。" value={(draft as AccountDraft).idleTimeoutSeconds || 120} onChange={value => setDraft({ ...draft, idleTimeoutSeconds: value })} />
-                            <NumberField label="最大会话秒" help="单个会话最长存活时间，0 表示不限。" value={(draft as AccountDraft).maxSessionSeconds || 0} onChange={value => setDraft({ ...draft, maxSessionSeconds: value })} />
-                        </div>
-                    </>
                 )}
             </>
         )
@@ -2700,7 +3122,7 @@ function filterOptions(items: SearchOption[], query: string) {
     return items.filter(item => [item.name, item.description, item.meta, String(item.id)].some(value => value?.toLowerCase().includes(keyword)))
 }
 
-function SearchSelect({ label, help, items, value, onChange, placeholder = '搜索并选择', noneLabel, emptyLabel = '暂无可选项' }: {
+function SearchSelect({ label, help, items, value, onChange, placeholder = '搜索并选择', noneLabel, emptyLabel = '暂无可选项', clearable = true }: {
     label?: string
     help?: string
     items: SearchOption[]
@@ -2709,10 +3131,12 @@ function SearchSelect({ label, help, items, value, onChange, placeholder = '搜�
     placeholder?: string
     noneLabel?: string
     emptyLabel?: string
+    clearable?: boolean
 }) {
     const [open, setOpen] = useState(false)
     const [query, setQuery] = useState('')
     const ref = useRef<HTMLDivElement>(null)
+    const listboxId = useId()
     const selected = items.find(item => item.id === value)
     const filtered = filterOptions(items, query)
 
@@ -2733,6 +3157,10 @@ function SearchSelect({ label, help, items, value, onChange, placeholder = '搜�
             <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
                 <input
+                    aria-label={label || placeholder}
+                    aria-controls={listboxId}
+                    aria-expanded={open}
+                    role="combobox"
                     value={open ? query : selected?.name || ''}
                     onFocus={() => {
                         setOpen(true)
@@ -2745,7 +3173,7 @@ function SearchSelect({ label, help, items, value, onChange, placeholder = '搜�
                     placeholder={selected?.name || noneLabel || placeholder}
                     className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-8 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40"
                 />
-                {value && (
+                {clearable && value && (
                     <button
                         type="button"
                         onClick={() => {
@@ -2759,10 +3187,12 @@ function SearchSelect({ label, help, items, value, onChange, placeholder = '搜�
                 )}
             </div>
             {open && (
-                <div className="absolute z-50 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+                <div id={listboxId} role="listbox" className="absolute z-50 mt-1 max-h-64 w-full overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-xl dark:border-gray-700 dark:bg-gray-900">
                     {noneLabel && (
                         <button
                             type="button"
+                            role="option"
+                            aria-selected={!value}
                             onClick={() => {
                                 onChange(undefined)
                                 setOpen(false)
@@ -2778,6 +3208,8 @@ function SearchSelect({ label, help, items, value, onChange, placeholder = '搜�
                         <button
                             key={item.id}
                             type="button"
+                            role="option"
+                            aria-selected={item.id === value}
                             onClick={() => {
                                 onChange(item.id)
                                 setOpen(false)

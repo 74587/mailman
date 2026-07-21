@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,16 +30,19 @@ type ProxyGatewayService struct {
 	proxyRepo *repository.ProxyPoolRepository
 	logger    *utils.Logger
 
-	mu           sync.RWMutex
-	runtimes     map[uint]*proxyGatewayRuntime
-	roundRobin   map[string]int
-	lastSuccess  map[string]uint
-	sticky       map[string]stickyProxyEntry
-	active       map[uint]int
-	rateWindows  map[uint]rateWindow
-	dnsCache     map[string]dnsCacheEntry
-	targetRoutes map[uint][]models.ProxyGatewayTargetRoute
-	rand         *rand.Rand
+	reloadMu      sync.Mutex
+	mu            sync.RWMutex
+	runtimes      map[uint]*proxyGatewayRuntime
+	configured    map[uint]models.ProxyGatewayListener
+	startFailures map[uint]listenerStartFailure
+	roundRobin    map[string]int
+	lastSuccess   map[string]uint
+	sticky        map[string]stickyProxyEntry
+	active        map[uint]int
+	rateWindows   map[uint]rateWindow
+	dnsCache      map[string]dnsCacheEntry
+	targetRoutes  map[uint][]models.ProxyGatewayTargetRoute
+	rand          *rand.Rand
 }
 
 type proxyGatewayRuntime struct {
@@ -57,6 +61,13 @@ type proxyGatewayRuntime struct {
 	lastError      string
 	lastStartedAt  time.Time
 	lastReloadedAt time.Time
+	running        bool
+	stopping       bool
+}
+
+type listenerStartFailure struct {
+	message string
+	at      time.Time
 }
 
 type ProxyGatewayRuntimeStatus struct {
@@ -121,18 +132,20 @@ type gatewayAuthResult struct {
 
 func NewProxyGatewayService(repo *repository.ProxyGatewayRepository, proxyRepo *repository.ProxyPoolRepository) *ProxyGatewayService {
 	return &ProxyGatewayService{
-		repo:         repo,
-		proxyRepo:    proxyRepo,
-		logger:       utils.NewLogger("ProxyGateway"),
-		runtimes:     map[uint]*proxyGatewayRuntime{},
-		roundRobin:   map[string]int{},
-		lastSuccess:  map[string]uint{},
-		sticky:       map[string]stickyProxyEntry{},
-		active:       map[uint]int{},
-		rateWindows:  map[uint]rateWindow{},
-		dnsCache:     map[string]dnsCacheEntry{},
-		targetRoutes: map[uint][]models.ProxyGatewayTargetRoute{},
-		rand:         rand.New(rand.NewSource(time.Now().UnixNano())),
+		repo:          repo,
+		proxyRepo:     proxyRepo,
+		logger:        utils.NewLogger("ProxyGateway"),
+		runtimes:      map[uint]*proxyGatewayRuntime{},
+		configured:    map[uint]models.ProxyGatewayListener{},
+		startFailures: map[uint]listenerStartFailure{},
+		roundRobin:    map[string]int{},
+		lastSuccess:   map[string]uint{},
+		sticky:        map[string]stickyProxyEntry{},
+		active:        map[uint]int{},
+		rateWindows:   map[uint]rateWindow{},
+		dnsCache:      map[string]dnsCacheEntry{},
+		targetRoutes:  map[uint][]models.ProxyGatewayTargetRoute{},
+		rand:          rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -141,6 +154,8 @@ func (s *ProxyGatewayService) Start(ctx context.Context) error {
 }
 
 func (s *ProxyGatewayService) Stop(ctx context.Context) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	s.mu.Lock()
 	runtimes := s.runtimes
 	s.runtimes = map[uint]*proxyGatewayRuntime{}
@@ -160,6 +175,8 @@ func (s *ProxyGatewayService) Stop(ctx context.Context) error {
 }
 
 func (s *ProxyGatewayService) Reload(ctx context.Context) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	listeners, err := s.repo.ListEnabledListeners()
 	if err != nil {
 		return err
@@ -179,6 +196,12 @@ func (s *ProxyGatewayService) Reload(ctx context.Context) error {
 	s.mu.Lock()
 	current := s.runtimes
 	next := make(map[uint]*proxyGatewayRuntime, len(nextByID))
+	nextFailures := make(map[uint]listenerStartFailure, len(nextByID))
+	for id := range nextByID {
+		if failure, ok := s.startFailures[id]; ok {
+			nextFailures[id] = failure
+		}
+	}
 	var toStop []*proxyGatewayRuntime
 	var toStart []models.ProxyGatewayListener
 
@@ -189,14 +212,17 @@ func (s *ProxyGatewayService) Reload(ctx context.Context) error {
 			continue
 		}
 		signature := listenerSignature(listener)
-		if runtime.signature == signature {
-			runtime.mu.Lock()
+		runtime.mu.Lock()
+		running := runtime.running
+		if runtime.signature == signature && running {
 			runtime.listenerConfig = listener
 			runtime.lastReloadedAt = time.Now()
 			runtime.mu.Unlock()
 			next[id] = runtime
+			delete(nextFailures, id)
 			continue
 		}
+		runtime.mu.Unlock()
 		toStop = append(toStop, runtime)
 		toStart = append(toStart, listener)
 	}
@@ -206,14 +232,22 @@ func (s *ProxyGatewayService) Reload(ctx context.Context) error {
 		}
 	}
 	s.runtimes = next
+	s.configured = nextByID
+	s.startFailures = nextFailures
 	s.targetRoutes = nextTargetRoutes
 	s.mu.Unlock()
 
 	for _, runtime := range toStop {
 		runtime.stop()
 	}
+	var startErrors []error
 	for _, listener := range toStart {
 		if err := s.startListener(listener); err != nil {
+			wrapped := fmt.Errorf("start listener %q (%s): %w", listener.Name, net.JoinHostPort(listener.ListenIP, strconv.Itoa(listener.Port)), err)
+			startErrors = append(startErrors, wrapped)
+			s.mu.Lock()
+			s.startFailures[listener.ID] = listenerStartFailure{message: wrapped.Error(), at: time.Now()}
+			s.mu.Unlock()
 			s.logger.Error("failed to start proxy gateway listener %d: %v", listener.ID, err)
 			_ = s.repo.CreateAuditLog(&models.ProxyGatewayAuditLog{
 				OrgID:      listener.OrgID,
@@ -229,7 +263,7 @@ func (s *ProxyGatewayService) Reload(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		return nil
+		return errors.Join(startErrors...)
 	}
 }
 
@@ -265,23 +299,46 @@ func (s *ProxyGatewayService) RefreshTargetRoutesByStrategy(orgID, strategyID ui
 
 func (s *ProxyGatewayService) Status() []ProxyGatewayRuntimeStatus {
 	s.mu.RLock()
-	runtimes := make([]*proxyGatewayRuntime, 0, len(s.runtimes))
-	for _, runtime := range s.runtimes {
-		runtimes = append(runtimes, runtime)
+	configured := make(map[uint]models.ProxyGatewayListener, len(s.configured))
+	for id, listener := range s.configured {
+		configured[id] = listener
+	}
+	runtimes := make(map[uint]*proxyGatewayRuntime, len(s.runtimes))
+	for id, runtime := range s.runtimes {
+		runtimes[id] = runtime
+	}
+	failures := make(map[uint]listenerStartFailure, len(s.startFailures))
+	for id, failure := range s.startFailures {
+		failures[id] = failure
 	}
 	s.mu.RUnlock()
 
-	statuses := make([]ProxyGatewayRuntimeStatus, 0, len(runtimes))
-	for _, runtime := range runtimes {
+	statuses := make([]ProxyGatewayRuntimeStatus, 0, len(configured))
+	for id, listener := range configured {
+		runtime := runtimes[id]
+		if runtime == nil {
+			failure := failures[id]
+			statuses = append(statuses, ProxyGatewayRuntimeStatus{
+				ListenerID:     listener.ID,
+				Name:           listener.Name,
+				ListenAddress:  net.JoinHostPort(listener.ListenIP, strconv.Itoa(listener.Port)),
+				Protocol:       string(listener.Protocol),
+				Enabled:        listener.Enabled,
+				Running:        false,
+				LastError:      failure.message,
+				LastReloadedAt: failure.at,
+			})
+			continue
+		}
 		runtime.mu.RLock()
-		listener := runtime.listenerConfig
+		listener = runtime.listenerConfig
 		statuses = append(statuses, ProxyGatewayRuntimeStatus{
 			ListenerID:     listener.ID,
 			Name:           listener.Name,
 			ListenAddress:  net.JoinHostPort(listener.ListenIP, strconv.Itoa(listener.Port)),
 			Protocol:       string(listener.Protocol),
 			Enabled:        listener.Enabled,
-			Running:        runtime.listener != nil,
+			Running:        runtime.running,
 			ActiveConns:    runtime.activeConns,
 			TotalConns:     runtime.totalConns,
 			TotalBytesIn:   runtime.totalBytesIn,
@@ -292,6 +349,7 @@ func (s *ProxyGatewayService) Status() []ProxyGatewayRuntimeStatus {
 		})
 		runtime.mu.RUnlock()
 	}
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].ListenerID < statuses[j].ListenerID })
 	return statuses
 }
 
@@ -323,6 +381,7 @@ func (s *ProxyGatewayService) startListener(listener models.ProxyGatewayListener
 		service:        s,
 		lastStartedAt:  time.Now(),
 		lastReloadedAt: time.Now(),
+		running:        true,
 	}
 
 	s.mu.Lock()
@@ -330,6 +389,7 @@ func (s *ProxyGatewayService) startListener(listener models.ProxyGatewayListener
 		existing.stop()
 	}
 	s.runtimes[listener.ID] = runtime
+	delete(s.startFailures, listener.ID)
 	s.mu.Unlock()
 
 	go runtime.serve()
@@ -344,19 +404,21 @@ func (s *ProxyGatewayService) startListener(listener models.ProxyGatewayListener
 }
 
 func (r *proxyGatewayRuntime) serve() {
-	defer close(r.stopped)
+	defer func() {
+		r.mu.Lock()
+		r.running = false
+		r.mu.Unlock()
+		close(r.stopped)
+	}()
 	for {
 		conn, err := r.listener.Accept()
 		if err != nil {
-			select {
-			case <-r.stopped:
-				return
-			default:
-				r.mu.Lock()
+			r.mu.Lock()
+			if !r.stopping {
 				r.lastError = err.Error()
-				r.mu.Unlock()
-				return
 			}
+			r.mu.Unlock()
+			return
 		}
 		r.mu.Lock()
 		r.activeConns++
@@ -368,6 +430,9 @@ func (r *proxyGatewayRuntime) serve() {
 
 func (r *proxyGatewayRuntime) stop() {
 	r.stopOnce.Do(func() {
+		r.mu.Lock()
+		r.stopping = true
+		r.mu.Unlock()
 		if r.listener != nil {
 			_ = r.listener.Close()
 		}
@@ -385,7 +450,9 @@ func (r *proxyGatewayRuntime) handleConn(conn net.Conn) {
 		_ = counted.Close()
 	}()
 
+	r.mu.RLock()
 	listener := r.listenerConfig
+	r.mu.RUnlock()
 	timeout := time.Duration(nonZero(listener.HandshakeTimeoutSeconds, 10)) * time.Second
 	_ = counted.SetReadDeadline(time.Now().Add(timeout))
 	reader := bufio.NewReader(counted)
@@ -640,7 +707,7 @@ func (s *ProxyGatewayService) performSocks5Handshake(conn net.Conn, reader *bufi
 		return auth, nil
 	}
 	_, _ = conn.Write([]byte{0x05, 0x00})
-	return gatewayAuthResult{account: s.anonymousAccount(listener.OrgID), rawUsername: "anonymous"}, nil
+	return gatewayAuthResult{account: s.anonymousAccount(listener), rawUsername: "anonymous"}, nil
 }
 
 func readSocks5UsernamePassword(reader *bufio.Reader) (string, string, error) {
@@ -723,7 +790,7 @@ func writeSocks5Reply(conn net.Conn, code byte) error {
 
 func (s *ProxyGatewayService) authenticateHTTP(listener models.ProxyGatewayListener, req *http.Request) (gatewayAuthResult, error) {
 	if !listener.RequireAuth {
-		return gatewayAuthResult{account: s.anonymousAccount(listener.OrgID), rawUsername: "anonymous"}, nil
+		return gatewayAuthResult{account: s.anonymousAccount(listener), rawUsername: "anonymous"}, nil
 	}
 	header := req.Header.Get("Proxy-Authorization")
 	if header == "" {
@@ -759,7 +826,7 @@ func (s *ProxyGatewayService) authenticateAccount(listener models.ProxyGatewayLi
 		return auth, nil
 	}
 
-	request, ok := parseGatewayUsernameRoute(username)
+	request, ok := parseGatewayUsernameRoute(username, listener.UsernameRouteSeparators)
 	if !ok {
 		return auth, err
 	}
@@ -819,7 +886,7 @@ type gatewayUsernameRouteRequest struct {
 	params       models.JSONMapInterface
 }
 
-func parseGatewayUsernameRoute(raw string) (gatewayUsernameRouteRequest, bool) {
+func parseGatewayUsernameRoute(raw string, configuredSeparators []string) (gatewayUsernameRouteRequest, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return gatewayUsernameRouteRequest{}, false
@@ -827,7 +894,7 @@ func parseGatewayUsernameRoute(raw string) (gatewayUsernameRouteRequest, bool) {
 	if idx := strings.Index(raw, "?"); idx > 0 && idx < len(raw)-1 {
 		values, err := url.ParseQuery(raw[idx+1:])
 		if err == nil {
-			flagText := firstNonEmpty(values.Get("route"), values.Get("rs"), values.Get("strategy"))
+			flagText := firstNonEmpty(values.Get("route"), values.Get("router"), values.Get("rs"), values.Get("strategy"))
 			if flagText != "" {
 				flagNo, err := strconv.Atoi(flagText)
 				if err == nil && flagNo > 0 {
@@ -843,12 +910,14 @@ func parseGatewayUsernameRoute(raw string) (gatewayUsernameRouteRequest, bool) {
 		}
 	}
 
-	for _, separator := range []string{"#"} {
+	separators := append([]string(nil), models.EffectiveProxyGatewayUsernameRouteSeparators(configuredSeparators)...)
+	sort.SliceStable(separators, func(i, j int) bool { return len(separators[i]) > len(separators[j]) })
+	for _, separator := range separators {
 		idx := strings.LastIndex(raw, separator)
 		if idx <= 0 || idx >= len(raw)-1 {
 			continue
 		}
-		flagAndParams := raw[idx+1:]
+		flagAndParams := raw[idx+len(separator):]
 		flagText := flagAndParams
 		params := models.JSONMapInterface{}
 		if paramIdx := strings.IndexAny(flagAndParams, ";&,"); paramIdx >= 0 {
@@ -954,9 +1023,9 @@ func (s *ProxyGatewayService) applyAuthResultToSession(session *gatewaySession, 
 	}
 }
 
-func (s *ProxyGatewayService) anonymousAccount(orgID uint) *models.ProxyGatewayAccount {
+func (s *ProxyGatewayService) anonymousAccount(listener models.ProxyGatewayListener) *models.ProxyGatewayAccount {
 	return &models.ProxyGatewayAccount{
-		OrgID:                 orgID,
+		OrgID:                 listener.OrgID,
 		Username:              "anonymous",
 		Enabled:               true,
 		SelectionMode:         models.ProxyGatewaySelectionFiltered,
@@ -964,8 +1033,8 @@ func (s *ProxyGatewayService) anonymousAccount(orgID uint) *models.ProxyGatewayA
 		ProxyMatchTagMode:     models.ProxyTagFilterOR,
 		FallbackMode:          models.ProxyGatewayFallbackInterrupt,
 		MaxRetries:            2,
-		ConnectTimeoutSeconds: 30,
-		IdleTimeoutSeconds:    120,
+		ConnectTimeoutSeconds: nonZero(listener.ConnectTimeoutSeconds, 30),
+		IdleTimeoutSeconds:    nonZero(listener.IdleTimeoutSeconds, 120),
 	}
 }
 
@@ -1010,6 +1079,11 @@ func (s *ProxyGatewayService) applyTargetRoute(session *gatewaySession) error {
 	}
 	if defaultIndex >= 0 {
 		return applyTargetRouteStrategy(session, &routes[defaultIndex], "")
+	}
+	if session.account != nil &&
+		session.account.ProxySelectionSource == models.ProxyGatewaySelectionSourceGateway &&
+		session.routeStrategyID == nil {
+		return errors.New("gateway-managed proxy selection requires a matching target route, a default target route, or an explicit username route strategy")
 	}
 	return nil
 }
@@ -1063,50 +1137,50 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session *gatew
 	}
 
 	exclude := []uint{}
-	attempts := nonZero(session.account.MaxRetries, 0) + 1
-	if attempts < 1 {
-		attempts = 1
-	}
 	var lastErr error
-	for i := 0; i < attempts; i++ {
-		proxyItem, direct, err := s.selectProxy(session.account, *session, exclude, false)
-		if err != nil {
-			lastErr = err
-			break
-		}
-		conn, err := s.dialTarget(ctx, targetForDial, httpConnectHostHeader, proxyItem, direct, session.account)
-		if err == nil {
-			if proxyItem != nil {
-				s.rememberProxySuccess(session.account, *session, proxyItem.ID)
-			}
-			return conn, proxyItem, securityPolicy, dnsPolicy, nil
-		}
-		lastErr = err
-		if proxyItem != nil {
-			s.forgetStickySelection(session.account, *session, proxyItem.ID)
-			exclude = append(exclude, proxyItem.ID)
-		}
+	connectTimeout := nonZero(session.listener.ConnectTimeoutSeconds, 30)
+	if session.account != nil && session.account.ConnectTimeoutSeconds > 0 {
+		connectTimeout = session.account.ConnectTimeoutSeconds
 	}
-
-	if session.account.FallbackMode == models.ProxyGatewayFallbackBackup {
-		proxyItem, direct, err := s.selectProxy(session.account, *session, exclude, true)
-		if err == nil {
-			conn, dialErr := s.dialTarget(ctx, targetForDial, httpConnectHostHeader, proxyItem, direct, session.account)
-			if dialErr == nil {
+	attemptPool := func(fallback bool, attempts int) (net.Conn, *models.ProxyPoolItem, bool) {
+		for i := 0; i < attempts; i++ {
+			proxyItem, direct, err := s.selectProxy(session.account, *session, exclude, fallback)
+			if err != nil {
+				lastErr = err
+				return nil, nil, false
+			}
+			conn, err := s.dialTarget(ctx, targetForDial, httpConnectHostHeader, proxyItem, direct, connectTimeout)
+			if err == nil {
 				if proxyItem != nil {
 					s.rememberProxySuccess(session.account, *session, proxyItem.ID)
 				}
-				return conn, proxyItem, securityPolicy, dnsPolicy, nil
+				return conn, proxyItem, true
 			}
-			lastErr = dialErr
+			lastErr = err
 			if proxyItem != nil {
 				s.forgetStickySelection(session.account, *session, proxyItem.ID)
+				exclude = append(exclude, proxyItem.ID)
 			}
+		}
+		return nil, nil, false
+	}
+
+	mainAttempts := 1
+	if session.account.FallbackMode == models.ProxyGatewayFallbackRetry && session.account.MaxRetries > 0 {
+		mainAttempts += session.account.MaxRetries
+	}
+	if conn, proxyItem, ok := attemptPool(false, mainAttempts); ok {
+		return conn, proxyItem, securityPolicy, dnsPolicy, nil
+	}
+
+	if session.account.FallbackMode == models.ProxyGatewayFallbackBackup && session.account.MaxRetries > 0 {
+		if conn, proxyItem, ok := attemptPool(true, session.account.MaxRetries); ok {
+			return conn, proxyItem, securityPolicy, dnsPolicy, nil
 		}
 	}
 
 	if session.account.FallbackMode == models.ProxyGatewayFallbackDirect && session.account.AllowDirectFallback {
-		conn, err := s.dialTarget(ctx, targetForDial, httpConnectHostHeader, nil, true, session.account)
+		conn, err := s.dialTarget(ctx, targetForDial, httpConnectHostHeader, nil, true, connectTimeout)
 		if err == nil {
 			return conn, nil, securityPolicy, dnsPolicy, nil
 		}
@@ -1298,9 +1372,6 @@ func (s *ProxyGatewayService) selectProxy(account *models.ProxyGatewayAccount, s
 		return nil, false, err
 	}
 	if len(candidates) == 0 {
-		if account.AllowDirectFallback && account.FallbackMode == models.ProxyGatewayFallbackDirect {
-			return nil, true, nil
-		}
 		return nil, false, errors.New("no available proxy matched gateway account strategy")
 	}
 
@@ -1513,14 +1584,15 @@ func (s *ProxyGatewayService) routeRuntimeKey(account *models.ProxyGatewayAccoun
 	return fmt.Sprintf("account:%d", account.ID)
 }
 
-func (s *ProxyGatewayService) dialTarget(ctx context.Context, targetAddr, httpConnectHostHeader string, proxyItem *models.ProxyPoolItem, direct bool, account *models.ProxyGatewayAccount) (net.Conn, error) {
-	timeout := 30
-	if account != nil && account.ConnectTimeoutSeconds > 0 {
-		timeout = account.ConnectTimeoutSeconds
+func (s *ProxyGatewayService) dialTarget(ctx context.Context, targetAddr, httpConnectHostHeader string, proxyItem *models.ProxyPoolItem, direct bool, timeout int) (net.Conn, error) {
+	if timeout <= 0 {
+		timeout = 30
 	}
+	attemptCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
 	dialer := &net.Dialer{Timeout: time.Duration(timeout) * time.Second, KeepAlive: 30 * time.Second}
 	if direct || proxyItem == nil {
-		return dialer.DialContext(ctx, "tcp", targetAddr)
+		return dialer.DialContext(attemptCtx, "tcp", targetAddr)
 	}
 	proxyURL, err := url.Parse(proxyItem.ProxyURL())
 	if err != nil {
@@ -1528,15 +1600,15 @@ func (s *ProxyGatewayService) dialTarget(ctx context.Context, targetAddr, httpCo
 	}
 	switch models.NormalizeProxyType(proxyItem.Type) {
 	case models.ProxyTypeHTTP, models.ProxyTypeHTTPS:
-		return dialViaHTTPProxy(ctx, dialer, proxyURL, targetAddr, httpConnectHostHeader)
+		return dialViaHTTPProxy(attemptCtx, dialer, proxyURL, targetAddr, httpConnectHostHeader)
 	case models.ProxyTypeSocks5:
 		xDialer, err := xproxy.FromURL(proxyURL, xproxy.Direct)
 		if err != nil {
 			return nil, err
 		}
-		return dialWithProxyDialer(ctx, xDialer, targetAddr)
+		return dialWithProxyDialer(attemptCtx, xDialer, targetAddr)
 	case models.ProxyTypeSSH:
-		return dialViaSSHProxy(ctx, proxyURL, targetAddr, timeout)
+		return dialViaSSHProxy(attemptCtx, dialer, proxyURL, targetAddr)
 	default:
 		return nil, fmt.Errorf("unsupported upstream proxy type: %s", proxyItem.Type)
 	}
@@ -1551,16 +1623,24 @@ func dialViaHTTPProxy(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL
 			proxyHost += ":80"
 		}
 	}
-	var conn net.Conn
-	var err error
-	if proxyURL.Scheme == "https" {
-		host, _, _ := net.SplitHostPort(proxyHost)
-		conn, err = tls.DialWithDialer(dialer, "tcp", proxyHost, &tls.Config{ServerName: host})
-	} else {
-		conn, err = dialer.DialContext(ctx, "tcp", proxyHost)
-	}
+	conn, err := dialer.DialContext(ctx, "tcp", proxyHost)
 	if err != nil {
 		return nil, err
+	}
+	if proxyURL.Scheme == "https" {
+		host, _, _ := net.SplitHostPort(proxyHost)
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: host})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		conn = tlsConn
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
 	}
 	if strings.TrimSpace(connectHostHeader) == "" {
 		connectHostHeader = targetAddr
@@ -1588,6 +1668,10 @@ func dialViaHTTPProxy(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL
 		_ = conn.Close()
 		return nil, fmt.Errorf("upstream HTTP proxy CONNECT failed: %s", resp.Status)
 	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	if reader.Buffered() > 0 {
 		return &bufferedConn{Conn: conn, reader: reader}, nil
 	}
@@ -1595,14 +1679,23 @@ func dialViaHTTPProxy(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL
 }
 
 func dialWithProxyDialer(ctx context.Context, dialer xproxy.Dialer, targetAddr string) (net.Conn, error) {
+	if contextDialer, ok := dialer.(xproxy.ContextDialer); ok {
+		return contextDialer.DialContext(ctx, "tcp", targetAddr)
+	}
 	type result struct {
 		conn net.Conn
 		err  error
 	}
-	ch := make(chan result, 1)
+	ch := make(chan result)
 	go func() {
 		conn, err := dialer.Dial("tcp", targetAddr)
-		ch <- result{conn: conn, err: err}
+		select {
+		case ch <- result{conn: conn, err: err}:
+		case <-ctx.Done():
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
 	}()
 	select {
 	case <-ctx.Done():
@@ -1612,7 +1705,10 @@ func dialWithProxyDialer(ctx context.Context, dialer xproxy.Dialer, targetAddr s
 	}
 }
 
-func dialViaSSHProxy(ctx context.Context, proxyURL *url.URL, targetAddr string, timeout int) (net.Conn, error) {
+func dialViaSSHProxy(ctx context.Context, dialer *net.Dialer, proxyURL *url.URL, targetAddr string) (net.Conn, error) {
+	if proxyURL.User == nil {
+		return nil, errors.New("ssh proxy requires username and password")
+	}
 	username := proxyURL.User.Username()
 	password, _ := proxyURL.User.Password()
 	if username == "" || password == "" {
@@ -1622,28 +1718,59 @@ func dialViaSSHProxy(ctx context.Context, proxyURL *url.URL, targetAddr string, 
 		User:            username,
 		Auth:            []cryptossh.AuthMethod{cryptossh.Password(password)},
 		HostKeyCallback: cryptossh.InsecureIgnoreHostKey(),
-		Timeout:         time.Duration(timeout) * time.Second,
 	}
-	type result struct {
-		conn net.Conn
-		err  error
+	proxyHost := proxyURL.Host
+	if !strings.Contains(proxyHost, ":") {
+		proxyHost += ":22"
 	}
-	ch := make(chan result, 1)
-	go func() {
-		client, err := cryptossh.Dial("tcp", proxyURL.Host, cfg)
-		if err != nil {
-			ch <- result{err: err}
-			return
+	rawConn, err := dialer.DialContext(ctx, "tcp", proxyHost)
+	if err != nil {
+		return nil, err
+	}
+	cancelClose := context.AfterFunc(ctx, func() { _ = rawConn.Close() })
+	defer cancelClose()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := rawConn.SetDeadline(deadline); err != nil {
+			_ = rawConn.Close()
+			return nil, err
 		}
-		conn, err := client.Dial("tcp", targetAddr)
-		ch <- result{conn: conn, err: err}
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case result := <-ch:
-		return result.conn, result.err
 	}
+	clientConn, channels, requests, err := cryptossh.NewClientConn(rawConn, proxyHost, cfg)
+	if err != nil {
+		_ = rawConn.Close()
+		return nil, err
+	}
+	client := cryptossh.NewClient(clientConn, channels, requests)
+	conn, err := client.Dial("tcp", targetAddr)
+	if err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	if !cancelClose() && ctx.Err() != nil {
+		_ = conn.Close()
+		_ = client.Close()
+		return nil, ctx.Err()
+	}
+	if err := rawConn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		_ = client.Close()
+		return nil, err
+	}
+	return &sshProxyConn{Conn: conn, client: client}, nil
+}
+
+type sshProxyConn struct {
+	net.Conn
+	client    *cryptossh.Client
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (c *sshProxyConn) Close() error {
+	c.closeOnce.Do(func() {
+		c.closeErr = errors.Join(c.Conn.Close(), c.client.Close())
+	})
+	return c.closeErr
 }
 
 type bufferedConn struct {

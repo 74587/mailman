@@ -1952,7 +1952,7 @@ function ProxyDetailDrawerContent({ proxy, onClose, onEdit, onTest, onDelete }: 
 
                 <section className="space-y-3">
                     <DetailSectionTitle icon={<Server className="h-4 w-4" />} title="连接信息" />
-                    <DetailLine label="代理地址" value={proxyToUrl(proxy)} mono />
+                    <DetailLine label="代理地址" value={proxyToUrl(proxy, true)} mono />
                     <DetailLine label="账号" value={proxy.username || '-'} />
                     <DetailLine label="刷新 URL" value={proxy.refreshUrl || '-'} />
                 </section>

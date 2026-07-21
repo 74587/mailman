@@ -191,8 +191,9 @@ class ProxyPoolService {
 
 export const proxyPoolService = new ProxyPoolService()
 
-export function proxyToUrl(proxy: ProxyPoolItem) {
-    const auth = proxy.username ? `${proxy.username}:***@` : ''
+export function proxyToUrl(proxy: ProxyPoolItem, includePassword = false) {
+    const password = includePassword ? encodeURIComponent(proxy.password || '') : '***'
+    const auth = proxy.username ? `${encodeURIComponent(proxy.username)}:${password}@` : ''
     const host = proxy.host.includes(':') && !proxy.host.startsWith('[') ? `[${proxy.host}]` : proxy.host
     return `${proxy.type}://${auth}${host}:${proxy.port}`
 }

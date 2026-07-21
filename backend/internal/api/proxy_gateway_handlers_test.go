@@ -1,8 +1,19 @@
 package api
 
 import (
-	"mailman/internal/models"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+
+	"mailman/internal/models"
+	"mailman/internal/repository"
+	"mailman/internal/services"
+
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestValidateProxyGatewayListenerAllowsOptionalExternalPort(t *testing.T) {
@@ -31,5 +42,117 @@ func TestValidateProxyGatewayListenerRejectsInvalidExternalPort(t *testing.T) {
 	}
 	if message := validateProxyGatewayListener(item); message == "" {
 		t.Fatal("expected invalid external port to be rejected")
+	}
+}
+
+func TestApplyProxyGatewayListenerRequestKeepsUsernameSeparatorCompatibility(t *testing.T) {
+	createdByOldClient := models.ProxyGatewayListener{}
+	applyListenerRequest(&createdByOldClient, proxyGatewayListenerRequest{ListenIP: "127.0.0.1", Port: 18080})
+	if len(createdByOldClient.UsernameRouteSeparators) != 1 || createdByOldClient.UsernameRouteSeparators[0] != "#" {
+		t.Fatalf("old client default separators=%v want=[#]", createdByOldClient.UsernameRouteSeparators)
+	}
+
+	existing := models.ProxyGatewayListener{UsernameRouteSeparators: models.StringSlice{"~", "--"}}
+	applyListenerRequest(&existing, proxyGatewayListenerRequest{ListenIP: "127.0.0.1", Port: 18080})
+	if len(existing.UsernameRouteSeparators) != 2 || existing.UsernameRouteSeparators[0] != "~" {
+		t.Fatalf("omitted update changed separators: %v", existing.UsernameRouteSeparators)
+	}
+
+	requested := []string{" # ", "~", "#"}
+	applyListenerRequest(&existing, proxyGatewayListenerRequest{
+		ListenIP: "127.0.0.1", Port: 18080, UsernameRouteSeparators: &requested,
+	})
+	if len(existing.UsernameRouteSeparators) != 2 || existing.UsernameRouteSeparators[0] != "#" || existing.UsernameRouteSeparators[1] != "~" {
+		t.Fatalf("custom separators were not normalized: %v", existing.UsernameRouteSeparators)
+	}
+
+	existing.UsernameRouteSeparators = models.StringSlice{"route"}
+	if message := validateProxyGatewayListener(existing); message == "" {
+		t.Fatal("expected an alphanumeric smart username separator to be rejected")
+	}
+}
+
+func TestApplyProxyGatewayAccountRequestKeepsLegacyCompatibility(t *testing.T) {
+	legacy := models.ProxyGatewaySelectionSourceAccount
+	gateway := models.ProxyGatewaySelectionSourceGateway
+
+	createdByOldClient := models.ProxyGatewayAccount{}
+	applyAccountRequest(&createdByOldClient, proxyGatewayAccountRequest{Username: "old-client"})
+	if createdByOldClient.ProxySelectionSource != legacy {
+		t.Fatalf("old client create source=%q want=%q", createdByOldClient.ProxySelectionSource, legacy)
+	}
+
+	existingGatewayUser := models.ProxyGatewayAccount{ProxySelectionSource: gateway}
+	applyAccountRequest(&existingGatewayUser, proxyGatewayAccountRequest{Username: "unchanged"})
+	if existingGatewayUser.ProxySelectionSource != gateway {
+		t.Fatalf("omitted update source=%q want=%q", existingGatewayUser.ProxySelectionSource, gateway)
+	}
+
+	explicitGatewayUser := models.ProxyGatewayAccount{}
+	applyAccountRequest(&explicitGatewayUser, proxyGatewayAccountRequest{Username: "new-ui", ProxySelectionSource: &gateway})
+	if explicitGatewayUser.ProxySelectionSource != gateway {
+		t.Fatalf("explicit source=%q want=%q", explicitGatewayUser.ProxySelectionSource, gateway)
+	}
+}
+
+func TestValidateProxyGatewaySelectionSource(t *testing.T) {
+	invalid := models.ProxyGatewaySelectionSource("intersection")
+	if message := validateProxySelectionSource(&invalid); message == "" {
+		t.Fatal("expected invalid proxy selection source to be rejected")
+	}
+	if message := validateProxySelectionSource(nil); message != "" {
+		t.Fatalf("omitted source should remain compatible, got %q", message)
+	}
+}
+
+func TestProxyGatewayReloadHandlerPropagatesListenerStartFailure(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("open sqlite connection pool: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := db.AutoMigrate(
+		&models.ProxyGatewayListener{},
+		&models.ProxyGatewayRouteStrategy{},
+		&models.ProxyGatewayTargetRoute{},
+		&models.ProxyGatewaySecurityPolicy{},
+		&models.ProxyGatewayDNSPolicy{},
+		&models.ProxyGatewayAuditLog{},
+	); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupy listener port: %v", err)
+	}
+	defer occupied.Close()
+	_, portText, _ := net.SplitHostPort(occupied.Addr().String())
+	port, _ := strconv.Atoi(portText)
+	listener := models.ProxyGatewayListener{
+		OrgID: defaultOrgID, Name: "reload handler collision", ListenIP: "127.0.0.1", Port: port,
+		Protocol: models.ProxyGatewayProtocolMixed, Enabled: true, RequireAuth: true,
+	}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+
+	repo := repository.NewProxyGatewayRepository(db)
+	service := services.NewProxyGatewayService(repo, repository.NewProxyPoolRepository(db))
+	handler := NewProxyGatewayHandlers(repo, service)
+	recorder := httptest.NewRecorder()
+	handler.Reload(recorder, httptest.NewRequest(http.MethodPost, "/api/proxy-gateway/reload", nil))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("reload status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "start listener") {
+		t.Fatalf("reload error did not propagate start failure: %s", recorder.Body.String())
+	}
+	statuses := service.Status()
+	if len(statuses) != 1 || statuses[0].ListenerID != listener.ID || statuses[0].Running || statuses[0].LastError == "" {
+		t.Fatalf("failed listener health status=%+v", statuses)
 	}
 }

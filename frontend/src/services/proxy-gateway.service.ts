@@ -3,6 +3,7 @@ import { ProxyGroup, ProxyTag, ProxyTagFilterMode } from '@/types'
 
 export type ProxyGatewayProtocol = 'http' | 'socks5' | 'mixed'
 export type ProxyGatewaySelectionMode = 'all' | 'filtered' | 'explicit'
+export type ProxyGatewaySelectionSource = 'account' | 'gateway'
 export type ProxyGatewaySelectionAlgorithm = 'random' | 'round_robin' | 'weighted' | 'lowest_latency' | 'prefer_last_success'
 export type ProxyGatewayFallbackMode = 'interrupt' | 'retry' | 'backup_pool' | 'direct'
 export type ProxyGatewayStickyMode = 'none' | 'account' | 'client_ip' | 'target_host' | 'client_ip_target_host'
@@ -29,6 +30,7 @@ export interface ProxyGatewayListener {
     handshakeTimeoutSeconds: number
     idleTimeoutSeconds: number
     connectTimeoutSeconds: number
+    usernameRouteSeparators?: string[]
     createdAt?: string
     updatedAt?: string
 }
@@ -61,6 +63,7 @@ export interface ProxyGatewayAccount {
     groupId?: number
     group?: ProxyGatewayAccountGroup
     tags?: ProxyGatewayAccountTag[]
+    proxySelectionSource?: ProxyGatewaySelectionSource
     selectionMode: ProxyGatewaySelectionMode
     proxyIds?: number[]
     proxyMatchGroupIds?: number[]
