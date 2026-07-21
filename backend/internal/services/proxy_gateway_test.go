@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -776,6 +777,354 @@ func TestProxyGatewayTargetRoutePoolIndexUsesStableOrderAndOptionalModulo(t *tes
 	strictSession.proxyPoolSize = 0
 	if _, _, err := service.selectProxy(strictSession.account, &strictSession, nil, false); err == nil || !strings.Contains(err.Error(), "exceeds pool size 3") {
 		t.Fatalf("strict overflow error=%v", err)
+	}
+}
+
+func TestProxyGatewayTargetRouteFailoverOpensCircuitAndUsesFallback(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	gatewayRepo := repository.NewProxyGatewayRepository(db)
+	service := NewProxyGatewayService(gatewayRepo, repository.NewProxyPoolRepository(db))
+	fakeNow := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return fakeNow }
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("route-failover-ok"))
+	}))
+	defer target.Close()
+	targetAddr := strings.TrimPrefix(target.URL, "http://")
+
+	var primaryAttempts atomic.Int32
+	primaryUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		primaryAttempts.Add(1)
+		http.Error(w, "primary unavailable", http.StatusBadGateway)
+	}))
+	defer primaryUpstream.Close()
+	fallbackUpstream := newConnectProxyServer(t)
+	defer fallbackUpstream.Close()
+	proxyFromServer := func(server *httptest.Server) models.ProxyPoolItem {
+		host, portText, _ := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+		port, _ := strconv.Atoi(portText)
+		return models.ProxyPoolItem{OrgID: 1, Type: models.ProxyTypeHTTP, Host: host, Port: port, Status: models.ProxyStatusAvailable}
+	}
+	primaryProxy := proxyFromServer(primaryUpstream)
+	fallbackProxy := proxyFromServer(fallbackUpstream)
+	if err := db.Create(&primaryProxy).Error; err != nil {
+		t.Fatalf("create primary proxy: %v", err)
+	}
+	if err := db.Create(&fallbackProxy).Error; err != nil {
+		t.Fatalf("create fallback proxy: %v", err)
+	}
+
+	listener := models.ProxyGatewayListener{OrgID: 1, Name: "route failover", ListenIP: "127.0.0.1", Port: 18103, Protocol: models.ProxyGatewayProtocolMixed, ConnectTimeoutSeconds: 2}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	primaryStrategy := models.ProxyGatewayRouteStrategy{
+		OrgID: 1, GatewayID: listener.ID, Name: "primary", FlagNo: 81, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{primaryProxy.ID},
+		SelectionAlgorithm: models.ProxyGatewayAlgorithmRandom, FallbackMode: models.ProxyGatewayFallbackInterrupt,
+	}
+	fallbackStrategy := models.ProxyGatewayRouteStrategy{
+		OrgID: 1, GatewayID: listener.ID, Name: "fallback", FlagNo: 82, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{fallbackProxy.ID},
+		SelectionAlgorithm: models.ProxyGatewayAlgorithmRandom, ProxyIndexOverflowMode: models.ProxyGatewayIndexOverflowModulo,
+		FallbackMode: models.ProxyGatewayFallbackInterrupt,
+	}
+	if err := db.Create(&primaryStrategy).Error; err != nil {
+		t.Fatalf("create primary strategy: %v", err)
+	}
+	if err := db.Create(&fallbackStrategy).Error; err != nil {
+		t.Fatalf("create fallback strategy: %v", err)
+	}
+	fallbackID := fallbackStrategy.ID
+	route := models.ProxyGatewayTargetRoute{
+		OrgID: 1, GatewayID: listener.ID, Name: "default with failover", Enabled: true, IsDefault: true,
+		RouteStrategyID: primaryStrategy.ID, FailoverEnabled: true, FallbackRouteStrategyID: &fallbackID,
+		FailureThreshold: 2, FailureWindowSeconds: 30, CircuitBaseSeconds: 60, CircuitMaxSeconds: 300,
+		CircuitBackoffMultiplier: 2, CircuitJitterPercent: 0, CircuitHalfOpenProbes: 1,
+	}
+	if err := db.Create(&route).Error; err != nil {
+		t.Fatalf("create target route: %v", err)
+	}
+	if err := service.RefreshTargetRoutes(1, listener.ID); err != nil {
+		t.Fatalf("refresh target routes: %v", err)
+	}
+
+	security := &models.ProxyGatewaySecurityPolicy{ID: 910001, OrgID: 1, Name: "allow", NoMatchAction: models.ProxyGatewayPolicyAllow, TargetHostAllowlist: models.StringSlice{"*"}}
+	dns := &models.ProxyGatewayDNSPolicy{ID: 910002, OrgID: 1, Name: "remote", Mode: models.ProxyGatewayDNSRemote, HTTPConnectPreserveHost: true, ResolveFailureAction: models.ProxyGatewayResolveFailureUseRemoteProxy}
+	account := &models.ProxyGatewayAccount{
+		ID: 910003, OrgID: 1, Username: "failover-user", Enabled: true,
+		ProxySelectionSource: models.ProxyGatewaySelectionSourceGateway,
+		SecurityPolicyID:     &security.ID, SecurityPolicy: security, DNSPolicyID: &dns.ID, DNSPolicy: dns,
+		ConnectTimeoutSeconds: 2,
+	}
+
+	dial := func() gatewaySession {
+		session := gatewaySession{listener: listener, account: account, clientIP: "127.0.0.1", protocol: "http", command: "CONNECT", startedAt: fakeNow}
+		conn, proxyItem, _, _, err := service.dialWithPolicy(context.Background(), &session, targetAddr)
+		if err != nil {
+			t.Fatalf("route failover dial: %v", err)
+		}
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if proxyItem == nil || proxyItem.ID != fallbackProxy.ID {
+			t.Fatalf("selected proxy=%v, want fallback %d", proxyItem, fallbackProxy.ID)
+		}
+		return session
+	}
+
+	first := dial()
+	if first.routeCircuitState != "closed" || !first.routeFailoverUsed {
+		t.Fatalf("first failover state=%s used=%v", first.routeCircuitState, first.routeFailoverUsed)
+	}
+	second := dial()
+	if second.routeCircuitState != "open" {
+		t.Fatalf("second failover state=%s, want open", second.routeCircuitState)
+	}
+	third := dial()
+	if !third.routeCircuitCacheHit || third.routeCircuitState != "open" {
+		t.Fatalf("cached failover hit=%v state=%s", third.routeCircuitCacheHit, third.routeCircuitState)
+	}
+	if got := primaryAttempts.Load(); got != 2 {
+		t.Fatalf("primary attempts=%d, want 2 before cached bypass", got)
+	}
+	if third.routeStrategyID == nil || *third.routeStrategyID != fallbackStrategy.ID || third.primaryStrategyID == nil || *third.primaryStrategyID != primaryStrategy.ID {
+		t.Fatalf("strategy log context final=%v primary=%v", third.routeStrategyID, third.primaryStrategyID)
+	}
+	service.finishSessionWithPolicies(third, third.account, &fallbackProxy, "success", "", nil, security, dns)
+	var failoverLog models.ProxyGatewayAccessLog
+	if err := db.Order("id DESC").First(&failoverLog).Error; err != nil {
+		t.Fatalf("load failover access log: %v", err)
+	}
+	if !failoverLog.RouteFailoverUsed || !failoverLog.RouteCircuitCacheHit || failoverLog.RouteCircuitState != "open" ||
+		failoverLog.PrimaryRouteStrategyID == nil || *failoverLog.PrimaryRouteStrategyID != primaryStrategy.ID ||
+		failoverLog.FallbackRouteStrategyID == nil || *failoverLog.FallbackRouteStrategyID != fallbackStrategy.ID {
+		t.Fatalf("failover access log=%+v", failoverLog)
+	}
+
+	// AutoMigrate gives newly inserted rows the production jitter default (10%),
+	// so advance beyond the longest possible 60-second opening.
+	fakeNow = fakeNow.Add(67 * time.Second)
+	probe := dial()
+	if !probe.routeCircuitProbe || probe.routeCircuitState != "open" {
+		t.Fatalf("half-open probe=%v final state=%s", probe.routeCircuitProbe, probe.routeCircuitState)
+	}
+	if got := primaryAttempts.Load(); got != 3 {
+		t.Fatalf("primary attempts after probe=%d, want 3", got)
+	}
+
+	workingFallbackPort := fallbackProxy.Port
+	if err := db.Model(&models.ProxyPoolItem{}).Where("id = ?", fallbackProxy.ID).Update("port", freeTCPPort(t)).Error; err != nil {
+		t.Fatalf("make fallback proxy unavailable: %v", err)
+	}
+	fakeNow = fakeNow.Add(133 * time.Second)
+	failedProbeSession := gatewaySession{listener: listener, account: account, clientIP: "127.0.0.1", protocol: "http", command: "CONNECT", startedAt: fakeNow}
+	failedProbeConn, _, _, _, failedProbeErr := service.dialWithPolicy(context.Background(), &failedProbeSession, targetAddr)
+	if failedProbeConn != nil {
+		_ = failedProbeConn.Close()
+	}
+	if failedProbeErr == nil {
+		t.Fatal("half-open probe unexpectedly succeeded while both routes were unavailable")
+	}
+	if !failedProbeSession.routeCircuitProbe || failedProbeSession.routeCircuitState != "open" {
+		t.Fatalf("failed half-open probe log state probe=%v state=%s", failedProbeSession.routeCircuitProbe, failedProbeSession.routeCircuitState)
+	}
+	if err := db.Model(&models.ProxyPoolItem{}).Where("id = ?", fallbackProxy.ID).Update("port", workingFallbackPort).Error; err != nil {
+		t.Fatalf("restore fallback proxy: %v", err)
+	}
+
+	indexedSession := gatewaySession{
+		listener: listener, account: account, clientIP: "127.0.0.1", protocol: "socks5", command: "CONNECT",
+		proxyIndex: 2, rawUsername: "failover-user#2", startedAt: fakeNow,
+	}
+	conn, indexedProxy, _, _, err := service.dialWithPolicy(context.Background(), &indexedSession, targetAddr)
+	if err != nil {
+		t.Fatalf("indexed route failover: %v", err)
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if indexedProxy == nil || indexedProxy.ID != fallbackProxy.ID || indexedSession.resolvedProxyIndex != 1 || indexedSession.proxyPoolSize != 1 {
+		t.Fatalf("indexed fallback proxy=%v resolved=%d size=%d", indexedProxy, indexedSession.resolvedProxyIndex, indexedSession.proxyPoolSize)
+	}
+	if got := primaryAttempts.Load(); got != 4 {
+		t.Fatalf("strict primary index unexpectedly dialed upstream; attempts=%d", got)
+	}
+
+	if err := db.Model(&models.ProxyGatewayRouteStrategy{}).Where("id = ?", primaryStrategy.ID).Updates(map[string]interface{}{
+		"fallback_mode":         models.ProxyGatewayFallbackDirect,
+		"allow_direct_fallback": true,
+	}).Error; err != nil {
+		t.Fatalf("enable primary direct fallback: %v", err)
+	}
+	if err := service.RefreshTargetRoutes(1, listener.ID); err != nil {
+		t.Fatalf("refresh direct fallback route: %v", err)
+	}
+	directOrderedSession := gatewaySession{listener: listener, account: account, clientIP: "127.0.0.1", protocol: "http", command: "CONNECT", startedAt: fakeNow}
+	directOrderedConn, directOrderedProxy, _, _, err := service.dialWithPolicy(context.Background(), &directOrderedSession, targetAddr)
+	if err != nil {
+		t.Fatalf("route fallback before final direct: %v", err)
+	}
+	if directOrderedConn != nil {
+		_ = directOrderedConn.Close()
+	}
+	if directOrderedProxy == nil || directOrderedProxy.ID != fallbackProxy.ID {
+		t.Fatalf("primary direct ran before route fallback; proxy=%v", directOrderedProxy)
+	}
+
+	if err := db.Model(&models.ProxyGatewayRouteStrategy{}).Where("id = ?", fallbackStrategy.ID).Updates(map[string]interface{}{
+		"proxy_index_overflow_mode": models.ProxyGatewayIndexOverflowReject,
+		"fallback_mode":             models.ProxyGatewayFallbackDirect,
+		"allow_direct_fallback":     true,
+	}).Error; err != nil {
+		t.Fatalf("enable fallback direct with strict index: %v", err)
+	}
+	if err := service.RefreshTargetRoutes(1, listener.ID); err != nil {
+		t.Fatalf("refresh strict fallback route: %v", err)
+	}
+	strictDirectSession := gatewaySession{
+		listener: listener, account: account, clientIP: "127.0.0.1", protocol: "socks5", command: "CONNECT",
+		proxyIndex: 2, rawUsername: "failover-user#2", startedAt: fakeNow,
+	}
+	strictDirectConn, strictDirectProxy, _, _, strictDirectErr := service.dialWithPolicy(context.Background(), &strictDirectSession, targetAddr)
+	if strictDirectConn != nil {
+		_ = strictDirectConn.Close()
+	}
+	if strictDirectErr == nil || !strings.Contains(strictDirectErr.Error(), "exceeds pool size 1") {
+		t.Fatalf("strict route indexes unexpectedly fell through to direct: proxy=%v err=%v", strictDirectProxy, strictDirectErr)
+	}
+}
+
+func TestProxyGatewayRouteCircuitBackoffIsCapped(t *testing.T) {
+	service := NewProxyGatewayService(nil, nil)
+	now := time.Date(2026, 7, 22, 13, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	route := models.ProxyGatewayTargetRoute{
+		GatewayID: 7, FailureThreshold: 1, FailureWindowSeconds: 30,
+		CircuitBaseSeconds: 60, CircuitMaxSeconds: 300, CircuitBackoffMultiplier: 2,
+		CircuitJitterPercent: 0, CircuitHalfOpenProbes: 1,
+	}
+	const key = "circuit-cap"
+	service.recordRoutePrimaryFailure(key, route, false, 0)
+	wantDurations := []time.Duration{60 * time.Second, 120 * time.Second, 240 * time.Second, 300 * time.Second, 300 * time.Second}
+	lastDecision := routeCircuitDecision{}
+	for index, want := range wantDurations {
+		entry := service.routeCircuits[key]
+		if got := entry.OpenUntil.Sub(now); got != want {
+			t.Fatalf("backoff step %d duration=%s, want %s", index, got, want)
+		}
+		now = entry.OpenUntil
+		decision := service.routeCircuitDecision(key, route)
+		lastDecision = decision
+		if !decision.Probe || decision.SkipPrimary {
+			t.Fatalf("backoff step %d decision=%+v", index, decision)
+		}
+		if index < len(wantDurations)-1 {
+			service.recordRoutePrimaryFailure(key, route, true, decision.Generation)
+		}
+	}
+	entry := service.routeCircuits[key]
+	level := entry.BackoffLevel
+	service.releaseRouteCircuitProbe(key, route, true, lastDecision.Generation)
+	entry = service.routeCircuits[key]
+	if entry.BackoffLevel != level || entry.OpenUntil.Sub(now) != 300*time.Second {
+		t.Fatalf("both-failed probe changed capped backoff: level=%d duration=%s", entry.BackoffLevel, entry.OpenUntil.Sub(now))
+	}
+	route.CircuitJitterPercent = 50
+	for index := 0; index < 100; index++ {
+		if duration := service.routeCircuitDurationLocked(route, 20); duration > 300*time.Second {
+			t.Fatalf("jitter exceeded hard maximum at sample %d: %s", index, duration)
+		}
+	}
+}
+
+func TestProxyGatewayRouteCircuitCacheIsBounded(t *testing.T) {
+	service := NewProxyGatewayService(nil, nil)
+	now := time.Date(2026, 7, 22, 14, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	for index := 0; index < routeCircuitMaxEntries; index++ {
+		service.routeCircuits[fmt.Sprintf("target-%d", index)] = routeCircuitEntry{GatewayID: 1, LastSeen: now.Add(-time.Duration(index) * time.Second)}
+	}
+	decision := service.routeCircuitDecision("new-target", models.ProxyGatewayTargetRoute{CircuitHalfOpenProbes: 1})
+	if decision.State != "closed" {
+		t.Fatalf("new target decision=%+v", decision)
+	}
+	if got := len(service.routeCircuits); got > routeCircuitPruneEntries {
+		t.Fatalf("route circuit cache retained %d entries, want at most %d", got, routeCircuitPruneEntries)
+	}
+}
+
+func TestProxyGatewayRouteCircuitIgnoresStaleConcurrentProbes(t *testing.T) {
+	service := NewProxyGatewayService(nil, nil)
+	now := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+	route := models.ProxyGatewayTargetRoute{
+		GatewayID: 9, FailureThreshold: 1, FailureWindowSeconds: 30,
+		CircuitBaseSeconds: 60, CircuitMaxSeconds: 300, CircuitBackoffMultiplier: 2,
+		CircuitHalfOpenProbes: 2,
+	}
+	const key = "concurrent-probes"
+	service.recordRoutePrimaryFailure(key, route, false, 0)
+	entry := service.routeCircuits[key]
+	now = entry.OpenUntil
+	firstProbe := service.routeCircuitDecision(key, route)
+	secondProbe := service.routeCircuitDecision(key, route)
+	if !firstProbe.Probe || !secondProbe.Probe || firstProbe.Generation != secondProbe.Generation {
+		t.Fatalf("concurrent half-open decisions first=%+v second=%+v", firstProbe, secondProbe)
+	}
+
+	service.clearRouteCircuit(key)
+	service.recordRoutePrimaryFailure(key, route, true, firstProbe.Generation)
+	if state := service.currentRouteCircuitState(key); state != "closed" {
+		t.Fatalf("stale failed probe reopened a circuit after another probe succeeded: %s", state)
+	}
+
+	closedDecision := service.routeCircuitDecision(key, route)
+	service.recordRoutePrimaryFailure(key, route, false, closedDecision.Generation)
+	entry = service.routeCircuits[key]
+	now = entry.OpenUntil
+	firstProbe = service.routeCircuitDecision(key, route)
+	secondProbe = service.routeCircuitDecision(key, route)
+	service.recordRoutePrimaryFailure(key, route, true, firstProbe.Generation)
+	entryAfterFirstFailure := service.routeCircuits[key]
+	service.recordRoutePrimaryFailure(key, route, true, secondProbe.Generation)
+	entryAfterSecondFailure := service.routeCircuits[key]
+	if entryAfterSecondFailure.Generation != entryAfterFirstFailure.Generation || entryAfterSecondFailure.BackoffLevel != entryAfterFirstFailure.BackoffLevel || !entryAfterSecondFailure.OpenUntil.Equal(entryAfterFirstFailure.OpenUntil) {
+		t.Fatalf("stale concurrent failure amplified backoff: first=%+v second=%+v", entryAfterFirstFailure, entryAfterSecondFailure)
+	}
+}
+
+func TestProxyGatewayRouteCircuitKeyChangesWithPolicyConfiguration(t *testing.T) {
+	baseTime := time.Date(2026, 7, 22, 16, 0, 0, 0, time.UTC)
+	security := &models.ProxyGatewaySecurityPolicy{UpdatedAt: baseTime}
+	dns := &models.ProxyGatewayDNSPolicy{UpdatedAt: baseTime}
+	strategy := &models.ProxyGatewayRouteStrategy{ID: 3, UpdatedAt: baseTime, SecurityPolicy: security, DNSPolicy: dns}
+	fallback := &models.ProxyGatewayRouteStrategy{ID: 4, UpdatedAt: baseTime}
+	route := models.ProxyGatewayTargetRoute{ID: 2, RouteStrategyID: strategy.ID, UpdatedAt: baseTime, RouteStrategy: strategy, FallbackRouteStrategy: fallback}
+	session := gatewaySession{
+		listener:   models.ProxyGatewayListener{ID: 1, OrgID: 1},
+		account:    &models.ProxyGatewayAccount{SecurityPolicy: security, DNSPolicy: dns},
+		targetHost: "Example.COM.", targetPort: 443,
+	}
+	firstKey := routeCircuitKey(session, route)
+	security.UpdatedAt = baseTime.Add(time.Second)
+	secondKey := routeCircuitKey(session, route)
+	if firstKey == secondKey {
+		t.Fatal("route circuit key did not change after an effective security policy update")
+	}
+	if !strings.Contains(firstKey, "example.com") {
+		t.Fatalf("route circuit key did not normalize target host: %s", firstKey)
+	}
+	protocolSession := session
+	protocolSession.protocol = "socks5"
+	if protocolKey := routeCircuitKey(protocolSession, route); protocolKey == secondKey {
+		t.Fatal("route circuit key did not isolate protocol-specific dialing behavior")
+	}
+	timeoutSession := session
+	timeoutSession.account.ConnectTimeoutSeconds = 45
+	if timeoutKey := routeCircuitKey(timeoutSession, route); timeoutKey == secondKey {
+		t.Fatal("route circuit key did not isolate account connect timeout behavior")
 	}
 }
 

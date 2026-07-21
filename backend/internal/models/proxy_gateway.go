@@ -330,38 +330,45 @@ type ProxyGatewayDNSPolicy struct {
 }
 
 type ProxyGatewayAccessLog struct {
-	ID                  uint             `gorm:"primaryKey" json:"id"`
-	OrgID               uint             `gorm:"not null;index;default:1" json:"orgId"`
-	ListenerID          *uint            `gorm:"index" json:"listenerId,omitempty"`
-	AccountID           *uint            `gorm:"index" json:"accountId,omitempty"`
-	Username            string           `gorm:"type:varchar(160);index" json:"username,omitempty"`
-	RequestedUsername   string           `gorm:"type:varchar(240);index" json:"requestedUsername,omitempty"`
-	ClientIP            string           `gorm:"type:varchar(128);index" json:"clientIp,omitempty"`
-	ClientPort          string           `gorm:"type:varchar(16)" json:"clientPort,omitempty"`
-	Protocol            string           `gorm:"type:varchar(16);index" json:"protocol"`
-	Command             string           `gorm:"type:varchar(24)" json:"command,omitempty"`
-	TargetHost          string           `gorm:"type:varchar(255);index" json:"targetHost,omitempty"`
-	TargetPort          int              `gorm:"index" json:"targetPort,omitempty"`
-	UpstreamProxyID     *uint            `gorm:"index" json:"upstreamProxyId,omitempty"`
-	Status              string           `gorm:"type:varchar(32);index" json:"status"`
-	DenyReason          string           `gorm:"type:text" json:"denyReason,omitempty"`
-	Error               string           `gorm:"type:text" json:"error,omitempty"`
-	BytesIn             int64            `json:"bytesIn"`
-	BytesOut            int64            `json:"bytesOut"`
-	DurationMs          int64            `json:"durationMs"`
-	DNSMode             string           `gorm:"type:varchar(16)" json:"dnsMode,omitempty"`
-	SecurityPolicyID    *uint            `gorm:"index" json:"securityPolicyId,omitempty"`
-	DNSPolicyID         *uint            `gorm:"index" json:"dnsPolicyId,omitempty"`
-	RouteStrategyID     *uint            `gorm:"index" json:"routeStrategyId,omitempty"`
-	RouteStrategyFlagNo int              `gorm:"index" json:"routeStrategyFlagNo,omitempty"`
-	ProxyIndex          int              `gorm:"index" json:"proxyIndex,omitempty"`
-	ResolvedProxyIndex  int              `gorm:"index" json:"resolvedProxyIndex,omitempty"`
-	ProxyPoolSize       int              `json:"proxyPoolSize,omitempty"`
-	RouteParams         JSONMapInterface `gorm:"type:json" json:"routeParams,omitempty"`
-	TargetRouteID       *uint            `gorm:"index" json:"targetRouteId,omitempty"`
-	TargetRouteMatcher  string           `gorm:"type:varchar(255);index" json:"targetRouteMatcher,omitempty"`
-	TargetRouteDefault  bool             `gorm:"not null;default:false" json:"targetRouteDefault"`
-	CreatedAt           time.Time        `gorm:"index" json:"createdAt"`
+	ID                      uint             `gorm:"primaryKey" json:"id"`
+	OrgID                   uint             `gorm:"not null;index;default:1" json:"orgId"`
+	ListenerID              *uint            `gorm:"index" json:"listenerId,omitempty"`
+	AccountID               *uint            `gorm:"index" json:"accountId,omitempty"`
+	Username                string           `gorm:"type:varchar(160);index" json:"username,omitempty"`
+	RequestedUsername       string           `gorm:"type:varchar(240);index" json:"requestedUsername,omitempty"`
+	ClientIP                string           `gorm:"type:varchar(128);index" json:"clientIp,omitempty"`
+	ClientPort              string           `gorm:"type:varchar(16)" json:"clientPort,omitempty"`
+	Protocol                string           `gorm:"type:varchar(16);index" json:"protocol"`
+	Command                 string           `gorm:"type:varchar(24)" json:"command,omitempty"`
+	TargetHost              string           `gorm:"type:varchar(255);index" json:"targetHost,omitempty"`
+	TargetPort              int              `gorm:"index" json:"targetPort,omitempty"`
+	UpstreamProxyID         *uint            `gorm:"index" json:"upstreamProxyId,omitempty"`
+	Status                  string           `gorm:"type:varchar(32);index" json:"status"`
+	DenyReason              string           `gorm:"type:text" json:"denyReason,omitempty"`
+	Error                   string           `gorm:"type:text" json:"error,omitempty"`
+	BytesIn                 int64            `json:"bytesIn"`
+	BytesOut                int64            `json:"bytesOut"`
+	DurationMs              int64            `json:"durationMs"`
+	DNSMode                 string           `gorm:"type:varchar(16)" json:"dnsMode,omitempty"`
+	SecurityPolicyID        *uint            `gorm:"index" json:"securityPolicyId,omitempty"`
+	DNSPolicyID             *uint            `gorm:"index" json:"dnsPolicyId,omitempty"`
+	RouteStrategyID         *uint            `gorm:"index" json:"routeStrategyId,omitempty"`
+	RouteStrategyFlagNo     int              `gorm:"index" json:"routeStrategyFlagNo,omitempty"`
+	PrimaryRouteStrategyID  *uint            `gorm:"index" json:"primaryRouteStrategyId,omitempty"`
+	FallbackRouteStrategyID *uint            `gorm:"index" json:"fallbackRouteStrategyId,omitempty"`
+	RouteFailoverUsed       bool             `gorm:"not null;default:false;index" json:"routeFailoverUsed"`
+	RouteFailoverReason     string           `gorm:"type:text" json:"routeFailoverReason,omitempty"`
+	RouteCircuitState       string           `gorm:"type:varchar(24);index" json:"routeCircuitState,omitempty"`
+	RouteCircuitCacheHit    bool             `gorm:"not null;default:false;index" json:"routeCircuitCacheHit"`
+	RouteCircuitProbe       bool             `gorm:"not null;default:false;index" json:"routeCircuitProbe"`
+	ProxyIndex              int              `gorm:"index" json:"proxyIndex,omitempty"`
+	ResolvedProxyIndex      int              `gorm:"index" json:"resolvedProxyIndex,omitempty"`
+	ProxyPoolSize           int              `json:"proxyPoolSize,omitempty"`
+	RouteParams             JSONMapInterface `gorm:"type:json" json:"routeParams,omitempty"`
+	TargetRouteID           *uint            `gorm:"index" json:"targetRouteId,omitempty"`
+	TargetRouteMatcher      string           `gorm:"type:varchar(255);index" json:"targetRouteMatcher,omitempty"`
+	TargetRouteDefault      bool             `gorm:"not null;default:false" json:"targetRouteDefault"`
+	CreatedAt               time.Time        `gorm:"index" json:"createdAt"`
 }
 
 type ProxyGatewayAuditLog struct {

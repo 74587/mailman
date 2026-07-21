@@ -170,16 +170,72 @@ const routeStrategies = [
     { id: 107, gatewayId: 12, name: 'SOCKS 专属池', flagNo: 7, enabled: true },
 ]
 
+const targetRoutes = [
+    {
+        id: 301,
+        gatewayId: 11,
+        name: '缺失兜底策略测试',
+        enabled: true,
+        isDefault: true,
+        sortOrder: 100,
+        matchers: [],
+        routeStrategyId: 101,
+        routeStrategy: routeStrategies[0],
+        failoverEnabled: true,
+        failureThreshold: 2,
+        failureWindowSeconds: 30,
+        circuitBaseSeconds: 60,
+        circuitMaxSeconds: 300,
+        circuitBackoffMultiplier: 2,
+        circuitJitterPercent: 10,
+        circuitHalfOpenProbes: 1,
+    },
+]
+
+const accessLogs = [
+    {
+        id: 401,
+        listenerId: 11,
+        username: 'route-user',
+        requestedUsername: 'route-user#2',
+        clientIp: '198.51.100.8',
+        protocol: 'socks5',
+        command: 'CONNECT',
+        targetHost: 'api.example.test',
+        targetPort: 443,
+        upstreamProxyId: 232,
+        status: 'success',
+        bytesIn: 1024,
+        bytesOut: 2048,
+        durationMs: 120,
+        routeStrategyId: 102,
+        routeStrategyFlagNo: 4,
+        primaryRouteStrategyId: 101,
+        fallbackRouteStrategyId: 102,
+        routeFailoverUsed: true,
+        routeFailoverReason: 'primary route unavailable',
+        routeCircuitState: 'open',
+        routeCircuitCacheHit: true,
+        routeCircuitProbe: false,
+        proxyIndex: 2,
+        resolvedProxyIndex: 2,
+        proxyPoolSize: 3,
+        targetRouteId: 301,
+        targetRouteDefault: true,
+        createdAt: '2026-07-22T08:00:00Z',
+    },
+]
+
 function mockPayload(pathname) {
     if (pathname.endsWith('/proxy-gateway/listeners')) return listeners
     if (pathname.endsWith('/proxy-gateway/accounts')) return { items: accounts, total: accounts.length, page: 1, limit: 200 }
     if (pathname.endsWith('/proxy-gateway/account-groups')) return []
     if (pathname.endsWith('/proxy-gateway/account-tags')) return []
     if (pathname.endsWith('/proxy-gateway/route-strategies')) return routeStrategies
-    if (pathname.endsWith('/proxy-gateway/target-routes')) return []
+    if (pathname.endsWith('/proxy-gateway/target-routes')) return targetRoutes
     if (pathname.endsWith('/proxy-gateway/security-policies')) return []
     if (pathname.endsWith('/proxy-gateway/dns-policies')) return []
-    if (pathname.endsWith('/proxy-gateway/logs')) return { items: [], total: 0, page: 1, limit: 80 }
+    if (pathname.endsWith('/proxy-gateway/logs')) return { items: accessLogs, total: accessLogs.length, page: 1, limit: 80 }
     if (pathname.endsWith('/proxy-gateway/audit-logs')) return []
     if (pathname.endsWith('/proxy-gateway/status')) return []
     if (pathname.endsWith('/proxy-groups')) return []
@@ -525,6 +581,124 @@ async function run() {
             return label?.querySelector('select')?.value
         })
         assert(defaultOverflowMode === 'reject', `new route strategies should default to strict index overflow, received ${defaultOverflowMode}`)
+        await gatewayPage.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"]')
+            const button = Array.from(dialog?.querySelectorAll('button') || []).find(element => element.textContent?.trim() === '取消')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Cancel route strategy action not found')
+            button.click()
+        })
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '目标路由')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Target routes navigation not found')
+            button.click()
+        })
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('新增目标路由'))
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('缺失兜底策略测试') && document.body.innerText.includes('关联策略不可用'))
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '新增目标路由')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Create target route action not found')
+            button.click()
+        })
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('失败切换'))
+        const failoverInitiallyHidden = await gatewayPage.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"]')
+            return !dialog?.innerText.includes('兜底出口策略')
+        })
+        assert(failoverInitiallyHidden, 'advanced failover fields should stay hidden until failover is enabled')
+        await gatewayPage.evaluate(() => {
+            const section = Array.from(document.querySelectorAll('[role="dialog"] section')).find(element => element.innerText.includes('失败切换'))
+            const checkbox = section?.querySelector('input[type="checkbox"]')
+            if (!(checkbox instanceof HTMLInputElement)) throw new Error('Failover toggle not found')
+            checkbox.click()
+        })
+        await gatewayPage.waitForFunction(() => document.querySelector('[role="dialog"]')?.textContent?.includes('兜底出口策略'))
+        const failoverDefaults = await gatewayPage.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"]')
+            const numberValue = labelText => {
+                const label = Array.from(dialog?.querySelectorAll('label') || []).find(element => element.innerText.includes(labelText))
+                return label?.querySelector('input[type="number"]')?.value
+            }
+            const details = dialog?.querySelector('details')
+            return {
+                threshold: numberValue('失败阈值'),
+                base: numberValue('初始退避'),
+                maximum: numberValue('最大退避'),
+                advancedOpen: details?.hasAttribute('open'),
+            }
+        })
+        assert(failoverDefaults.threshold === '2', `failover threshold default should be 2, received ${failoverDefaults.threshold}`)
+        assert(failoverDefaults.base === '60' && failoverDefaults.maximum === '300', `failover backoff defaults should be 60–300, received ${failoverDefaults.base}–${failoverDefaults.maximum}`)
+        assert(!failoverDefaults.advancedOpen, 'advanced circuit controls should use progressive disclosure')
+        await gatewayPage.click('[role="dialog"] details summary')
+        const advancedDefaults = await gatewayPage.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"]')
+            const numberValue = labelText => {
+                const label = Array.from(dialog?.querySelectorAll('label') || []).find(element => element.innerText.includes(labelText))
+                return label?.querySelector('input[type="number"]')?.value
+            }
+            return {
+                window: numberValue('统计窗口'),
+                multiplier: numberValue('退避倍数'),
+                jitter: numberValue('抖动比例'),
+                probes: numberValue('半开探测数'),
+            }
+        })
+        assert(JSON.stringify(advancedDefaults) === JSON.stringify({ window: '30', multiplier: '2', jitter: '10', probes: '1' }), `unexpected advanced failover defaults: ${JSON.stringify(advancedDefaults)}`)
+        const targetRouteModalMetrics = await gatewayPage.$eval('[role="dialog"]', element => {
+            const rect = element.getBoundingClientRect()
+            return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+        })
+        assert(targetRouteModalMetrics.left >= 0 && targetRouteModalMetrics.right <= 1280, 'target route failover modal should stay inside the desktop viewport')
+        await gatewayPage.screenshot({ path: join(artifactDir, 'target-route-failover.png'), fullPage: true })
+        await gatewayPage.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 })
+        await delay(300)
+        const targetRouteMobileMetrics = await gatewayPage.$eval('[role="dialog"]', element => {
+            const rect = element.getBoundingClientRect()
+            return {
+                left: rect.left,
+                right: rect.right,
+                top: rect.top,
+                bottom: rect.bottom,
+                viewportWidth: window.innerWidth,
+                viewportHeight: window.innerHeight,
+                bodyScrollWidth: document.body.scrollWidth,
+            }
+        })
+        assert(targetRouteMobileMetrics.left >= 0 && targetRouteMobileMetrics.right <= targetRouteMobileMetrics.viewportWidth, 'target route failover modal should not overflow the mobile viewport')
+        assert(targetRouteMobileMetrics.top >= 0 && targetRouteMobileMetrics.bottom <= targetRouteMobileMetrics.viewportHeight, 'target route failover modal should use internal scrolling on mobile')
+        assert(targetRouteMobileMetrics.bodyScrollWidth <= targetRouteMobileMetrics.viewportWidth, 'target route failover modal should not create horizontal body scrolling')
+        await gatewayPage.screenshot({ path: join(artifactDir, 'target-route-failover-mobile.png'), fullPage: true })
+        await gatewayPage.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"]')
+            const button = Array.from(dialog?.querySelectorAll('button') || []).find(element => element.textContent?.trim() === '取消')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Cancel target route action not found')
+            button.click()
+        })
+        await gatewayPage.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 })
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '网关日志')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Gateway logs navigation not found')
+            button.click()
+        })
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('失败切换 → 策略 #102') && document.body.innerText.includes('熔断缓存命中'))
+        const failoverLogText = await gatewayPage.evaluate(() => document.body.innerText)
+        assert(failoverLogText.includes('api.example.test:443'), 'gateway log should display the destination host and port')
+        assert(failoverLogText.includes('主策略失败：primary route unavailable'), 'gateway log should label the primary failure reason on a successful failover')
+        assert(failoverLogText.includes('熔断 open'), 'gateway log should display the circuit state')
+        const failoverLogMetrics = await gatewayPage.evaluate(() => {
+            const table = Array.from(document.querySelectorAll('table')).find(element => element.innerText.includes('熔断缓存命中'))
+            const row = table?.querySelector('tbody tr')
+            return {
+                viewportWidth: window.innerWidth,
+                bodyScrollWidth: document.body.scrollWidth,
+                tableWidth: table?.getBoundingClientRect().width || 0,
+                rowHeight: row?.getBoundingClientRect().height || 0,
+            }
+        })
+        assert(failoverLogMetrics.bodyScrollWidth <= failoverLogMetrics.viewportWidth, 'gateway logs should not create horizontal body scrolling')
+        assert(failoverLogMetrics.tableWidth >= 900, 'gateway log columns should keep a readable minimum width')
+        assert(failoverLogMetrics.rowHeight < 180, 'gateway log rows should not collapse into excessive wrapped lines')
+        await gatewayPage.screenshot({ path: join(artifactDir, 'gateway-failover-log.png'), fullPage: true })
 
         console.log(JSON.stringify({
             status: 'ok',
@@ -535,6 +709,11 @@ async function run() {
             defaultGatewaySeparator: defaultSeparator,
             nextRouteStrategyFlag: nextFlagNo,
             defaultIndexOverflowMode: defaultOverflowMode,
+            failoverDefaults,
+            advancedFailoverDefaults: advancedDefaults,
+            targetRouteModal: targetRouteModalMetrics,
+            targetRouteMobileModal: targetRouteMobileMetrics,
+            failoverLogMetrics,
             artifacts: artifactDir,
         }, null, 2))
     } catch (error) {

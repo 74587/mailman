@@ -175,7 +175,10 @@ func (r *ProxyGatewayRepository) SaveListener(item *models.ProxyGatewayListener)
 				return err
 			}
 		}
-		return tx.Select("*").Save(item).Error
+		// Route strategies are preloaded for reads. Persist only their foreign-key
+		// fields here; otherwise a stale preloaded association can overwrite a new
+		// route_strategy_id or fallback_route_strategy_id during an edit.
+		return tx.Select("*").Omit("RouteStrategy", "FallbackRouteStrategy").Save(item).Error
 	})
 }
 
@@ -329,7 +332,7 @@ func (r *ProxyGatewayRepository) RouteStrategyFlagExists(orgID, gatewayID uint, 
 func (r *ProxyGatewayRepository) DeleteRouteStrategy(orgID, id uint) error {
 	var targetRouteCount int64
 	if err := r.db.Model(&models.ProxyGatewayTargetRoute{}).
-		Where("org_id = ? AND route_strategy_id = ?", orgID, id).
+		Where("org_id = ? AND (route_strategy_id = ? OR fallback_route_strategy_id = ?)", orgID, id, id).
 		Count(&targetRouteCount).Error; err != nil {
 		return err
 	}
@@ -342,7 +345,7 @@ func (r *ProxyGatewayRepository) DeleteRouteStrategy(orgID, id uint) error {
 func (r *ProxyGatewayRepository) CountEnabledTargetRoutesByStrategy(orgID, strategyID uint) (int64, error) {
 	var count int64
 	err := r.db.Model(&models.ProxyGatewayTargetRoute{}).
-		Where("org_id = ? AND route_strategy_id = ? AND enabled = ?", orgID, strategyID, true).
+		Where("org_id = ? AND enabled = ? AND (route_strategy_id = ? OR (failover_enabled = ? AND fallback_route_strategy_id = ?))", orgID, true, strategyID, true, strategyID).
 		Count(&count).Error
 	return count, err
 }
@@ -350,7 +353,7 @@ func (r *ProxyGatewayRepository) CountEnabledTargetRoutesByStrategy(orgID, strat
 func (r *ProxyGatewayRepository) ListEnabledTargetRouteGatewayIDsByStrategy(orgID, strategyID uint) ([]uint, error) {
 	var gatewayIDs []uint
 	err := r.db.Model(&models.ProxyGatewayTargetRoute{}).
-		Where("org_id = ? AND route_strategy_id = ? AND enabled = ?", orgID, strategyID, true).
+		Where("org_id = ? AND enabled = ? AND (route_strategy_id = ? OR (failover_enabled = ? AND fallback_route_strategy_id = ?))", orgID, true, strategyID, true, strategyID).
 		Distinct("gateway_id").
 		Order("gateway_id ASC").
 		Pluck("gateway_id", &gatewayIDs).Error
@@ -362,6 +365,8 @@ func (r *ProxyGatewayRepository) ListTargetRoutes(orgID uint, gatewayID *uint) (
 	query := r.db.
 		Preload("RouteStrategy.SecurityPolicy").
 		Preload("RouteStrategy.DNSPolicy").
+		Preload("FallbackRouteStrategy.SecurityPolicy").
+		Preload("FallbackRouteStrategy.DNSPolicy").
 		Where("org_id = ?", orgID)
 	if gatewayID != nil {
 		query = query.Where("gateway_id = ?", *gatewayID)
@@ -375,6 +380,8 @@ func (r *ProxyGatewayRepository) ListEnabledTargetRoutes(orgID, gatewayID uint) 
 	err := r.db.
 		Preload("RouteStrategy.SecurityPolicy").
 		Preload("RouteStrategy.DNSPolicy").
+		Preload("FallbackRouteStrategy.SecurityPolicy").
+		Preload("FallbackRouteStrategy.DNSPolicy").
 		Where("org_id = ? AND gateway_id = ? AND enabled = ?", orgID, gatewayID, true).
 		Order("is_default ASC, sort_order ASC, id ASC").
 		Find(&items).Error
@@ -386,6 +393,8 @@ func (r *ProxyGatewayRepository) GetTargetRoute(orgID, id uint) (*models.ProxyGa
 	err := r.db.
 		Preload("RouteStrategy.SecurityPolicy").
 		Preload("RouteStrategy.DNSPolicy").
+		Preload("FallbackRouteStrategy.SecurityPolicy").
+		Preload("FallbackRouteStrategy.DNSPolicy").
 		First(&item, "org_id = ? AND id = ?", orgID, id).Error
 	return &item, err
 }

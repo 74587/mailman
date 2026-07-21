@@ -125,14 +125,23 @@ type proxyGatewayRouteStrategyRequest struct {
 }
 
 type proxyGatewayTargetRouteRequest struct {
-	GatewayID       uint     `json:"gatewayId"`
-	Name            string   `json:"name"`
-	Description     string   `json:"description"`
-	Enabled         bool     `json:"enabled"`
-	IsDefault       bool     `json:"isDefault"`
-	SortOrder       int      `json:"sortOrder"`
-	Matchers        []string `json:"matchers"`
-	RouteStrategyID uint     `json:"routeStrategyId"`
+	GatewayID                uint     `json:"gatewayId"`
+	Name                     string   `json:"name"`
+	Description              string   `json:"description"`
+	Enabled                  bool     `json:"enabled"`
+	IsDefault                bool     `json:"isDefault"`
+	SortOrder                int      `json:"sortOrder"`
+	Matchers                 []string `json:"matchers"`
+	RouteStrategyID          uint     `json:"routeStrategyId"`
+	FailoverEnabled          bool     `json:"failoverEnabled"`
+	FallbackRouteStrategyID  *uint    `json:"fallbackRouteStrategyId"`
+	FailureThreshold         int      `json:"failureThreshold"`
+	FailureWindowSeconds     int      `json:"failureWindowSeconds"`
+	CircuitBaseSeconds       int      `json:"circuitBaseSeconds"`
+	CircuitMaxSeconds        int      `json:"circuitMaxSeconds"`
+	CircuitBackoffMultiplier int      `json:"circuitBackoffMultiplier"`
+	CircuitJitterPercent     *int     `json:"circuitJitterPercent"`
+	CircuitHalfOpenProbes    int      `json:"circuitHalfOpenProbes"`
 }
 
 type proxyGatewayMetaRequest struct {
@@ -755,12 +764,66 @@ func applyTargetRouteRequest(item *models.ProxyGatewayTargetRoute, req proxyGate
 	item.Enabled = req.Enabled
 	item.IsDefault = req.IsDefault
 	item.SortOrder = req.SortOrder
+	if item.RouteStrategyID != req.RouteStrategyID {
+		item.RouteStrategy = nil
+	}
 	item.RouteStrategyID = req.RouteStrategyID
+	item.FailoverEnabled = req.FailoverEnabled
+	if !sameOptionalUint(item.FallbackRouteStrategyID, req.FallbackRouteStrategyID) {
+		item.FallbackRouteStrategy = nil
+	}
+	item.FallbackRouteStrategyID = req.FallbackRouteStrategyID
+	if item.FallbackRouteStrategyID != nil && *item.FallbackRouteStrategyID == 0 {
+		item.FallbackRouteStrategyID = nil
+	}
+	if !item.FailoverEnabled {
+		item.FallbackRouteStrategyID = nil
+		item.FallbackRouteStrategy = nil
+	}
+	item.FailureThreshold = proxyGatewayNonZero(req.FailureThreshold, 2)
+	item.FailureWindowSeconds = proxyGatewayNonZero(req.FailureWindowSeconds, 30)
+	item.CircuitBaseSeconds = proxyGatewayNonZero(req.CircuitBaseSeconds, 60)
+	item.CircuitMaxSeconds = proxyGatewayNonZero(req.CircuitMaxSeconds, 300)
+	item.CircuitBackoffMultiplier = proxyGatewayNonZero(req.CircuitBackoffMultiplier, 2)
+	item.CircuitJitterPercent = 10
+	if req.CircuitJitterPercent != nil {
+		item.CircuitJitterPercent = *req.CircuitJitterPercent
+	}
+	item.CircuitHalfOpenProbes = proxyGatewayNonZero(req.CircuitHalfOpenProbes, 1)
 	if item.Name == "" || item.GatewayID == 0 || item.RouteStrategyID == 0 {
 		return errors.New("name, gatewayId and routeStrategyId are required")
 	}
 	if item.SortOrder < 0 {
 		return errors.New("sortOrder must not be negative")
+	}
+	if item.FailureThreshold < 1 || item.FailureThreshold > 100 {
+		return errors.New("failureThreshold must be between 1 and 100")
+	}
+	if item.FailureWindowSeconds < 1 || item.FailureWindowSeconds > 86400 {
+		return errors.New("failureWindowSeconds must be between 1 and 86400")
+	}
+	if item.CircuitBaseSeconds < 1 || item.CircuitBaseSeconds > 86400 {
+		return errors.New("circuitBaseSeconds must be between 1 and 86400")
+	}
+	if item.CircuitMaxSeconds < item.CircuitBaseSeconds || item.CircuitMaxSeconds > 604800 {
+		return errors.New("circuitMaxSeconds must be at least circuitBaseSeconds and no more than 604800")
+	}
+	if item.CircuitBackoffMultiplier < 1 || item.CircuitBackoffMultiplier > 10 {
+		return errors.New("circuitBackoffMultiplier must be between 1 and 10")
+	}
+	if item.CircuitJitterPercent < 0 || item.CircuitJitterPercent > 50 {
+		return errors.New("circuitJitterPercent must be between 0 and 50")
+	}
+	if item.CircuitHalfOpenProbes < 1 || item.CircuitHalfOpenProbes > 10 {
+		return errors.New("circuitHalfOpenProbes must be between 1 and 10")
+	}
+	if item.FailoverEnabled {
+		if item.FallbackRouteStrategyID == nil || *item.FallbackRouteStrategyID == 0 {
+			return errors.New("fallbackRouteStrategyId is required when failover is enabled")
+		}
+		if *item.FallbackRouteStrategyID == item.RouteStrategyID {
+			return errors.New("fallback route strategy must differ from the primary route strategy")
+		}
 	}
 	if item.IsDefault {
 		item.Matchers = models.StringSlice{}
@@ -786,6 +849,20 @@ func applyTargetRouteRequest(item *models.ProxyGatewayTargetRoute, req proxyGate
 	return nil
 }
 
+func sameOptionalUint(left, right *uint) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func proxyGatewayNonZero(value, fallback int) int {
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
 func (h *ProxyGatewayHandlers) validateTargetRouteReferences(orgID uint, item *models.ProxyGatewayTargetRoute) error {
 	if _, err := h.repo.GetListener(orgID, item.GatewayID); err != nil {
 		return fmt.Errorf("gateway %d is unavailable", item.GatewayID)
@@ -799,6 +876,18 @@ func (h *ProxyGatewayHandlers) validateTargetRouteReferences(orgID uint, item *m
 	}
 	if item.Enabled && !strategy.Enabled {
 		return errors.New("an enabled target route requires an enabled route strategy")
+	}
+	if item.FailoverEnabled {
+		fallback, err := h.repo.GetRouteStrategy(orgID, *item.FallbackRouteStrategyID)
+		if err != nil {
+			return fmt.Errorf("fallback route strategy %d is unavailable", *item.FallbackRouteStrategyID)
+		}
+		if fallback.GatewayID != 0 && fallback.GatewayID != item.GatewayID {
+			return errors.New("fallback route strategy belongs to another gateway")
+		}
+		if item.Enabled && !fallback.Enabled {
+			return errors.New("an enabled target route requires an enabled fallback route strategy")
+		}
 	}
 	return nil
 }

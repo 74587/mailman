@@ -13,20 +13,30 @@ import (
 // strategy. Non-default routes require at least one matcher; the default route
 // is selected only when no ordered matcher wins.
 type ProxyGatewayTargetRoute struct {
-	ID              uint                       `gorm:"primaryKey" json:"id"`
-	OrgID           uint                       `gorm:"not null;index;default:1" json:"orgId"`
-	GatewayID       uint                       `gorm:"not null;index;default:0" json:"gatewayId"`
-	Name            string                     `gorm:"not null;type:varchar(160);index" json:"name"`
-	Description     string                     `gorm:"type:text" json:"description,omitempty"`
-	Enabled         bool                       `gorm:"not null;default:true;index" json:"enabled"`
-	IsDefault       bool                       `gorm:"not null;default:false;index" json:"isDefault"`
-	SortOrder       int                        `gorm:"not null;default:100;index" json:"sortOrder"`
-	Matchers        StringSlice                `gorm:"type:json" json:"matchers,omitempty"`
-	RouteStrategyID uint                       `gorm:"not null;index" json:"routeStrategyId"`
-	RouteStrategy   *ProxyGatewayRouteStrategy `gorm:"foreignKey:RouteStrategyID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"routeStrategy,omitempty"`
-	CreatedAt       time.Time                  `json:"createdAt"`
-	UpdatedAt       time.Time                  `json:"updatedAt"`
-	DeletedAt       DeletedAt                  `gorm:"index" json:"deletedAt,omitempty"`
+	ID                       uint                       `gorm:"primaryKey" json:"id"`
+	OrgID                    uint                       `gorm:"not null;index;default:1" json:"orgId"`
+	GatewayID                uint                       `gorm:"not null;index;default:0" json:"gatewayId"`
+	Name                     string                     `gorm:"not null;type:varchar(160);index" json:"name"`
+	Description              string                     `gorm:"type:text" json:"description,omitempty"`
+	Enabled                  bool                       `gorm:"not null;default:true;index" json:"enabled"`
+	IsDefault                bool                       `gorm:"not null;default:false;index" json:"isDefault"`
+	SortOrder                int                        `gorm:"not null;default:100;index" json:"sortOrder"`
+	Matchers                 StringSlice                `gorm:"type:json" json:"matchers,omitempty"`
+	RouteStrategyID          uint                       `gorm:"not null;index" json:"routeStrategyId"`
+	RouteStrategy            *ProxyGatewayRouteStrategy `gorm:"foreignKey:RouteStrategyID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"routeStrategy,omitempty"`
+	FailoverEnabled          bool                       `gorm:"not null;default:false;index" json:"failoverEnabled"`
+	FallbackRouteStrategyID  *uint                      `gorm:"index" json:"fallbackRouteStrategyId,omitempty"`
+	FallbackRouteStrategy    *ProxyGatewayRouteStrategy `gorm:"foreignKey:FallbackRouteStrategyID;constraint:OnUpdate:CASCADE,OnDelete:RESTRICT;" json:"fallbackRouteStrategy,omitempty"`
+	FailureThreshold         int                        `gorm:"not null;default:2" json:"failureThreshold"`
+	FailureWindowSeconds     int                        `gorm:"not null;default:30" json:"failureWindowSeconds"`
+	CircuitBaseSeconds       int                        `gorm:"not null;default:60" json:"circuitBaseSeconds"`
+	CircuitMaxSeconds        int                        `gorm:"not null;default:300" json:"circuitMaxSeconds"`
+	CircuitBackoffMultiplier int                        `gorm:"not null;default:2" json:"circuitBackoffMultiplier"`
+	CircuitJitterPercent     int                        `gorm:"not null;default:10" json:"circuitJitterPercent"`
+	CircuitHalfOpenProbes    int                        `gorm:"not null;default:1" json:"circuitHalfOpenProbes"`
+	CreatedAt                time.Time                  `json:"createdAt"`
+	UpdatedAt                time.Time                  `json:"updatedAt"`
+	DeletedAt                DeletedAt                  `gorm:"index" json:"deletedAt,omitempty"`
 }
 
 func (ProxyGatewayTargetRoute) TableName() string { return "proxy_gateway_target_routes" }

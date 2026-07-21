@@ -141,6 +141,16 @@ export interface ProxyGatewayTargetRoute {
     matchers?: string[]
     routeStrategyId: number
     routeStrategy?: ProxyGatewayRouteStrategy
+    failoverEnabled: boolean
+    fallbackRouteStrategyId?: number
+    fallbackRouteStrategy?: ProxyGatewayRouteStrategy
+    failureThreshold: number
+    failureWindowSeconds: number
+    circuitBaseSeconds: number
+    circuitMaxSeconds: number
+    circuitBackoffMultiplier: number
+    circuitJitterPercent: number
+    circuitHalfOpenProbes: number
     createdAt?: string
     updatedAt?: string
 }
@@ -211,6 +221,13 @@ export interface ProxyGatewayAccessLog {
     dnsPolicyId?: number
     routeStrategyId?: number
     routeStrategyFlagNo?: number
+    primaryRouteStrategyId?: number
+    fallbackRouteStrategyId?: number
+    routeFailoverUsed?: boolean
+    routeFailoverReason?: string
+    routeCircuitState?: 'closed' | 'open' | 'half_open' | string
+    routeCircuitCacheHit?: boolean
+    routeCircuitProbe?: boolean
     proxyIndex?: number
     resolvedProxyIndex?: number
     proxyPoolSize?: number

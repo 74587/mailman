@@ -196,6 +196,14 @@ const defaultTargetRoute = (gatewayId: number, routeStrategyId?: number): Partia
     sortOrder: 100,
     matchers: [],
     routeStrategyId,
+    failoverEnabled: false,
+    failureThreshold: 2,
+    failureWindowSeconds: 30,
+    circuitBaseSeconds: 60,
+    circuitMaxSeconds: 300,
+    circuitBackoffMultiplier: 2,
+    circuitJitterPercent: 10,
+    circuitHalfOpenProbes: 1,
 })
 
 const defaultSecurityPolicy = (gatewayId: number): Partial<ProxyGatewaySecurityPolicy> => ({
@@ -471,6 +479,20 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
         if (!payload.routeStrategyId) {
             toast.error('请选择出口策略')
             return
+        }
+        if (payload.failoverEnabled) {
+            if (!payload.fallbackRouteStrategyId) {
+                toast.error('请选择失败切换的兜底出口策略')
+                return
+            }
+            if (payload.fallbackRouteStrategyId === payload.routeStrategyId) {
+                toast.error('兜底出口策略不能与主出口策略相同')
+                return
+            }
+            if ((payload.circuitMaxSeconds || 0) < (payload.circuitBaseSeconds || 0)) {
+                toast.error('最大退避时间不能小于初始退避时间')
+                return
+            }
         }
         if (!payload.isDefault && !(payload.matchers || []).length) {
             toast.error('非默认规则至少需要一个域名、IP 或 CIDR')
@@ -1933,14 +1955,16 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                     <div className="space-y-3 md:hidden">
                         {routes.map(item => {
                             const strategy = item.routeStrategy || strategyById.get(item.routeStrategyId)
+                            const fallbackStrategy = item.fallbackRouteStrategy || (item.fallbackRouteStrategyId ? strategyById.get(item.fallbackRouteStrategyId) : undefined)
+                            const strategyUnavailable = !strategy || (item.failoverEnabled && !fallbackStrategy) || strategy.enabled === false || fallbackStrategy?.enabled === false
                             return (
                                 <div key={item.id} className="rounded-lg border border-gray-200 p-3 dark:border-gray-800">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="min-w-0">
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <span className="font-medium text-gray-900 dark:text-white">{item.name}</span>
-                                                <Badge tone={item.enabled ? (strategy?.enabled === false ? 'amber' : 'green') : 'gray'}>
-                                                    {!item.enabled ? '已停用' : strategy?.enabled === false ? '出口策略已停用' : '已启用'}
+                                                <Badge tone={item.enabled ? (strategyUnavailable ? 'amber' : 'green') : 'gray'}>
+													{!item.enabled ? '已停用' : strategyUnavailable ? '关联策略不可用' : '已启用'}
                                                 </Badge>
                                             </div>
                                             {item.description && <div className="mt-1 text-xs text-gray-500">{item.description}</div>}
@@ -1962,6 +1986,12 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                                         <dd>
                                             <div className="font-medium text-gray-800 dark:text-gray-200">{strategy?.name || `#${item.routeStrategyId}`}</div>
                                             {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge><Badge tone={strategy.proxyIndexOverflowMode === 'modulo' ? 'green' : 'gray'}>索引{strategy.proxyIndexOverflowMode === 'modulo' ? '取模' : '越界拒绝'}</Badge></div>}
+                                            {item.failoverEnabled && (
+                                                <div className="mt-2 text-xs text-gray-500">
+                                                    失败切换 → <span className="font-medium text-gray-700 dark:text-gray-300">{fallbackStrategy?.name || (item.fallbackRouteStrategyId ? `#${item.fallbackRouteStrategyId}` : '未找到')}</span>
+                                                    <span className="ml-1">· {item.circuitBaseSeconds || 60}–{item.circuitMaxSeconds || 300}s</span>
+                                                </div>
+                                            )}
                                         </dd>
                                     </dl>
                                 </div>
@@ -1984,6 +2014,8 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                         <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                             {routes.map(item => {
                                 const strategy = item.routeStrategy || strategyById.get(item.routeStrategyId)
+                                const fallbackStrategy = item.fallbackRouteStrategy || (item.fallbackRouteStrategyId ? strategyById.get(item.fallbackRouteStrategyId) : undefined)
+                                const strategyUnavailable = !strategy || (item.failoverEnabled && !fallbackStrategy) || strategy.enabled === false || fallbackStrategy?.enabled === false
                                 return (
                                     <tr key={item.id} className="hover:bg-gray-50/80 dark:hover:bg-gray-800/40">
                                         <td className="px-4 py-3 font-mono text-xs text-gray-500">{item.isDefault ? '—' : item.sortOrder}</td>
@@ -2001,10 +2033,17 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                                         <td className="px-4 py-3">
                                             <div className="font-medium text-gray-800 dark:text-gray-200">{strategy?.name || `#${item.routeStrategyId}`}</div>
                                             {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge><Badge tone={strategy.proxyIndexOverflowMode === 'modulo' ? 'green' : 'gray'}>索引{strategy.proxyIndexOverflowMode === 'modulo' ? '取模' : '越界拒绝'}</Badge></div>}
+                                            {item.failoverEnabled && (
+                                                <div className="mt-2 flex flex-wrap items-center gap-1 text-xs text-gray-500">
+                                                    <Badge tone="amber">失败切换</Badge>
+                                                    <span>→ {fallbackStrategy?.name || (item.fallbackRouteStrategyId ? `#${item.fallbackRouteStrategyId}` : '未找到')}</span>
+                                                    <span>· 退避 {item.circuitBaseSeconds || 60}–{item.circuitMaxSeconds || 300}s</span>
+                                                </div>
+                                            )}
                                         </td>
                                         <td className="px-4 py-3">
-                                            <Badge tone={item.enabled ? (strategy?.enabled === false ? 'amber' : 'green') : 'gray'}>
-                                                {!item.enabled ? '已停用' : strategy?.enabled === false ? '出口策略已停用' : '已启用'}
+											<Badge tone={item.enabled ? (strategyUnavailable ? 'amber' : 'green') : 'gray'}>
+												{!item.enabled ? '已停用' : strategyUnavailable ? '关联策略不可用' : '已启用'}
                                             </Badge>
                                         </td>
                                         <td className="px-4 py-3 text-right"><RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} /></td>
@@ -2276,10 +2315,10 @@ function MetaTable<T extends { id: number; name: string; color?: string; descrip
 
 function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLogs: ProxyGatewayAuditLog[] }) {
     return (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_360px]">
             <Panel>
                 <TableShell>
-                    <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-800">
+                    <table className="min-w-[920px] divide-y divide-gray-200 text-sm dark:divide-gray-800">
                         <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/60">
                             <tr>
                                 <th className="px-4 py-3 text-left">时间</th>
@@ -2294,10 +2333,10 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                         <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                             {logs.map(item => (
                                 <tr key={item.id}>
-                                    <td className="px-4 py-3 text-gray-500">{formatTime(item.createdAt)}</td>
-                                    <td className="px-4 py-3">
+                                    <td className="whitespace-nowrap px-4 py-3 text-gray-500">{formatTime(item.createdAt)}</td>
+                                    <td className="min-w-64 px-4 py-3">
                                         <div>{item.username || '-'}</div>
-                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo || item.proxyIndex || item.targetRouteId) && (
+                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo || item.proxyIndex || item.targetRouteId || item.routeFailoverUsed) && (
                                             <div className="mt-1 flex flex-wrap gap-1 text-xs text-gray-500">
                                                 {item.requestedUsername && <span>{item.requestedUsername}</span>}
                                                 {item.clientIp && (
@@ -2314,19 +2353,30 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                                     </Badge>
                                                 ) : null}
                                                 {item.targetRouteId ? <Badge tone="amber">目标路由 #{item.targetRouteId}{item.targetRouteDefault ? ' 默认' : item.targetRouteMatcher ? ` · ${item.targetRouteMatcher}` : ''}</Badge> : null}
+                                                {item.routeFailoverUsed ? <Badge tone="amber">失败切换 → 策略 #{item.fallbackRouteStrategyId || item.routeStrategyId}</Badge> : null}
+                                                {item.routeCircuitState && item.routeCircuitState !== 'closed' ? <Badge tone="blue">熔断 {item.routeCircuitState}</Badge> : null}
+                                                {item.routeCircuitCacheHit ? <Badge tone="blue">熔断缓存命中</Badge> : null}
+                                                {item.routeCircuitProbe ? <Badge tone="blue">半开探测</Badge> : null}
                                             </div>
                                         )}
                                     </td>
-                                    <td className="px-4 py-3">
+                                    <td className="whitespace-nowrap px-4 py-3">
                                         {item.targetHost ? `${item.targetHost}:${item.targetPort || ''}` : '-'}
                                     </td>
-                                    <td className="px-4 py-3">{item.upstreamProxyId ? `#${item.upstreamProxyId}` : '直连/无'}</td>
-                                    <td className="px-4 py-3 text-xs text-gray-500">
+                                    <td className="whitespace-nowrap px-4 py-3">{item.upstreamProxyId ? `#${item.upstreamProxyId}` : '直连/无'}</td>
+                                    <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500">
                                         <div>入 {formatBytes(item.bytesIn || 0)}</div>
                                         <div>出 {formatBytes(item.bytesOut || 0)}</div>
                                     </td>
-                                    <td className="px-4 py-3"><Badge tone={item.status === 'success' ? 'green' : item.status === 'denied' ? 'red' : 'amber'}>{item.status}</Badge></td>
-                                    <td className="px-4 py-3">{item.durationMs}ms</td>
+                                    <td className="px-4 py-3">
+                                        <Badge tone={item.status === 'success' ? 'green' : item.status === 'denied' ? 'red' : 'amber'}>{item.status}</Badge>
+                                        {(item.denyReason || item.error || item.routeFailoverReason) && (
+                                            <div className="mt-1 max-w-56 truncate text-xs text-gray-500" title={item.denyReason || item.error || item.routeFailoverReason}>
+                                                {item.denyReason || item.error || `主策略失败：${item.routeFailoverReason}`}
+                                            </div>
+                                        )}
+                                    </td>
+                                    <td className="whitespace-nowrap px-4 py-3">{item.durationMs}ms</td>
                                 </tr>
                             ))}
                         </tbody>
@@ -2891,9 +2941,10 @@ function TargetRouteModal({ draft, setDraft, routeStrategies, onSave }: {
 }) {
     if (!draft) return null
     const strategyOptions = toSearchOptions(routeStrategies, item => `${item.selectionMode} · ${item.selectionAlgorithm}${item.enabled ? '' : ' · 已停用'}`)
+    const fallbackStrategyOptions = toSearchOptions(routeStrategies.filter(item => item.id !== draft.routeStrategyId), item => `${item.selectionMode} · ${item.selectionAlgorithm}${item.enabled ? '' : ' · 已停用'}`)
     return (
         <Modal open={!!draft} onOpenChange={open => !open && setDraft(null)}>
-            <ModalContent size="2xl">
+            <ModalContent size="6xl">
                 <ModalHeader>
                     <ModalTitle>{draft.id ? '编辑目标路由' : '新增目标路由'}</ModalTitle>
                     <ModalDescription>域名、IP 和 CIDR 使用同一张有序规则表；第一条匹配规则决定出口。</ModalDescription>
@@ -2902,7 +2953,7 @@ function TargetRouteModal({ draft, setDraft, routeStrategies, onSave }: {
                     <div className="grid gap-3 md:grid-cols-2">
                         <TextField label="规则名称" help="用于规则列表和访问日志识别。" value={draft.name || ''} onChange={value => setDraft({ ...draft, name: value })} />
                         <NumberField label="匹配顺序" help="数值越小越先匹配；默认规则不参与顺序。" value={draft.sortOrder ?? 100} onChange={value => setDraft({ ...draft, sortOrder: value })} />
-                        <SearchSelect label="出口策略" help="命中后使用该策略配置的代理池、调度算法和 fallback。" items={strategyOptions} value={draft.routeStrategyId} onChange={value => setDraft({ ...draft, routeStrategyId: value })} noneLabel="请选择出口策略" placeholder="搜索出口策略" />
+                        <SearchSelect label="出口策略" help="命中后先使用该策略；策略自身的重试和备用池会先执行。" items={strategyOptions} value={draft.routeStrategyId} onChange={value => setDraft({ ...draft, routeStrategyId: value, fallbackRouteStrategyId: value === draft.fallbackRouteStrategyId ? undefined : draft.fallbackRouteStrategyId })} noneLabel="请选择出口策略" placeholder="搜索出口策略" />
                         <div className="grid gap-2 sm:grid-cols-2">
                             <Toggle label="启用规则" help="停用后不参与匹配。" checked={draft.enabled !== false} onChange={value => setDraft({ ...draft, enabled: value })} />
                             <Toggle label="设为默认出口" help="仅在没有其他规则命中时使用；同一网关只保留一个默认出口。" checked={!!draft.isDefault} onChange={value => setDraft({ ...draft, isDefault: value, matchers: value ? [] : draft.matchers })} />
@@ -2921,6 +2972,45 @@ function TargetRouteModal({ draft, setDraft, routeStrategies, onSave }: {
                             默认出口没有匹配项，只在所有有序规则都未命中时使用。
                         </div>
                     )}
+                    <section className="rounded-xl border border-gray-200 p-4 dark:border-gray-800">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                                <div className="text-sm font-medium text-gray-900 dark:text-white">失败切换</div>
+                                <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">主出口完成内部重试后仍无法连接，才切换到另一个出口策略。主出口恢复后会自动探测并切回。</p>
+                            </div>
+                            <Toggle label="启用" help="现有路由默认关闭；开启后必须选择不同的兜底出口。" checked={!!draft.failoverEnabled} onChange={value => setDraft({ ...draft, failoverEnabled: value })} />
+                        </div>
+                        {draft.failoverEnabled && (
+                            <div className="mt-4 space-y-4 border-t border-gray-100 pt-4 dark:border-gray-800">
+                                <SearchSelect
+                                    label="兜底出口策略"
+                                    help="保留智能用户名中的池索引；兜底策略独立执行自己的越界处理、DNS 和内部 Fallback。"
+                                    items={fallbackStrategyOptions}
+                                    value={draft.fallbackRouteStrategyId}
+                                    onChange={value => setDraft({ ...draft, fallbackRouteStrategyId: value })}
+                                    noneLabel="请选择不同的出口策略"
+                                    placeholder="搜索兜底出口策略"
+                                />
+                                <div className="grid gap-3 sm:grid-cols-3">
+                                    <NumberField label="失败阈值" help="在统计窗口内，主出口失败且兜底成功达到此次数后开启熔断。" min={1} max={100} value={draft.failureThreshold || 2} onChange={value => setDraft({ ...draft, failureThreshold: value })} />
+                                    <NumberField label="初始退避（秒）" help="熔断后跳过主出口的初始时长。" min={1} max={86400} value={draft.circuitBaseSeconds || 60} onChange={value => setDraft({ ...draft, circuitBaseSeconds: value })} />
+                                    <NumberField label="最大退避（秒）" help="指数退避的硬上限；达到后仍按该间隔进行半开探测。" min={1} max={604800} value={draft.circuitMaxSeconds || 300} onChange={value => setDraft({ ...draft, circuitMaxSeconds: value })} />
+                                </div>
+                                <details className="rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-900/60">
+                                    <summary className="cursor-pointer text-sm font-medium text-gray-700 dark:text-gray-200">高级熔断参数</summary>
+                                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                        <NumberField label="统计窗口（秒）" help="只累计窗口内由兜底成功确认的主出口失败。" min={1} max={86400} value={draft.failureWindowSeconds || 30} onChange={value => setDraft({ ...draft, failureWindowSeconds: value })} />
+                                        <NumberField label="退避倍数" help="半开探测失败且兜底成功时，按此倍数延长并受最大值限制。" min={1} max={10} value={draft.circuitBackoffMultiplier || 2} onChange={value => setDraft({ ...draft, circuitBackoffMultiplier: value })} />
+                                        <NumberField label="抖动比例（%）" help="在退避时间上加入随机偏移，避免大量连接同时探测。" min={0} max={50} value={draft.circuitJitterPercent ?? 10} onChange={value => setDraft({ ...draft, circuitJitterPercent: value })} />
+                                        <NumberField label="半开探测数" help="每个目标同时允许尝试主出口的连接数；其余连接继续走兜底。" min={1} max={10} value={draft.circuitHalfOpenProbes || 1} onChange={value => setDraft({ ...draft, circuitHalfOpenProbes: value })} />
+                                    </div>
+                                </details>
+                                <div className="text-xs leading-5 text-gray-500 dark:text-gray-400">
+                                    只有“主出口失败且兜底成功”才累计失败或提高退避级别；两个出口同时失败不会无限加重熔断。
+                                </div>
+                            </div>
+                        )}
+                    </section>
                     <TextareaField label="描述" help="记录该规则适用的服务或出口要求。" value={draft.description || ''} onChange={value => setDraft({ ...draft, description: value })} />
                 </ModalBody>
                 <ModalFooter>
