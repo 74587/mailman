@@ -117,6 +117,9 @@ type gatewaySession struct {
 	rawUsername         string
 	routeStrategyID     *uint
 	routeStrategyFlagNo int
+	proxyIndex          int
+	resolvedProxyIndex  int
+	proxyPoolSize       int
 	routeParams         models.JSONMapInterface
 	targetRouteID       *uint
 	targetRouteMatcher  string
@@ -127,6 +130,7 @@ type gatewayAuthResult struct {
 	account       *models.ProxyGatewayAccount
 	rawUsername   string
 	routeStrategy *models.ProxyGatewayRouteStrategy
+	proxyIndex    int
 	routeParams   models.JSONMapInterface
 }
 
@@ -841,6 +845,21 @@ func (s *ProxyGatewayService) authenticateAccount(listener models.ProxyGatewayLi
 	if err := authorizeAccountGateway(account, listener); err != nil {
 		return auth, err
 	}
+	auth.routeParams = request.params
+	routingMode := models.EffectiveProxyGatewayUsernameRoutingMode(account.UsernameRoutingMode)
+	useProxyIndex := request.kind == gatewayUsernameRouteProxyIndex ||
+		(request.kind == gatewayUsernameRouteSuffix && routingMode == models.ProxyGatewayUsernameRoutingProxyIndex)
+	if useProxyIndex {
+		if !account.EnableUsernameRouting {
+			return auth, errors.New("proxy account does not allow smart username routing")
+		}
+		if routingMode != models.ProxyGatewayUsernameRoutingProxyIndex {
+			return auth, errors.New("proxy account does not allow pool proxy indexing")
+		}
+		auth.proxyIndex = request.flagNo
+		return auth, nil
+	}
+
 	strategy, err := s.repo.GetRouteStrategyByFlagNo(orgID, listener.ID, request.flagNo)
 	if err != nil {
 		return auth, fmt.Errorf("route strategy flag %d is not available", request.flagNo)
@@ -848,10 +867,8 @@ func (s *ProxyGatewayService) authenticateAccount(listener models.ProxyGatewayLi
 	if err := authorizeUsernameRouteStrategy(account, listener, strategy); err != nil {
 		return auth, err
 	}
-	routedAccount := applyRouteStrategyToAccount(account, strategy)
-	auth.account = routedAccount
+	auth.account = applyRouteStrategyToAccount(account, strategy)
 	auth.routeStrategy = strategy
-	auth.routeParams = request.params
 	return auth, nil
 }
 
@@ -883,8 +900,17 @@ func authorizeAccountGateway(account *models.ProxyGatewayAccount, listener model
 type gatewayUsernameRouteRequest struct {
 	baseUsername string
 	flagNo       int
+	kind         gatewayUsernameRouteKind
 	params       models.JSONMapInterface
 }
+
+type gatewayUsernameRouteKind string
+
+const (
+	gatewayUsernameRouteSuffix     gatewayUsernameRouteKind = "suffix"
+	gatewayUsernameRouteStrategy   gatewayUsernameRouteKind = "strategy"
+	gatewayUsernameRouteProxyIndex gatewayUsernameRouteKind = "proxy_index"
+)
 
 func parseGatewayUsernameRoute(raw string, configuredSeparators []string) (gatewayUsernameRouteRequest, bool) {
 	raw = strings.TrimSpace(raw)
@@ -895,6 +921,11 @@ func parseGatewayUsernameRoute(raw string, configuredSeparators []string) (gatew
 		values, err := url.ParseQuery(raw[idx+1:])
 		if err == nil {
 			flagText := firstNonEmpty(values.Get("route"), values.Get("router"), values.Get("rs"), values.Get("strategy"))
+			kind := gatewayUsernameRouteStrategy
+			if flagText == "" {
+				flagText = firstNonEmpty(values.Get("index"), values.Get("proxy"), values.Get("pi"))
+				kind = gatewayUsernameRouteProxyIndex
+			}
 			if flagText != "" {
 				flagNo, err := strconv.Atoi(flagText)
 				if err == nil && flagNo > 0 {
@@ -904,7 +935,7 @@ func parseGatewayUsernameRoute(raw string, configuredSeparators []string) (gatew
 							params[key] = value[len(value)-1]
 						}
 					}
-					return gatewayUsernameRouteRequest{baseUsername: raw[:idx], flagNo: flagNo, params: params}, true
+					return gatewayUsernameRouteRequest{baseUsername: raw[:idx], flagNo: flagNo, kind: kind, params: params}, true
 				}
 			}
 		}
@@ -926,7 +957,7 @@ func parseGatewayUsernameRoute(raw string, configuredSeparators []string) (gatew
 		}
 		flagNo, err := strconv.Atoi(flagText)
 		if err == nil && flagNo > 0 {
-			return gatewayUsernameRouteRequest{baseUsername: raw[:idx], flagNo: flagNo, params: params}, true
+			return gatewayUsernameRouteRequest{baseUsername: raw[:idx], flagNo: flagNo, kind: gatewayUsernameRouteSuffix, params: params}, true
 		}
 	}
 	return gatewayUsernameRouteRequest{}, false
@@ -990,6 +1021,7 @@ func applyRouteStrategyToAccount(account *models.ProxyGatewayAccount, strategy *
 	next.ProxyMatchTagIDs = strategy.ProxyMatchTagIDs
 	next.ProxyMatchTagMode = strategy.ProxyMatchTagMode
 	next.SelectionAlgorithm = strategy.SelectionAlgorithm
+	next.ProxyIndexOverflowMode = strategy.ProxyIndexOverflowMode
 	next.StickyMode = strategy.StickyMode
 	next.StickyTTLSeconds = strategy.StickyTTLSeconds
 	next.PreferLastSuccess = strategy.PreferLastSuccess
@@ -1017,6 +1049,9 @@ func (s *ProxyGatewayService) applyAuthResultToSession(session *gatewaySession, 
 		id := auth.routeStrategy.ID
 		session.routeStrategyID = &id
 		session.routeStrategyFlagNo = auth.routeStrategy.FlagNo
+	}
+	if auth.proxyIndex > 0 {
+		session.proxyIndex = auth.proxyIndex
 	}
 	if auth.routeParams != nil {
 		session.routeParams = auth.routeParams
@@ -1106,6 +1141,9 @@ func applyTargetRouteStrategy(session *gatewaySession, route *models.ProxyGatewa
 	if strategy.GatewayID != 0 && strategy.GatewayID != session.listener.ID {
 		return fmt.Errorf("target route %s references a strategy from another gateway", route.Name)
 	}
+	strategyID := strategy.ID
+	session.routeStrategyID = &strategyID
+	session.routeStrategyFlagNo = strategy.FlagNo
 	session.account = applyRouteStrategyToAccount(session.account, strategy)
 	return nil
 }
@@ -1144,7 +1182,7 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session *gatew
 	}
 	attemptPool := func(fallback bool, attempts int) (net.Conn, *models.ProxyPoolItem, bool) {
 		for i := 0; i < attempts; i++ {
-			proxyItem, direct, err := s.selectProxy(session.account, *session, exclude, fallback)
+			proxyItem, direct, err := s.selectProxy(session.account, session, exclude, fallback)
 			if err != nil {
 				lastErr = err
 				return nil, nil, false
@@ -1171,6 +1209,10 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session *gatew
 	}
 	if conn, proxyItem, ok := attemptPool(false, mainAttempts); ok {
 		return conn, proxyItem, securityPolicy, dnsPolicy, nil
+	}
+	var indexErr *proxyIndexSelectionError
+	if errors.As(lastErr, &indexErr) {
+		return nil, nil, securityPolicy, dnsPolicy, lastErr
 	}
 
 	if session.account.FallbackMode == models.ProxyGatewayFallbackBackup && session.account.MaxRetries > 0 {
@@ -1363,9 +1405,18 @@ func (s *ProxyGatewayService) resolveHost(ctx context.Context, policy models.Pro
 	return ips, err
 }
 
-func (s *ProxyGatewayService) selectProxy(account *models.ProxyGatewayAccount, session gatewaySession, exclude []uint, fallback bool) (*models.ProxyPoolItem, bool, error) {
+type proxyIndexSelectionError struct {
+	message string
+}
+
+func (e *proxyIndexSelectionError) Error() string { return e.message }
+
+func (s *ProxyGatewayService) selectProxy(account *models.ProxyGatewayAccount, session *gatewaySession, exclude []uint, fallback bool) (*models.ProxyPoolItem, bool, error) {
 	if account == nil {
 		return nil, false, errors.New("missing proxy gateway account")
+	}
+	if session != nil && session.proxyIndex > 0 && !fallback && len(exclude) == 0 {
+		return s.selectProxyByIndex(account, session)
 	}
 	candidates, err := s.loadProxyCandidates(account, fallback, exclude)
 	if err != nil {
@@ -1380,7 +1431,11 @@ func (s *ProxyGatewayService) selectProxy(account *models.ProxyGatewayAccount, s
 		candidatesByID[candidate.ID] = candidate
 	}
 
-	stickyKey := s.stickyKey(account, session)
+	currentSession := gatewaySession{}
+	if session != nil {
+		currentSession = *session
+	}
+	stickyKey := s.stickyKey(account, currentSession)
 	if stickyKey != "" {
 		s.mu.RLock()
 		entry, ok := s.sticky[stickyKey]
@@ -1394,7 +1449,7 @@ func (s *ProxyGatewayService) selectProxy(account *models.ProxyGatewayAccount, s
 
 	if account.PreferLastSuccess || account.SelectionAlgorithm == models.ProxyGatewayAlgorithmPreferLastGood {
 		s.mu.RLock()
-		lastID := s.lastSuccess[s.routeRuntimeKey(account, session)]
+		lastID := s.lastSuccess[s.routeRuntimeKey(account, currentSession)]
 		s.mu.RUnlock()
 		if lastID != 0 {
 			if item, found := candidatesByID[lastID]; found {
@@ -1406,7 +1461,7 @@ func (s *ProxyGatewayService) selectProxy(account *models.ProxyGatewayAccount, s
 	var selected models.ProxyPoolItem
 	switch account.SelectionAlgorithm {
 	case models.ProxyGatewayAlgorithmRoundRobin:
-		runtimeKey := s.routeRuntimeKey(account, session)
+		runtimeKey := s.routeRuntimeKey(account, currentSession)
 		s.mu.Lock()
 		index := s.roundRobin[runtimeKey] % len(candidates)
 		s.roundRobin[runtimeKey] = s.roundRobin[runtimeKey] + 1
@@ -1426,7 +1481,29 @@ func (s *ProxyGatewayService) selectProxy(account *models.ProxyGatewayAccount, s
 		selected = candidates[s.rand.Intn(len(candidates))]
 		s.mu.Unlock()
 	}
-	s.rememberStickySelection(account, session, selected.ID)
+	s.rememberStickySelection(account, currentSession, selected.ID)
+	return &selected, false, nil
+}
+
+func (s *ProxyGatewayService) selectProxyByIndex(account *models.ProxyGatewayAccount, session *gatewaySession) (*models.ProxyPoolItem, bool, error) {
+	candidates, err := s.loadIndexedProxyCandidates(account)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(candidates) == 0 {
+		return nil, false, &proxyIndexSelectionError{message: "pool proxy index cannot be resolved because the selected proxy pool is empty"}
+	}
+	requested := session.proxyIndex
+	resolved := requested
+	if requested > len(candidates) {
+		if models.EffectiveProxyGatewayIndexOverflowMode(account.ProxyIndexOverflowMode) != models.ProxyGatewayIndexOverflowModulo {
+			return nil, false, &proxyIndexSelectionError{message: fmt.Sprintf("pool proxy index %d exceeds pool size %d", requested, len(candidates))}
+		}
+		resolved = (requested-1)%len(candidates) + 1
+	}
+	session.resolvedProxyIndex = resolved
+	session.proxyPoolSize = len(candidates)
+	selected := candidates[resolved-1]
 	return &selected, false, nil
 }
 
@@ -1478,6 +1555,49 @@ func (s *ProxyGatewayService) loadProxyCandidates(account *models.ProxyGatewayAc
 	var candidates []models.ProxyPoolItem
 	err := query.Limit(500).Find(&candidates).Error
 	return candidates, err
+}
+
+func (s *ProxyGatewayService) loadIndexedProxyCandidates(account *models.ProxyGatewayAccount) ([]models.ProxyPoolItem, error) {
+	query := s.proxyRepo.GetDB().Model(&models.ProxyPoolItem{}).Where("org_id = ?", account.OrgID)
+	explicitIDs := []uint(account.ProxyIDs)
+	switch account.SelectionMode {
+	case models.ProxyGatewaySelectionExplicit:
+		if len(explicitIDs) == 0 {
+			return nil, &proxyIndexSelectionError{message: "explicit proxy strategy requires proxy IDs"}
+		}
+		query = query.Where("id IN ?", explicitIDs)
+	case models.ProxyGatewaySelectionAll:
+	default:
+		if len(account.ProxyMatchGroupIDs) > 0 {
+			query = query.Where("group_id IN ?", []uint(account.ProxyMatchGroupIDs))
+		}
+		if len(account.ProxyMatchTagIDs) > 0 {
+			sub := s.proxyRepo.GetDB().Model(&models.ProxyPoolItemTag{}).Select("proxy_id").Where("tag_id IN ?", []uint(account.ProxyMatchTagIDs))
+			if strings.ToLower(string(account.ProxyMatchTagMode)) == "and" {
+				sub = sub.Group("proxy_id").Having("COUNT(DISTINCT tag_id) = ?", len(account.ProxyMatchTagIDs))
+			}
+			query = query.Where("id IN (?)", sub)
+		}
+	}
+
+	var candidates []models.ProxyPoolItem
+	if err := query.Order("id ASC").Limit(500).Find(&candidates).Error; err != nil {
+		return nil, err
+	}
+	if account.SelectionMode != models.ProxyGatewaySelectionExplicit {
+		return candidates, nil
+	}
+	byID := make(map[uint]models.ProxyPoolItem, len(candidates))
+	for _, candidate := range candidates {
+		byID[candidate.ID] = candidate
+	}
+	ordered := make([]models.ProxyPoolItem, 0, len(candidates))
+	for _, id := range explicitIDs {
+		if candidate, ok := byID[id]; ok {
+			ordered = append(ordered, candidate)
+		}
+	}
+	return ordered, nil
 }
 
 func (s *ProxyGatewayService) weightedCandidate(candidates []models.ProxyPoolItem) models.ProxyPoolItem {
@@ -2036,6 +2156,9 @@ func (s *ProxyGatewayService) finishSessionWithPolicies(session gatewaySession, 
 		DNSPolicyID:         dnsID,
 		RouteStrategyID:     session.routeStrategyID,
 		RouteStrategyFlagNo: session.routeStrategyFlagNo,
+		ProxyIndex:          session.proxyIndex,
+		ResolvedProxyIndex:  session.resolvedProxyIndex,
+		ProxyPoolSize:       session.proxyPoolSize,
 		RouteParams:         session.routeParams,
 		TargetRouteID:       session.targetRouteID,
 		TargetRouteMatcher:  session.targetRouteMatcher,

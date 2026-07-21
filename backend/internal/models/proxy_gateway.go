@@ -37,6 +37,46 @@ func (source ProxyGatewaySelectionSource) IsValid() bool {
 	return source == ProxyGatewaySelectionSourceAccount || source == ProxyGatewaySelectionSourceGateway
 }
 
+type ProxyGatewayUsernameRoutingMode string
+
+const (
+	// Strategy keeps the original behavior: username#N selects the route
+	// strategy whose flag number is N.
+	ProxyGatewayUsernameRoutingStrategy ProxyGatewayUsernameRoutingMode = "strategy"
+	// ProxyIndex defers username#N until the target route has selected a pool,
+	// then selects the Nth proxy from that pool.
+	ProxyGatewayUsernameRoutingProxyIndex ProxyGatewayUsernameRoutingMode = "proxy_index"
+)
+
+func (mode ProxyGatewayUsernameRoutingMode) IsValid() bool {
+	return mode == ProxyGatewayUsernameRoutingStrategy || mode == ProxyGatewayUsernameRoutingProxyIndex
+}
+
+func EffectiveProxyGatewayUsernameRoutingMode(mode ProxyGatewayUsernameRoutingMode) ProxyGatewayUsernameRoutingMode {
+	if mode == ProxyGatewayUsernameRoutingProxyIndex {
+		return mode
+	}
+	return ProxyGatewayUsernameRoutingStrategy
+}
+
+type ProxyGatewayIndexOverflowMode string
+
+const (
+	ProxyGatewayIndexOverflowReject ProxyGatewayIndexOverflowMode = "reject"
+	ProxyGatewayIndexOverflowModulo ProxyGatewayIndexOverflowMode = "modulo"
+)
+
+func (mode ProxyGatewayIndexOverflowMode) IsValid() bool {
+	return mode == ProxyGatewayIndexOverflowReject || mode == ProxyGatewayIndexOverflowModulo
+}
+
+func EffectiveProxyGatewayIndexOverflowMode(mode ProxyGatewayIndexOverflowMode) ProxyGatewayIndexOverflowMode {
+	if mode == ProxyGatewayIndexOverflowModulo {
+		return mode
+	}
+	return ProxyGatewayIndexOverflowReject
+}
+
 type ProxyGatewaySelectionAlgorithm string
 
 const (
@@ -125,88 +165,91 @@ type ProxyGatewayListener struct {
 }
 
 type ProxyGatewayAccount struct {
-	ID                      uint                           `gorm:"primaryKey" json:"id"`
-	OrgID                   uint                           `gorm:"not null;index;default:1;uniqueIndex:idx_proxy_gateway_account_username" json:"orgId"`
-	Username                string                         `gorm:"not null;type:varchar(160);uniqueIndex:idx_proxy_gateway_account_username" json:"username"`
-	PasswordHash            string                         `gorm:"not null" json:"-"`
-	Password                string                         `gorm:"type:text" json:"password,omitempty"`
-	Name                    string                         `gorm:"type:varchar(160)" json:"name,omitempty"`
-	Remark                  string                         `gorm:"type:text" json:"remark,omitempty"`
-	Enabled                 bool                           `gorm:"not null;default:true" json:"enabled"`
-	ExpiresAt               *time.Time                     `json:"expiresAt,omitempty"`
-	AllowAllGateways        bool                           `gorm:"not null;default:false" json:"allowAllGateways"`
-	AllowedGatewayIDs       UintSlice                      `gorm:"type:json" json:"allowedGatewayIds,omitempty"`
-	GroupID                 *uint                          `gorm:"index" json:"groupId,omitempty"`
-	Group                   *ProxyGatewayAccountGroup      `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"group,omitempty"`
-	Tags                    []ProxyGatewayAccountTag       `gorm:"many2many:proxy_gateway_account_tag_links;foreignKey:ID;joinForeignKey:AccountID;References:ID;joinReferences:TagID" json:"tags,omitempty"`
-	ProxySelectionSource    ProxyGatewaySelectionSource    `gorm:"type:varchar(16);not null;default:'account'" json:"proxySelectionSource"`
-	SelectionMode           ProxyGatewaySelectionMode      `gorm:"type:varchar(24);not null;default:'filtered'" json:"selectionMode"`
-	ProxyIDs                UintSlice                      `gorm:"type:json" json:"proxyIds,omitempty"`
-	ProxyMatchGroupIDs      UintSlice                      `gorm:"type:json" json:"proxyMatchGroupIds,omitempty"`
-	ProxyMatchTagIDs        UintSlice                      `gorm:"type:json" json:"proxyMatchTagIds,omitempty"`
-	ProxyMatchTagMode       ProxyTagFilterMode             `gorm:"type:varchar(8);not null;default:'or'" json:"proxyMatchTagMode"`
-	SelectionAlgorithm      ProxyGatewaySelectionAlgorithm `gorm:"type:varchar(32);not null;default:'random'" json:"selectionAlgorithm"`
-	StickyMode              ProxyGatewayStickyMode         `gorm:"type:varchar(32);not null;default:'none'" json:"stickyMode"`
-	StickyTTLSeconds        int                            `gorm:"not null;default:600" json:"stickyTtlSeconds"`
-	PreferLastSuccess       bool                           `gorm:"not null;default:false" json:"preferLastSuccess"`
-	FallbackMode            ProxyGatewayFallbackMode       `gorm:"type:varchar(24);not null;default:'interrupt'" json:"fallbackMode"`
-	FallbackProxyIDs        UintSlice                      `gorm:"type:json" json:"fallbackProxyIds,omitempty"`
-	FallbackGroupIDs        UintSlice                      `gorm:"type:json" json:"fallbackGroupIds,omitempty"`
-	FallbackTagIDs          UintSlice                      `gorm:"type:json" json:"fallbackTagIds,omitempty"`
-	FallbackTagMode         ProxyTagFilterMode             `gorm:"type:varchar(8);not null;default:'or'" json:"fallbackTagMode"`
-	MaxRetries              int                            `gorm:"not null;default:2" json:"maxRetries"`
-	AllowDirectFallback     bool                           `gorm:"not null;default:false" json:"allowDirectFallback"`
-	SecurityPolicyID        *uint                          `gorm:"index" json:"securityPolicyId,omitempty"`
-	SecurityPolicy          *ProxyGatewaySecurityPolicy    `gorm:"foreignKey:SecurityPolicyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"securityPolicy,omitempty"`
-	DNSPolicyID             *uint                          `gorm:"index" json:"dnsPolicyId,omitempty"`
-	DNSPolicy               *ProxyGatewayDNSPolicy         `gorm:"foreignKey:DNSPolicyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"dnsPolicy,omitempty"`
-	MaxConcurrent           int                            `gorm:"not null;default:0" json:"maxConcurrent"`
-	RateLimitPerMinute      int                            `gorm:"not null;default:0" json:"rateLimitPerMinute"`
-	BandwidthLimitKBps      int                            `gorm:"not null;default:0" json:"bandwidthLimitKbps"`
-	ConnectTimeoutSeconds   int                            `gorm:"not null;default:30" json:"connectTimeoutSeconds"`
-	IdleTimeoutSeconds      int                            `gorm:"not null;default:120" json:"idleTimeoutSeconds"`
-	MaxSessionSeconds       int                            `gorm:"not null;default:0" json:"maxSessionSeconds"`
-	EnableUsernameRouting   bool                           `gorm:"not null;default:false" json:"enableUsernameRouting"`
-	AllowAllRouteStrategies bool                           `gorm:"not null;default:false" json:"allowAllRouteStrategies"`
-	AllowedRouteStrategyIDs UintSlice                      `gorm:"type:json" json:"allowedRouteStrategyIds,omitempty"`
-	LastUsedAt              *time.Time                     `json:"lastUsedAt,omitempty"`
-	CreatedAt               time.Time                      `json:"createdAt"`
-	UpdatedAt               time.Time                      `json:"updatedAt"`
-	DeletedAt               DeletedAt                      `gorm:"index" json:"deletedAt,omitempty"`
+	ID                      uint                            `gorm:"primaryKey" json:"id"`
+	OrgID                   uint                            `gorm:"not null;index;default:1;uniqueIndex:idx_proxy_gateway_account_username" json:"orgId"`
+	Username                string                          `gorm:"not null;type:varchar(160);uniqueIndex:idx_proxy_gateway_account_username" json:"username"`
+	PasswordHash            string                          `gorm:"not null" json:"-"`
+	Password                string                          `gorm:"type:text" json:"password,omitempty"`
+	Name                    string                          `gorm:"type:varchar(160)" json:"name,omitempty"`
+	Remark                  string                          `gorm:"type:text" json:"remark,omitempty"`
+	Enabled                 bool                            `gorm:"not null;default:true" json:"enabled"`
+	ExpiresAt               *time.Time                      `json:"expiresAt,omitempty"`
+	AllowAllGateways        bool                            `gorm:"not null;default:false" json:"allowAllGateways"`
+	AllowedGatewayIDs       UintSlice                       `gorm:"type:json" json:"allowedGatewayIds,omitempty"`
+	GroupID                 *uint                           `gorm:"index" json:"groupId,omitempty"`
+	Group                   *ProxyGatewayAccountGroup       `gorm:"foreignKey:GroupID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"group,omitempty"`
+	Tags                    []ProxyGatewayAccountTag        `gorm:"many2many:proxy_gateway_account_tag_links;foreignKey:ID;joinForeignKey:AccountID;References:ID;joinReferences:TagID" json:"tags,omitempty"`
+	ProxySelectionSource    ProxyGatewaySelectionSource     `gorm:"type:varchar(16);not null;default:'account'" json:"proxySelectionSource"`
+	SelectionMode           ProxyGatewaySelectionMode       `gorm:"type:varchar(24);not null;default:'filtered'" json:"selectionMode"`
+	ProxyIDs                UintSlice                       `gorm:"type:json" json:"proxyIds,omitempty"`
+	ProxyMatchGroupIDs      UintSlice                       `gorm:"type:json" json:"proxyMatchGroupIds,omitempty"`
+	ProxyMatchTagIDs        UintSlice                       `gorm:"type:json" json:"proxyMatchTagIds,omitempty"`
+	ProxyMatchTagMode       ProxyTagFilterMode              `gorm:"type:varchar(8);not null;default:'or'" json:"proxyMatchTagMode"`
+	SelectionAlgorithm      ProxyGatewaySelectionAlgorithm  `gorm:"type:varchar(32);not null;default:'random'" json:"selectionAlgorithm"`
+	StickyMode              ProxyGatewayStickyMode          `gorm:"type:varchar(32);not null;default:'none'" json:"stickyMode"`
+	StickyTTLSeconds        int                             `gorm:"not null;default:600" json:"stickyTtlSeconds"`
+	PreferLastSuccess       bool                            `gorm:"not null;default:false" json:"preferLastSuccess"`
+	FallbackMode            ProxyGatewayFallbackMode        `gorm:"type:varchar(24);not null;default:'interrupt'" json:"fallbackMode"`
+	FallbackProxyIDs        UintSlice                       `gorm:"type:json" json:"fallbackProxyIds,omitempty"`
+	FallbackGroupIDs        UintSlice                       `gorm:"type:json" json:"fallbackGroupIds,omitempty"`
+	FallbackTagIDs          UintSlice                       `gorm:"type:json" json:"fallbackTagIds,omitempty"`
+	FallbackTagMode         ProxyTagFilterMode              `gorm:"type:varchar(8);not null;default:'or'" json:"fallbackTagMode"`
+	MaxRetries              int                             `gorm:"not null;default:2" json:"maxRetries"`
+	AllowDirectFallback     bool                            `gorm:"not null;default:false" json:"allowDirectFallback"`
+	SecurityPolicyID        *uint                           `gorm:"index" json:"securityPolicyId,omitempty"`
+	SecurityPolicy          *ProxyGatewaySecurityPolicy     `gorm:"foreignKey:SecurityPolicyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"securityPolicy,omitempty"`
+	DNSPolicyID             *uint                           `gorm:"index" json:"dnsPolicyId,omitempty"`
+	DNSPolicy               *ProxyGatewayDNSPolicy          `gorm:"foreignKey:DNSPolicyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"dnsPolicy,omitempty"`
+	MaxConcurrent           int                             `gorm:"not null;default:0" json:"maxConcurrent"`
+	RateLimitPerMinute      int                             `gorm:"not null;default:0" json:"rateLimitPerMinute"`
+	BandwidthLimitKBps      int                             `gorm:"not null;default:0" json:"bandwidthLimitKbps"`
+	ConnectTimeoutSeconds   int                             `gorm:"not null;default:30" json:"connectTimeoutSeconds"`
+	IdleTimeoutSeconds      int                             `gorm:"not null;default:120" json:"idleTimeoutSeconds"`
+	MaxSessionSeconds       int                             `gorm:"not null;default:0" json:"maxSessionSeconds"`
+	EnableUsernameRouting   bool                            `gorm:"not null;default:false" json:"enableUsernameRouting"`
+	UsernameRoutingMode     ProxyGatewayUsernameRoutingMode `gorm:"type:varchar(24);not null;default:'strategy'" json:"usernameRoutingMode"`
+	ProxyIndexOverflowMode  ProxyGatewayIndexOverflowMode   `gorm:"type:varchar(16);not null;default:'reject'" json:"proxyIndexOverflowMode"`
+	AllowAllRouteStrategies bool                            `gorm:"not null;default:false" json:"allowAllRouteStrategies"`
+	AllowedRouteStrategyIDs UintSlice                       `gorm:"type:json" json:"allowedRouteStrategyIds,omitempty"`
+	LastUsedAt              *time.Time                      `json:"lastUsedAt,omitempty"`
+	CreatedAt               time.Time                       `json:"createdAt"`
+	UpdatedAt               time.Time                       `json:"updatedAt"`
+	DeletedAt               DeletedAt                       `gorm:"index" json:"deletedAt,omitempty"`
 }
 
 type ProxyGatewayRouteStrategy struct {
-	ID                  uint                           `gorm:"primaryKey" json:"id"`
-	OrgID               uint                           `gorm:"not null;index;default:1;uniqueIndex:idx_proxy_gateway_route_flag" json:"orgId"`
-	GatewayID           uint                           `gorm:"not null;index;default:0;uniqueIndex:idx_proxy_gateway_route_flag" json:"gatewayId"`
-	Name                string                         `gorm:"not null;type:varchar(160);index" json:"name"`
-	FlagNo              int                            `gorm:"not null;uniqueIndex:idx_proxy_gateway_route_flag" json:"flagNo"`
-	Description         string                         `gorm:"type:text" json:"description,omitempty"`
-	Enabled             bool                           `gorm:"not null;default:true" json:"enabled"`
-	SelectionMode       ProxyGatewaySelectionMode      `gorm:"type:varchar(24);not null;default:'filtered'" json:"selectionMode"`
-	ProxyIDs            UintSlice                      `gorm:"type:json" json:"proxyIds,omitempty"`
-	ProxyMatchGroupIDs  UintSlice                      `gorm:"type:json" json:"proxyMatchGroupIds,omitempty"`
-	ProxyMatchTagIDs    UintSlice                      `gorm:"type:json" json:"proxyMatchTagIds,omitempty"`
-	ProxyMatchTagMode   ProxyTagFilterMode             `gorm:"type:varchar(8);not null;default:'or'" json:"proxyMatchTagMode"`
-	SelectionAlgorithm  ProxyGatewaySelectionAlgorithm `gorm:"type:varchar(32);not null;default:'random'" json:"selectionAlgorithm"`
-	StickyMode          ProxyGatewayStickyMode         `gorm:"type:varchar(32);not null;default:'none'" json:"stickyMode"`
-	StickyTTLSeconds    int                            `gorm:"not null;default:600" json:"stickyTtlSeconds"`
-	PreferLastSuccess   bool                           `gorm:"not null;default:false" json:"preferLastSuccess"`
-	FallbackMode        ProxyGatewayFallbackMode       `gorm:"type:varchar(24);not null;default:'interrupt'" json:"fallbackMode"`
-	FallbackProxyIDs    UintSlice                      `gorm:"type:json" json:"fallbackProxyIds,omitempty"`
-	FallbackGroupIDs    UintSlice                      `gorm:"type:json" json:"fallbackGroupIds,omitempty"`
-	FallbackTagIDs      UintSlice                      `gorm:"type:json" json:"fallbackTagIds,omitempty"`
-	FallbackTagMode     ProxyTagFilterMode             `gorm:"type:varchar(8);not null;default:'or'" json:"fallbackTagMode"`
-	MaxRetries          int                            `gorm:"not null;default:2" json:"maxRetries"`
-	AllowDirectFallback bool                           `gorm:"not null;default:false" json:"allowDirectFallback"`
-	SecurityPolicyID    *uint                          `gorm:"index" json:"securityPolicyId,omitempty"`
-	SecurityPolicy      *ProxyGatewaySecurityPolicy    `gorm:"foreignKey:SecurityPolicyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"securityPolicy,omitempty"`
-	DNSPolicyID         *uint                          `gorm:"index" json:"dnsPolicyId,omitempty"`
-	DNSPolicy           *ProxyGatewayDNSPolicy         `gorm:"foreignKey:DNSPolicyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"dnsPolicy,omitempty"`
-	Metadata            JSONMapInterface               `gorm:"type:json" json:"metadata,omitempty"`
-	CreatedAt           time.Time                      `json:"createdAt"`
-	UpdatedAt           time.Time                      `json:"updatedAt"`
-	DeletedAt           DeletedAt                      `gorm:"index" json:"deletedAt,omitempty"`
+	ID                     uint                           `gorm:"primaryKey" json:"id"`
+	OrgID                  uint                           `gorm:"not null;index;default:1;uniqueIndex:idx_proxy_gateway_route_flag" json:"orgId"`
+	GatewayID              uint                           `gorm:"not null;index;default:0;uniqueIndex:idx_proxy_gateway_route_flag" json:"gatewayId"`
+	Name                   string                         `gorm:"not null;type:varchar(160);index" json:"name"`
+	FlagNo                 int                            `gorm:"not null;uniqueIndex:idx_proxy_gateway_route_flag" json:"flagNo"`
+	Description            string                         `gorm:"type:text" json:"description,omitempty"`
+	Enabled                bool                           `gorm:"not null;default:true" json:"enabled"`
+	SelectionMode          ProxyGatewaySelectionMode      `gorm:"type:varchar(24);not null;default:'filtered'" json:"selectionMode"`
+	ProxyIDs               UintSlice                      `gorm:"type:json" json:"proxyIds,omitempty"`
+	ProxyMatchGroupIDs     UintSlice                      `gorm:"type:json" json:"proxyMatchGroupIds,omitempty"`
+	ProxyMatchTagIDs       UintSlice                      `gorm:"type:json" json:"proxyMatchTagIds,omitempty"`
+	ProxyMatchTagMode      ProxyTagFilterMode             `gorm:"type:varchar(8);not null;default:'or'" json:"proxyMatchTagMode"`
+	SelectionAlgorithm     ProxyGatewaySelectionAlgorithm `gorm:"type:varchar(32);not null;default:'random'" json:"selectionAlgorithm"`
+	ProxyIndexOverflowMode ProxyGatewayIndexOverflowMode  `gorm:"type:varchar(16);not null;default:'reject'" json:"proxyIndexOverflowMode"`
+	StickyMode             ProxyGatewayStickyMode         `gorm:"type:varchar(32);not null;default:'none'" json:"stickyMode"`
+	StickyTTLSeconds       int                            `gorm:"not null;default:600" json:"stickyTtlSeconds"`
+	PreferLastSuccess      bool                           `gorm:"not null;default:false" json:"preferLastSuccess"`
+	FallbackMode           ProxyGatewayFallbackMode       `gorm:"type:varchar(24);not null;default:'interrupt'" json:"fallbackMode"`
+	FallbackProxyIDs       UintSlice                      `gorm:"type:json" json:"fallbackProxyIds,omitempty"`
+	FallbackGroupIDs       UintSlice                      `gorm:"type:json" json:"fallbackGroupIds,omitempty"`
+	FallbackTagIDs         UintSlice                      `gorm:"type:json" json:"fallbackTagIds,omitempty"`
+	FallbackTagMode        ProxyTagFilterMode             `gorm:"type:varchar(8);not null;default:'or'" json:"fallbackTagMode"`
+	MaxRetries             int                            `gorm:"not null;default:2" json:"maxRetries"`
+	AllowDirectFallback    bool                           `gorm:"not null;default:false" json:"allowDirectFallback"`
+	SecurityPolicyID       *uint                          `gorm:"index" json:"securityPolicyId,omitempty"`
+	SecurityPolicy         *ProxyGatewaySecurityPolicy    `gorm:"foreignKey:SecurityPolicyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"securityPolicy,omitempty"`
+	DNSPolicyID            *uint                          `gorm:"index" json:"dnsPolicyId,omitempty"`
+	DNSPolicy              *ProxyGatewayDNSPolicy         `gorm:"foreignKey:DNSPolicyID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;" json:"dnsPolicy,omitempty"`
+	Metadata               JSONMapInterface               `gorm:"type:json" json:"metadata,omitempty"`
+	CreatedAt              time.Time                      `json:"createdAt"`
+	UpdatedAt              time.Time                      `json:"updatedAt"`
+	DeletedAt              DeletedAt                      `gorm:"index" json:"deletedAt,omitempty"`
 }
 
 type ProxyGatewayAccountGroup struct {
@@ -311,6 +354,9 @@ type ProxyGatewayAccessLog struct {
 	DNSPolicyID         *uint            `gorm:"index" json:"dnsPolicyId,omitempty"`
 	RouteStrategyID     *uint            `gorm:"index" json:"routeStrategyId,omitempty"`
 	RouteStrategyFlagNo int              `gorm:"index" json:"routeStrategyFlagNo,omitempty"`
+	ProxyIndex          int              `gorm:"index" json:"proxyIndex,omitempty"`
+	ResolvedProxyIndex  int              `gorm:"index" json:"resolvedProxyIndex,omitempty"`
+	ProxyPoolSize       int              `json:"proxyPoolSize,omitempty"`
 	RouteParams         JSONMapInterface `gorm:"type:json" json:"routeParams,omitempty"`
 	TargetRouteID       *uint            `gorm:"index" json:"targetRouteId,omitempty"`
 	TargetRouteMatcher  string           `gorm:"type:varchar(255);index" json:"targetRouteMatcher,omitempty"`

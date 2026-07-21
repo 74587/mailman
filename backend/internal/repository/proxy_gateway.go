@@ -313,6 +313,19 @@ func (r *ProxyGatewayRepository) SaveRouteStrategy(item *models.ProxyGatewayRout
 	return r.db.Select("*").Save(item).Error
 }
 
+func (r *ProxyGatewayRepository) RouteStrategyFlagExists(orgID, gatewayID uint, flagNo int, excludeID uint) (bool, error) {
+	query := r.db.Model(&models.ProxyGatewayRouteStrategy{}).
+		Where("org_id = ? AND gateway_id = ? AND flag_no = ?", orgID, gatewayID, flagNo)
+	if excludeID != 0 {
+		query = query.Where("id <> ?", excludeID)
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func (r *ProxyGatewayRepository) DeleteRouteStrategy(orgID, id uint) error {
 	var targetRouteCount int64
 	if err := r.db.Model(&models.ProxyGatewayTargetRoute{}).

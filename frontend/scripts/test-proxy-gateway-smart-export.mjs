@@ -127,6 +127,8 @@ const accounts = [
         idleTimeoutSeconds: 120,
         maxSessionSeconds: 0,
         enableUsernameRouting: true,
+        usernameRoutingMode: 'proxy_index',
+        proxyIndexOverflowMode: 'modulo',
         allowAllRouteStrategies: false,
         allowedRouteStrategyIds: [102, 103, 106, 107],
     },
@@ -229,6 +231,28 @@ async function selectByLabel(page, label, value) {
     }, { label, value })
 }
 
+async function setNumberByLabel(page, label, value) {
+    await page.evaluate(({ label, value }) => {
+        const labels = Array.from(document.querySelectorAll('label'))
+        const element = labels.find(item => item.innerText.includes(label))?.querySelector('input[type="number"]')
+        if (!(element instanceof HTMLInputElement)) throw new Error(`Number input not found: ${label}`)
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+        if (!setter) throw new Error('Native number input setter unavailable')
+        setter.call(element, String(value))
+        element.dispatchEvent(new Event('input', { bubbles: true }))
+    }, { label, value })
+}
+
+async function selectRadioByGroup(page, groupLabel, optionLabel) {
+    await page.evaluate(({ groupLabel, optionLabel }) => {
+        const group = document.querySelector(`[role="radiogroup"][aria-label="${groupLabel}"]`)
+        const option = Array.from(group?.querySelectorAll('[role="radio"]') || [])
+            .find(element => element.textContent?.trim() === optionLabel)
+        if (!(option instanceof HTMLButtonElement)) throw new Error(`Radio option not found: ${groupLabel} / ${optionLabel}`)
+        option.click()
+    }, { groupLabel, optionLabel })
+}
+
 async function openExport(page) {
     await page.goto(page.url(), { waitUntil: 'domcontentloaded', timeout: 60_000 })
     await page.waitForFunction(() => document.body.innerText.includes('route-user'), { timeout: 60_000 })
@@ -289,39 +313,83 @@ async function run() {
         }))
         assert(gatewayPickerAccessibility.role === 'combobox', 'gateway picker should expose its combobox role')
         assert(!gatewayPickerAccessibility.hasClearButton, 'required gateway picker should not expose a no-op clear action')
+        await setNumberByLabel(desktop, '生成数量', 2)
+        await desktop.waitForFunction(() => (document.querySelector('pre code')?.textContent || '').split('\n').length === 2)
         let preview = await desktop.$eval('pre code', element => element.textContent || '')
-        assert(preview.includes('http://route-user%234:secret-pass@[2001:db8::10]:19080'), 'HTTP URL should encode # and bracket IPv6')
-        assert(preview.includes('socks5://route-user%236:secret-pass@[2001:db8::10]:19080'), 'SOCKS5 URL should include authorized gateway flag 6')
-        assert(!preview.includes('%231'), 'a shadowed global strategy must not be exported when its gateway-specific winner is unauthorized')
-        assert(!preview.includes('%239'), 'unauthorized route flag must not be exported')
-        assert(preview.split('\n').length === 4, `duplicate flags should collapse to four protocol rows, received ${preview.split('\n').length}`)
+        assert(preview.includes('http://route-user%231:secret-pass@[2001:db8::10]:19080'), 'HTTP URL should encode # and bracket IPv6')
+        assert(preview.includes('http://route-user%232:secret-pass@[2001:db8::10]:19080'), 'sequential export should generate pool indexes 1 and 2')
+        assert(!preview.includes('socks5://'), 'protocol selection must default to exactly one protocol')
+        assert(preview.split('\n').length === 2, `generated quantity should equal output rows, received ${preview.split('\n').length}`)
+        const activeProtocols = await desktop.$$eval('[role="radiogroup"][aria-label="代理协议"] [role="radio"][aria-checked="true"]', buttons => buttons.map(button => button.textContent?.trim()))
+        assert(activeProtocols.length === 1 && activeProtocols[0] === 'HTTP', 'protocol selector should be a single-choice control')
+
+        await setNumberByLabel(desktop, '生成数量', 20)
+        await desktop.waitForFunction(() => (document.querySelector('pre code')?.textContent || '').split('\n').length === 20)
+        preview = await desktop.$eval('pre code', element => element.textContent || '')
+        assert(preview.includes('route-user%2320'), 'pool-index export quantity must not be capped by the number of route strategies')
+
+        await setNumberByLabel(desktop, '生成数量', 1)
+        await desktop.waitForFunction(() => (document.querySelector('pre code')?.textContent || '').split('\n').length === 1)
+        preview = await desktop.$eval('pre code', element => element.textContent || '')
+        assert(preview.includes('%231') && !preview.includes('%232'), 'quantity one should generate exactly pool index one')
 
         await selectByLabel(desktop, '用户名分隔符', '--')
-        await desktop.waitForFunction(() => document.querySelector('pre code')?.textContent?.includes('--4'))
+        await desktop.waitForFunction(() => document.querySelector('pre code')?.textContent?.includes('--1'))
         preview = await desktop.$eval('pre code', element => element.textContent || '')
-        assert(preview.includes('route-user--4'), 'custom multi-character separator should be exported')
+        assert(preview.includes('route-user--1'), 'custom multi-character separator should be exported')
 
-        await desktop.evaluate(() => {
-            const button = Array.from(document.querySelectorAll('button')).find(element => element.innerText.trim() === 'HTTP')
-            if (!(button instanceof HTMLButtonElement)) throw new Error('HTTP protocol toggle not found')
-            button.click()
-        })
+        await selectRadioByGroup(desktop, '代理协议', 'SOCKS5')
         await desktop.waitForFunction(() => {
             const text = document.querySelector('pre code')?.textContent || ''
             return text.startsWith('socks5://') && !text.includes('\nhttp://')
         })
         preview = await desktop.$eval('pre code', element => element.textContent || '')
-        assert(preview.split('\n').length === 2, 'protocol selection should immediately narrow exported rows')
+        assert(preview.split('\n').length === 1, 'switching protocol must preserve the requested generated quantity')
+
+        const exportFormats = await desktop.$$eval('label', labels => {
+            const select = labels.find(label => label.innerText.includes('导出格式'))?.querySelector('select')
+            return Array.from(select?.options || []).map(option => option.value)
+        })
+        assert(exportFormats.length === 8, `export format selector should expose eight practical templates, received ${exportFormats.length}`)
+
+        const formatExpectations = [
+            ['auth-at-host', 'route-user--1:secret-pass@[2001:db8::10]:19080'],
+            ['host-port-auth', '[2001:db8::10]:19080:route-user--1:secret-pass'],
+            ['host-port-at-auth', '[2001:db8::10]:19080@route-user--1:secret-pass'],
+            ['auth-host-port', 'route-user--1:secret-pass:[2001:db8::10]:19080'],
+            ['csv', 'socks5,2001:db8::10,19080,route-user--1,secret-pass'],
+            ['tsv', 'socks5\t2001:db8::10\t19080\troute-user--1\tsecret-pass'],
+        ]
+        for (const [format, expected] of formatExpectations) {
+            await selectByLabel(desktop, '导出格式', format)
+            await desktop.waitForFunction(expectedText => document.querySelector('pre code')?.textContent === expectedText, {}, expected)
+        }
+
+        await selectByLabel(desktop, '导出格式', 'jsonl')
+        await desktop.waitForFunction(() => document.querySelector('pre code')?.textContent?.startsWith('{"protocol":"socks5"'))
+        preview = await desktop.$eval('pre code', element => element.textContent || '')
+        const jsonLine = JSON.parse(preview)
+        assert(jsonLine.username === 'route-user--1' && jsonLine.host === '2001:db8::10', 'JSON Lines should preserve structured proxy fields')
+
+        await setNumberByLabel(desktop, '生成数量', 4)
+        await selectRadioByGroup(desktop, '索引生成方式', '随机数')
+        await desktop.waitForSelector('button')
+        await selectByLabel(desktop, '导出格式', 'url')
+        await desktop.waitForFunction(() => (document.querySelector('pre code')?.textContent || '').split('\n').length === 4)
+        const randomIndexes = await desktop.$$eval('[aria-label="已生成池内代理索引"] span', badges => badges.map(badge => badge.textContent?.trim()))
+        assert(randomIndexes.length === 4 && new Set(randomIndexes).size === 4, 'random mode should generate the requested number of distinct indexes')
+        assert(randomIndexes.every(index => /^--\d+$/.test(index || '')), `random mode must generate positive integer indexes, received ${randomIndexes.join(', ')}`)
+        assert(randomIndexes.some(index => Number(index?.slice(2)) > 4), 'random mode should generate random numbers instead of only shuffling 1 to N')
         await desktop.evaluate(() => {
-            const button = Array.from(document.querySelectorAll('button')).find(element => element.innerText.trim() === 'HTTP')
-            if (!(button instanceof HTMLButtonElement)) throw new Error('HTTP protocol toggle not found')
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '重新随机')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Re-randomize action not found')
             button.click()
         })
-
-        await selectByLabel(desktop, '导出格式', 'csv')
-        await desktop.waitForFunction(() => document.querySelector('pre code')?.textContent?.includes('http,'))
+        await selectRadioByGroup(desktop, '索引生成方式', '顺序')
+        await setNumberByLabel(desktop, '生成数量', 1)
+        await desktop.waitForFunction(() => document.querySelector('pre code')?.textContent?.includes('route-user--1'))
         preview = await desktop.$eval('pre code', element => element.textContent || '')
-        assert(preview.includes('http,2001:db8::10,19080,route-user--4,secret-pass'), 'CSV export should keep raw credentials in five columns')
+
         await desktop.bringToFront()
         await desktop.click('button[aria-label="复制导出的代理配置"]')
         await delay(500)
@@ -369,9 +437,9 @@ async function run() {
                 .find(element => element.innerText.includes('用户名分隔符'))
                 ?.querySelector('select')?.value
             const preview = document.querySelector('pre code')?.textContent || ''
-            return separator === '~' && preview.includes('socks5,proxy.example.test,19081,route-user~1') && !preview.includes('http,')
+            return separator === '~' && preview.includes('socks5://route-user~1:secret-pass@proxy.example.test:19081') && !preview.includes('http://')
         })
-        const switchedProtocols = await desktop.$$eval('button[aria-pressed]', buttons => buttons.map(button => button.textContent?.trim()))
+        const switchedProtocols = await desktop.$$eval('[role="radiogroup"][aria-label="代理协议"] [role="radio"][aria-checked="true"]', buttons => buttons.map(button => button.textContent?.trim()))
         assert(switchedProtocols.length === 1 && switchedProtocols[0] === 'SOCKS5', 'gateway switching should synchronously constrain supported protocols')
         await selectByLabel(desktop, '导出格式', 'jsonl')
         await desktop.waitForFunction(() => document.querySelector('pre code')?.textContent?.startsWith('{"protocol":"socks5"'))
@@ -418,6 +486,45 @@ async function run() {
             return textarea?.value
         })
         assert(defaultSeparator === '#', `new gateways should default to #, received ${defaultSeparator}`)
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '取消')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Cancel gateway action not found')
+            button.click()
+        })
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '配置策略')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Configure gateway action not found')
+            button.click()
+        })
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('返回网关列表'))
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '出口策略')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Route strategies navigation not found')
+            button.click()
+        })
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('池内索引账号的 #N 不选择策略'))
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '新增出口策略')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Create route strategy action not found')
+            button.click()
+        })
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('新增出口策略'))
+        const nextFlagNo = await gatewayPage.evaluate(() => {
+            const label = Array.from(document.querySelectorAll('label')).find(element => element.innerText.includes('标志号'))
+            return label?.querySelector('input[type="number"]')?.value
+        })
+        assert(nextFlagNo === '2', `new route strategies should choose the first unused gateway flag, received ${nextFlagNo}`)
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.includes('代理选择'))
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Proxy selection wizard step not found')
+            button.click()
+        })
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('索引越界'))
+        const defaultOverflowMode = await gatewayPage.evaluate(() => {
+            const label = Array.from(document.querySelectorAll('label')).find(element => element.innerText.includes('索引越界'))
+            return label?.querySelector('select')?.value
+        })
+        assert(defaultOverflowMode === 'reject', `new route strategies should default to strict index overflow, received ${defaultOverflowMode}`)
 
         console.log(JSON.stringify({
             status: 'ok',
@@ -426,6 +533,8 @@ async function run() {
             desktopModal: modalMetrics,
             mobileModal: mobileMetrics,
             defaultGatewaySeparator: defaultSeparator,
+            nextRouteStrategyFlag: nextFlagNo,
+            defaultIndexOverflowMode: defaultOverflowMode,
             artifacts: artifactDir,
         }, null, 2))
     } catch (error) {

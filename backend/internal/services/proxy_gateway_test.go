@@ -316,6 +316,49 @@ func TestProxyGatewayFallbackModesHaveDistinctAttemptSemantics(t *testing.T) {
 			t.Fatalf("direct fallback unexpectedly reported proxy %d", proxyItem.ID)
 		}
 	})
+
+	t.Run("strict pool index overflow never falls through to direct", func(t *testing.T) {
+		account.FallbackMode = models.ProxyGatewayFallbackDirect
+		account.AllowDirectFallback = true
+		account.ProxyIDs = models.UintSlice{badProxy.ID}
+		account.ProxyIndexOverflowMode = models.ProxyGatewayIndexOverflowReject
+		session := gatewaySession{
+			listener: listener, account: account, proxyIndex: 2,
+			clientIP: "127.0.0.1", protocol: "http", command: "CONNECT",
+		}
+		conn, proxyItem, _, _, err := service.dialWithPolicy(context.Background(), &session, targetAddr)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if err == nil || !strings.Contains(err.Error(), "exceeds pool size 1") {
+			t.Fatalf("strict overflow error=%v", err)
+		}
+		if proxyItem != nil {
+			t.Fatalf("strict overflow unexpectedly used proxy %d", proxyItem.ID)
+		}
+	})
+
+	t.Run("indexed proxy failure honors configured retry", func(t *testing.T) {
+		account.FallbackMode = models.ProxyGatewayFallbackRetry
+		account.MaxRetries = 1
+		account.AllowDirectFallback = false
+		account.ProxyIDs = models.UintSlice{badProxy.ID, goodProxy.ID}
+		account.ProxyIndexOverflowMode = models.ProxyGatewayIndexOverflowReject
+		session := gatewaySession{
+			listener: listener, account: account, proxyIndex: 1,
+			clientIP: "127.0.0.1", protocol: "http", command: "CONNECT",
+		}
+		conn, proxyItem, _, _, err := service.dialWithPolicy(context.Background(), &session, targetAddr)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		if err != nil {
+			t.Fatalf("indexed retry failed: %v", err)
+		}
+		if proxyItem == nil || proxyItem.ID != goodProxy.ID {
+			t.Fatalf("indexed retry selected proxy=%v, want %d", proxyItem, goodProxy.ID)
+		}
+	})
 }
 
 func TestProxyGatewayConnectTimeoutCoversUpstreamHandshakes(t *testing.T) {
@@ -603,6 +646,139 @@ func TestProxyGatewaySmartUsernameRoutingRequiresPermission(t *testing.T) {
 	}
 }
 
+func TestProxyGatewaySmartUsernameProxyIndexDefersSelectionUntilPoolIsKnown(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	service := NewProxyGatewayService(repository.NewProxyGatewayRepository(db), repository.NewProxyPoolRepository(db))
+	listener := models.ProxyGatewayListener{
+		OrgID: 1, Name: "index gateway", ListenIP: "127.0.0.1", Port: 18101,
+		Protocol: models.ProxyGatewayProtocolMixed, Enabled: true,
+		UsernameRouteSeparators: models.StringSlice{"#"},
+	}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	account := models.ProxyGatewayAccount{
+		OrgID: 1, Username: "index-user", Enabled: true,
+		AllowedGatewayIDs: models.UintSlice{listener.ID}, EnableUsernameRouting: true,
+		UsernameRoutingMode: models.ProxyGatewayUsernameRoutingProxyIndex,
+		SelectionMode:       models.ProxyGatewaySelectionExplicit,
+		ProxyIDs:            models.UintSlice{901, 902},
+		SelectionAlgorithm:  models.ProxyGatewayAlgorithmRandom,
+		FallbackMode:        models.ProxyGatewayFallbackInterrupt,
+	}
+	if err := account.SetPassword("secret"); err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+
+	auth, err := service.authenticateAccount(listener, "index-user#20;batch=a", "secret")
+	if err != nil {
+		t.Fatalf("authenticate pool index: %v", err)
+	}
+	if auth.proxyIndex != 20 || auth.routeStrategy != nil {
+		t.Fatalf("auth proxy index=%d route=%+v", auth.proxyIndex, auth.routeStrategy)
+	}
+	if len(auth.account.ProxyIDs) != 2 || auth.account.ProxyIDs[0] != 901 {
+		t.Fatalf("authentication changed the account pool before target routing: %v", auth.account.ProxyIDs)
+	}
+	if auth.routeParams["batch"] != "a" {
+		t.Fatalf("proxy index params=%v", auth.routeParams)
+	}
+
+	queryAuth, err := service.authenticateAccount(listener, "index-user?index=21&batch=b", "secret")
+	if err != nil || queryAuth.proxyIndex != 21 || queryAuth.routeParams["batch"] != "b" {
+		t.Fatalf("query proxy index auth=%+v err=%v", queryAuth, err)
+	}
+}
+
+func TestProxyGatewayTargetRoutePoolIndexUsesStableOrderAndOptionalModulo(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	gatewayRepo := repository.NewProxyGatewayRepository(db)
+	service := NewProxyGatewayService(gatewayRepo, repository.NewProxyPoolRepository(db))
+	listener := models.ProxyGatewayListener{OrgID: 1, Name: "indexed target gateway", ListenIP: "127.0.0.1", Port: 18102, Protocol: models.ProxyGatewayProtocolMixed}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+
+	proxies := []models.ProxyPoolItem{
+		{OrgID: 1, Type: models.ProxyTypeSocks5, Host: "proxy-a.test", Port: 1001, Status: models.ProxyStatusUnavailable},
+		{OrgID: 1, Type: models.ProxyTypeSocks5, Host: "proxy-b.test", Port: 1002, Status: models.ProxyStatusAvailable},
+		{OrgID: 1, Type: models.ProxyTypeSocks5, Host: "proxy-c.test", Port: 1003, Status: models.ProxyStatusAvailable},
+	}
+	for index := range proxies {
+		if err := db.Create(&proxies[index]).Error; err != nil {
+			t.Fatalf("create proxy %d: %v", index, err)
+		}
+	}
+	strategy := models.ProxyGatewayRouteStrategy{
+		OrgID: 1, GatewayID: listener.ID, Name: "ordered pool", FlagNo: 9, Enabled: true,
+		SelectionMode:          models.ProxyGatewaySelectionExplicit,
+		ProxyIDs:               models.UintSlice{proxies[2].ID, proxies[0].ID, proxies[1].ID},
+		SelectionAlgorithm:     models.ProxyGatewayAlgorithmRandom,
+		ProxyIndexOverflowMode: models.ProxyGatewayIndexOverflowModulo,
+		FallbackMode:           models.ProxyGatewayFallbackInterrupt,
+	}
+	if err := db.Create(&strategy).Error; err != nil {
+		t.Fatalf("create strategy: %v", err)
+	}
+	route := models.ProxyGatewayTargetRoute{
+		OrgID: 1, GatewayID: listener.ID, Name: "default indexed pool", Enabled: true, IsDefault: true,
+		RouteStrategyID: strategy.ID,
+	}
+	if err := db.Create(&route).Error; err != nil {
+		t.Fatalf("create target route: %v", err)
+	}
+	if err := service.RefreshTargetRoutes(1, listener.ID); err != nil {
+		t.Fatalf("refresh target routes: %v", err)
+	}
+
+	session := gatewaySession{
+		listener: listener, targetHost: "example.com", targetPort: 443, proxyIndex: 5,
+		protocol: "socks5", command: "CONNECT", rawUsername: "indexed#5", startedAt: time.Now(),
+		account: &models.ProxyGatewayAccount{
+			OrgID: 1, Username: "indexed", ProxySelectionSource: models.ProxyGatewaySelectionSourceGateway,
+			UsernameRoutingMode: models.ProxyGatewayUsernameRoutingProxyIndex,
+		},
+	}
+	if err := service.applyTargetRoute(&session); err != nil {
+		t.Fatalf("apply target route: %v", err)
+	}
+	selected, _, err := service.selectProxy(session.account, &session, nil, false)
+	if err != nil {
+		t.Fatalf("select modulo proxy: %v", err)
+	}
+	// Configured order is [C, A, B]. Index 5 wraps to position 2, so the
+	// unavailable A entry remains addressable instead of shifting the mapping.
+	if selected.ID != proxies[0].ID || session.resolvedProxyIndex != 2 || session.proxyPoolSize != 3 {
+		t.Fatalf("selected=%d resolved=%d size=%d want proxy=%d resolved=2 size=3", selected.ID, session.resolvedProxyIndex, session.proxyPoolSize, proxies[0].ID)
+	}
+	if session.routeStrategyID == nil || *session.routeStrategyID != strategy.ID || session.routeStrategyFlagNo != strategy.FlagNo {
+		t.Fatalf("effective route strategy not recorded: id=%v flag=%d", session.routeStrategyID, session.routeStrategyFlagNo)
+	}
+	service.finishSessionWithPolicies(session, session.account, selected, "success", "", nil, nil, nil)
+	var accessLog models.ProxyGatewayAccessLog
+	if err := db.Order("id DESC").First(&accessLog).Error; err != nil {
+		t.Fatalf("load indexed access log: %v", err)
+	}
+	if accessLog.ProxyIndex != 5 || accessLog.ResolvedProxyIndex != 2 || accessLog.ProxyPoolSize != 3 ||
+		accessLog.RouteStrategyID == nil || *accessLog.RouteStrategyID != strategy.ID {
+		t.Fatalf("indexed access log=%+v", accessLog)
+	}
+
+	strictAccount := *session.account
+	strictAccount.ProxyIndexOverflowMode = models.ProxyGatewayIndexOverflowReject
+	strictSession := session
+	strictSession.account = &strictAccount
+	strictSession.proxyIndex = 4
+	strictSession.resolvedProxyIndex = 0
+	strictSession.proxyPoolSize = 0
+	if _, _, err := service.selectProxy(strictSession.account, &strictSession, nil, false); err == nil || !strings.Contains(err.Error(), "exceeds pool size 3") {
+		t.Fatalf("strict overflow error=%v", err)
+	}
+}
+
 func TestParseGatewayUsernameRouteSupportsConfiguredSeparators(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -610,13 +786,15 @@ func TestParseGatewayUsernameRouteSupportsConfiguredSeparators(t *testing.T) {
 		separators []string
 		wantBase   string
 		wantFlag   int
+		wantKind   gatewayUsernameRouteKind
 		wantOK     bool
 	}{
-		{name: "legacy default", raw: "user#7", wantBase: "user", wantFlag: 7, wantOK: true},
-		{name: "custom separator", raw: "user--8", separators: []string{"--"}, wantBase: "user", wantFlag: 8, wantOK: true},
-		{name: "longest overlapping separator wins", raw: "user##9", separators: []string{"#", "##"}, wantBase: "user", wantFlag: 9, wantOK: true},
-		{name: "router query alias", raw: "user?router=10", separators: []string{"~"}, wantBase: "user", wantFlag: 10, wantOK: true},
-		{name: "query syntax remains available", raw: "user?rs=10", separators: []string{"~"}, wantBase: "user", wantFlag: 10, wantOK: true},
+		{name: "legacy default", raw: "user#7", wantBase: "user", wantFlag: 7, wantKind: gatewayUsernameRouteSuffix, wantOK: true},
+		{name: "custom separator", raw: "user--8", separators: []string{"--"}, wantBase: "user", wantFlag: 8, wantKind: gatewayUsernameRouteSuffix, wantOK: true},
+		{name: "longest overlapping separator wins", raw: "user##9", separators: []string{"#", "##"}, wantBase: "user", wantFlag: 9, wantKind: gatewayUsernameRouteSuffix, wantOK: true},
+		{name: "router query alias", raw: "user?router=10", separators: []string{"~"}, wantBase: "user", wantFlag: 10, wantKind: gatewayUsernameRouteStrategy, wantOK: true},
+		{name: "query syntax remains available", raw: "user?rs=10", separators: []string{"~"}, wantBase: "user", wantFlag: 10, wantKind: gatewayUsernameRouteStrategy, wantOK: true},
+		{name: "explicit proxy index query", raw: "user?index=11", separators: []string{"~"}, wantBase: "user", wantFlag: 11, wantKind: gatewayUsernameRouteProxyIndex, wantOK: true},
 		{name: "unconfigured separator", raw: "user#11", separators: []string{"~"}, wantOK: false},
 	}
 	for _, test := range tests {
@@ -625,8 +803,8 @@ func TestParseGatewayUsernameRouteSupportsConfiguredSeparators(t *testing.T) {
 			if ok != test.wantOK {
 				t.Fatalf("parse %q ok=%v want=%v request=%+v", test.raw, ok, test.wantOK, request)
 			}
-			if ok && (request.baseUsername != test.wantBase || request.flagNo != test.wantFlag) {
-				t.Fatalf("parse %q=%+v want base=%q flag=%d", test.raw, request, test.wantBase, test.wantFlag)
+			if ok && (request.baseUsername != test.wantBase || request.flagNo != test.wantFlag || request.kind != test.wantKind) {
+				t.Fatalf("parse %q=%+v want base=%q flag=%d kind=%q", test.raw, request, test.wantBase, test.wantFlag, test.wantKind)
 			}
 		})
 	}
@@ -842,11 +1020,11 @@ func TestProxyGatewayStickySelectionIsReservedBeforeDialSuccess(t *testing.T) {
 		startedAt: time.Now(),
 	}
 
-	first, _, err := service.selectProxy(account, session, nil, false)
+	first, _, err := service.selectProxy(account, &session, nil, false)
 	if err != nil {
 		t.Fatalf("first select: %v", err)
 	}
-	second, _, err := service.selectProxy(account, session, nil, false)
+	second, _, err := service.selectProxy(account, &session, nil, false)
 	if err != nil {
 		t.Fatalf("second select: %v", err)
 	}
@@ -854,7 +1032,7 @@ func TestProxyGatewayStickySelectionIsReservedBeforeDialSuccess(t *testing.T) {
 		t.Fatalf("sticky selection was not reserved: first=%d second=%d", first.ID, second.ID)
 	}
 
-	retry, _, err := service.selectProxy(account, session, []uint{first.ID}, false)
+	retry, _, err := service.selectProxy(account, &session, []uint{first.ID}, false)
 	if err != nil {
 		t.Fatalf("retry select: %v", err)
 	}

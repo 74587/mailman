@@ -66,7 +66,19 @@ type AccountDraft = Partial<ProxyGatewayAccount> & { password?: string; tagIds?:
 type MetaDraft = { id?: number; type: 'group' | 'tag'; name: string; description?: string; color?: string; sortOrder?: number }
 type SearchOption = { id: number; name: string; description?: string; color?: string; meta?: string }
 type ProxyExportProtocol = 'http' | 'socks5'
-type ProxyExportFormat = 'url' | 'csv' | 'jsonl'
+type ProxyExportIndexMode = 'sequential' | 'random'
+type ProxyExportFormat = 'url' | 'auth-at-host' | 'host-port-auth' | 'host-port-at-auth' | 'auth-host-port' | 'csv' | 'tsv' | 'jsonl'
+
+const proxyExportFormatOptions: Array<[ProxyExportFormat, string]> = [
+    ['url', '协议://用户:密码@地址:端口'],
+    ['auth-at-host', '用户:密码@地址:端口'],
+    ['host-port-auth', '地址:端口:用户:密码'],
+    ['host-port-at-auth', '地址:端口@用户:密码'],
+    ['auth-host-port', '用户:密码:地址:端口'],
+    ['csv', 'CSV（协议,地址,端口,用户,密码）'],
+    ['tsv', 'TSV（制表符分隔）'],
+    ['jsonl', 'JSON Lines'],
+]
 
 const proxyGatewayGuideHref = '/guide-html/proxy-pool-management.html#usage'
 
@@ -130,6 +142,8 @@ const defaultAccount = (defaultGatewayId?: number): AccountDraft => ({
     idleTimeoutSeconds: 120,
     maxSessionSeconds: 0,
     enableUsernameRouting: false,
+    usernameRoutingMode: 'proxy_index',
+    proxyIndexOverflowMode: 'reject',
     allowAllRouteStrategies: false,
     allowedRouteStrategyIds: [],
     proxyIds: [],
@@ -149,6 +163,7 @@ const defaultRouteStrategy = (gatewayId: number): Partial<ProxyGatewayRouteStrat
     enabled: true,
     selectionMode: 'filtered',
     selectionAlgorithm: 'random',
+    proxyIndexOverflowMode: 'reject',
     proxyMatchTagMode: 'or',
     stickyMode: 'none',
     stickyTtlSeconds: 600,
@@ -164,6 +179,13 @@ const defaultRouteStrategy = (gatewayId: number): Partial<ProxyGatewayRouteStrat
     fallbackGroupIds: [],
     fallbackTagIds: [],
 })
+
+function nextRouteStrategyFlag(strategies: ProxyGatewayRouteStrategy[], gatewayId: number) {
+    const used = new Set(strategies.filter(item => item.gatewayId === gatewayId).map(item => item.flagNo))
+    let flagNo = 1
+    while (used.has(flagNo)) flagNo += 1
+    return flagNo
+}
 
 const defaultTargetRoute = (gatewayId: number, routeStrategyId?: number): Partial<ProxyGatewayTargetRoute> => ({
     gatewayId,
@@ -589,10 +611,13 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                         await proxyGatewayService.deleteListener(item.id)
                                         await loadData()
                                     }}
-                                    onCreateRoute={() => currentGatewayId && setRouteDraft(defaultRouteStrategy(currentGatewayId))}
+                                    onCreateRoute={() => currentGatewayId && setRouteDraft({
+                                        ...defaultRouteStrategy(currentGatewayId),
+                                        flagNo: nextRouteStrategyFlag(safeRouteStrategies, currentGatewayId),
+                                    })}
                                     onEditRoute={item => setRouteDraft({ ...item })}
                                     onDeleteRoute={async item => {
-                                        if (!(await confirm.confirm({ title: '删除出口策略', description: `确认删除 ${item.name}？引用它的目标路由需要先删除，已授权账号也将无法继续使用 #${item.flagNo}。` }))) return
+                                        if (!(await confirm.confirm({ title: '删除出口策略', description: `确认删除 ${item.name}？引用它的目标路由需要先删除，已授权账号也将无法继续使用 ?route=${item.flagNo}（兼容账号为 #${item.flagNo}）。` }))) return
                                         await proxyGatewayService.deleteRouteStrategy(item.id)
                                         await loadData()
                                     }}
@@ -1065,7 +1090,9 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                                         <div className="font-medium text-gray-900 dark:text-white">{item.username}</div>
                                         <div className="mt-1 flex flex-wrap gap-1">
                                             <Badge tone={item.enabled ? 'green' : 'red'}>{item.enabled ? '启用' : '停用'}</Badge>
-                                            {item.enableUsernameRouting && <Badge tone="amber">智能用户名</Badge>}
+                                            {item.enableUsernameRouting && (
+                                                <Badge tone="amber">{(item.usernameRoutingMode || 'strategy') === 'proxy_index' ? '池内索引' : '策略编号'}</Badge>
+                                            )}
                                         </div>
                                         <div className="mt-1 text-xs text-gray-500">{item.name || item.remark || '无备注'}</div>
                                     </td>
@@ -1100,7 +1127,10 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                                                 <div className="mt-1 text-xs text-gray-500">兼容模式</div>
                                             </div>
                                         )}
-                                        {item.enableUsernameRouting && !item.allowAllRouteStrategies && (
+                                        {item.enableUsernameRouting && (item.usernameRoutingMode || 'strategy') === 'proxy_index' && item.proxyIndexOverflowMode === 'modulo' && (
+                                            <div className="mt-1"><Badge tone="green">索引取模</Badge></div>
+                                        )}
+                                        {item.enableUsernameRouting && (item.usernameRoutingMode || 'strategy') === 'strategy' && !item.allowAllRouteStrategies && (
                                             <div className="mt-1 flex flex-wrap gap-1">
                                                 {(item.allowedRouteStrategyIds || []).map(id => {
                                                     const strategy = strategyById.get(id)
@@ -1173,9 +1203,11 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
     onClose: () => void
 }) {
     const [gatewayId, setGatewayId] = useState<number | undefined>()
-    const [protocols, setProtocols] = useState<ProxyExportProtocol[]>([])
+    const [protocol, setProtocol] = useState<ProxyExportProtocol>('http')
     const [separator, setSeparator] = useState('#')
     const [quantity, setQuantity] = useState(0)
+    const [indexMode, setIndexMode] = useState<ProxyExportIndexMode>('sequential')
+    const [randomSeed, setRandomSeed] = useState(1)
     const [format, setFormat] = useState<ProxyExportFormat>('url')
 
     const allowedGateways = useMemo(() => {
@@ -1198,14 +1230,13 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
     const selectedGateway = allowedGateways.find(gateway => gateway.id === gatewayId) || allowedGateways[0]
     const supportedProtocols = selectedGateway ? gatewaySupportedExportProtocols(selectedGateway) : []
     const supportedSeparators = selectedGateway ? gatewayUsernameRouteSeparators(selectedGateway) : ['#']
-    const selectedProtocols = supportedProtocols.filter(protocol => protocols.includes(protocol))
-    const effectiveProtocols = selectedProtocols.length ? selectedProtocols : supportedProtocols
+    const effectiveProtocol = supportedProtocols.includes(protocol) ? protocol : supportedProtocols[0]
     const effectiveSeparator = supportedSeparators.includes(separator) ? separator : supportedSeparators[0] || '#'
 
     useEffect(() => {
         const nextProtocols = selectedGateway ? gatewaySupportedExportProtocols(selectedGateway) : []
         const nextSeparators = selectedGateway ? gatewayUsernameRouteSeparators(selectedGateway) : ['#']
-        setProtocols(nextProtocols)
+        setProtocol(current => nextProtocols.includes(current) ? current : nextProtocols[0] || 'http')
         setSeparator(nextSeparators[0] || '#')
     }, [selectedGateway])
 
@@ -1213,43 +1244,55 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
         () => account && selectedGateway ? accountExportRouteStrategies(account, selectedGateway, routeStrategies) : [],
         [account, selectedGateway, routeStrategies]
     )
+    const usesProxyIndex = (account?.usernameRoutingMode || 'strategy') === 'proxy_index'
+    const maxExportQuantity = usesProxyIndex ? 5000 : availableStrategies.length
 
     useEffect(() => {
-        setQuantity(availableStrategies.length ? Math.min(availableStrategies.length, 20) : 0)
-    }, [account?.id, selectedGateway?.id, availableStrategies.length])
+        setQuantity(usesProxyIndex ? 20 : (availableStrategies.length ? Math.min(availableStrategies.length, 20) : 0))
+    }, [account?.id, selectedGateway?.id, usesProxyIndex, availableStrategies.length])
+
+    const routingEntries = useMemo(
+        () => {
+            if (usesProxyIndex) {
+                const numbers = indexMode === 'random'
+                    ? createRandomExportNumbers(quantity, randomSeed)
+                    : Array.from({ length: quantity }, (_, index) => index + 1)
+                return numbers.map(number => ({ key: `index-${number}`, number }))
+            }
+            const strategies = indexMode === 'random'
+                ? shuffleExportValues(availableStrategies, randomSeed)
+                : availableStrategies
+            return strategies.slice(0, quantity).map(strategy => ({ key: `strategy-${strategy.id}`, number: strategy.flagNo }))
+        },
+        [availableStrategies, indexMode, quantity, randomSeed, usesProxyIndex]
+    )
 
     if (!account) return null
 
-    const exportedStrategies = availableStrategies.slice(0, Math.max(0, Math.min(quantity, availableStrategies.length)))
-    const exportLines = selectedGateway
-        ? exportedStrategies.flatMap(strategy => effectiveProtocols.map(protocol => formatSmartRouteProxyExport({
+    const exportLines = selectedGateway && effectiveProtocol
+        ? routingEntries.map(entry => formatSmartRouteProxyExport({
             account,
             gateway: selectedGateway,
-            protocol,
+            protocol: effectiveProtocol,
             separator: effectiveSeparator,
-            flagNo: strategy.flagNo,
+            routingNumber: entry.number,
             format,
-        })))
+        }))
         : []
     const exportText = exportLines.join('\n')
     const canCopy = !!exportText && (!!account.password || selectedGateway?.requireAuth === false)
     const gatewayOptions = toSearchOptions(allowedGateways, gateway => `${gatewayHostPort(gateway)} · ${gateway.protocol.toUpperCase()}`)
 
-    const toggleProtocol = (protocol: ProxyExportProtocol) => {
-        setProtocols(current => {
-            const supportedCurrent = supportedProtocols.filter(item => current.includes(item))
-            const baseline = supportedCurrent.length ? supportedCurrent : supportedProtocols
-            if (!baseline.includes(protocol)) return [...baseline, protocol]
-            if (baseline.length === 1) return baseline
-            return baseline.filter(item => item !== protocol)
-        })
+    const selectIndexMode = (mode: ProxyExportIndexMode) => {
+        setIndexMode(mode)
+        if (mode === 'random') setRandomSeed(createRandomExportSeed())
     }
 
     const copyExport = async () => {
         if (!canCopy) return
         try {
             await writeClipboardText(exportText)
-            toast.success(`已复制 ${exportLines.length} 条代理链接`)
+            toast.success(`已复制 ${exportLines.length} 条代理配置`)
         } catch (error: any) {
             toast.error(error.message || '复制失败')
         }
@@ -1264,7 +1307,11 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
             >
                 <ModalHeader className="p-4 pr-12 sm:p-6 sm:pr-12">
                     <ModalTitle>批量导出智能路由代理</ModalTitle>
-                    <ModalDescription>按已授权的策略编号生成代理配置；标准 URL 会自动编码用户名中的分隔符。</ModalDescription>
+                    <ModalDescription>
+                        {usesProxyIndex
+                            ? '生成指定数量的池内代理索引配置；目标路由会先选定代理池，再按索引定位池内代理。'
+                            : '按现有兼容模式从已授权策略中生成代理配置；后缀仍表示策略编号。'}
+                    </ModalDescription>
                 </ModalHeader>
                 <ModalBody className="space-y-5 p-4 sm:p-6">
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -1278,12 +1325,17 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
                             emptyLabel="没有可用于导出的网关"
                             clearable={false}
                         />
-                        <SelectField
-                            label="导出格式"
-                            help="URL 适合直接粘贴；CSV 和 JSON Lines 适合批量导入其他系统。"
-                            value={format}
-                            onChange={value => setFormat(value as ProxyExportFormat)}
-                            options={[["url", "标准代理 URL"], ["csv", "CSV 五列"], ["jsonl", "JSON Lines"]]}
+                        <NumberField
+                            label="生成数量"
+                            help={usesProxyIndex
+                                ? `最终导出的配置条数，最多 ${maxExportQuantity} 条；它不等于代理池大小。`
+                                : `最终导出的配置条数；当前最多可生成 ${maxExportQuantity} 条。`}
+                            value={quantity}
+                            min={maxExportQuantity ? 1 : 0}
+                            max={maxExportQuantity}
+                            onChange={value => setQuantity(maxExportQuantity
+                                ? Math.max(1, Math.min(Math.trunc(value || 1), maxExportQuantity))
+                                : 0)}
                         />
                         <SelectField
                             label="用户名分隔符"
@@ -1292,80 +1344,130 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
                             onChange={setSeparator}
                             options={supportedSeparators.map(value => [value, value])}
                         />
-                        <NumberField
-                            label="策略数量"
-                            help="按标志号升序导出前 N 个已授权策略。"
-                            value={quantity}
-                            onChange={value => setQuantity(Math.max(0, Math.min(Math.trunc(value || 0), availableStrategies.length)))}
+                        <SelectField
+                            label="导出格式"
+                            help="URL 会编码凭据；其他文本模板保留原始用户名和密码。IPv6 地址会自动加方括号。"
+                            value={format}
+                            onChange={value => setFormat(value as ProxyExportFormat)}
+                            options={proxyExportFormatOptions}
                         />
                     </div>
 
-                    <div>
-                        <FieldLabel label="代理协议" help="Mixed 网关可同时导出 HTTP 和 SOCKS5。" />
-                        <div className="mt-2 flex flex-wrap gap-2">
-                            {supportedProtocols.map(protocol => {
-                                const active = effectiveProtocols.includes(protocol)
-                                return (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                        <div>
+                            <FieldLabel label="代理协议" help="每次只导出一种协议；Mixed 网关可在 HTTP 和 SOCKS5 之间切换。" />
+                            <div className="mt-2 inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-gray-700 dark:bg-gray-900" role="radiogroup" aria-label="代理协议">
+                                {supportedProtocols.map(item => {
+                                    const active = item === effectiveProtocol
+                                    return (
+                                        <button
+                                            key={item}
+                                            type="button"
+                                            role="radio"
+                                            aria-checked={active}
+                                            onClick={() => setProtocol(item)}
+                                            className={cn(
+                                                'min-w-24 rounded-md px-3 py-1.5 text-sm font-medium transition',
+                                                active
+                                                    ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
+                                                    : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
+                                            )}
+                                        >
+                                            {item.toUpperCase()}
+                                        </button>
+                                    )
+                                })}
+                            </div>
+                        </div>
+                        <div>
+                            <FieldLabel
+                                label="索引生成"
+                                help={usesProxyIndex
+                                    ? '顺序模式生成 1 到 N；随机数模式生成 N 个不重复的正整数，适合配合取模循环。'
+                                    : '兼容模式按策略标志号升序生成，随机仅改变已授权策略的顺序。'}
+                            />
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-gray-700 dark:bg-gray-900" role="radiogroup" aria-label="索引生成方式">
+                                    {([['sequential', '顺序'], ['random', usesProxyIndex ? '随机数' : '随机顺序']] as Array<[ProxyExportIndexMode, string]>).map(([value, label]) => {
+                                        const active = indexMode === value
+                                        return (
+                                            <button
+                                                key={value}
+                                                type="button"
+                                                role="radio"
+                                                aria-checked={active}
+                                                onClick={() => selectIndexMode(value)}
+                                                className={cn(
+                                                    'min-w-20 rounded-md px-3 py-1.5 text-sm font-medium transition',
+                                                    active
+                                                        ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white'
+                                                        : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white'
+                                                )}
+                                            >
+                                                {label}
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                                {indexMode === 'random' && (
                                     <button
-                                        key={protocol}
                                         type="button"
-                                        aria-pressed={active}
-                                        onClick={() => toggleProtocol(protocol)}
-                                        className={cn(
-                                            'rounded-lg border px-3 py-1.5 text-sm font-medium transition',
-                                            active
-                                                ? 'border-blue-600 bg-blue-600 text-white'
-                                                : 'border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800'
-                                        )}
+                                        onClick={() => setRandomSeed(createRandomExportSeed())}
+                                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                                     >
-                                        {protocol.toUpperCase()}
+                                        <RefreshCw className="h-3.5 w-3.5" />
+                                        重新随机
                                     </button>
-                                )
-                            })}
+                                )}
+                            </div>
                         </div>
                     </div>
 
-                    {selectedGateway && availableStrategies.length > 0 ? (
-                        <>
-                            <div className="grid grid-cols-3 gap-3">
-                                <Metric label="可用策略" value={availableStrategies.length} />
-                                <Metric label="已选协议" value={effectiveProtocols.length} />
-                                <Metric label="导出条目" value={exportLines.length} />
-                            </div>
-                            <div>
-                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                                    <div className="min-w-0">
-                                        <FieldLabel label="导出预览" />
-                                        <div className="mt-1 flex max-h-16 flex-wrap gap-1 overflow-auto">
-                                            {exportedStrategies.map(strategy => <Badge key={strategy.id} tone="blue">{effectiveSeparator}{strategy.flagNo}</Badge>)}
+                    {usesProxyIndex && indexMode === 'random' && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                            随机数可能超过实际代理池大小；请将目标路由命中的出口策略（或账号自有池）设为“取模循环”，否则越界索引会被拒绝。
+                        </div>
+                    )}
+
+                    {selectedGateway && (usesProxyIndex || availableStrategies.length > 0) ? (
+                        <div>
+                            <div className="mb-2 flex flex-wrap items-end justify-between gap-3">
+                                <div className="min-w-0">
+                                    <FieldLabel label="导出预览" />
+                                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+                                        <span>共 {exportLines.length} 条</span>
+                                        <span aria-hidden="true">·</span>
+                                        <span>{indexMode === 'random' ? (usesProxyIndex ? '随机数' : '随机策略顺序') : '顺序索引'}</span>
+                                        <div className="flex max-h-14 flex-wrap gap-1 overflow-auto" aria-label={usesProxyIndex ? '已生成池内代理索引' : '已生成策略编号'}>
+                                            {routingEntries.map(entry => <Badge key={entry.key} tone="blue">{effectiveSeparator}{entry.number}</Badge>)}
                                         </div>
                                     </div>
-                                    <button
-                                        type="button"
-                                        aria-label="复制导出的代理配置"
-                                        disabled={!canCopy}
-                                        onClick={copyExport}
-                                        className={cn(
-                                            'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-white',
-                                            canCopy ? 'bg-blue-600 hover:bg-blue-700' : 'cursor-not-allowed bg-gray-300 dark:bg-gray-700'
-                                        )}
-                                    >
-                                        <Copy className="h-4 w-4" />
-                                        一键复制
-                                    </button>
                                 </div>
-                                {!account.password && (
-                                    <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
-                                        当前用户没有可回显密码，无法生成可直接使用的认证链接。请先编辑用户并重新设置密码。
-                                    </div>
-                                )}
-                                <pre className="max-h-72 min-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-gray-800 bg-gray-950 p-3 text-xs leading-5 text-gray-100">
-                                    <code>{exportText || '请选择至少一个协议和策略。'}</code>
-                                </pre>
+                                <button
+                                    type="button"
+                                    aria-label="复制导出的代理配置"
+                                    disabled={!canCopy}
+                                    onClick={copyExport}
+                                    className={cn(
+                                        'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-white',
+                                        canCopy ? 'bg-blue-600 hover:bg-blue-700' : 'cursor-not-allowed bg-gray-300 dark:bg-gray-700'
+                                    )}
+                                >
+                                    <Copy className="h-4 w-4" />
+                                    复制 {exportLines.length} 条
+                                </button>
                             </div>
-                        </>
+                            {!account.password && (
+                                <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                                    当前用户没有可回显密码，无法生成可直接使用的认证配置。请先编辑用户并重新设置密码。
+                                </div>
+                            )}
+                            <pre className="max-h-72 min-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-gray-800 bg-gray-950 p-3 text-xs leading-5 text-gray-100">
+                                <code>{exportText || '请选择网关并设置生成数量。'}</code>
+                            </pre>
+                        </div>
                     ) : (
-                        <EmptyState label={selectedGateway ? '该用户在当前网关没有可用的智能路由策略' : '没有可用于导出的已启用认证网关'} />
+                        <EmptyState label={selectedGateway ? '该兼容模式用户在当前网关没有可用的智能路由策略' : '没有可用于导出的已启用认证网关'} />
                     )}
                 </ModalBody>
                 <ModalFooter className="p-4 sm:p-6">
@@ -1591,30 +1693,82 @@ function accountExportRouteStrategies(account: ProxyGatewayAccount, gateway: Pro
         .sort((left, right) => left.flagNo - right.flagNo)
 }
 
+function createRandomExportSeed() {
+    if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
+        const values = new Uint32Array(1)
+        globalThis.crypto.getRandomValues(values)
+        return values[0] || 1
+    }
+    return Math.floor(Math.random() * 0xffffffff) || 1
+}
+
+function createRandomExportNumbers(quantity: number, seed: number) {
+    const values: number[] = []
+    const used = new Set<number>()
+    const upperBound = Math.max(999999, quantity * 100)
+    let state = seed >>> 0 || 1
+    while (values.length < quantity) {
+        state ^= state << 13
+        state ^= state >>> 17
+        state ^= state << 5
+        const value = (state >>> 0) % upperBound + 1
+        if (used.has(value)) continue
+        used.add(value)
+        values.push(value)
+    }
+    return values
+}
+
+function shuffleExportValues<T>(values: T[], seed: number) {
+    const shuffled = [...values]
+    let state = seed >>> 0 || 1
+    const random = () => {
+        state ^= state << 13
+        state ^= state >>> 17
+        state ^= state << 5
+        return (state >>> 0) / 0x100000000
+    }
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+        const swapIndex = Math.floor(random() * (index + 1))
+        const current = shuffled[index]
+        shuffled[index] = shuffled[swapIndex]
+        shuffled[swapIndex] = current
+    }
+    return shuffled
+}
+
 function csvCell(value: string | number) {
     const text = String(value)
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
-function formatSmartRouteProxyExport({ account, gateway, protocol, separator, flagNo, format }: {
+function formatSmartRouteProxyExport({ account, gateway, protocol, separator, routingNumber, format }: {
     account: ProxyGatewayAccount
     gateway: ProxyGatewayListener
     protocol: ProxyExportProtocol
     separator: string
-    flagNo: number
+    routingNumber: number
     format: ProxyExportFormat
 }) {
-    const username = `${account.username}${separator}${flagNo}`
+    const username = `${account.username}${separator}${routingNumber}`
     const password = account.password || ''
     const host = gatewayExternalHost(gateway)
     const port = gatewayExternalPort(gateway)
+    const hostPort = gatewayHostPort(gateway)
     if (format === 'csv') {
         return [protocol, host, port, username, password].map(csvCell).join(',')
+    }
+    if (format === 'tsv') {
+        return [protocol, host, port, username, password].join('\t')
     }
     if (format === 'jsonl') {
         return JSON.stringify({ protocol, host, port, username, password })
     }
-    return `${protocol}://${urlCredential(username)}:${urlCredential(password)}@${gatewayHostPort(gateway)}`
+    if (format === 'auth-at-host') return `${username}:${password}@${hostPort}`
+    if (format === 'host-port-auth') return `${hostPort}:${username}:${password}`
+    if (format === 'host-port-at-auth') return `${hostPort}@${username}:${password}`
+    if (format === 'auth-host-port') return `${username}:${password}:${hostPort}`
+    return `${protocol}://${urlCredential(username)}:${urlCredential(password)}@${hostPort}`
 }
 
 function gatewayExternalHost(gateway: ProxyGatewayListener) {
@@ -1807,7 +1961,7 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                                         <dt className="text-gray-500">出口策略</dt>
                                         <dd>
                                             <div className="font-medium text-gray-800 dark:text-gray-200">{strategy?.name || `#${item.routeStrategyId}`}</div>
-                                            {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge></div>}
+                                            {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge><Badge tone={strategy.proxyIndexOverflowMode === 'modulo' ? 'green' : 'gray'}>索引{strategy.proxyIndexOverflowMode === 'modulo' ? '取模' : '越界拒绝'}</Badge></div>}
                                         </dd>
                                     </dl>
                                 </div>
@@ -1846,7 +2000,7 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                                         </td>
                                         <td className="px-4 py-3">
                                             <div className="font-medium text-gray-800 dark:text-gray-200">{strategy?.name || `#${item.routeStrategyId}`}</div>
-                                            {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge></div>}
+                                            {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge><Badge tone={strategy.proxyIndexOverflowMode === 'modulo' ? 'green' : 'gray'}>索引{strategy.proxyIndexOverflowMode === 'modulo' ? '取模' : '越界拒绝'}</Badge></div>}
                                         </td>
                                         <td className="px-4 py-3">
                                             <Badge tone={item.enabled ? (strategy?.enabled === false ? 'amber' : 'green') : 'gray'}>
@@ -1874,7 +2028,8 @@ function RouteStrategiesView({ strategies, accounts, onCreate, onEdit, onDelete 
     onEdit: (item: ProxyGatewayRouteStrategy) => void
     onDelete: (item: ProxyGatewayRouteStrategy) => void
 }) {
-    const sampleAccount = accounts.find(item => item.enableUsernameRouting)?.username || 'proxy_user'
+    const strategyAccount = accounts.find(item => item.enableUsernameRouting && (item.usernameRoutingMode || 'strategy') === 'strategy')?.username
+    const sampleAccount = strategyAccount || accounts.find(item => item.enableUsernameRouting)?.username || 'proxy_user'
     return (
         <div className="space-y-3">
             <div className="flex justify-end">
@@ -1887,7 +2042,7 @@ function RouteStrategiesView({ strategies, accounts, onCreate, onEdit, onDelete 
                             <tr>
                                 <th className="px-4 py-3 text-left">策略</th>
                                 <th className="px-4 py-3 text-left">标志号</th>
-                                <th className="px-4 py-3 text-left">用户名示例</th>
+                                <th className="px-4 py-3 text-left">显式调用</th>
                                 <th className="px-4 py-3 text-left">路由</th>
                                 <th className="px-4 py-3 text-right">操作</th>
                             </tr>
@@ -1901,13 +2056,16 @@ function RouteStrategiesView({ strategies, accounts, onCreate, onEdit, onDelete 
                                     </td>
                                     <td className="px-4 py-3"><Badge tone={item.enabled ? 'blue' : 'gray'}>#{item.flagNo}</Badge></td>
                                     <td className="px-4 py-3">
-                                        <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-200">{sampleAccount}#{item.flagNo}</code>
-                                        <div className="mt-1 text-xs text-gray-500">{sampleAccount}?route={item.flagNo}</div>
+                                        <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-200">{sampleAccount}?route={item.flagNo}</code>
+                                        <div className="mt-1 text-xs text-gray-500">
+                                            {strategyAccount ? `${strategyAccount}#${item.flagNo}（兼容模式）` : '池内索引账号的 #N 不选择策略'}
+                                        </div>
                                     </td>
                                     <td className="px-4 py-3">
                                         <div className="flex flex-wrap gap-1.5">
                                             <Badge>{item.selectionMode}</Badge>
                                             <Badge>{item.selectionAlgorithm}</Badge>
+                                            <Badge tone={item.proxyIndexOverflowMode === 'modulo' ? 'green' : 'gray'}>索引{item.proxyIndexOverflowMode === 'modulo' ? '取模' : '越界拒绝'}</Badge>
                                             {item.preferLastSuccess && <Badge tone="green">优先复用</Badge>}
                                             {item.stickyMode !== 'none' && <Badge tone="amber">{item.stickyMode}</Badge>}
                                         </div>
@@ -2128,6 +2286,7 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                 <th className="px-4 py-3 text-left">账号</th>
                                 <th className="px-4 py-3 text-left">目标</th>
                                 <th className="px-4 py-3 text-left">上游</th>
+                                <th className="px-4 py-3 text-left">流量</th>
                                 <th className="px-4 py-3 text-left">状态</th>
                                 <th className="px-4 py-3 text-left">耗时</th>
                             </tr>
@@ -2138,7 +2297,7 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                     <td className="px-4 py-3 text-gray-500">{formatTime(item.createdAt)}</td>
                                     <td className="px-4 py-3">
                                         <div>{item.username || '-'}</div>
-                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo || item.targetRouteId) && (
+                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo || item.proxyIndex || item.targetRouteId) && (
                                             <div className="mt-1 flex flex-wrap gap-1 text-xs text-gray-500">
                                                 {item.requestedUsername && <span>{item.requestedUsername}</span>}
                                                 {item.clientIp && (
@@ -2147,6 +2306,13 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                                     </span>
                                                 )}
                                                 {item.routeStrategyFlagNo ? <Badge tone="blue">#{item.routeStrategyFlagNo}</Badge> : null}
+                                                {item.proxyIndex ? (
+                                                    <Badge tone="green">
+                                                        池内 #{item.proxyIndex}
+                                                        {item.resolvedProxyIndex && item.resolvedProxyIndex !== item.proxyIndex ? ` → #${item.resolvedProxyIndex}` : ''}
+                                                        {item.proxyPoolSize ? ` / ${item.proxyPoolSize}` : ''}
+                                                    </Badge>
+                                                ) : null}
                                                 {item.targetRouteId ? <Badge tone="amber">目标路由 #{item.targetRouteId}{item.targetRouteDefault ? ' 默认' : item.targetRouteMatcher ? ` · ${item.targetRouteMatcher}` : ''}</Badge> : null}
                                             </div>
                                         )}
@@ -2155,6 +2321,10 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                         {item.targetHost ? `${item.targetHost}:${item.targetPort || ''}` : '-'}
                                     </td>
                                     <td className="px-4 py-3">{item.upstreamProxyId ? `#${item.upstreamProxyId}` : '直连/无'}</td>
+                                    <td className="px-4 py-3 text-xs text-gray-500">
+                                        <div>入 {formatBytes(item.bytesIn || 0)}</div>
+                                        <div>出 {formatBytes(item.bytesOut || 0)}</div>
+                                    </td>
                                     <td className="px-4 py-3"><Badge tone={item.status === 'success' ? 'green' : item.status === 'denied' ? 'red' : 'amber'}>{item.status}</Badge></td>
                                     <td className="px-4 py-3">{item.durationMs}ms</td>
                                 </tr>
@@ -2383,7 +2553,7 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
     const steps: Array<{ id: AccountStep; label: string; description: string }> = [
         { id: 'identity', label: '账号信息', description: '用户名、密码、分组和标签' },
         { id: 'authorization', label: '网关授权', description: '选择账号可登录的网关' },
-        { id: 'routing', label: '用户名路由', description: '授权可用的路由标志号' },
+        { id: 'routing', label: '用户名路由', description: '配置池内索引或兼容策略编号' },
         { id: 'source', label: '出口来源', description: '遵循网关或保留独立策略' },
         ...(proxySelectionSource === 'account' ? [
             { id: 'proxy' as AccountStep, label: '独立代理池', description: '兼容模式的范围和调度' },
@@ -2459,25 +2629,58 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
 
                         {step === 'routing' && (
                             <>
-                                <SectionTitle label="智能用户名路由授权" />
+                                <SectionTitle label="智能用户名" />
                                 <div className="space-y-4 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
                                     <div className="grid gap-3 md:grid-cols-2">
-                                        <Toggle label="允许用户名携带路由标志" help="开启后用户可使用 username#标志号 或 username?route=标志号 临时切换路由。" checked={!!draft.enableUsernameRouting} onChange={value => setDraft({ ...draft, enableUsernameRouting: value })} />
-                                        <Toggle label="允许全部路由策略" help="开启后该用户可使用其授权网关下的所有用户名路由策略。" checked={!!draft.allowAllRouteStrategies} onChange={value => setDraft({ ...draft, allowAllRouteStrategies: value })} />
+                                        <Toggle label="允许智能用户名后缀" help="开启后可以在基础用户名后追加网关支持的分隔符和正整数。" checked={!!draft.enableUsernameRouting} onChange={value => setDraft({ ...draft, enableUsernameRouting: value })} />
+                                        {draft.enableUsernameRouting && (
+                                            <SelectField
+                                                label="后缀含义"
+                                                help="池内代理索引会在目标路由选定代理池后定位其中一个代理；策略编号保留旧版行为。"
+                                                value={draft.usernameRoutingMode || 'strategy'}
+                                                onChange={value => setDraft({ ...draft, usernameRoutingMode: value as any })}
+                                                options={[["proxy_index", "池内代理索引"], ["strategy", "策略编号（兼容模式）"]]}
+                                            />
+                                        )}
                                     </div>
-                                    {draft.enableUsernameRouting && !draft.allowAllRouteStrategies && (
-                                        <SearchMultiSelect
-                                            label="允许使用的路由策略"
-                                            help="只列出当前用户可用网关下的策略，标志号会展示给用户用于拼接用户名。"
-                                            items={routeOptions}
-                                            selected={draft.allowedRouteStrategyIds || []}
-                                            onChange={value => setDraft({ ...draft, allowedRouteStrategyIds: value })}
-                                            placeholder="搜索标志号或策略名称"
-                                        />
+                                    {draft.enableUsernameRouting && (draft.usernameRoutingMode || 'strategy') === 'proxy_index' && (
+                                        <div className="grid gap-3 md:grid-cols-2">
+                                            <SelectField
+                                                label="账号代理池索引越界"
+                                                help="仅在使用账号自有代理池时生效；目标路由选中的出口策略使用该策略自己的越界配置。"
+                                                value={draft.proxyIndexOverflowMode || 'reject'}
+                                                onChange={value => setDraft({ ...draft, proxyIndexOverflowMode: value as any })}
+                                                options={[["reject", "拒绝连接"], ["modulo", "取模循环"]]}
+                                            />
+                                            <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600 dark:border-gray-800 dark:bg-gray-950/50 dark:text-gray-300">
+                                                目标路由先选择出口策略，再用后缀索引定位该池内代理；未携带后缀时仍使用策略原有调度算法。
+                                            </div>
+                                        </div>
                                     )}
-                                    <div className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-gray-950/60 dark:text-gray-300">
-                                        示例：<code>{draft.username || 'proxy_user'}#标志号</code> / <code>{draft.username || 'proxy_user'}?route=标志号</code>
-                                    </div>
+                                    {draft.enableUsernameRouting && (draft.usernameRoutingMode || 'strategy') === 'strategy' && (
+                                        <>
+                                            <Toggle label="允许全部路由策略" help="开启后该用户可使用其授权网关下的所有用户名路由策略。" checked={!!draft.allowAllRouteStrategies} onChange={value => setDraft({ ...draft, allowAllRouteStrategies: value })} />
+                                            {!draft.allowAllRouteStrategies && (
+                                                <SearchMultiSelect
+                                                    label="允许使用的路由策略"
+                                                    help="只列出当前用户可用网关下的策略，标志号会展示给用户用于拼接用户名。"
+                                                    items={routeOptions}
+                                                    selected={draft.allowedRouteStrategyIds || []}
+                                                    onChange={value => setDraft({ ...draft, allowedRouteStrategyIds: value })}
+                                                    placeholder="搜索标志号或策略名称"
+                                                />
+                                            )}
+                                        </>
+                                    )}
+                                    {draft.enableUsernameRouting && (
+                                        <div className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-gray-950/60 dark:text-gray-300">
+                                            {(draft.usernameRoutingMode || 'strategy') === 'proxy_index' ? (
+                                                <>示例：<code>{draft.username || 'proxy_user'}#2</code> / <code>{draft.username || 'proxy_user'}?index=2</code></>
+                                            ) : (
+                                                <>兼容示例：<code>{draft.username || 'proxy_user'}#策略编号</code> / <code>{draft.username || 'proxy_user'}?route=策略编号</code></>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             </>
                         )}
@@ -2592,6 +2795,7 @@ function ProxyStrategyFields({ draft, setDraft, proxyGroups, proxyTags, proxies,
     const tagOptions = toSearchOptions(proxyTags)
     const selectionMode = draft.selectionMode || 'filtered'
     const fallbackMode = draft.fallbackMode || 'interrupt'
+    const isRouteStrategy = 'gatewayId' in draft || 'flagNo' in draft
 
     if (section === 'fallback') {
         return (
@@ -2636,9 +2840,18 @@ function ProxyStrategyFields({ draft, setDraft, proxyGroups, proxyTags, proxies,
     return (
         <>
             <SectionTitle label="代理选择策略" />
-            <div className="grid gap-3 md:grid-cols-4">
+            <div className={cn('grid gap-3 md:grid-cols-2', isRouteStrategy ? 'xl:grid-cols-5' : 'xl:grid-cols-4')}>
                 <SelectField label="选择范围" help="全部可用会从所有可用代理中选择；按组/标签会根据下面条件筛选；临时代理池只使用勾选 ID。" value={draft.selectionMode || 'filtered'} onChange={value => setDraft({ ...draft, selectionMode: value as any })} options={[['all', '全部可用'], ['filtered', '按组/标签'], ['explicit', '临时代理池']]} />
                 <SelectField label="调度算法" help="轮询适合均匀分摊；随机适合简单分散；优先复用会倾向最近成功的代理。" value={draft.selectionAlgorithm || 'random'} onChange={value => setDraft({ ...draft, selectionAlgorithm: value as any })} options={[['random', '随机'], ['round_robin', '轮询'], ['weighted', '权重随机'], ['lowest_latency', '最低延迟'], ['prefer_last_success', '优先复用']]} />
+                {isRouteStrategy && (
+                    <SelectField
+                        label="索引越界"
+                        help="池内索引超过代理数量时拒绝连接，或按 (N-1) % 池大小循环映射。"
+                        value={draft.proxyIndexOverflowMode || 'reject'}
+                        onChange={value => setDraft({ ...draft, proxyIndexOverflowMode: value as any })}
+                        options={[['reject', '拒绝连接'], ['modulo', '取模循环']]}
+                    />
+                )}
                 <SelectField label="粘性策略" help="粘性会在 TTL 内尽量为同一范围复用同一个上游代理。" value={draft.stickyMode || 'none'} onChange={value => setDraft({ ...draft, stickyMode: value as any })} options={[['none', '不粘性'], ['account', '账号'], ['client_ip', '客户端 IP'], ['target_host', '目标域名'], ['client_ip_target_host', 'IP+域名']]} />
                 <NumberField label="粘性 TTL 秒" help="粘性代理缓存的有效时间。" value={draft.stickyTtlSeconds || 600} onChange={value => setDraft({ ...draft, stickyTtlSeconds: value })} />
             </div>
@@ -2751,7 +2964,7 @@ function RouteStrategyModal({ draft, setDraft, proxyGroups, proxyTags, proxies, 
             <ModalContent size="6xl">
                 <ModalHeader>
                     <ModalTitle>{draft.id ? '编辑出口策略' : '新增出口策略'}</ModalTitle>
-                    <ModalDescription>配置可由目标路由自动选择、也可由用户名标志号手动调用的代理出口。</ModalDescription>
+                    <ModalDescription>配置可由目标路由自动选择，也可通过 ?route=标志号显式调用的代理出口；#标志号仅用于兼容账号。</ModalDescription>
                 </ModalHeader>
                 <ModalBody className="grid gap-5 xl:grid-cols-[240px_minmax(0,1fr)]">
                     <WizardRail steps={steps} current={step} onChange={setStep} />
@@ -2761,12 +2974,12 @@ function RouteStrategyModal({ draft, setDraft, proxyGroups, proxyTags, proxies, 
                                 <SectionTitle label="基础信息" />
                                 <div className="grid gap-3 md:grid-cols-3">
                                     <TextField label="策略名称" help="用于账号授权和日志识别。" value={draft.name || ''} onChange={value => setDraft({ ...draft, name: value })} />
-                                    <NumberField label="标志号" help="用户连接时通过 username#标志号 或 username?route=标志号 调用。" value={draft.flagNo || 0} onChange={value => setDraft({ ...draft, flagNo: value })} />
+                                    <NumberField label="标志号" help="显式调用使用 username?route=标志号；只有策略编号兼容账号才使用 username#标志号。" value={draft.flagNo || 0} onChange={value => setDraft({ ...draft, flagNo: value })} />
                                     <Toggle label="启用策略" help="停用后即使账号已授权也无法使用该标志号。" checked={draft.enabled !== false} onChange={value => setDraft({ ...draft, enabled: value })} />
                                 </div>
                                 <TextareaField label="描述" help="记录该标志号对应业务或代理池用途。" value={draft.description || ''} onChange={value => setDraft({ ...draft, description: value })} />
                                 <div className="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-gray-950/60 dark:text-gray-300">
-                                    示例：<code>proxy_user#{draft.flagNo || '标志号'}</code> / <code>proxy_user?route={draft.flagNo || '标志号'}</code>
+                                    显式调用：<code>proxy_user?route={draft.flagNo || '标志号'}</code>；兼容模式：<code>proxy_user#{draft.flagNo || '标志号'}</code>
                                 </div>
                             </>
                         )}
@@ -3015,11 +3228,18 @@ function TextField({ label, value, onChange, type = 'text', help }: { label: str
     )
 }
 
-function NumberField({ label, value, onChange, help }: { label: string; value: number; onChange: (value: number) => void; help?: string }) {
+function NumberField({ label, value, onChange, help, min, max }: {
+    label: string
+    value: number
+    onChange: (value: number) => void
+    help?: string
+    min?: number
+    max?: number
+}) {
     return (
         <label className="block text-sm">
             <FieldLabel label={label} help={help} />
-            <input type="number" value={value} onChange={event => onChange(Number(event.target.value))} className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40" />
+            <input type="number" min={min} max={max} value={value} onChange={event => onChange(Number(event.target.value))} className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40" />
         </label>
     )
 }

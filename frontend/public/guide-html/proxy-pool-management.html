@@ -185,19 +185,20 @@ curl -X POST "$BASE_URL/api/proxy-pool/bulk-import" \
           </div>
         </div>
         <div id="policy-route" class="tab-panel" role="tabpanel">
-          <p>用户名路由允许用户在用户名后携带标志号，临时切换策略。标志号会在页面中显示，用户必须被授权才能使用。</p>
-          <pre><code>proxy_user#17
-proxy_user?route=17
-proxy_user?router=17
-proxy_user?rs=17
-proxy_user?strategy=17
-proxy_user#17;purpose=signup;batch=202606</code></pre>
-          <p><code>#</code> 是兼容默认值。网关编辑页可以逐行配置多个符号分隔符，例如 <code>#</code>、<code>~</code>、<code>--</code>；较长的分隔符优先匹配。分隔符不能包含 ASCII 冒号，因为 HTTP Basic 用户名不能包含冒号。查询参数 <code>route</code>、<code>router</code>、<code>rs</code>、<code>strategy</code> 始终可用。</p>
+          <p>推荐使用“池内代理索引”：目标路由先按目标域名或 IP 选择出口代理池，用户名后缀再选择该池的第 N 个代理。</p>
+          <pre><code>proxy_user#1
+proxy_user#2
+proxy_user?index=2
+proxy_user?proxy=2
+proxy_user?pi=2</code></pre>
+          <p>索引从 1 开始。显式临时代理池按保存顺序编号，筛选池按代理 ID 升序编号。出口策略可选择严格拒绝越界，或按 <code>((N-1) % 池大小) + 1</code> 取模循环；池大小为 10 时，<code>#20</code> 映射到第 10 个代理。</p>
+          <p>存量用户默认保留“策略编号”兼容模式，原来的 <code>proxy_user#17</code> 和 <code>proxy_user?route=17</code> 继续选择标志号为 17 的策略。<code>route/router/rs/strategy</code> 始终表示策略编号，<code>index/proxy/pi</code> 始终表示池内索引。</p>
+          <p><code>#</code> 是兼容默认值。网关编辑页可以逐行配置多个符号分隔符，例如 <code>#</code>、<code>~</code>、<code>--</code>；较长的分隔符优先匹配。</p>
           <ul>
-            <li>网关用户必须开启“允许用户名携带路由标志”。</li>
-            <li>网关用户必须被授权使用当前网关。</li>
-            <li>网关用户必须被授权使用该路由策略，或开启“允许全部路由策略”。</li>
-            <li>未携带标志号时，按网关用户的代理策略来源使用网关默认出口或账号独立策略。</li>
+            <li>网关用户必须开启智能用户名后缀，并被授权使用当前网关。</li>
+            <li>池内索引模式不按策略标志号授权；目标路由负责选池，后缀只负责选池内代理。</li>
+            <li>兼容模式仍要求用户获得目标策略授权，目标路由的管理员规则仍优先。</li>
+            <li>未携带后缀时，继续使用出口策略原有的随机、轮询或其他调度算法。</li>
           </ul>
         </div>
       </div>
@@ -221,6 +222,8 @@ proxy_user#17;purpose=signup;batch=202606</code></pre>
           <thead><tr><th>策略</th><th>选项</th><th>建议</th></tr></thead>
           <tbody>
             <tr><td>策略来源</td><td>遵循网关、独立代理策略</td><td>新用户推荐遵循网关；独立策略用于兼容现有接入。</td></tr>
+            <tr><td>智能用户名</td><td>池内代理索引、策略编号兼容</td><td>新用户推荐池内索引；现有用户默认不改变语义。</td></tr>
+            <tr><td>索引越界</td><td>拒绝、取模循环</td><td>随机索引或索引数量大于池大小时使用取模循环。</td></tr>
             <tr><td>独立代理池</td><td>全部可用、按组/标签、临时代理池</td><td>仅在独立代理策略模式下参与选路。</td></tr>
             <tr><td>调度算法</td><td>随机、轮询、权重、最低延迟、优先复用最近成功</td><td>通用场景用随机或轮询；会话稳定场景用优先复用。</td></tr>
             <tr><td>粘性策略</td><td>账号、客户端 IP、目标域名、客户端 IP + 目标域名</td><td>登录和浏览器会话建议按账号或客户端 IP 粘性。</td></tr>
@@ -229,7 +232,7 @@ proxy_user#17;purpose=signup;batch=202606</code></pre>
           </tbody>
         </table>
       </div>
-      <div class="callout success">创建完成后，在网关用户列表点击“代码示例”，选择可用网关，页面会实时拉取网关信息并生成代理 URL、curl 和程序接入片段。开启智能用户名路由的用户还可以点击批量导出按钮，按网关、协议、分隔符和策略数量生成 URL、CSV 或 JSON Lines，并一键复制。</div>
+      <div class="callout success">创建完成后，在网关用户列表点击“代码示例”，选择可用网关，页面会实时拉取网关信息并生成代理 URL、curl 和程序接入片段。开启智能用户名路由的用户还可以批量导出：生成数量就是最终条数，协议为单选；池内索引可顺序生成 1..N 或生成 N 个不重复随机正整数，并按标准代理 URL、常用认证文本、CSV、TSV 或 JSON Lines 格式一键复制。随机数建议配合取模循环。</div>
     </section>
 
     <section id="usage" class="section">
@@ -239,9 +242,9 @@ proxy_user#17;purpose=signup;batch=202606</code></pre>
       <pre><code>http://gw_user:gw_password@proxy.example.com:32109
 socks5://gw_user:gw_password@proxy.example.com:32109
 
-# 用户名路由示例，gw_user#17 需要编码为 gw_user%2317
-http://gw_user%2317:gw_password@proxy.example.com:32109
-socks5://gw_user%2317:gw_password@proxy.example.com:32109</code></pre>
+# 池内第 2 个代理，gw_user#2 需要编码为 gw_user%232
+http://gw_user%232:gw_password@proxy.example.com:32109
+socks5://gw_user%232:gw_password@proxy.example.com:32109</code></pre>
       <h3>curl</h3>
       <p class="muted">curl 示例使用 <code>--proxy-user</code> 传递原始用户名密码，不要把密码里的 <code>}</code> 写成 <code>%7d</code> 这类 URL 编码。</p>
       <pre><code># HTTP CONNECT
@@ -251,7 +254,7 @@ curl -x 'http://proxy.example.com:32109' \
 
 # HTTP CONNECT + 用户名路由
 curl -x 'http://proxy.example.com:32109' \
-  --proxy-user 'gw_user#17:gw_password' \
+  --proxy-user 'gw_user#2:gw_password' \
   'https://api.ipify.org?format=json'
 
 # SOCKS5 远端解析
@@ -261,7 +264,7 @@ curl --socks5-hostname 'proxy.example.com:32109' \
 
 # SOCKS5 + 用户名路由
 curl --socks5-hostname 'proxy.example.com:32109' \
-  --proxy-user 'gw_user#17:gw_password' \
+  --proxy-user 'gw_user#2:gw_password' \
   'https://example.com'</code></pre>
       <h3>Playwright</h3>
       <pre><code>import { chromium } from 'playwright'
@@ -269,7 +272,7 @@ curl --socks5-hostname 'proxy.example.com:32109' \
 const browser = await chromium.launch({
   proxy: {
     server: 'http://proxy.example.com:32109',
-    username: 'gw_user#17',
+    username: 'gw_user#2',
     password: 'gw_password',
   },
 })
@@ -282,7 +285,7 @@ await browser.close()</code></pre>
       <pre><code>import requests
 from urllib.parse import quote
 
-username = quote("gw_user#17", safe="")
+username = quote("gw_user#2", safe="")
 password = quote("gw_password", safe="")
 proxy = f"http://{username}:{password}@proxy.example.com:32109"
 
@@ -295,7 +298,7 @@ print(requests.get("https://api.ipify.org?format=json", proxies=proxies, timeout
           <tbody>
             <tr><td>Host</td><td><code>proxy.example.com</code> 或网关外部访问 IP。</td></tr>
             <tr><td>Port</td><td>网关端口，例如 <code>32109</code>。</td></tr>
-            <tr><td>Username</td><td><code>gw_user</code>，需要路由时填 <code>gw_user#17</code>。</td></tr>
+            <tr><td>Username</td><td><code>gw_user</code>，选择池内第 2 个代理时填 <code>gw_user#2</code>。</td></tr>
             <tr><td>Password</td><td>网关用户密码。</td></tr>
           </tbody>
         </table>
@@ -356,7 +359,7 @@ print(requests.get("https://api.ipify.org?format=json", proxies=proxies, timeout
           <h3>代理网关</h3>
           <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/listeners</code><span>网关列表</span></div>
           <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/accounts</code><span>网关用户</span></div>
-          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/route-strategies</code><span>用户名路由</span></div>
+          <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/route-strategies</code><span>出口策略</span></div>
           <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/security-policies</code><span>安全策略</span></div>
           <div class="endpoint"><span class="method get">GET</span><code>/api/proxy-gateway/dns-policies</code><span>DNS 策略</span></div>
           <div class="endpoint"><span class="method post">POST</span><code>/api/proxy-gateway/reload</code><span>热加载</span></div>

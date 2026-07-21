@@ -75,11 +75,17 @@ func TestApplyProxyGatewayListenerRequestKeepsUsernameSeparatorCompatibility(t *
 func TestApplyProxyGatewayAccountRequestKeepsLegacyCompatibility(t *testing.T) {
 	legacy := models.ProxyGatewaySelectionSourceAccount
 	gateway := models.ProxyGatewaySelectionSourceGateway
+	strategyMode := models.ProxyGatewayUsernameRoutingStrategy
+	indexMode := models.ProxyGatewayUsernameRoutingProxyIndex
+	modulo := models.ProxyGatewayIndexOverflowModulo
 
 	createdByOldClient := models.ProxyGatewayAccount{}
 	applyAccountRequest(&createdByOldClient, proxyGatewayAccountRequest{Username: "old-client"})
 	if createdByOldClient.ProxySelectionSource != legacy {
 		t.Fatalf("old client create source=%q want=%q", createdByOldClient.ProxySelectionSource, legacy)
+	}
+	if createdByOldClient.UsernameRoutingMode != strategyMode || createdByOldClient.ProxyIndexOverflowMode != models.ProxyGatewayIndexOverflowReject {
+		t.Fatalf("old client username settings mode=%q overflow=%q", createdByOldClient.UsernameRoutingMode, createdByOldClient.ProxyIndexOverflowMode)
 	}
 
 	existingGatewayUser := models.ProxyGatewayAccount{ProxySelectionSource: gateway}
@@ -93,6 +99,13 @@ func TestApplyProxyGatewayAccountRequestKeepsLegacyCompatibility(t *testing.T) {
 	if explicitGatewayUser.ProxySelectionSource != gateway {
 		t.Fatalf("explicit source=%q want=%q", explicitGatewayUser.ProxySelectionSource, gateway)
 	}
+
+	applyAccountRequest(&explicitGatewayUser, proxyGatewayAccountRequest{
+		Username: "new-index-ui", UsernameRoutingMode: &indexMode, ProxyIndexOverflowMode: &modulo,
+	})
+	if explicitGatewayUser.UsernameRoutingMode != indexMode || explicitGatewayUser.ProxyIndexOverflowMode != modulo {
+		t.Fatalf("explicit username settings mode=%q overflow=%q", explicitGatewayUser.UsernameRoutingMode, explicitGatewayUser.ProxyIndexOverflowMode)
+	}
 }
 
 func TestValidateProxyGatewaySelectionSource(t *testing.T) {
@@ -102,6 +115,56 @@ func TestValidateProxyGatewaySelectionSource(t *testing.T) {
 	}
 	if message := validateProxySelectionSource(nil); message != "" {
 		t.Fatalf("omitted source should remain compatible, got %q", message)
+	}
+}
+
+func TestValidateProxyGatewayUsernameRoutingSettings(t *testing.T) {
+	invalidRouting := models.ProxyGatewayUsernameRoutingMode("mixed")
+	if message := validateUsernameRoutingSettings(&invalidRouting, nil); message == "" {
+		t.Fatal("expected invalid username routing mode to be rejected")
+	}
+	invalidOverflow := models.ProxyGatewayIndexOverflowMode("clamp")
+	if message := validateUsernameRoutingSettings(nil, &invalidOverflow); message == "" {
+		t.Fatal("expected invalid proxy index overflow mode to be rejected")
+	}
+	validRouting := models.ProxyGatewayUsernameRoutingProxyIndex
+	validOverflow := models.ProxyGatewayIndexOverflowModulo
+	if message := validateUsernameRoutingSettings(&validRouting, &validOverflow); message != "" {
+		t.Fatalf("valid username routing settings rejected: %s", message)
+	}
+}
+
+func TestCreateProxyGatewayRouteStrategyReturnsConflictForDuplicateFlag(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.ProxyGatewayRouteStrategy{}); err != nil {
+		t.Fatalf("migrate route strategy: %v", err)
+	}
+	existing := models.ProxyGatewayRouteStrategy{
+		OrgID: defaultOrgID, GatewayID: 7, Name: "existing", FlagNo: 1, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionAll, SelectionAlgorithm: models.ProxyGatewayAlgorithmRandom,
+	}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatalf("create existing route strategy: %v", err)
+	}
+
+	repo := repository.NewProxyGatewayRepository(db)
+	service := services.NewProxyGatewayService(repo, repository.NewProxyPoolRepository(db))
+	handler := NewProxyGatewayHandlers(repo, service)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/proxy-gateway/route-strategies", strings.NewReader(`{
+		"gatewayId":7,"name":"duplicate","flagNo":1,"enabled":true,"selectionMode":"all","selectionAlgorithm":"random"
+	}`))
+	handler.CreateRouteStrategy(recorder, request)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "already exists") {
+		t.Fatalf("duplicate route flag response status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+
+	exists, err := repo.RouteStrategyFlagExists(defaultOrgID, 7, 1, existing.ID)
+	if err != nil || exists {
+		t.Fatalf("excluding current strategy exists=%v err=%v", exists, err)
 	}
 }
 

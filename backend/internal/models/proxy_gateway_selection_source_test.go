@@ -16,6 +16,16 @@ type legacyProxyGatewayAccount struct {
 
 func (legacyProxyGatewayAccount) TableName() string { return "proxy_gateway_accounts" }
 
+type legacyProxyGatewayRouteStrategy struct {
+	ID        uint   `gorm:"primaryKey"`
+	OrgID     uint   `gorm:"not null;default:1;uniqueIndex:idx_proxy_gateway_route_flag"`
+	GatewayID uint   `gorm:"not null;default:0;uniqueIndex:idx_proxy_gateway_route_flag"`
+	Name      string `gorm:"not null"`
+	FlagNo    int    `gorm:"not null;uniqueIndex:idx_proxy_gateway_route_flag"`
+}
+
+func (legacyProxyGatewayRouteStrategy) TableName() string { return "proxy_gateway_route_strategies" }
+
 func TestProxyGatewayAccountMigrationDefaultsExistingRowsToAccountSelection(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:proxy-selection-source-migration?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -38,5 +48,36 @@ func TestProxyGatewayAccountMigrationDefaultsExistingRowsToAccountSelection(t *t
 	}
 	if migrated.ProxySelectionSource != ProxyGatewaySelectionSourceAccount {
 		t.Fatalf("selection source=%q want=%q", migrated.ProxySelectionSource, ProxyGatewaySelectionSourceAccount)
+	}
+	if migrated.UsernameRoutingMode != ProxyGatewayUsernameRoutingStrategy {
+		t.Fatalf("username routing mode=%q want=%q", migrated.UsernameRoutingMode, ProxyGatewayUsernameRoutingStrategy)
+	}
+	if migrated.ProxyIndexOverflowMode != ProxyGatewayIndexOverflowReject {
+		t.Fatalf("proxy index overflow=%q want=%q", migrated.ProxyIndexOverflowMode, ProxyGatewayIndexOverflowReject)
+	}
+}
+
+func TestProxyGatewayRouteStrategyMigrationDefaultsExistingRowsToStrictIndexOverflow(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:proxy-index-overflow-migration?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&legacyProxyGatewayRouteStrategy{}); err != nil {
+		t.Fatalf("migrate legacy strategy: %v", err)
+	}
+	legacy := legacyProxyGatewayRouteStrategy{OrgID: 1, GatewayID: 2, Name: "existing pool", FlagNo: 3}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatalf("create legacy strategy: %v", err)
+	}
+
+	if err := db.AutoMigrate(&ProxyGatewayRouteStrategy{}); err != nil {
+		t.Fatalf("migrate current strategy: %v", err)
+	}
+	var migrated ProxyGatewayRouteStrategy
+	if err := db.First(&migrated, legacy.ID).Error; err != nil {
+		t.Fatalf("load migrated strategy: %v", err)
+	}
+	if migrated.ProxyIndexOverflowMode != ProxyGatewayIndexOverflowReject {
+		t.Fatalf("proxy index overflow=%q want=%q", migrated.ProxyIndexOverflowMode, ProxyGatewayIndexOverflowReject)
 	}
 }

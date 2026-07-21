@@ -313,13 +313,38 @@ DNS 策略属于具体网关。进入“代理网关 → 选择网关 → 配置
 | 字段 | 说明 |
 | --- | --- |
 | 策略名称 | 例如 `US Login Route`。 |
-| 标志号 | 页面会显示，例如 `17`。用户连接时需要传这个数字。 |
+| 标志号 | 兼容模式显式选择出口策略时使用，例如 `?route=17`。池内索引模式的 `#17` 不使用它。 |
 | 启用策略 | 关闭后该标志号不可用。 |
 | 描述 | 写清用途，例如“美国登录专用，US Residential + login”。 |
+| 索引越界 | 池内索引超过池大小时拒绝，或按 `((N-1) % 池大小) + 1` 取模循环。 |
 
-### 8.2 用户如何传路由标志号
+### 8.2 池内代理索引（推荐）
 
-用户连接代理时，可以在用户名后面携带标志号：
+新建网关用户默认使用“池内代理索引”。目标路由先根据目标域名或 IP 选择出口策略和代理池，然后用户名后缀选择该池的第 N 个代理：
+
+```text
+proxy_user#1
+proxy_user#2
+proxy_user?index=2
+proxy_user?proxy=2
+proxy_user?pi=2
+```
+
+索引从 1 开始。显式临时代理池按保存的代理 ID 顺序编号；全部可用或按组/标签筛选的池按代理 ID 升序编号。未带后缀时，仍使用出口策略原有的随机、轮询、权重或其他调度算法。
+
+目标路由选择的出口策略决定索引越界方式。例如池内有 10 个代理且策略开启“取模循环”时：
+
+```text
+#10 -> 第 10 个
+#20 -> 第 10 个
+#21 -> 第 1 个
+```
+
+如果使用账号自己的代理池，则由账号的“索引越界”配置决定；如果目标路由选择了出口策略，则由最终出口策略的配置决定。
+
+### 8.3 策略编号（存量兼容）
+
+已有网关用户默认保留“策略编号”模式，原来的用户名无需修改：
 
 ```text
 proxy_user#17
@@ -329,7 +354,9 @@ proxy_user?rs=17
 proxy_user?strategy=17
 ```
 
-`#` 是默认兼容分隔符。网关编辑页可以为智能用户名逐行配置多个符号分隔符，例如 `#`、`~`、`--`；解析时优先匹配较长的分隔符。分隔符不能包含 ASCII 冒号，因为 HTTP Basic 用户名不能包含冒号。`route`、`router`、`rs`、`strategy` 查询参数别名固定可用，不受分隔符配置影响。
+此模式下 `#17` 仍表示出口策略的标志号，并要求账号获得该策略授权。`route`、`router`、`rs`、`strategy` 始终显式表示策略编号；`index`、`proxy`、`pi` 始终显式表示池内索引。
+
+`#` 是默认兼容分隔符。网关编辑页可以为智能用户名逐行配置多个符号分隔符，例如 `#`、`~`、`--`；解析时优先匹配较长的分隔符。分隔符不能包含 ASCII 冒号，因为 HTTP Basic 用户名不能包含冒号。查询参数别名不受分隔符配置影响。
 
 `#` 格式支持附加参数，参数会进入访问日志：
 
@@ -337,20 +364,20 @@ proxy_user?strategy=17
 proxy_user#17;purpose=signup;batch=202606
 ```
 
-### 8.3 权限控制
+### 8.4 权限控制
 
-路由策略不是知道标志号就能用，必须同时满足：
+两种模式都要求：
 
-1. 网关用户启用“允许用户名携带路由标志”。
+1. 网关用户启用智能用户名后缀。
 2. 网关用户被授权使用当前网关。
-3. 网关用户被授权使用该路由策略，或开启“允许全部路由策略”。
-4. 路由策略属于当前网关，并且处于启用状态。
+3. 池内索引是正整数，最终代理池非空，且索引满足出口策略的越界规则。
+4. 兼容模式下，网关用户还必须被授权使用该路由策略，或开启“允许全部路由策略”。
 
 未授权会在认证阶段被拒绝。
 
-开启智能用户名路由的用户会在列表中出现批量导出按钮。导出弹窗只展示该用户已授权、已启用且需要认证的网关，并按实际授权策略编号生成 HTTP / SOCKS5 的 URL、CSV 或 JSON Lines；标准 URL 会自动编码用户名中的分隔符并支持一键复制。
+开启智能用户名路由的用户会在列表中出现批量导出按钮。导出弹窗只展示该用户已授权、已启用且需要认证的网关；生成数量等于最终配置条数，HTTP / SOCKS5 协议为单选。池内索引模式可顺序生成 `1..N`，也可生成 N 个不重复随机正整数；随机数建议配合“取模循环”。兼容模式仍从已授权策略编号中生成。导出格式支持标准代理 URL、`用户:密码@地址:端口`、`地址:端口:用户:密码`、`地址:端口@用户:密码`、`用户:密码:地址:端口`、CSV、TSV 和 JSON Lines，并支持一键复制。标准 URL 会编码凭据，IPv6 地址会自动加方括号。
 
-目标路由由管理员配置并强制执行，不受网关用户的“允许用户名路由策略”授权影响；用户名授权只控制客户端能否主动使用 `#标志号`。
+目标路由由管理员配置并强制执行。池内索引模式下，目标路由和后缀不会冲突：目标路由负责选池，后缀只负责选池内代理。兼容策略编号仍受目标路由优先级约束。
 
 ## 9. 第六步：配置目标路由
 
@@ -390,7 +417,7 @@ proxy_user#17;purpose=signup;batch=202606
 
 如果该出口连接失败，只执行其自身配置的重试或备用池，不会自动继续匹配下一条规则，也不会隐式回到默认出口。需要允许回退时，应在该出口策略中显式配置 fallback。
 
-目标路由属于网关管理员强制策略，优先于客户端通过用户名标志号选择的出口，避免客户端绕过指定域名或 IP 的出口要求。
+目标路由属于网关管理员强制策略。池内索引模式下，它先确定出口代理池，随后才应用 `#N`；兼容策略编号模式下，它仍优先于客户端请求的出口策略，避免客户端绕过指定域名或 IP 的出口要求。
 
 ### 9.4 SOCKS5 域名与 IP
 
@@ -537,11 +564,11 @@ http://gw_user:gw_password@proxy.example.com:32109
 socks5://gw_user:gw_password@proxy.example.com:32109
 ```
 
-如果用户名使用路由标志号，`#` 需要编码成 `%23`：
+如果用户名使用池内索引后缀，`#` 需要编码成 `%23`：
 
 ```text
-http://gw_user%2317:gw_password@proxy.example.com:32109
-socks5://gw_user%2317:gw_password@proxy.example.com:32109
+http://gw_user%232:gw_password@proxy.example.com:32109
+socks5://gw_user%232:gw_password@proxy.example.com:32109
 ```
 
 ### 12.2 HTTP 代理 curl
@@ -556,7 +583,7 @@ curl -x 'http://proxy.example.com:32109' \
 
 ```bash
 curl -x 'http://proxy.example.com:32109' \
-  --proxy-user 'gw_user#17:gw_password' \
+  --proxy-user 'gw_user#2:gw_password' \
   'https://api.ipify.org?format=json'
 ```
 
@@ -580,7 +607,7 @@ curl --socks5-hostname 'proxy.example.com:32109' \
 
 ```bash
 curl --socks5-hostname 'proxy.example.com:32109' \
-  --proxy-user 'gw_user#17:gw_password' \
+  --proxy-user 'gw_user#2:gw_password' \
   'https://example.com'
 ```
 
@@ -604,7 +631,7 @@ curl --socks5-hostname 'proxy.example.com:32109' --proxy-user 'gw_user:gw_passwo
 | --- | --- | --- |
 | Host | `proxy.example.com` | `proxy.example.com` |
 | Port | `32109` | `32109` |
-| Username | `gw_user` 或 `gw_user#17` | `gw_user` 或 `gw_user#17` |
+| Username | `gw_user` 或 `gw_user#2` | `gw_user` 或 `gw_user#2` |
 | Password | 网关用户密码 | 网关用户密码 |
 
 如果浏览器不支持用户名密码内置保存，可以使用浏览器插件或自动化工具传入认证信息。
@@ -617,7 +644,7 @@ import { chromium } from 'playwright'
 const browser = await chromium.launch({
   proxy: {
     server: 'http://proxy.example.com:32109',
-    username: 'gw_user#17',
+    username: 'gw_user#2',
     password: 'gw_password',
   },
 })
@@ -653,12 +680,12 @@ proxies = {
 print(requests.get("https://api.ipify.org?format=json", proxies=proxies, timeout=20).text)
 ```
 
-如果用户名使用路由标志号，建议 URL 编码：
+如果用户名使用池内索引后缀，建议 URL 编码：
 
 ```python
 from urllib.parse import quote
 
-username = quote("gw_user#17", safe="")
+username = quote("gw_user#2", safe="")
 password = quote("gw_password", safe="")
 proxy = f"http://{username}:{password}@proxy.example.com:32109"
 ```
@@ -672,7 +699,7 @@ proxy = f"http://{username}:{password}@proxy.example.com:32109"
 | Proxy type | HTTP、SOCKS5，或按网关协议选择。 |
 | Host | 网关外部访问地址。 |
 | Port | 网关端口。 |
-| Username | 网关用户名，可带路由标志号。 |
+| Username | 网关用户名，可带池内代理索引；兼容账号也可带策略编号。 |
 | Password | 网关用户密码。 |
 
 如果工具支持代理检测，检测目标建议使用 `https://api.ipify.org?format=json` 或你自己的出口检查服务。
@@ -868,7 +895,7 @@ curl --socks5-hostname 'proxy.example.com:32109' \
 1. 用户名和密码是否正确。
 2. 网关用户是否启用或已过期。
 3. 用户是否被授权使用该网关。
-4. 如果用户名带 `#17`，是否开启用户名路由权限。
+4. 如果用户名带 `#N`，是否开启智能用户名后缀，账号模式与预期是否一致，索引是否越界。
 5. 路由策略是否存在、启用，并授权给该用户。
 
 ### 16.3 没有可用代理

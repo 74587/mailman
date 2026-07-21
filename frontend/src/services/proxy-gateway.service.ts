@@ -4,6 +4,8 @@ import { ProxyGroup, ProxyTag, ProxyTagFilterMode } from '@/types'
 export type ProxyGatewayProtocol = 'http' | 'socks5' | 'mixed'
 export type ProxyGatewaySelectionMode = 'all' | 'filtered' | 'explicit'
 export type ProxyGatewaySelectionSource = 'account' | 'gateway'
+export type ProxyGatewayUsernameRoutingMode = 'strategy' | 'proxy_index'
+export type ProxyGatewayIndexOverflowMode = 'reject' | 'modulo'
 export type ProxyGatewaySelectionAlgorithm = 'random' | 'round_robin' | 'weighted' | 'lowest_latency' | 'prefer_last_success'
 export type ProxyGatewayFallbackMode = 'interrupt' | 'retry' | 'backup_pool' | 'direct'
 export type ProxyGatewayStickyMode = 'none' | 'account' | 'client_ip' | 'target_host' | 'client_ip_target_host'
@@ -89,6 +91,8 @@ export interface ProxyGatewayAccount {
     idleTimeoutSeconds: number
     maxSessionSeconds: number
     enableUsernameRouting: boolean
+    usernameRoutingMode?: ProxyGatewayUsernameRoutingMode
+    proxyIndexOverflowMode?: ProxyGatewayIndexOverflowMode
     allowAllRouteStrategies: boolean
     allowedRouteStrategyIds?: number[]
     lastUsedAt?: string
@@ -109,6 +113,7 @@ export interface ProxyGatewayRouteStrategy {
     proxyMatchTagIds?: number[]
     proxyMatchTagMode?: ProxyTagFilterMode
     selectionAlgorithm: ProxyGatewaySelectionAlgorithm
+    proxyIndexOverflowMode?: ProxyGatewayIndexOverflowMode
     stickyMode: ProxyGatewayStickyMode
     stickyTtlSeconds: number
     preferLastSuccess: boolean
@@ -206,6 +211,9 @@ export interface ProxyGatewayAccessLog {
     dnsPolicyId?: number
     routeStrategyId?: number
     routeStrategyFlagNo?: number
+    proxyIndex?: number
+    resolvedProxyIndex?: number
+    proxyPoolSize?: number
     routeParams?: Record<string, any>
     targetRouteId?: number
     targetRouteMatcher?: string
