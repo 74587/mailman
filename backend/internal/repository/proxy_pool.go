@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ProxyPoolRepository struct {
@@ -51,6 +52,12 @@ func (r *ProxyPoolRepository) GetDB() *gorm.DB {
 	return r.db
 }
 
+func (r *ProxyPoolRepository) Transaction(fn func(*ProxyPoolRepository) error) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		return fn(NewProxyPoolRepository(tx))
+	})
+}
+
 func (r *ProxyPoolRepository) Create(proxyItem *models.ProxyPoolItem) error {
 	return r.db.Create(proxyItem).Error
 }
@@ -59,7 +66,54 @@ func (r *ProxyPoolRepository) BatchCreate(proxyItems []*models.ProxyPoolItem) er
 	if len(proxyItems) == 0 {
 		return nil
 	}
-	return r.db.Create(&proxyItems).Error
+	return r.db.CreateInBatches(&proxyItems, 200).Error
+}
+
+func (r *ProxyPoolRepository) BatchCreateWithTags(proxyItems []*models.ProxyPoolItem, tagIDs []uint) error {
+	if len(proxyItems) == 0 {
+		return nil
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.CreateInBatches(&proxyItems, 200).Error; err != nil {
+			return err
+		}
+		if len(tagIDs) == 0 {
+			return nil
+		}
+		links := make([]models.ProxyPoolItemTag, 0, len(proxyItems)*len(tagIDs))
+		for _, item := range proxyItems {
+			for _, tagID := range tagIDs {
+				links = append(links, models.ProxyPoolItemTag{ProxyID: item.ID, TagID: tagID})
+			}
+		}
+		return tx.CreateInBatches(&links, 500).Error
+	})
+}
+
+// FindDuplicatesForImport loads duplicate candidates in bounded query chunks,
+// avoiding one database round trip per imported proxy.
+func (r *ProxyPoolRepository) FindDuplicatesForImport(orgID uint, proxyItems []models.ProxyPoolItem) ([]models.ProxyPoolItem, error) {
+	hostSet := make(map[string]struct{}, len(proxyItems))
+	for _, item := range proxyItems {
+		hostSet[item.Host] = struct{}{}
+	}
+	hosts := make([]string, 0, len(hostSet))
+	for host := range hostSet {
+		hosts = append(hosts, host)
+	}
+	result := make([]models.ProxyPoolItem, 0)
+	for start := 0; start < len(hosts); start += 400 {
+		end := start + 400
+		if end > len(hosts) {
+			end = len(hosts)
+		}
+		var batch []models.ProxyPoolItem
+		if err := r.db.Where("org_id = ? AND host IN ?", orgID, hosts[start:end]).Find(&batch).Error; err != nil {
+			return nil, err
+		}
+		result = append(result, batch...)
+	}
+	return result, nil
 }
 
 func (r *ProxyPoolRepository) Update(proxyItem *models.ProxyPoolItem) error {
@@ -96,15 +150,7 @@ func (r *ProxyPoolRepository) List(orgID uint, filter ProxyPoolFilter) ([]models
 	var proxies []models.ProxyPoolItem
 	var total int64
 
-	if filter.Page < 1 {
-		filter.Page = 1
-	}
-	if filter.Limit < 1 {
-		filter.Limit = 20
-	}
-	if filter.Limit > 500 {
-		filter.Limit = 500
-	}
+	filter = NormalizeProxyPoolFilter(filter)
 
 	query := r.applyProxyFilter(r.db.Model(&models.ProxyPoolItem{}), orgID, filter)
 	if err := query.Count(&total).Error; err != nil {
@@ -138,6 +184,20 @@ func (r *ProxyPoolRepository) List(orgID uint, filter ProxyPoolFilter) ([]models
 		Offset((filter.Page - 1) * filter.Limit).
 		Find(&proxies).Error
 	return proxies, total, err
+}
+
+func NormalizeProxyPoolFilter(filter ProxyPoolFilter) ProxyPoolFilter {
+	if filter.Page < 1 {
+		filter.Page = 1
+	}
+	if filter.Limit < 1 {
+		filter.Limit = 20
+	}
+	maxInt := int(^uint(0) >> 1)
+	if filter.Page > 1 && filter.Page-1 > maxInt/filter.Limit {
+		filter.Page = maxInt/filter.Limit + 1
+	}
+	return filter
 }
 
 func (r *ProxyPoolRepository) ListIDs(orgID uint, filter ProxyPoolFilter) ([]uint, error) {
@@ -344,6 +404,68 @@ func (r *ProxyPoolRepository) PickAvailable(orgID uint, groupIDs, tagIDs []uint,
 
 func (r *ProxyPoolRepository) UpdateCheckResult(proxyID uint, updates map[string]interface{}) error {
 	return r.db.Model(&models.ProxyPoolItem{}).Where("id = ?", proxyID).Updates(updates).Error
+}
+
+func (r *ProxyPoolRepository) EnsureCheckChannels(defaults []models.ProxyCheckChannel) error {
+	if len(defaults) == 0 {
+		return nil
+	}
+	return r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "org_id"}, {Name: "key"}},
+		DoNothing: true,
+	}).Create(&defaults).Error
+}
+
+func (r *ProxyPoolRepository) ListCheckChannels(orgID uint, includeDisabled bool) ([]models.ProxyCheckChannel, error) {
+	var channels []models.ProxyCheckChannel
+	query := r.notDeleted(r.db.Unscoped().Where("org_id = ?", orgID))
+	if !includeDisabled {
+		query = query.Where("enabled = ?", true)
+	}
+	err := query.Order("sort_order ASC, name ASC").Find(&channels).Error
+	for i := range channels {
+		channels[i].HasCredential = strings.TrimSpace(channels[i].AuthValue) != ""
+	}
+	return channels, err
+}
+
+func (r *ProxyPoolRepository) GetCheckChannelByKey(orgID uint, key string) (*models.ProxyCheckChannel, error) {
+	var channel models.ProxyCheckChannel
+	err := r.notDeleted(r.db.Unscoped().Where("org_id = ? AND key = ?", orgID, key)).First(&channel).Error
+	if err != nil {
+		return nil, err
+	}
+	channel.HasCredential = strings.TrimSpace(channel.AuthValue) != ""
+	return &channel, nil
+}
+
+func (r *ProxyPoolRepository) GetCheckChannelByID(orgID, id uint) (*models.ProxyCheckChannel, error) {
+	var channel models.ProxyCheckChannel
+	err := r.notDeleted(r.db.Unscoped().Where("org_id = ? AND id = ?", orgID, id)).First(&channel).Error
+	if err != nil {
+		return nil, err
+	}
+	channel.HasCredential = strings.TrimSpace(channel.AuthValue) != ""
+	return &channel, nil
+}
+
+func (r *ProxyPoolRepository) CreateCheckChannel(channel *models.ProxyCheckChannel) error {
+	return r.db.Create(channel).Error
+}
+
+func (r *ProxyPoolRepository) UpdateCheckChannel(channel *models.ProxyCheckChannel) error {
+	return r.db.Select("name", "provider", "description", "mode", "url_template", "method", "response_format", "ip_field", "country_field", "region_field", "city_field", "isp_field", "status_field", "failure_value", "message_field", "headers", "auth_type", "auth_name", "auth_value", "enabled", "supports_ipv4", "supports_ipv6", "timeout_seconds", "sort_order", "updated_at").Save(channel).Error
+}
+
+func (r *ProxyPoolRepository) DeleteCheckChannel(orgID, id uint) error {
+	channel, err := r.GetCheckChannelByID(orgID, id)
+	if err != nil {
+		return err
+	}
+	if channel.BuiltIn {
+		return errors.New("built-in check channels cannot be deleted; disable it instead")
+	}
+	return r.db.Delete(channel).Error
 }
 
 func (r *ProxyPoolRepository) notDeleted(query *gorm.DB) *gorm.DB {

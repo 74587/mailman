@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"mailman/internal/models"
@@ -164,6 +165,256 @@ func TestProxyPoolBulkImportCanSkipDuplicates(t *testing.T) {
 	}
 	if len(response.Created) != 1 || len(response.Errors) != 0 || response.Summary["skipped"].(float64) != 1 {
 		t.Fatalf("created=%d errors=%d summary=%v, want created=1 errors=0 skipped=1", len(response.Created), len(response.Errors), response.Summary)
+	}
+}
+
+func TestProxyPoolBulkImportCoalescesRepeatedUpdates(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open sqlite test db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.ProxyPoolItem{}, &models.ProxyPoolItemTag{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+	existing := models.ProxyPoolItem{OrgID: defaultOrgID, Type: models.ProxyTypeSocks5, Host: "192.168.0.1", Port: 8000, Username: "user", Password: "old", Status: models.ProxyStatusUnknown}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatalf("create existing proxy: %v", err)
+	}
+
+	repo := repository.NewProxyPoolRepository(db)
+	handler := NewProxyPoolHandlers(repo, services.NewProxyPoolService(repo, nil))
+	body := `{"defaultType":"socks5","duplicatePolicy":"update","content":"192.168.0.1:8000:user:first\n192.168.0.1:8000:user:second"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/bulk-import", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.BulkImport(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("BulkImport status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response proxyBulkImportResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Created) != 1 || response.Summary["updated"].(float64) != 2 || response.Summary["processed"].(float64) != 2 {
+		t.Fatalf("response=%+v, want one unique proxy and two processed updates", response)
+	}
+	stored, err := repo.GetByID(defaultOrgID, existing.ID)
+	if err != nil {
+		t.Fatalf("reload existing proxy: %v", err)
+	}
+	if stored.Password != "second" {
+		t.Fatalf("stored password=%q, want last update", stored.Password)
+	}
+}
+
+func TestProxyPoolBulkImportRollsBackUpdatesWhenBatchInsertFails(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:proxy-import-rollback?mode=memory&cache=shared&_foreign_keys=on"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open sqlite test db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.ProxyTag{}, &models.ProxyPoolItem{}, &models.ProxyPoolItemTag{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+	existing := models.ProxyPoolItem{OrgID: defaultOrgID, Type: models.ProxyTypeSocks5, Host: "192.168.0.1", Port: 8000, Username: "user", Password: "old", Status: models.ProxyStatusUnknown}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatalf("create existing proxy: %v", err)
+	}
+
+	repo := repository.NewProxyPoolRepository(db)
+	handler := NewProxyPoolHandlers(repo, services.NewProxyPoolService(repo, nil))
+	body := `{"defaultType":"socks5","duplicatePolicy":"update","tagIds":[999],"content":"192.168.0.1:8000:user:new\n192.168.0.2:8001:user:pass"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/bulk-import", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.BulkImport(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("BulkImport status=%d body=%s, want 500", rec.Code, rec.Body.String())
+	}
+	stored, err := repo.GetByID(defaultOrgID, existing.ID)
+	if err != nil {
+		t.Fatalf("reload existing proxy: %v", err)
+	}
+	if stored.Password != "old" {
+		t.Fatalf("existing proxy was partially updated: password=%q", stored.Password)
+	}
+	var count int64
+	if err := db.Model(&models.ProxyPoolItem{}).Count(&count).Error; err != nil {
+		t.Fatalf("count proxies: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("proxy count=%d, want only the original row", count)
+	}
+}
+
+func TestProxyPoolBulkImportAcceptsMoreThanLegacyFiveHundredLimit(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open sqlite test db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.ProxyPoolItem{}, &models.ProxyPoolItemTag{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+
+	lines := make([]string, 0, 2000)
+	for i := 0; i < 2000; i++ {
+		lines = append(lines, fmt.Sprintf("10.%d.%d.%d:%d", (i/65536)%256, (i/256)%256, i%256, 10000+i))
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"defaultType":     "socks5",
+		"duplicatePolicy": "skip",
+		"content":         strings.Join(lines, "\n"),
+	})
+	if err != nil {
+		t.Fatalf("marshal import body: %v", err)
+	}
+
+	repo := repository.NewProxyPoolRepository(db)
+	handler := NewProxyPoolHandlers(repo, services.NewProxyPoolService(repo, nil))
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/bulk-import", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.BulkImport(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("BulkImport status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var response proxyBulkImportResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Created) != 2000 || len(response.Errors) != 0 {
+		t.Fatalf("created=%d errors=%d, want 2000 and 0", len(response.Created), len(response.Errors))
+	}
+	var count int64
+	if err := db.Model(&models.ProxyPoolItem{}).Count(&count).Error; err != nil {
+		t.Fatalf("count imported proxies: %v", err)
+	}
+	if count != 2000 {
+		t.Fatalf("database count=%d, want 2000", count)
+	}
+}
+
+func TestProxyPoolListDoesNotClampRequestedPageSize(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open sqlite test db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.ProxyPoolItem{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+	items := make([]models.ProxyPoolItem, 0, 620)
+	for i := 0; i < 620; i++ {
+		items = append(items, models.ProxyPoolItem{OrgID: defaultOrgID, Type: models.ProxyTypeHTTP, Host: fmt.Sprintf("page-%d.example", i), Port: 8000 + i, Status: models.ProxyStatusUnknown})
+	}
+	if err := db.CreateInBatches(&items, 200).Error; err != nil {
+		t.Fatalf("create proxies: %v", err)
+	}
+
+	repo := repository.NewProxyPoolRepository(db)
+	handler := NewProxyPoolHandlers(repo, services.NewProxyPoolService(repo, nil))
+	req := httptest.NewRequest(http.MethodGet, "/api/proxy-pool?page=1&limit=620", nil)
+	rec := httptest.NewRecorder()
+	handler.ListProxies(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ListProxies status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var response proxyListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Items) != 620 || response.Limit != 620 || response.Page != 1 {
+		t.Fatalf("items=%d page=%d limit=%d, want 620/1/620", len(response.Items), response.Page, response.Limit)
+	}
+}
+
+func TestProxyCheckChannelsAreConfigurableAndCredentialsAreNotReturned(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("failed to open sqlite test db: %v", err)
+	}
+	if err := db.AutoMigrate(&models.ProxyCheckChannel{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+	repo := repository.NewProxyPoolRepository(db)
+	handler := NewProxyPoolHandlers(repo, services.NewProxyPoolService(repo, nil))
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/proxy-pool/check-channels?includeDisabled=true", nil)
+	listRec := httptest.NewRecorder()
+	handler.GetCheckChannels(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("GetCheckChannels status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var defaults []models.ProxyCheckChannel
+	if err := json.NewDecoder(listRec.Body).Decode(&defaults); err != nil {
+		t.Fatalf("decode defaults: %v", err)
+	}
+	if len(defaults) < 10 || defaults[0].Key != "ip-sb" {
+		t.Fatalf("unexpected default channels: %+v", defaults)
+	}
+	defaultsByKey := make(map[string]models.ProxyCheckChannel, len(defaults))
+	for _, channel := range defaults {
+		defaultsByKey[channel.Key] = channel
+	}
+	if defaultsByKey["ipqualityscore"].Enabled {
+		t.Fatal("credentialed IPQualityScore channel must be disabled until configured")
+	}
+	if defaultsByKey["ip-api"].SupportsIPv6 {
+		t.Fatal("ip-api self-check channel must not be offered for IPv6 egress checks")
+	}
+	if got := defaultsByKey["db-ip"].URLTemplate; got != "http://api.db-ip.com/v2/free/self" {
+		t.Fatalf("DB-IP free endpoint=%q, want documented HTTP endpoint", got)
+	}
+
+	createBody := `{"key":"custom-dual","name":"Custom Dual","provider":"example.test","mode":"self","urlTemplate":"https://example.test/me","method":"GET","responseFormat":"json","ipField":"data.ip","authType":"header","authName":"X-API-Key","credential":"secret-value","enabled":true,"supportsIPv4":true,"supportsIPv6":true,"timeoutSeconds":8,"sortOrder":5}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/check-channels", strings.NewReader(createBody))
+	createRec := httptest.NewRecorder()
+	handler.CreateCheckChannel(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("CreateCheckChannel status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+	if strings.Contains(createRec.Body.String(), "secret-value") {
+		t.Fatal("channel response exposed its credential")
+	}
+	var created models.ProxyCheckChannel
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created channel: %v", err)
+	}
+	if !created.HasCredential || created.Key != "custom-dual" {
+		t.Fatalf("created channel=%+v", created)
+	}
+
+	stored, err := repo.GetCheckChannelByID(defaultOrgID, created.ID)
+	if err != nil {
+		t.Fatalf("load stored channel: %v", err)
+	}
+	if stored.AuthValue == "" {
+		t.Fatal("stored channel credential is empty")
+	}
+}
+
+func TestProxyCheckChannelValidationRejectsBrokenEnabledPathAuthAndExcessiveTimeout(t *testing.T) {
+	base := proxyCheckChannelRequest{
+		Key: "custom", Name: "Custom", Mode: "lookup", URLTemplate: "https://example.test/{{credential}}/{{ip}}",
+		Method: http.MethodGet, ResponseFormat: "json", AuthType: "path", Enabled: true,
+		SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12,
+	}
+	if err := applyProxyCheckChannelRequest(&models.ProxyCheckChannel{}, base, true); err == nil || !strings.Contains(err.Error(), "require a credential") {
+		t.Fatalf("path auth validation error=%v", err)
+	}
+	credential := "secret"
+	base.Credential = &credential
+	base.TimeoutSeconds = 121
+	if err := applyProxyCheckChannelRequest(&models.ProxyCheckChannel{}, base, true); err == nil || !strings.Contains(err.Error(), "cannot exceed 120") {
+		t.Fatalf("timeout validation error=%v", err)
+	}
+	base.TimeoutSeconds = 12
+	base.URLTemplate = "https://user:password@example.test/{{credential}}/{{ip}}"
+	if err := applyProxyCheckChannelRequest(&models.ProxyCheckChannel{}, base, true); err == nil || !strings.Contains(err.Error(), "embedded credentials") {
+		t.Fatalf("embedded credential validation error=%v", err)
+	}
+}
+
+func TestUniqueProxyImportIDsDropsZeroAndDuplicates(t *testing.T) {
+	got := uniqueProxyImportIDs([]uint{0, 3, 3, 2, 0})
+	if len(got) != 2 || got[0] != 3 || got[1] != 2 {
+		t.Fatalf("unique IDs=%v, want [3 2]", got)
 	}
 }
 

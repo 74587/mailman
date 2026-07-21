@@ -127,6 +127,7 @@ func Migrate() error {
 		// Proxy pool tables
 		&models.ProxyGroup{},
 		&models.ProxyTag{},
+		&models.ProxyCheckChannel{},
 		&models.ProxyPoolItem{},
 		&models.ProxyPoolItemTag{},
 		// Proxy gateway tables

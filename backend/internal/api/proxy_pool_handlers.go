@@ -3,24 +3,39 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"mailman/internal/models"
 	"mailman/internal/repository"
 	"mailman/internal/services"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 )
 
 type ProxyPoolHandlers struct {
-	repo    *repository.ProxyPoolRepository
-	service *services.ProxyPoolService
+	repo          *repository.ProxyPoolRepository
+	service       *services.ProxyPoolService
+	bulkCheckOnce sync.Once
+	bulkCheckJobs chan proxyBulkCheckJob
 }
 
 func NewProxyPoolHandlers(repo *repository.ProxyPoolRepository, service *services.ProxyPoolService) *ProxyPoolHandlers {
-	return &ProxyPoolHandlers{repo: repo, service: service}
+	return &ProxyPoolHandlers{
+		repo:          repo,
+		service:       service,
+		bulkCheckJobs: make(chan proxyBulkCheckJob, 256),
+	}
+}
+
+type proxyBulkCheckJob struct {
+	item    models.ProxyPoolItem
+	channel string
 }
 
 type proxyListResponse struct {
@@ -81,9 +96,44 @@ type proxySelectRequest struct {
 	ExcludeIDs []uint `json:"excludeIds"`
 }
 
+type proxyCheckChannelRequest struct {
+	Key            string         `json:"key"`
+	Name           string         `json:"name"`
+	Provider       string         `json:"provider"`
+	Description    string         `json:"description"`
+	Mode           string         `json:"mode"`
+	URLTemplate    string         `json:"urlTemplate"`
+	Method         string         `json:"method"`
+	ResponseFormat string         `json:"responseFormat"`
+	IPField        string         `json:"ipField"`
+	CountryField   string         `json:"countryField"`
+	RegionField    string         `json:"regionField"`
+	CityField      string         `json:"cityField"`
+	ISPField       string         `json:"ispField"`
+	StatusField    string         `json:"statusField"`
+	FailureValue   string         `json:"failureValue"`
+	MessageField   string         `json:"messageField"`
+	Headers        models.JSONMap `json:"headers"`
+	AuthType       string         `json:"authType"`
+	AuthName       string         `json:"authName"`
+	Credential     *string        `json:"credential"`
+	Enabled        bool           `json:"enabled"`
+	SupportsIPv4   bool           `json:"supportsIPv4"`
+	SupportsIPv6   bool           `json:"supportsIPv6"`
+	TimeoutSeconds int            `json:"timeoutSeconds"`
+	SortOrder      int            `json:"sortOrder"`
+}
+
+var proxyCheckChannelKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+const (
+	maxSynchronousBulkChecks = 20
+	bulkCheckWorkerCount     = 12
+)
+
 func (h *ProxyPoolHandlers) ListProxies(w http.ResponseWriter, r *http.Request) {
 	orgID := GetCurrentOrgID(r)
-	filter := proxyFilterFromRequest(r)
+	filter := repository.NormalizeProxyPoolFilter(proxyFilterFromRequest(r))
 	items, total, err := h.repo.List(orgID, filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -211,82 +261,173 @@ func (h *ProxyPoolHandlers) BulkImport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	parsed := h.service.ParseBulk(req.Content, req.DefaultType, req.GroupID, req.TagIDs, orgID)
+	tagIDs := uniqueProxyImportIDs(req.TagIDs)
+	parsed := h.service.ParseBulk(req.Content, req.DefaultType, req.GroupID, tagIDs, orgID)
+	submittedCount := len(parsed.Proxies) + len(parsed.Errors)
 	created := make([]models.ProxyPoolItem, 0, len(parsed.Proxies))
 	checks := []services.ProxyCheckResult{}
 	duplicatePolicy := normalizeProxyDuplicatePolicy(req.DuplicatePolicy)
 	updatedCount := 0
 	skippedCount := 0
-	for i := range parsed.Proxies {
-		item := parsed.Proxies[i]
-		tagIDs := make([]uint, 0, len(item.Tags))
-		for _, tag := range item.Tags {
-			tagIDs = append(tagIDs, tag.ID)
+	newItems := make([]*models.ProxyPoolItem, 0, len(parsed.Proxies))
+	type pendingExistingUpdate struct {
+		item    *models.ProxyPoolItem
+		count   int
+		content string
+	}
+	if err := h.repo.Transaction(func(txRepo *repository.ProxyPoolRepository) error {
+		existingByKey := map[string]*models.ProxyPoolItem{}
+		if duplicatePolicy != "allow" {
+			existing, err := txRepo.FindDuplicatesForImport(orgID, parsed.Proxies)
+			if err != nil {
+				return err
+			}
+			for i := range existing {
+				existingByKey[proxyImportDuplicateKey(existing[i])] = &existing[i]
+			}
 		}
-		item.Tags = nil
-		duplicate, err := h.repo.FindDuplicate(orgID, item)
-		if err != nil {
-			parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
-			continue
-		}
-		if duplicate != nil {
-			switch duplicatePolicy {
-			case "skip":
-				skippedCount++
-				continue
-			case "update":
-				duplicate.Password = item.Password
-				duplicate.RefreshURL = item.RefreshURL
-				duplicate.Remark = item.Remark
-				duplicate.GroupID = item.GroupID
-				duplicate.UsageScope = item.UsageScope
-				duplicate.Source = item.Source
-				if err := h.repo.Update(duplicate); err != nil {
-					parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
-					continue
-				}
-				if err := h.repo.SetProxyTags(duplicate.ID, tagIDs); err != nil {
-					parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
-					continue
-				}
-				itemWithRelations, _ := h.repo.GetByID(orgID, duplicate.ID)
-				if itemWithRelations != nil {
-					created = append(created, *itemWithRelations)
-					updatedCount++
-					if req.CheckProxy {
-						checks = append(checks, h.service.TestProxy(context.Background(), itemWithRelations, req.Channel, 12*time.Second))
+		pendingByKey := map[string]int{}
+		pendingExisting := map[string]*pendingExistingUpdate{}
+		pendingExistingOrder := make([]string, 0)
+		for i := range parsed.Proxies {
+			item := parsed.Proxies[i]
+			item.Tags = nil
+			key := proxyImportDuplicateKey(item)
+			duplicate := existingByKey[key]
+			if duplicate == nil {
+				if pendingIndex, exists := pendingByKey[key]; exists {
+					switch duplicatePolicy {
+					case "skip":
+						skippedCount++
+						continue
+					case "update":
+						*newItems[pendingIndex] = item
+						updatedCount++
+						continue
 					}
 				}
+			}
+			if duplicate != nil {
+				switch duplicatePolicy {
+				case "skip":
+					skippedCount++
+					continue
+				case "update":
+					duplicate.Password = item.Password
+					duplicate.RefreshURL = item.RefreshURL
+					duplicate.Remark = item.Remark
+					duplicate.GroupID = item.GroupID
+					duplicate.UsageScope = item.UsageScope
+					duplicate.Source = item.Source
+					pending := pendingExisting[key]
+					if pending == nil {
+						pending = &pendingExistingUpdate{item: duplicate}
+						pendingExisting[key] = pending
+						pendingExistingOrder = append(pendingExistingOrder, key)
+					}
+					pending.count++
+					pending.content = item.DisplayAddress()
+					continue
+				}
+			}
+			newItems = append(newItems, &item)
+			if duplicatePolicy != "allow" {
+				pendingByKey[key] = len(newItems) - 1
+			}
+		}
+		for _, key := range pendingExistingOrder {
+			pending := pendingExisting[key]
+			err := txRepo.Transaction(func(itemRepo *repository.ProxyPoolRepository) error {
+				if err := itemRepo.Update(pending.item); err != nil {
+					return err
+				}
+				return itemRepo.SetProxyTags(pending.item.ID, tagIDs)
+			})
+			if err != nil {
+				parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: pending.content, Error: err.Error()})
 				continue
 			}
+			created = append(created, *pending.item)
+			updatedCount += pending.count
 		}
-		if err := h.repo.Create(&item); err != nil {
-			parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
-			continue
-		}
-		if err := h.repo.SetProxyTags(item.ID, tagIDs); err != nil {
-			parsed.Errors = append(parsed.Errors, services.ProxyParseError{Line: 0, Content: item.DisplayAddress(), Error: err.Error()})
-			continue
-		}
-		itemWithRelations, _ := h.repo.GetByID(orgID, item.ID)
-		if itemWithRelations != nil {
-			created = append(created, *itemWithRelations)
-			if req.CheckProxy {
-				checks = append(checks, h.service.TestProxy(context.Background(), itemWithRelations, req.Channel, 12*time.Second))
+		return txRepo.BatchCreateWithTags(newItems, tagIDs)
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, item := range newItems {
+		created = append(created, *item)
+	}
+	queuedChecks := 0
+	if req.CheckProxy {
+		if len(created) <= maxSynchronousBulkChecks {
+			for i := range created {
+				checks = append(checks, h.service.TestProxy(context.Background(), &created[i], req.Channel, 12*time.Second))
 			}
+		} else {
+			queuedChecks = len(created)
+			h.queueBulkProxyChecks(created, req.Channel)
 		}
 	}
+	processedCount := len(newItems) + updatedCount + skippedCount
 	writeJSON(w, proxyBulkImportResponse{
 		Created: created,
 		Errors:  parsed.Errors,
 		Checks:  checks,
 		Summary: map[string]interface{}{
-			"processed": len(created),
-			"updated":   updatedCount,
-			"skipped":   skippedCount,
-			"errors":    len(parsed.Errors),
+			"processed":   processedCount,
+			"created":     len(newItems),
+			"updated":     updatedCount,
+			"skipped":     skippedCount,
+			"errors":      len(parsed.Errors),
+			"submitted":   submittedCount,
+			"checkQueued": queuedChecks,
 		},
 	})
+}
+
+// queueBulkProxyChecks keeps large imports independent from upstream HTTP
+// timeouts. Imports are already durable at this point; one handler-wide bounded
+// worker pool updates each proxy's check state in the background.
+func (h *ProxyPoolHandlers) queueBulkProxyChecks(items []models.ProxyPoolItem, channel string) {
+	queued := append([]models.ProxyPoolItem(nil), items...)
+	h.bulkCheckOnce.Do(func() {
+		for i := 0; i < bulkCheckWorkerCount; i++ {
+			go func() {
+				for job := range h.bulkCheckJobs {
+					h.service.TestProxy(context.Background(), &job.item, job.channel, 12*time.Second)
+				}
+			}()
+		}
+	})
+	go func() {
+		for _, item := range queued {
+			h.bulkCheckJobs <- proxyBulkCheckJob{item: item, channel: channel}
+		}
+	}()
+}
+
+func proxyImportDuplicateKey(item models.ProxyPoolItem) string {
+	return fmt.Sprintf("%s\x00%s\x00%d\x00%s", models.NormalizeProxyType(item.Type), strings.ToLower(item.Host), item.Port, item.Username)
+}
+
+func uniqueProxyImportIDs(ids []uint) []uint {
+	if len(ids) == 0 {
+		return nil
+	}
+	seen := make(map[uint]struct{}, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
 }
 
 func (h *ProxyPoolHandlers) TestProxy(w http.ResponseWriter, r *http.Request) {
@@ -326,13 +467,17 @@ func (h *ProxyPoolHandlers) BatchTest(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		req.Filter.Limit = 500
-		list, _, err := h.repo.List(orgID, req.Filter)
+		ids, err := h.repo.ListIDs(orgID, req.Filter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		items = list
+		for _, id := range ids {
+			item, err := h.repo.GetByID(orgID, id)
+			if err == nil && item != nil {
+				items = append(items, *item)
+			}
+		}
 	}
 	results := make([]services.ProxyCheckResult, 0, len(items))
 	for i := range items {
@@ -382,7 +527,75 @@ func (h *ProxyPoolHandlers) SelectProxy(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *ProxyPoolHandlers) GetCheckChannels(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, services.DefaultProxyCheckChannels())
+	includeDisabled, _ := strconv.ParseBool(r.URL.Query().Get("includeDisabled"))
+	channels, err := h.service.ListCheckChannels(GetCurrentOrgID(r), includeDisabled)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, channels)
+}
+
+func (h *ProxyPoolHandlers) CreateCheckChannel(w http.ResponseWriter, r *http.Request) {
+	var req proxyCheckChannelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	channel := &models.ProxyCheckChannel{OrgID: GetCurrentOrgID(r)}
+	if err := applyProxyCheckChannelRequest(channel, req, true); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.repo.CreateCheckChannel(channel); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	channel.HasCredential = channel.AuthValue != ""
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, channel)
+}
+
+func (h *ProxyPoolHandlers) UpdateCheckChannel(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+	id, err := parseMuxUint(r, "id")
+	if err != nil {
+		http.Error(w, "Invalid check channel ID", http.StatusBadRequest)
+		return
+	}
+	channel, err := h.repo.GetCheckChannelByID(orgID, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	var req proxyCheckChannelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := applyProxyCheckChannelRequest(channel, req, false); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := h.repo.UpdateCheckChannel(channel); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	channel.HasCredential = channel.AuthValue != ""
+	writeJSON(w, channel)
+}
+
+func (h *ProxyPoolHandlers) DeleteCheckChannel(w http.ResponseWriter, r *http.Request) {
+	id, err := parseMuxUint(r, "id")
+	if err != nil {
+		http.Error(w, "Invalid check channel ID", http.StatusBadRequest)
+		return
+	}
+	if err := h.repo.DeleteCheckChannel(GetCurrentOrgID(r), id); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]bool{"success": true})
 }
 
 func (h *ProxyPoolHandlers) ListGroups(w http.ResponseWriter, r *http.Request) {
@@ -601,6 +814,96 @@ func normalizeProxyDuplicatePolicy(policy string) string {
 	}
 }
 
+func applyProxyCheckChannelRequest(channel *models.ProxyCheckChannel, req proxyCheckChannelRequest, creating bool) error {
+	if creating {
+		channel.Key = strings.ToLower(strings.TrimSpace(req.Key))
+		if !proxyCheckChannelKeyPattern.MatchString(channel.Key) {
+			return fmt.Errorf("channel key must use lowercase letters, numbers, and hyphens")
+		}
+	}
+	channel.Name = strings.TrimSpace(req.Name)
+	if channel.Name == "" {
+		return fmt.Errorf("channel name is required")
+	}
+	channel.Provider = strings.TrimSpace(req.Provider)
+	channel.Description = strings.TrimSpace(req.Description)
+	channel.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+	if channel.Mode != "self" && channel.Mode != "lookup" {
+		return fmt.Errorf("channel mode must be self or lookup")
+	}
+	channel.URLTemplate = strings.TrimSpace(req.URLTemplate)
+	parsedURL, err := url.Parse(strings.ReplaceAll(strings.ReplaceAll(channel.URLTemplate, "{{ip}}", "127.0.0.1"), "{{credential}}", "credential"))
+	if err != nil || parsedURL.Scheme != "http" && parsedURL.Scheme != "https" || parsedURL.Host == "" {
+		return fmt.Errorf("channel URL must be a valid HTTP/HTTPS URL")
+	}
+	if parsedURL.User != nil {
+		return fmt.Errorf("channel URL cannot contain embedded credentials; use the authentication fields")
+	}
+	if channel.Mode == "lookup" && !strings.Contains(channel.URLTemplate, "{{ip}}") {
+		return fmt.Errorf("lookup channel URL must include {{ip}}")
+	}
+	channel.Method = strings.ToUpper(strings.TrimSpace(req.Method))
+	if channel.Method == "" {
+		channel.Method = http.MethodGet
+	}
+	if channel.Method != http.MethodGet {
+		return fmt.Errorf("only GET check channels are supported")
+	}
+	channel.ResponseFormat = strings.ToLower(strings.TrimSpace(req.ResponseFormat))
+	if channel.ResponseFormat != "json" && channel.ResponseFormat != "text" {
+		return fmt.Errorf("response format must be json or text")
+	}
+	channel.IPField = strings.TrimSpace(req.IPField)
+	if channel.Mode == "self" && channel.ResponseFormat == "json" && channel.IPField == "" {
+		return fmt.Errorf("JSON self check channels require an IP field")
+	}
+	channel.CountryField = strings.TrimSpace(req.CountryField)
+	channel.RegionField = strings.TrimSpace(req.RegionField)
+	channel.CityField = strings.TrimSpace(req.CityField)
+	channel.ISPField = strings.TrimSpace(req.ISPField)
+	channel.StatusField = strings.TrimSpace(req.StatusField)
+	channel.FailureValue = strings.TrimSpace(req.FailureValue)
+	channel.MessageField = strings.TrimSpace(req.MessageField)
+	channel.Headers = req.Headers
+	channel.AuthType = strings.ToLower(strings.TrimSpace(req.AuthType))
+	if channel.AuthType == "" {
+		channel.AuthType = "none"
+	}
+	switch channel.AuthType {
+	case "none", "bearer", "query", "header", "path":
+	default:
+		return fmt.Errorf("unsupported channel authentication type")
+	}
+	channel.AuthName = strings.TrimSpace(req.AuthName)
+	if (channel.AuthType == "query" || channel.AuthType == "header") && channel.AuthName == "" {
+		return fmt.Errorf("authentication parameter/header name is required")
+	}
+	if channel.AuthType == "path" && !strings.Contains(channel.URLTemplate, "{{credential}}") {
+		return fmt.Errorf("path authentication requires {{credential}} in the URL")
+	}
+	if req.Credential != nil {
+		channel.AuthValue = services.EncryptIfAvailable(strings.TrimSpace(*req.Credential))
+	}
+	channel.Enabled = req.Enabled
+	if channel.Enabled && channel.AuthType == "path" && strings.TrimSpace(channel.AuthValue) == "" {
+		return fmt.Errorf("path-authenticated channels require a credential before they can be enabled")
+	}
+	channel.SupportsIPv4 = req.SupportsIPv4
+	channel.SupportsIPv6 = req.SupportsIPv6
+	if !channel.SupportsIPv4 && !channel.SupportsIPv6 {
+		return fmt.Errorf("channel must support at least one IP version")
+	}
+	channel.TimeoutSeconds = req.TimeoutSeconds
+	if channel.TimeoutSeconds <= 0 {
+		channel.TimeoutSeconds = 12
+	}
+	if channel.TimeoutSeconds > 120 {
+		return fmt.Errorf("channel timeout cannot exceed 120 seconds")
+	}
+	channel.SortOrder = req.SortOrder
+	return nil
+}
+
 func (h *ProxyPoolHandlers) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/proxy-pool", h.ListProxies).Methods("GET")
 	router.HandleFunc("/proxy-pool", h.CreateProxy).Methods("POST")
@@ -609,6 +912,9 @@ func (h *ProxyPoolHandlers) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/proxy-pool/batch", h.BatchDelete).Methods("DELETE")
 	router.HandleFunc("/proxy-pool/select", h.SelectProxy).Methods("POST")
 	router.HandleFunc("/proxy-pool/check-channels", h.GetCheckChannels).Methods("GET")
+	router.HandleFunc("/proxy-pool/check-channels", h.CreateCheckChannel).Methods("POST")
+	router.HandleFunc("/proxy-pool/check-channels/{id}", h.UpdateCheckChannel).Methods("PUT")
+	router.HandleFunc("/proxy-pool/check-channels/{id}", h.DeleteCheckChannel).Methods("DELETE")
 	router.HandleFunc("/proxy-pool/{id}", h.GetProxy).Methods("GET")
 	router.HandleFunc("/proxy-pool/{id}", h.UpdateProxy).Methods("PUT")
 	router.HandleFunc("/proxy-pool/{id}", h.DeleteProxy).Methods("DELETE")

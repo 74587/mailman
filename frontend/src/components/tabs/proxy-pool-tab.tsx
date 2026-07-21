@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
     Activity,
@@ -10,6 +10,8 @@ import {
     Check,
     CheckCircle2,
     ChevronDown,
+    ChevronsLeft,
+    ChevronsRight,
     ClipboardPaste,
     Clock3,
     Eye,
@@ -18,6 +20,7 @@ import {
     FolderOpen,
     Globe2,
     Info,
+    KeyRound,
     Layers3,
     ListFilter,
     Loader2,
@@ -56,6 +59,7 @@ import {
     BulkDeleteProxyPayload,
     proxyPoolService,
     ProxyCheckChannel,
+    ProxyCheckChannelPayload,
     ProxyCheckResult,
     ProxyPayload,
     proxyToUrl,
@@ -109,6 +113,34 @@ const emptyProxyDraft = (): ProxyPayload => ({
     remark: '',
     tagIds: [],
     usageScope: 'shared',
+})
+
+const emptyCheckChannelDraft = (): ProxyCheckChannelPayload => ({
+    key: '',
+    name: '',
+    provider: '',
+    description: '',
+    mode: 'self',
+    urlTemplate: '',
+    method: 'GET',
+    responseFormat: 'json',
+    ipField: 'ip',
+    countryField: '',
+    regionField: '',
+    cityField: '',
+    ispField: '',
+    statusField: '',
+    failureValue: '',
+    messageField: '',
+    headers: {},
+    authType: 'none',
+    authName: '',
+    credential: '',
+    enabled: true,
+    supportsIPv4: true,
+    supportsIPv6: true,
+    timeoutSeconds: 12,
+    sortOrder: 100,
 })
 
 function sortProxyMeta<T extends { name: string; sortOrder?: number }>(left: T, right: T) {
@@ -328,6 +360,7 @@ export default function ProxyPoolTab() {
     const [showImportWizard, setShowImportWizard] = useState(false)
     const [showDeleteModal, setShowDeleteModal] = useState(false)
     const [showAdvancedFilters, setShowAdvancedFilters] = useState(false)
+    const [searchInput, setSearchInput] = useState('')
     const [search, setSearch] = useState('')
     const [status, setStatus] = useState<ProxyStatus | ''>('')
     const [type, setType] = useState<ProxyType | ''>('')
@@ -335,6 +368,9 @@ export default function ProxyPoolTab() {
     const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
     const [tagMode, setTagMode] = useState<ProxyTagFilterMode>('or')
     const [page, setPage] = useState(1)
+    const [limit, setLimit] = useState(30)
+    const [pageInput, setPageInput] = useState('1')
+    const [limitInput, setLimitInput] = useState('30')
     const [total, setTotal] = useState(0)
     const [trafficSummary, setTrafficSummary] = useState({ trafficBytesIn: 0, trafficBytesOut: 0 })
     const [bulkText, setBulkText] = useState('')
@@ -343,18 +379,24 @@ export default function ProxyPoolTab() {
     const [bulkTagIds, setBulkTagIds] = useState<number[]>([])
     const [bulkCheck, setBulkCheck] = useState(false)
     const [bulkDuplicatePolicy, setBulkDuplicatePolicy] = useState<ProxyDuplicatePolicy>('skip')
-    const [checkChannel, setCheckChannel] = useState('ip-api')
+    const [bulkImportErrors, setBulkImportErrors] = useState<Array<{ line: number; content: string; error: string }>>([])
+    const [checkChannel, setCheckChannel] = useState('ip-sb')
     const [checkResults, setCheckResults] = useState<ProxyCheckResult[]>([])
     const [showMetaManager, setShowMetaManager] = useState(false)
+    const [showChannelManager, setShowChannelManager] = useState(false)
+    const [managedChannels, setManagedChannels] = useState<ProxyCheckChannel[]>([])
+    const [editingChannel, setEditingChannel] = useState<ProxyCheckChannel | null | 'new'>(null)
+    const [channelDraft, setChannelDraft] = useState<ProxyCheckChannelPayload>(emptyCheckChannelDraft())
+    const [savingChannel, setSavingChannel] = useState(false)
     const [deleteReplacement, setDeleteReplacement] = useState<BulkDeleteProxyPayload['replacement']>({ mode: 'clear' })
     const [editingProxy, setEditingProxy] = useState<ProxyPoolItem | null>(null)
     const [detailProxy, setDetailProxy] = useState<ProxyPoolItem | null>(null)
     const [editDraft, setEditDraft] = useState<ProxyPayload>(emptyProxyDraft())
     const [savingProxy, setSavingProxy] = useState(false)
-
-    const limit = 30
+    const loadRequestSequence = useRef(0)
 
     const loadData = useCallback(async () => {
+        const requestSequence = ++loadRequestSequence.current
         setLoading(true)
         try {
             const [proxyData, channelData] = await Promise.all([
@@ -370,6 +412,7 @@ export default function ProxyPoolTab() {
                 }),
                 proxyPoolService.getCheckChannels(),
             ])
+            if (requestSequence !== loadRequestSequence.current) return
             setProxies(proxyData.items)
             setTotal(proxyData.total)
             setTrafficSummary({
@@ -377,12 +420,19 @@ export default function ProxyPoolTab() {
                 trafficBytesOut: Number(proxyData.trafficSummary?.trafficBytesOut || 0),
             })
             setChannels(channelData)
+            setCheckChannel(current => channelData.some(channel => channel.key === current)
+                ? current
+                : channelData.find(channel => channel.key === 'ip-sb')?.key || channelData[0]?.key || '')
         } catch (error: any) {
-            toast.error(error.message || '加载代理池失败')
+            if (requestSequence === loadRequestSequence.current) {
+                toast.error(error.message || '加载代理池失败')
+            }
         } finally {
-            setLoading(false)
+            if (requestSequence === loadRequestSequence.current) {
+                setLoading(false)
+            }
         }
-    }, [page, search, status, type, selectedGroupIds, selectedTagIds, tagMode])
+    }, [page, limit, search, status, type, selectedGroupIds, selectedTagIds, tagMode])
 
     const loadMeta = useCallback(async () => {
         try {
@@ -412,6 +462,13 @@ export default function ProxyPoolTab() {
     }, [loadData, loadMeta])
 
     const totalPages = Math.max(1, Math.ceil(total / limit))
+    useEffect(() => {
+        setPageInput(String(page))
+    }, [page])
+
+    useEffect(() => {
+        if (page > totalPages) setPage(totalPages)
+    }, [page, totalPages])
     const proxyStats = useMemo(() => {
         const available = proxies.filter(proxy => proxy.status === 'available').length
         const unavailable = proxies.filter(proxy => proxy.status === 'unavailable').length
@@ -428,11 +485,12 @@ export default function ProxyPoolTab() {
     const activeFilterCount = Number(!!search.trim()) + Number(!!status) + Number(!!type) + selectedGroupIds.length + selectedTagIds.length
 
     const runSearch = () => {
+        setSearch(searchInput.trim())
         setPage(1)
-        setTimeout(loadData, 0)
     }
 
     const clearFilters = () => {
+        setSearchInput('')
         setSearch('')
         setStatus('')
         setType('')
@@ -440,6 +498,124 @@ export default function ProxyPoolTab() {
         setSelectedTagIds([])
         setTagMode('or')
         setPage(1)
+    }
+
+    const applyPageSize = () => {
+        const nextLimit = Number(limitInput)
+        if (!Number.isSafeInteger(nextLimit) || nextLimit < 1) {
+            setLimitInput(String(limit))
+            toast.error('每页数量必须是大于 0 的整数')
+            return
+        }
+        setLimit(nextLimit)
+        setPage(1)
+    }
+
+    const jumpToPage = () => {
+        const requested = Number(pageInput)
+        if (!Number.isSafeInteger(requested)) {
+            setPageInput(String(page))
+            return
+        }
+        const nextPage = Math.min(totalPages, Math.max(1, requested))
+        setPageInput(String(nextPage))
+        setPage(nextPage)
+    }
+
+    const loadManagedChannels = useCallback(async () => {
+        const items = await proxyPoolService.getCheckChannels(true)
+        setManagedChannels(items)
+        return items
+    }, [])
+
+    const openChannelManager = async () => {
+        setShowChannelManager(true)
+        setEditingChannel(null)
+        try {
+            await loadManagedChannels()
+        } catch (error: any) {
+            toast.error(error.message || '加载检测渠道失败')
+        }
+    }
+
+    const editCheckChannel = (channel: ProxyCheckChannel) => {
+        setEditingChannel(channel)
+        setChannelDraft({
+            key: channel.key,
+            name: channel.name,
+            provider: channel.provider || '',
+            description: channel.description || '',
+            mode: channel.mode,
+            urlTemplate: channel.urlTemplate,
+            method: 'GET',
+            responseFormat: channel.responseFormat,
+            ipField: channel.ipField || '',
+            countryField: channel.countryField || '',
+            regionField: channel.regionField || '',
+            cityField: channel.cityField || '',
+            ispField: channel.ispField || '',
+            statusField: channel.statusField || '',
+            failureValue: channel.failureValue || '',
+            messageField: channel.messageField || '',
+            headers: channel.headers || {},
+            authType: channel.authType,
+            authName: channel.authName || '',
+            credential: undefined,
+            enabled: channel.enabled,
+            supportsIPv4: channel.supportsIPv4,
+            supportsIPv6: channel.supportsIPv6,
+            timeoutSeconds: channel.timeoutSeconds || 12,
+            sortOrder: channel.sortOrder || 0,
+        })
+    }
+
+    const createCheckChannel = () => {
+        setEditingChannel('new')
+        setChannelDraft(emptyCheckChannelDraft())
+    }
+
+    const saveCheckChannel = async () => {
+        if (!channelDraft.name.trim() || !channelDraft.urlTemplate.trim()) {
+            toast.error('请填写渠道名称和请求地址')
+            return
+        }
+        if (editingChannel === 'new' && !channelDraft.key.trim()) {
+            toast.error('请填写渠道标识')
+            return
+        }
+        setSavingChannel(true)
+        try {
+            if (editingChannel === 'new') {
+                await proxyPoolService.createCheckChannel(channelDraft)
+            } else if (editingChannel) {
+                await proxyPoolService.updateCheckChannel(editingChannel.id, channelDraft)
+            }
+            toast.success(editingChannel === 'new' ? '检测渠道已创建' : '检测渠道已更新')
+            setEditingChannel(null)
+            await Promise.all([loadManagedChannels(), loadData()])
+        } catch (error: any) {
+            toast.error(error.message || '保存检测渠道失败')
+        } finally {
+            setSavingChannel(false)
+        }
+    }
+
+    const deleteCheckChannel = async (channel: ProxyCheckChannel) => {
+        const confirmed = await confirm({
+            title: '删除检测渠道',
+            description: `确定删除「${channel.name}」吗？`,
+            confirmText: '删除',
+            cancelText: '取消',
+            variant: 'destructive',
+        })
+        if (!confirmed) return
+        try {
+            await proxyPoolService.deleteCheckChannel(channel.id)
+            toast.success('检测渠道已删除')
+            await Promise.all([loadManagedChannels(), loadData()])
+        } catch (error: any) {
+            toast.error(error.message || '删除检测渠道失败')
+        }
     }
 
     const toggleSelected = (id: number) => {
@@ -458,6 +634,7 @@ export default function ProxyPoolTab() {
             return
         }
         setLoading(true)
+        setBulkImportErrors([])
         try {
             const result = await proxyPoolService.bulkImport({
                 defaultType: bulkDefaultType,
@@ -471,10 +648,18 @@ export default function ProxyPoolTab() {
             setCheckResults(result.checks || [])
             const updated = Number(result.summary?.updated || 0)
             const skipped = Number(result.summary?.skipped || 0)
-            toast.success(`已处理 ${result.created.length} 个代理${updated ? `，覆盖 ${updated} 个` : ''}${skipped ? `，跳过 ${skipped} 个重复项` : ''}${result.errors.length ? `，${result.errors.length} 行失败` : ''}`)
+            const checkQueued = Number(result.summary?.checkQueued || 0)
+            const processed = Number(result.summary?.processed ?? result.created.length)
+            if (result.errors.length) {
+                setBulkImportErrors(result.errors)
+                toast.error(`已处理 ${processed} 个代理，但有 ${result.errors.length} 行失败；窗口已保留以便检查`)
+                await loadData()
+                return
+            }
+            toast.success(`已处理 ${processed} 个代理${updated ? `，覆盖 ${updated} 个` : ''}${skipped ? `，跳过 ${skipped} 个重复项` : ''}${checkQueued ? `，${checkQueued} 个检测已进入后台队列` : ''}`)
             setBulkText('')
             setShowImportWizard(false)
-            loadData()
+            await loadData()
         } catch (error: any) {
             toast.error(error.message || '批量添加失败')
         } finally {
@@ -532,7 +717,13 @@ export default function ProxyPoolTab() {
         try {
             const result = await proxyPoolService.test(proxy.id, checkChannel)
             setCheckResults(prev => [result, ...prev].slice(0, 30))
-            toast[result.success ? 'success' : 'error'](`${proxy.host}:${proxy.port} ${result.success ? '可用' : '不可用'}`)
+            if (result.success) {
+                toast[result.warning ? 'warning' : 'success'](`${proxy.host}:${proxy.port} 可用${result.warning ? `；${result.warning}` : ''}`)
+            } else if (result.inconclusive) {
+                toast.warning(`${proxy.host}:${proxy.port} 检测渠道异常，代理状态未改变`)
+            } else {
+                toast.error(`${proxy.host}:${proxy.port} 不可用`)
+            }
         } catch (error: any) {
             toast.error(error.message || '代理检测失败')
         } finally {
@@ -798,11 +989,15 @@ export default function ProxyPoolTab() {
                         </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
+                        <button onClick={openChannelManager} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
+                            <Globe2 className="h-4 w-4" />
+                            检测渠道
+                        </button>
                         <button onClick={() => setShowMetaManager(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">
                             <Settings2 className="h-4 w-4" />
                             分组标签
                         </button>
-                        <button onClick={() => setShowImportWizard(true)} className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white transition hover:-translate-y-0.5 hover:bg-primary-700 hover:shadow-lg hover:shadow-primary-600/20">
+                        <button onClick={() => { setBulkImportErrors([]); setShowImportWizard(true) }} className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white transition hover:-translate-y-0.5 hover:bg-primary-700 hover:shadow-lg hover:shadow-primary-600/20">
                             <Plus className="h-4 w-4" />
                             批量新增
                         </button>
@@ -823,21 +1018,21 @@ export default function ProxyPoolTab() {
                             <div className="relative min-w-[280px] flex-1">
                                 <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
                                 <input
-                                    value={search}
-                                    onChange={(event) => setSearch(event.target.value)}
+                                    value={searchInput}
+                                    onChange={(event) => setSearchInput(event.target.value)}
                                     onKeyDown={(event) => event.key === 'Enter' && runSearch()}
                                     placeholder="搜索主机、备注、出口 IP、账号"
                                     className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40"
                                 />
                             </div>
-                            <select value={status} onChange={(event) => setStatus(event.target.value as ProxyStatus | '')} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
+                            <select value={status} onChange={(event) => { setStatus(event.target.value as ProxyStatus | ''); setPage(1) }} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
                                 <option value="">全部状态</option>
                                 <option value="available">可用</option>
                                 <option value="unavailable">不可用</option>
                                 <option value="unknown">未知</option>
                                 <option value="checking">检测中</option>
                             </select>
-                            <select value={type} onChange={(event) => setType(event.target.value as ProxyType | '')} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
+                            <select value={type} onChange={(event) => { setType(event.target.value as ProxyType | ''); setPage(1) }} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
                                 <option value="">全部类型</option>
                                 {proxyTypes.map(item => <option key={item} value={item}>{item.toUpperCase()}</option>)}
                             </select>
@@ -861,11 +1056,11 @@ export default function ProxyPoolTab() {
                             selectedGroupIds={selectedGroupIds}
                             selectedTagIds={selectedTagIds}
                             tagMode={tagMode}
-                            onClearSearch={() => setSearch('')}
-                            onClearStatus={() => setStatus('')}
-                            onClearType={() => setType('')}
-                            onRemoveGroup={(id) => setSelectedGroupIds(prev => prev.filter(item => item !== id))}
-                            onRemoveTag={(id) => setSelectedTagIds(prev => prev.filter(item => item !== id))}
+                            onClearSearch={() => { setSearchInput(''); setSearch(''); setPage(1) }}
+                            onClearStatus={() => { setStatus(''); setPage(1) }}
+                            onClearType={() => { setType(''); setPage(1) }}
+                            onRemoveGroup={(id) => { setSelectedGroupIds(prev => prev.filter(item => item !== id)); setPage(1) }}
+                            onRemoveTag={(id) => { setSelectedTagIds(prev => prev.filter(item => item !== id)); setPage(1) }}
                             onClearAll={clearFilters}
                         />
 
@@ -885,9 +1080,9 @@ export default function ProxyPoolTab() {
                                             selectedGroupIds={selectedGroupIds}
                                             selectedTagIds={selectedTagIds}
                                             tagMode={tagMode}
-                                            onGroupChange={setSelectedGroupIds}
-                                            onTagChange={setSelectedTagIds}
-                                            onTagModeChange={setTagMode}
+                                            onGroupChange={(ids) => { setSelectedGroupIds(ids); setPage(1) }}
+                                            onTagChange={(ids) => { setSelectedTagIds(ids); setPage(1) }}
+                                            onTagModeChange={(mode) => { setTagMode(mode); setPage(1) }}
                                         />
                                     </div>
                                 </motion.div>
@@ -956,11 +1151,43 @@ export default function ProxyPoolTab() {
                             </table>
                         </div>
 
-                        <div className="flex items-center justify-between border-t border-gray-100 px-4 py-3 text-sm dark:border-gray-800">
-                            <span className="text-gray-500">第 {page} / {totalPages} 页</span>
-                            <div className="flex gap-2">
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 px-4 py-3 text-sm dark:border-gray-800">
+                            <div className="flex flex-wrap items-center gap-3 text-gray-500">
+                                <span>共 {total} 条 · 第 {page} / {totalPages} 页</span>
+                                <label className="inline-flex items-center gap-2">
+                                    每页
+                                    <input
+                                        aria-label="每页数量"
+                                        type="number"
+                                        min={1}
+                                        value={limitInput}
+                                        onChange={event => setLimitInput(event.target.value)}
+                                        onBlur={applyPageSize}
+                                        onKeyDown={event => event.key === 'Enter' && applyPageSize()}
+                                        className="w-24 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-900 outline-none focus:border-primary-400 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                                    />
+                                    条
+                                </label>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button aria-label="第一页" disabled={page <= 1} onClick={() => setPage(1)} className="rounded-lg border border-gray-200 p-2 transition hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"><ChevronsLeft className="h-4 w-4" /></button>
                                 <button disabled={page <= 1} onClick={() => setPage(page - 1)} className="rounded-lg border border-gray-200 px-3 py-1.5 transition hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800">上一页</button>
+                                <label className="inline-flex items-center gap-2 text-gray-500">
+                                    跳至
+                                    <input
+                                        aria-label="跳转页码"
+                                        type="number"
+                                        min={1}
+                                        max={totalPages}
+                                        value={pageInput}
+                                        onChange={event => setPageInput(event.target.value)}
+                                        onBlur={jumpToPage}
+                                        onKeyDown={event => event.key === 'Enter' && jumpToPage()}
+                                        className="w-20 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-center text-gray-900 outline-none focus:border-primary-400 dark:border-gray-700 dark:bg-gray-900 dark:text-white"
+                                    />
+                                </label>
                                 <button disabled={page >= totalPages} onClick={() => setPage(page + 1)} className="rounded-lg border border-gray-200 px-3 py-1.5 transition hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800">下一页</button>
+                                <button aria-label="最后一页" disabled={page >= totalPages} onClick={() => setPage(totalPages)} className="rounded-lg border border-gray-200 p-2 transition hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"><ChevronsRight className="h-4 w-4" /></button>
                             </div>
                         </div>
                     </div>
@@ -1005,6 +1232,21 @@ export default function ProxyPoolTab() {
                 onCreateTag={createTag}
                 onImport={importProxies}
                 loading={loading}
+                importErrors={bulkImportErrors}
+            />
+            <CheckChannelManagerModal
+                open={showChannelManager}
+                onOpenChange={setShowChannelManager}
+                channels={managedChannels}
+                editing={editingChannel}
+                draft={channelDraft}
+                setDraft={setChannelDraft}
+                saving={savingChannel}
+                onCreate={createCheckChannel}
+                onEdit={editCheckChannel}
+                onBack={() => setEditingChannel(null)}
+                onSave={saveCheckChannel}
+                onDelete={deleteCheckChannel}
             />
             <Modal open={showDeleteModal} onOpenChange={setShowDeleteModal}>
                 <ModalContent size="xl">
@@ -1218,7 +1460,7 @@ function ProxyInsightPanel({ stats, total, selectedCount, channels, checkChannel
                     onChange={(event) => setCheckChannel(event.target.value)}
                     className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900"
                 >
-                    {channels.map(channel => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
+                    {channels.map(channel => <option key={channel.id} value={channel.key}>{channel.name}</option>)}
                 </select>
                 <button onClick={onBatchTest} disabled={loading} className="inline-flex items-center justify-center gap-2 rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white transition hover:-translate-y-0.5 hover:bg-gray-800 disabled:opacity-60 dark:bg-white dark:text-gray-900">
                     {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
@@ -1373,6 +1615,170 @@ function CriteriaBar({ groups, tags, selectedGroupIds, selectedTagIds, tagMode, 
     )
 }
 
+function CheckChannelManagerModal({ open, onOpenChange, channels, editing, draft, setDraft, saving, onCreate, onEdit, onBack, onSave, onDelete }: {
+    open: boolean
+    onOpenChange: (open: boolean) => void
+    channels: ProxyCheckChannel[]
+    editing: ProxyCheckChannel | null | 'new'
+    draft: ProxyCheckChannelPayload
+    setDraft: (draft: ProxyCheckChannelPayload) => void
+    saving: boolean
+    onCreate: () => void
+    onEdit: (channel: ProxyCheckChannel) => void
+    onBack: () => void
+    onSave: () => void
+    onDelete: (channel: ProxyCheckChannel) => void
+}) {
+    const inputClass = 'w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40'
+    const field = (key: keyof ProxyCheckChannelPayload, value: unknown) => setDraft({ ...draft, [key]: value })
+    const formOpen = editing !== null
+
+    return (
+        <Modal open={open} onOpenChange={onOpenChange}>
+            <ModalContent size="6xl" className="h-[86vh] overflow-hidden">
+                <ModalHeader>
+                    <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-300">
+                            <Globe2 className="h-5 w-5" />
+                        </div>
+                        <div>
+                            <ModalTitle>{formOpen ? editing === 'new' ? '新增检测渠道' : `编辑 ${editing.name}` : '检测渠道'}</ModalTitle>
+                            <ModalDescription>{formOpen ? '配置服务端 HTTP/API 出口探测，不包含浏览器指纹检测。' : '管理出口探测和 IP 信息查询渠道；停用不会删除历史检测记录。'}</ModalDescription>
+                        </div>
+                    </div>
+                </ModalHeader>
+                <ModalBody className="min-h-0">
+                    {!formOpen ? (
+                        <div className="space-y-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div className="text-sm text-gray-500">{channels.filter(channel => channel.enabled).length} 个启用 · {channels.length} 个已配置</div>
+                                <button onClick={onCreate} className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-2 text-sm font-medium text-white hover:bg-primary-700">
+                                    <Plus className="h-4 w-4" />新增渠道
+                                </button>
+                            </div>
+                            <div className="space-y-3 md:hidden">
+                                {channels.map(channel => (
+                                    <div key={channel.id} className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="flex flex-wrap items-center gap-2 font-medium text-gray-900 dark:text-white">
+                                                    {channel.name}
+                                                    {channel.builtIn && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800">内置</span>}
+                                                    <span className={cn('rounded-full border px-2 py-0.5 text-[11px]', channel.enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300' : 'border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-700 dark:bg-gray-800')}>{channel.enabled ? '启用' : '停用'}</span>
+                                                </div>
+                                                <div className="mt-1 truncate font-mono text-xs text-gray-400">{channel.urlTemplate}</div>
+                                            </div>
+                                            <div className="flex shrink-0 gap-1">
+                                                <button onClick={() => onEdit(channel)} className="rounded-lg border border-gray-200 p-2 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800" title="编辑"><Pencil className="h-4 w-4" /></button>
+                                                {!channel.builtIn && <button onClick={() => onDelete(channel)} className="rounded-lg border border-rose-200 p-2 text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30" title="删除"><Trash2 className="h-4 w-4" /></button>}
+                                            </div>
+                                        </div>
+                                        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                                            <span>{channel.mode === 'lookup' ? 'IP 信息查询' : '出口探测'}</span>
+                                            <span aria-hidden="true">·</span>
+                                            <span>{channel.authType === 'none' ? '无需认证' : channel.hasCredential ? '已配置认证' : '未配置认证'}</span>
+                                            {channel.supportsIPv4 && <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">IPv4</span>}
+                                            {channel.supportsIPv6 && <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-violet-700 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300">IPv6</span>}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="hidden overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700 md:block">
+                                <table className="w-full min-w-[880px] text-left text-sm">
+                                    <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-gray-900/60">
+                                        <tr>
+                                            <th className="px-4 py-3">渠道</th>
+                                            <th className="px-4 py-3">类型</th>
+                                            <th className="px-4 py-3">协议能力</th>
+                                            <th className="px-4 py-3">认证</th>
+                                            <th className="px-4 py-3">状态</th>
+                                            <th className="px-4 py-3 text-right">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                                        {channels.map(channel => (
+                                            <tr key={channel.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
+                                                <td className="px-4 py-3">
+                                                    <div className="flex items-center gap-2 font-medium text-gray-900 dark:text-white">
+                                                        {channel.name}
+                                                        {channel.builtIn && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-800">内置</span>}
+                                                    </div>
+                                                    <div className="mt-1 max-w-md truncate font-mono text-xs text-gray-400">{channel.urlTemplate}</div>
+                                                </td>
+                                                <td className="px-4 py-3 text-gray-600 dark:text-gray-300">{channel.mode === 'lookup' ? 'IP 信息查询' : '出口探测'}</td>
+                                                <td className="px-4 py-3">
+                                                    <div className="flex gap-1">
+                                                        {channel.supportsIPv4 && <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">IPv4</span>}
+                                                        {channel.supportsIPv6 && <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-xs text-violet-700 dark:border-violet-900 dark:bg-violet-950/30 dark:text-violet-300">IPv6</span>}
+                                                    </div>
+                                                </td>
+                                                <td className="px-4 py-3 text-gray-500">{channel.authType === 'none' ? '无需认证' : channel.hasCredential ? '已配置' : '未配置'}</td>
+                                                <td className="px-4 py-3">
+                                                    <span className={cn('rounded-full border px-2 py-1 text-xs', channel.enabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300' : 'border-gray-200 bg-gray-50 text-gray-500 dark:border-gray-700 dark:bg-gray-800')}>{channel.enabled ? '启用' : '停用'}</span>
+                                                </td>
+                                                <td className="px-4 py-3 text-right">
+                                                    <div className="inline-flex gap-1">
+                                                        <button onClick={() => onEdit(channel)} className="rounded-lg border border-gray-200 p-2 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800" title="编辑"><Pencil className="h-4 w-4" /></button>
+                                                        {!channel.builtIn && <button onClick={() => onDelete(channel)} className="rounded-lg border border-rose-200 p-2 text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30" title="删除"><Trash2 className="h-4 w-4" /></button>}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="mx-auto max-w-4xl space-y-5">
+                            <div className="grid gap-4 sm:grid-cols-2">
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">渠道名称</span><input value={draft.name} onChange={event => field('name', event.target.value)} className={inputClass} /></label>
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">渠道标识</span><input value={draft.key} disabled={editing !== 'new'} onChange={event => field('key', event.target.value.toLowerCase())} placeholder="my-channel" className={cn(inputClass, 'font-mono disabled:bg-gray-100 disabled:text-gray-400 dark:disabled:bg-gray-800')} /></label>
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">服务商</span><input value={draft.provider || ''} onChange={event => field('provider', event.target.value)} placeholder="example.com" className={inputClass} /></label>
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">检测类型</span><select value={draft.mode} onChange={event => field('mode', event.target.value)} className={inputClass}><option value="self">出口探测（请求经过代理）</option><option value="lookup">IP 信息查询（先获取出口 IP）</option></select></label>
+                            </div>
+                            <label className="block text-sm"><span className="mb-1.5 block font-medium">请求地址</span><input value={draft.urlTemplate} onChange={event => field('urlTemplate', event.target.value)} placeholder={draft.mode === 'lookup' ? 'https://api.example.com/ip/{{ip}}' : 'https://api.example.com/me'} className={cn(inputClass, 'font-mono')} /><span className="mt-1 block text-xs text-gray-400">查询型渠道必须包含 {'{{ip}}'}；路径认证可使用 {'{{credential}}'}。</span></label>
+                            <label className="block text-sm"><span className="mb-1.5 block font-medium">说明</span><textarea value={draft.description || ''} onChange={event => field('description', event.target.value)} rows={2} className={inputClass} /></label>
+
+                            <div className="grid gap-4 rounded-xl border border-gray-200 p-4 dark:border-gray-700 sm:grid-cols-2 lg:grid-cols-4">
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">响应格式</span><select value={draft.responseFormat} onChange={event => field('responseFormat', event.target.value)} className={inputClass}><option value="json">JSON</option><option value="text">纯文本 IP</option></select></label>
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">认证方式</span><select value={draft.authType} onChange={event => field('authType', event.target.value)} className={inputClass}><option value="none">无需认证</option><option value="bearer">Bearer Token</option><option value="query">Query 参数</option><option value="header">请求头</option><option value="path">URL 路径</option></select></label>
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">认证参数名</span><input value={draft.authName || ''} disabled={!['query', 'header'].includes(draft.authType)} onChange={event => field('authName', event.target.value)} placeholder="apiKey" className={cn(inputClass, 'disabled:bg-gray-100 dark:disabled:bg-gray-800')} /></label>
+                                <label className="text-sm"><span className="mb-1.5 block font-medium"><KeyRound className="mr-1 inline h-3.5 w-3.5" />凭据</span><input type="password" value={draft.credential || ''} disabled={draft.authType === 'none'} onChange={event => field('credential', event.target.value)} placeholder={editing !== 'new' ? '留空保留原值' : ''} className={cn(inputClass, 'disabled:bg-gray-100 dark:disabled:bg-gray-800')} /></label>
+                            </div>
+
+                            <details className="rounded-xl border border-gray-200 dark:border-gray-700">
+                                <summary className="cursor-pointer px-4 py-3 text-sm font-medium">响应字段映射与失败判定</summary>
+                                <div className="grid gap-4 border-t border-gray-200 p-4 dark:border-gray-700 sm:grid-cols-2 lg:grid-cols-4">
+                                    {[
+                                        ['ipField', '出口 IP 字段'], ['countryField', '国家字段'], ['regionField', '地区字段'], ['cityField', '城市字段'], ['ispField', 'ISP 字段'], ['statusField', '状态字段'], ['failureValue', '失败值'], ['messageField', '错误信息字段'],
+                                    ].map(([key, label]) => (
+                                        <label key={key} className="text-sm"><span className="mb-1.5 block font-medium">{label}</span><input value={String(draft[key as keyof ProxyCheckChannelPayload] || '')} onChange={event => field(key as keyof ProxyCheckChannelPayload, event.target.value)} placeholder={key === 'ipField' ? 'ip' : ''} className={cn(inputClass, 'font-mono')} /></label>
+                                    ))}
+                                </div>
+                            </details>
+
+                            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                <label className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700"><span>启用渠道</span><input type="checkbox" checked={draft.enabled} onChange={event => field('enabled', event.target.checked)} /></label>
+                                <label className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700"><span>支持 IPv4</span><input type="checkbox" checked={draft.supportsIPv4} onChange={event => field('supportsIPv4', event.target.checked)} /></label>
+                                <label className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700"><span>支持 IPv6</span><input type="checkbox" checked={draft.supportsIPv6} onChange={event => field('supportsIPv6', event.target.checked)} /></label>
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">超时（秒）</span><input type="number" min={1} max={120} value={draft.timeoutSeconds} onChange={event => field('timeoutSeconds', Number(event.target.value))} className={inputClass} /></label>
+                            </div>
+                        </div>
+                    )}
+                </ModalBody>
+                <ModalFooter>
+                    {formOpen ? (
+                        <>
+                            <button onClick={onBack} className="rounded-lg border border-gray-200 px-4 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">返回列表</button>
+                            <button onClick={onSave} disabled={saving} className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-60">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}保存渠道</button>
+                        </>
+                    ) : <button onClick={() => onOpenChange(false)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">关闭</button>}
+                </ModalFooter>
+            </ModalContent>
+        </Modal>
+    )
+}
+
 function ImportWizardModal(props: {
     open: boolean
     onOpenChange: (open: boolean) => void
@@ -1397,6 +1803,7 @@ function ImportWizardModal(props: {
     onCreateTag: (input: string | ProxyMetaDraft) => Promise<ProxyTag | null>
     onImport: () => void
     loading: boolean
+    importErrors: Array<{ line: number; content: string; error: string }>
 }) {
     const [step, setStep] = useState<ImportWizardStep>(1)
     const [quickGroupName, setQuickGroupName] = useState('')
@@ -1523,7 +1930,7 @@ function ImportWizardModal(props: {
                                                 </label>
                                                 {props.checkProxy && (
                                                     <select value={props.channel} onChange={(event) => props.setChannel(event.target.value)} className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900">
-                                                        {props.channels.map(channel => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
+                                                        {props.channels.map(channel => <option key={channel.id} value={channel.key}>{channel.name}</option>)}
                                                     </select>
                                                 )}
                                             </div>
@@ -1588,6 +1995,19 @@ function ImportWizardModal(props: {
                                                 <ImportFinishCard label="重复行" value={previewSummary.duplicates} tone="amber" />
                                                 <ImportFinishCard label="错误行" value={previewSummary.errors} tone="rose" />
                                             </div>
+                                            {props.importErrors.length > 0 && (
+                                                <div className="mt-5 max-h-48 overflow-auto rounded-xl border border-rose-200 bg-rose-50 p-3 text-left dark:border-rose-900 dark:bg-rose-950/20">
+                                                    <div className="text-sm font-medium text-rose-700 dark:text-rose-300">服务端返回 {props.importErrors.length} 条导入错误</div>
+                                                    <div className="mt-2 space-y-2 font-mono text-xs text-rose-600 dark:text-rose-300">
+                                                        {props.importErrors.slice(0, 100).map((item, index) => (
+                                                            <div key={`${item.line}-${index}`} className="break-all">
+                                                                {item.line > 0 ? `第 ${item.line} 行：` : ''}{item.error}{item.content ? ` · ${item.content}` : ''}
+                                                            </div>
+                                                        ))}
+                                                        {props.importErrors.length > 100 && <div>其余 {props.importErrors.length - 100} 条错误已省略</div>}
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     </motion.div>
                                 )}
@@ -1596,7 +2016,7 @@ function ImportWizardModal(props: {
                     </div>
                 </ModalBody>
                 <ModalFooter className="justify-between">
-                    <div className="text-xs text-gray-400">最多一次添加 500 个代理</div>
+                    <div className="text-xs text-gray-400">导入数量不设上限；大批量数据将分批写入</div>
                     <div className="flex items-center gap-2">
                         <button onClick={() => closeModal(false)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">取消</button>
                         {step > 1 && (
@@ -2486,10 +2906,11 @@ function CheckResultPanel({ results }: { results: ProxyCheckResult[] }) {
                 {results.length === 0 ? <div className="text-sm text-gray-400">暂无检测结果</div> : results.map((result, index) => (
                     <div key={`${result.proxyId}-${index}`} className="rounded-lg border border-gray-100 p-3 text-xs dark:border-gray-800">
                         <div className="flex items-center justify-between">
-                            <span className={result.success ? 'text-emerald-600' : 'text-rose-600'}>{result.success ? '可用' : '不可用'}</span>
+                            <span className={result.success ? 'text-emerald-600' : result.inconclusive ? 'text-amber-600' : 'text-rose-600'}>{result.success ? '可用' : result.inconclusive ? '渠道异常' : '不可用'}</span>
                             <span className="text-gray-400">{result.latencyMs}ms</span>
                         </div>
                         <div className="mt-1 text-gray-600 dark:text-gray-300">#{result.proxyId} {result.exitIp || result.error || '-'}</div>
+                        <div className="mt-1 text-gray-400">{result.usedChannel || result.checkChannel}{result.warning ? ` · ${result.warning}` : ''}</div>
                     </div>
                 ))}
             </div>

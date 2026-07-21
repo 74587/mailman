@@ -7,6 +7,20 @@ import (
 	"mailman/internal/models"
 )
 
+func TestNormalizeProxyPoolFilterKeepsUnlimitedPageSizeWithoutOffsetOverflow(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	filter := NormalizeProxyPoolFilter(ProxyPoolFilter{Page: maxInt, Limit: maxInt})
+	if filter.Limit != maxInt {
+		t.Fatalf("limit=%d, want requested unlimited size %d", filter.Limit, maxInt)
+	}
+	if filter.Page != 2 {
+		t.Fatalf("page=%d, want largest page with a representable offset", filter.Page)
+	}
+	if offset := (filter.Page - 1) * filter.Limit; offset < 0 {
+		t.Fatalf("normalized offset overflowed: %d", offset)
+	}
+}
+
 func TestProxyPoolRepositoryListsCreatedGroupsAndTags(t *testing.T) {
 	db := mustOpenRealSyncConfigTestDB(t)
 	if err := db.AutoMigrate(&models.ProxyGroup{}, &models.ProxyTag{}); err != nil {

@@ -105,6 +105,44 @@ type ProxyTag struct {
 	DeletedAt DeletedAt `gorm:"index" json:"deletedAt,omitempty"`
 }
 
+// ProxyCheckChannel describes a server-side HTTP/API endpoint used to verify
+// proxy egress or enrich a previously discovered exit IP. Credentials are
+// intentionally omitted from JSON responses and are exposed only as a boolean.
+type ProxyCheckChannel struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	OrgID          uint      `gorm:"not null;uniqueIndex:idx_proxy_check_channel_key;default:1" json:"orgId"`
+	Key            string    `gorm:"not null;type:varchar(64);uniqueIndex:idx_proxy_check_channel_key" json:"key"`
+	Name           string    `gorm:"not null;type:varchar(100)" json:"name"`
+	Provider       string    `gorm:"type:varchar(64)" json:"provider,omitempty"`
+	Description    string    `gorm:"type:text" json:"description,omitempty"`
+	Mode           string    `gorm:"not null;type:varchar(16);default:'self'" json:"mode"`
+	URLTemplate    string    `gorm:"not null;type:text" json:"urlTemplate"`
+	Method         string    `gorm:"not null;type:varchar(8);default:'GET'" json:"method"`
+	ResponseFormat string    `gorm:"not null;type:varchar(16);default:'json'" json:"responseFormat"`
+	IPField        string    `gorm:"type:varchar(128)" json:"ipField,omitempty"`
+	CountryField   string    `gorm:"type:varchar(128)" json:"countryField,omitempty"`
+	RegionField    string    `gorm:"type:varchar(128)" json:"regionField,omitempty"`
+	CityField      string    `gorm:"type:varchar(128)" json:"cityField,omitempty"`
+	ISPField       string    `gorm:"type:varchar(128)" json:"ispField,omitempty"`
+	StatusField    string    `gorm:"type:varchar(128)" json:"statusField,omitempty"`
+	FailureValue   string    `gorm:"type:varchar(64)" json:"failureValue,omitempty"`
+	MessageField   string    `gorm:"type:varchar(128)" json:"messageField,omitempty"`
+	Headers        JSONMap   `gorm:"type:json" json:"headers,omitempty"`
+	AuthType       string    `gorm:"not null;type:varchar(16);default:'none'" json:"authType"`
+	AuthName       string    `gorm:"type:varchar(100)" json:"authName,omitempty"`
+	AuthValue      string    `gorm:"type:text" json:"-"`
+	HasCredential  bool      `gorm:"-" json:"hasCredential"`
+	Enabled        bool      `gorm:"not null;default:false;index" json:"enabled"`
+	BuiltIn        bool      `gorm:"not null;default:false" json:"builtIn"`
+	SupportsIPv4   bool      `gorm:"not null;default:false" json:"supportsIPv4"`
+	SupportsIPv6   bool      `gorm:"not null;default:false" json:"supportsIPv6"`
+	TimeoutSeconds int       `gorm:"not null;default:12" json:"timeoutSeconds"`
+	SortOrder      int       `gorm:"not null;default:0" json:"sortOrder"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	DeletedAt      DeletedAt `gorm:"index" json:"deletedAt,omitempty"`
+}
+
 type ProxyPoolItem struct {
 	ID              uint        `gorm:"primaryKey" json:"id"`
 	OrgID           uint        `gorm:"not null;index;default:1" json:"orgId"`
@@ -157,6 +195,10 @@ func (ProxyGroup) TableName() string {
 
 func (ProxyTag) TableName() string {
 	return "proxy_tags"
+}
+
+func (ProxyCheckChannel) TableName() string {
+	return "proxy_check_channels"
 }
 
 func (ProxyPoolItem) TableName() string {

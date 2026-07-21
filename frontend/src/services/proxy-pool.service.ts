@@ -36,10 +36,40 @@ export interface ProxyListResponse {
 }
 
 export interface ProxyCheckChannel {
-    id: string
+    id: number
+    orgId: number
+    key: string
     name: string
-    url: string
-    description: string
+    provider?: string
+    description?: string
+    mode: 'self' | 'lookup'
+    urlTemplate: string
+    method: 'GET'
+    responseFormat: 'json' | 'text'
+    ipField?: string
+    countryField?: string
+    regionField?: string
+    cityField?: string
+    ispField?: string
+    statusField?: string
+    failureValue?: string
+    messageField?: string
+    headers?: Record<string, string>
+    authType: 'none' | 'bearer' | 'query' | 'header' | 'path'
+    authName?: string
+    hasCredential: boolean
+    enabled: boolean
+    builtIn: boolean
+    supportsIPv4: boolean
+    supportsIPv6: boolean
+    timeoutSeconds: number
+    sortOrder: number
+    createdAt?: string
+    updatedAt?: string
+}
+
+export type ProxyCheckChannelPayload = Omit<ProxyCheckChannel, 'id' | 'orgId' | 'hasCredential' | 'builtIn' | 'createdAt' | 'updatedAt'> & {
+    credential?: string
 }
 
 export interface ProxyCheckResult {
@@ -53,7 +83,10 @@ export interface ProxyCheckResult {
     city?: string
     isp?: string
     error?: string
+    warning?: string
+    inconclusive?: boolean
     checkChannel: string
+    usedChannel?: string
 }
 
 export interface ProxyPayload {
@@ -152,8 +185,20 @@ class ProxyPoolService {
         return apiClient.post(`${this.basePath}/select`, payload)
     }
 
-    async getCheckChannels(): Promise<ProxyCheckChannel[]> {
-        return apiClient.get(`${this.basePath}/check-channels`)
+    async getCheckChannels(includeDisabled = false): Promise<ProxyCheckChannel[]> {
+        return apiClient.get(`${this.basePath}/check-channels`, { params: includeDisabled ? { includeDisabled: true } : undefined })
+    }
+
+    async createCheckChannel(payload: ProxyCheckChannelPayload): Promise<ProxyCheckChannel> {
+        return apiClient.post(`${this.basePath}/check-channels`, payload)
+    }
+
+    async updateCheckChannel(id: number, payload: ProxyCheckChannelPayload): Promise<ProxyCheckChannel> {
+        return apiClient.put(`${this.basePath}/check-channels/${id}`, payload)
+    }
+
+    async deleteCheckChannel(id: number): Promise<void> {
+        await apiClient.delete(`${this.basePath}/check-channels/${id}`)
     }
 
     async listGroups(): Promise<ProxyGroup[]> {

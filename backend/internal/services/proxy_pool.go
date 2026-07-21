@@ -10,6 +10,7 @@ import (
 	"mailman/internal/repository"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -34,16 +35,10 @@ type BulkProxyParseResult struct {
 	Errors  []ProxyParseError      `json:"errors"`
 }
 
-type ProxyCheckChannel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	URL         string `json:"url"`
-	Description string `json:"description"`
-}
-
 type ProxyCheckResult struct {
 	ProxyID      uint               `json:"proxyId"`
 	Success      bool               `json:"success"`
+	Inconclusive bool               `json:"inconclusive,omitempty"`
 	Status       models.ProxyStatus `json:"status"`
 	LatencyMs    int64              `json:"latencyMs"`
 	ExitIP       string             `json:"exitIp,omitempty"`
@@ -52,21 +47,36 @@ type ProxyCheckResult struct {
 	City         string             `json:"city,omitempty"`
 	ISP          string             `json:"isp,omitempty"`
 	Error        string             `json:"error,omitempty"`
+	Warning      string             `json:"warning,omitempty"`
 	CheckChannel string             `json:"checkChannel"`
+	UsedChannel  string             `json:"usedChannel,omitempty"`
 }
 
 func NewProxyPoolService(proxyRepo *repository.ProxyPoolRepository, accountRepo *repository.EmailAccountRepository) *ProxyPoolService {
 	return &ProxyPoolService{proxyRepo: proxyRepo, accountRepo: accountRepo}
 }
 
-func DefaultProxyCheckChannels() []ProxyCheckChannel {
-	return []ProxyCheckChannel{
-		{ID: "ip-api", Name: "ip-api", URL: "http://ip-api.com/json/?fields=status,message,query,country,regionName,city,isp", Description: "返回出口 IP、国家、地区、城市与 ISP"},
-		{ID: "ipify", Name: "ipify", URL: "https://api.ipify.org?format=json", Description: "轻量出口 IP 查询"},
-		{ID: "httpbin", Name: "httpbin", URL: "https://httpbin.org/ip", Description: "HTTPBin origin IP"},
-		{ID: "ipinfo", Name: "ipinfo", URL: "https://ipinfo.io/json", Description: "出口 IP 与地理信息"},
-		{ID: "icanhazip", Name: "icanhazip", URL: "https://icanhazip.com", Description: "纯文本出口 IP"},
+func DefaultProxyCheckChannels(orgID uint) []models.ProxyCheckChannel {
+	defaults := []models.ProxyCheckChannel{
+		{Key: "ip-sb", Name: "IP.SB", Provider: "api.ip.sb", Description: "双栈出口 IP、GeoIP 与运营商信息", Mode: "self", URLTemplate: "https://api.ip.sb/geoip", Method: http.MethodGet, ResponseFormat: "json", IPField: "ip", CountryField: "country", RegionField: "region", CityField: "city", ISPField: "organization", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 10},
+		{Key: "ipinfo", Name: "IPinfo", Provider: "ipinfo.io", Description: "双栈出口 IP 与地理信息，可选 Token", Mode: "self", URLTemplate: "https://ipinfo.io/json", Method: http.MethodGet, ResponseFormat: "json", IPField: "ip", CountryField: "country", RegionField: "region", CityField: "city", ISPField: "org", AuthType: "query", AuthName: "token", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 20},
+		{Key: "ipgeolocation", Name: "IPGeolocation", Provider: "ipgeolocation.io", Description: "双栈出口 IP；配置 API Key 后可自定义完整 GeoIP 端点", Mode: "self", URLTemplate: "https://api.ipgeolocation.io/v3/getip", Method: http.MethodGet, ResponseFormat: "json", IPField: "ip", AuthType: "query", AuthName: "apiKey", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 30},
+		{Key: "lumtest", Name: "Lumtest", Provider: "lumtest.com", Description: "出口 IP、ASN 与地理信息；Bright Data 官方示例使用 HTTP", Mode: "self", URLTemplate: "http://lumtest.com/myip.json", Method: http.MethodGet, ResponseFormat: "json", IPField: "ip", CountryField: "country", RegionField: "geo.region_name", CityField: "geo.city", ISPField: "asn.org_name", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 40},
+		{Key: "ipapi-is", Name: "ipapi.is", Provider: "api.ipapi.is", Description: "出口 IP 的 ASN、代理、VPN 与机房属性查询", Mode: "lookup", URLTemplate: "https://api.ipapi.is/?q={{ip}}", Method: http.MethodGet, ResponseFormat: "json", IPField: "ip", CountryField: "location.country", RegionField: "location.state", CityField: "location.city", ISPField: "company.name", AuthType: "query", AuthName: "key", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 50},
+		{Key: "ipqualityscore", Name: "IPQualityScore", Provider: "ipqualityscore.com", Description: "出口 IP 的代理、VPN 与欺诈风险查询，需要 API Key", Mode: "lookup", URLTemplate: "https://ipqualityscore.com/api/json/ip/{{credential}}/{{ip}}", Method: http.MethodGet, ResponseFormat: "json", CountryField: "country_code", RegionField: "region", CityField: "city", ISPField: "ISP", StatusField: "success", FailureValue: "false", MessageField: "message", AuthType: "path", Enabled: false, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 60},
+		{Key: "db-ip", Name: "DB-IP", Provider: "db-ip.com", Description: "出口 IP 与地理信息；免费接口仅支持 HTTP", Mode: "self", URLTemplate: "http://api.db-ip.com/v2/free/self", Method: http.MethodGet, ResponseFormat: "json", IPField: "ipAddress", CountryField: "countryName", RegionField: "stateProv", CityField: "city", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 70},
+		{Key: "ip-api", Name: "ip-api", Provider: "ip-api.com", Description: "IPv4 GeoIP；免费接口不支持 HTTPS，不建议作为默认渠道", Mode: "self", URLTemplate: "http://ip-api.com/json/?fields=status,message,query,country,regionName,city,isp", Method: http.MethodGet, ResponseFormat: "json", IPField: "query", CountryField: "country", RegionField: "regionName", CityField: "city", ISPField: "isp", StatusField: "status", FailureValue: "fail", MessageField: "message", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: false, TimeoutSeconds: 12, SortOrder: 80},
+		{Key: "ipify", Name: "ipify", Provider: "api.ipify.org", Description: "轻量双栈出口 IP 查询", Mode: "self", URLTemplate: "https://api.ipify.org?format=json", Method: http.MethodGet, ResponseFormat: "json", IPField: "ip", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 90},
+		{Key: "httpbin", Name: "httpbin", Provider: "httpbin.org", Description: "HTTPBin origin IP", Mode: "self", URLTemplate: "https://httpbin.org/ip", Method: http.MethodGet, ResponseFormat: "json", IPField: "origin", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 100},
+		{Key: "icanhazip", Name: "icanhazip", Provider: "icanhazip.com", Description: "纯文本双栈出口 IP", Mode: "self", URLTemplate: "https://icanhazip.com", Method: http.MethodGet, ResponseFormat: "text", Enabled: true, BuiltIn: true, SupportsIPv4: true, SupportsIPv6: true, TimeoutSeconds: 12, SortOrder: 110},
 	}
+	for i := range defaults {
+		defaults[i].OrgID = orgID
+		if defaults[i].AuthType == "" {
+			defaults[i].AuthType = "none"
+		}
+	}
+	return defaults
 }
 
 func (s *ProxyPoolService) ParseBulk(input string, defaultType models.ProxyType, groupID *uint, tagIDs []uint, orgID uint) BulkProxyParseResult {
@@ -74,17 +84,11 @@ func (s *ProxyPoolService) ParseBulk(input string, defaultType models.ProxyType,
 	lines := strings.Split(input, "\n")
 	defaultType = models.NormalizeProxyType(defaultType)
 
-	added := 0
 	for i, raw := range lines {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		if added >= 500 {
-			result.Errors = append(result.Errors, ProxyParseError{Line: i + 1, Content: line, Error: "一次最多添加500个代理"})
-			continue
-		}
-
 		item, err := ParseProxyLine(line, defaultType)
 		if err != nil {
 			result.Errors = append(result.Errors, ProxyParseError{Line: i + 1, Content: line, Error: err.Error()})
@@ -99,7 +103,6 @@ func (s *ProxyPoolService) ParseBulk(input string, defaultType models.ProxyType,
 			item.Tags = append(item.Tags, models.ProxyTag{ID: tagID})
 		}
 		result.Proxies = append(result.Proxies, item)
-		added++
 	}
 	return result
 }
@@ -249,13 +252,23 @@ func (s *ProxyPoolService) TestProxy(ctx context.Context, proxyItem *models.Prox
 		timeout = 12 * time.Second
 	}
 	if channelID == "" {
-		channelID = "ip-api"
+		channelID = "ip-sb"
 	}
-	channel := findProxyCheckChannel(channelID)
 	result := ProxyCheckResult{
 		ProxyID:      proxyItem.ID,
-		Status:       models.ProxyStatusUnavailable,
-		CheckChannel: channel.ID,
+		Status:       proxyItem.Status,
+		CheckChannel: channelID,
+	}
+	channels, err := s.ListCheckChannels(proxyItem.OrgID, false)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	channel := findConfiguredCheckChannel(channels, channelID)
+	if channel == nil {
+		result.Error = fmt.Sprintf("检测渠道不存在或已停用: %s", channelID)
+		result.Inconclusive = true
+		return result
 	}
 
 	now := time.Now()
@@ -265,10 +278,24 @@ func (s *ProxyPoolService) TestProxy(ctx context.Context, proxyItem *models.Prox
 	})
 
 	start := time.Now()
-	ipInfo, err := s.probeProxy(ctx, *proxyItem, channel, timeout)
+	ipInfo, usedChannel, warning, inconclusive, err := s.checkProxyThroughChannels(ctx, *proxyItem, *channel, channels, timeout)
 	result.LatencyMs = time.Since(start).Milliseconds()
+	result.UsedChannel = usedChannel
+	result.Warning = warning
 	if err != nil {
 		result.Error = err.Error()
+		result.Inconclusive = inconclusive
+		if inconclusive {
+			result.Status = proxyItem.Status
+			_ = s.proxyRepo.UpdateCheckResult(proxyItem.ID, map[string]interface{}{
+				"status":           proxyItem.Status,
+				"last_check_at":    now,
+				"last_error":       result.Error,
+				"check_latency_ms": result.LatencyMs,
+				"check_count":      proxyItem.CheckCount + 1,
+			})
+			return result
+		}
 		result.Status = models.ProxyStatusUnavailable
 		_ = s.proxyRepo.UpdateCheckResult(proxyItem.ID, map[string]interface{}{
 			"status":           models.ProxyStatusUnavailable,
@@ -314,41 +341,233 @@ type proxyIPInfo struct {
 	ISP     string
 }
 
-func findProxyCheckChannel(channelID string) ProxyCheckChannel {
-	channels := DefaultProxyCheckChannels()
-	for _, channel := range channels {
-		if channel.ID == channelID {
-			return channel
-		}
-	}
-	return channels[0]
+type proxyChannelError struct {
+	Channel    string
+	StatusCode int
+	Err        error
 }
 
-func (s *ProxyPoolService) probeProxy(ctx context.Context, proxyItem models.ProxyPoolItem, channel ProxyCheckChannel, timeout time.Duration) (proxyIPInfo, error) {
+func (e *proxyChannelError) Error() string {
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("检测渠道 %s 返回 HTTP %d: %v", e.Channel, e.StatusCode, e.Err)
+	}
+	return fmt.Sprintf("检测渠道 %s 失败: %v", e.Channel, e.Err)
+}
+
+func (s *ProxyPoolService) ListCheckChannels(orgID uint, includeDisabled bool) ([]models.ProxyCheckChannel, error) {
+	if err := s.proxyRepo.EnsureCheckChannels(DefaultProxyCheckChannels(orgID)); err != nil {
+		return nil, err
+	}
+	return s.proxyRepo.ListCheckChannels(orgID, includeDisabled)
+}
+
+func findConfiguredCheckChannel(channels []models.ProxyCheckChannel, key string) *models.ProxyCheckChannel {
+	for i := range channels {
+		if channels[i].Key == key {
+			return &channels[i]
+		}
+	}
+	return nil
+}
+
+func (s *ProxyPoolService) checkProxyThroughChannels(ctx context.Context, proxyItem models.ProxyPoolItem, selected models.ProxyCheckChannel, channels []models.ProxyCheckChannel, timeout time.Duration) (proxyIPInfo, string, string, bool, error) {
+	if strings.EqualFold(selected.Mode, "lookup") {
+		base, used, warning, inconclusive, err := s.probeWithFallback(ctx, proxyItem, nil, channels, timeout)
+		if err != nil {
+			return proxyIPInfo{}, used, warning, inconclusive, err
+		}
+		enriched, err := s.lookupChannel(ctx, selected, base.ExitIP, timeout)
+		if err != nil {
+			warning = joinProxyCheckWarnings(warning, err.Error())
+			return base, used, warning, false, nil
+		}
+		enriched.ExitIP = base.ExitIP
+		return enriched, selected.Key, warning, false, nil
+	}
+	return s.probeWithFallback(ctx, proxyItem, &selected, channels, timeout)
+}
+
+func (s *ProxyPoolService) probeWithFallback(ctx context.Context, proxyItem models.ProxyPoolItem, primary *models.ProxyCheckChannel, channels []models.ProxyCheckChannel, timeout time.Duration) (proxyIPInfo, string, string, bool, error) {
+	candidates := make([]models.ProxyCheckChannel, 0, 4)
+	if primary != nil {
+		candidates = append(candidates, *primary)
+	}
+	for _, channel := range channels {
+		if strings.EqualFold(channel.Mode, "lookup") || primary != nil && channel.Key == primary.Key {
+			continue
+		}
+		candidates = append(candidates, channel)
+		if len(candidates) >= 4 {
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		return proxyIPInfo{}, "", "", true, errors.New("没有已启用的出口探测渠道")
+	}
+
+	errorsSeen := make([]string, 0, len(candidates))
+	hasChannelError := false
+	for index, channel := range candidates {
+		info, err := s.probeProxy(ctx, proxyItem, channel, timeout)
+		if err == nil {
+			warning := ""
+			if index > 0 && len(errorsSeen) > 0 {
+				warning = fmt.Sprintf("首选渠道失败，已通过 %s 完成检测：%s", channel.Name, errorsSeen[0])
+			}
+			return info, channel.Key, warning, false, nil
+		}
+		errorsSeen = append(errorsSeen, err.Error())
+		var channelErr *proxyChannelError
+		if errors.As(err, &channelErr) {
+			hasChannelError = true
+		}
+	}
+	return proxyIPInfo{}, "", "", hasChannelError, errors.New(strings.Join(errorsSeen, "; "))
+}
+
+func (s *ProxyPoolService) probeProxy(ctx context.Context, proxyItem models.ProxyPoolItem, channel models.ProxyCheckChannel, timeout time.Duration) (proxyIPInfo, error) {
 	client, err := s.createHTTPClient(proxyItem, timeout)
 	if err != nil {
 		return proxyIPInfo{}, err
 	}
+	return s.requestCheckChannel(ctx, client, channel, "", timeout)
+}
 
+func (s *ProxyPoolService) lookupChannel(ctx context.Context, channel models.ProxyCheckChannel, exitIP string, timeout time.Duration) (proxyIPInfo, error) {
+	client := newDirectProxyCheckClient(timeout)
+	return s.requestCheckChannel(ctx, client, channel, exitIP, timeout)
+}
+
+func newDirectProxyCheckClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: timeout}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, fmt.Errorf("检测渠道地址无效: %w", err)
+			}
+			resolved, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("解析检测渠道地址失败: %w", err)
+			}
+			var lastErr error
+			for _, candidate := range resolved {
+				if !isPublicProxyCheckIP(candidate.IP) {
+					continue
+				}
+				conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(candidate.IP.String(), port))
+				if dialErr == nil {
+					return conn, nil
+				}
+				lastErr = dialErr
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, fmt.Errorf("检测渠道目标 %s 不允许访问非公网地址", host)
+		},
+		ForceAttemptHTTP2: true,
+	}
+	return &http.Client{Transport: transport, Timeout: timeout}
+}
+
+var blockedProxyCheckPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("2001:10::/28"),
+	netip.MustParsePrefix("2001:20::/28"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+
+func isPublicProxyCheckIP(ip net.IP) bool {
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return false
+	}
+	address, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	address = address.Unmap()
+	for _, prefix := range blockedProxyCheckPrefixes {
+		if prefix.Contains(address) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *ProxyPoolService) requestCheckChannel(ctx context.Context, client *http.Client, channel models.ProxyCheckChannel, exitIP string, timeout time.Duration) (proxyIPInfo, error) {
+	if channel.TimeoutSeconds > 0 && time.Duration(channel.TimeoutSeconds)*time.Second < timeout {
+		timeout = time.Duration(channel.TimeoutSeconds) * time.Second
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, channel.URL, nil)
+	credential := DecryptIfAvailable(channel.AuthValue)
+	requestURL := strings.ReplaceAll(channel.URLTemplate, "{{ip}}", url.QueryEscape(exitIP))
+	requestURL = strings.ReplaceAll(requestURL, "{{credential}}", url.PathEscape(credential))
+	parsedURL, err := url.Parse(requestURL)
+	if err != nil || parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: errors.New("渠道 URL 必须是有效的 HTTP/HTTPS 地址")}
+	}
+	if strings.EqualFold(channel.Mode, "lookup") && !strings.Contains(channel.URLTemplate, "{{ip}}") {
+		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: errors.New("查询型渠道 URL 缺少 {{ip}} 占位符")}
+	}
+	if strings.EqualFold(channel.AuthType, "path") && credential == "" {
+		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: errors.New("渠道尚未配置凭据")}
+	}
+	if credential != "" && strings.EqualFold(channel.AuthType, "query") {
+		query := parsedURL.Query()
+		query.Set(channel.AuthName, credential)
+		parsedURL.RawQuery = query.Encode()
+	}
+	method := strings.ToUpper(strings.TrimSpace(channel.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(reqCtx, method, parsedURL.String(), nil)
 	if err != nil {
-		return proxyIPInfo{}, err
+		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: err}
+	}
+	for name, value := range channel.Headers {
+		req.Header.Set(name, fmt.Sprint(value))
+	}
+	if credential != "" {
+		switch strings.ToLower(channel.AuthType) {
+		case "bearer":
+			req.Header.Set("Authorization", "Bearer "+credential)
+		case "header":
+			req.Header.Set(channel.AuthName, credential)
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return proxyIPInfo{}, err
 	}
 	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: readErr}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return proxyIPInfo{}, fmt.Errorf("查询出口IP失败: HTTP %d", resp.StatusCode)
+		message := strings.TrimSpace(string(body))
+		if len(message) > 200 {
+			message = message[:200]
+		}
+		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, StatusCode: resp.StatusCode, Err: errors.New(message)}
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	info, err := parseProxyIPInfo(channel, body)
 	if err != nil {
-		return proxyIPInfo{}, err
+		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: err}
 	}
-	return parseProxyIPInfo(channel.ID, body)
+	return info, nil
 }
 
 func (s *ProxyPoolService) createHTTPClient(proxyItem models.ProxyPoolItem, timeout time.Duration) (*http.Client, error) {
@@ -407,46 +626,67 @@ func (s *ProxyPoolService) createHTTPClient(proxyItem models.ProxyPoolItem, time
 	return &http.Client{Transport: transport, Timeout: timeout}, nil
 }
 
-func parseProxyIPInfo(channelID string, body []byte) (proxyIPInfo, error) {
+func parseProxyIPInfo(channel models.ProxyCheckChannel, body []byte) (proxyIPInfo, error) {
 	text := strings.TrimSpace(string(body))
 	info := proxyIPInfo{}
-	switch channelID {
-	case "icanhazip":
+	if strings.EqualFold(channel.ResponseFormat, "text") {
 		info.ExitIP = text
-		return info, nil
-	default:
-		var raw map[string]interface{}
+	} else {
+		var raw interface{}
 		if err := json.Unmarshal(body, &raw); err != nil {
 			return info, err
 		}
-		if status, _ := raw["status"].(string); status == "fail" {
-			if msg, _ := raw["message"].(string); msg != "" {
-				return info, errors.New(msg)
+		if channel.StatusField != "" && strings.EqualFold(jsonPathString(raw, channel.StatusField), channel.FailureValue) {
+			message := jsonPathString(raw, channel.MessageField)
+			if message == "" {
+				message = "IP 查询渠道返回失败"
 			}
-			return info, errors.New("IP查询渠道返回失败")
+			return info, errors.New(message)
 		}
-		info.ExitIP = firstString(raw, "query", "ip", "origin")
-		info.Country = firstString(raw, "country")
-		info.Region = firstString(raw, "regionName", "region")
-		info.City = firstString(raw, "city")
-		info.ISP = firstString(raw, "isp", "org")
-		if strings.Contains(info.ExitIP, ",") {
-			info.ExitIP = strings.TrimSpace(strings.Split(info.ExitIP, ",")[0])
-		}
-		if info.ExitIP == "" {
-			return info, errors.New("IP查询渠道未返回出口IP")
-		}
-		return info, nil
+		info.ExitIP = jsonPathString(raw, channel.IPField)
+		info.Country = jsonPathString(raw, channel.CountryField)
+		info.Region = jsonPathString(raw, channel.RegionField)
+		info.City = jsonPathString(raw, channel.CityField)
+		info.ISP = jsonPathString(raw, channel.ISPField)
 	}
+	if strings.Contains(info.ExitIP, ",") {
+		info.ExitIP = strings.TrimSpace(strings.Split(info.ExitIP, ",")[0])
+	}
+	if info.ExitIP == "" && !strings.EqualFold(channel.Mode, "lookup") {
+		return info, errors.New("IP 查询渠道未返回出口 IP")
+	}
+	return info, nil
 }
 
-func firstString(raw map[string]interface{}, keys ...string) string {
-	for _, key := range keys {
-		if value, ok := raw[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
+func jsonPathString(raw interface{}, path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	current := raw
+	for _, part := range strings.Split(path, ".") {
+		object, ok := current.(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		current, ok = object[part]
+		if !ok {
+			return ""
 		}
 	}
-	return ""
+	if current == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(current))
+}
+
+func joinProxyCheckWarnings(current, next string) string {
+	if current == "" {
+		return next
+	}
+	if next == "" {
+		return current
+	}
+	return current + "; " + next
 }
 
 func (s *ProxyPoolService) PrepareAccountProxy(account *models.EmailAccount) error {
