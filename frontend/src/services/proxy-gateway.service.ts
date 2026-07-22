@@ -52,6 +52,17 @@ export interface ProxyGatewayAccountTag {
     sortOrder?: number
 }
 
+export interface ProxyGatewayAccountRouteStrategyOverride {
+    id?: number
+    orgId?: number
+    accountId?: number
+    gatewayId: number
+    sourceRouteStrategyId: number
+    replacementRouteStrategyId: number
+    sourceRouteStrategy?: ProxyGatewayRouteStrategy
+    replacementRouteStrategy?: ProxyGatewayRouteStrategy
+}
+
 export interface ProxyGatewayAccount {
     id: number
     username: string
@@ -95,6 +106,7 @@ export interface ProxyGatewayAccount {
     proxyIndexOverflowMode?: ProxyGatewayIndexOverflowMode
     allowAllRouteStrategies: boolean
     allowedRouteStrategyIds?: number[]
+    routeStrategyOverrides?: ProxyGatewayAccountRouteStrategyOverride[]
     lastUsedAt?: string
     createdAt?: string
     updatedAt?: string
@@ -223,6 +235,8 @@ export interface ProxyGatewayAccessLog {
     routeStrategyFlagNo?: number
     primaryRouteStrategyId?: number
     fallbackRouteStrategyId?: number
+    routeStrategyOverrideSourceId?: number
+    routeStrategyOverrideReplacementId?: number
     routeFailoverUsed?: boolean
     routeFailoverReason?: string
     routeCircuitState?: 'closed' | 'open' | 'half_open' | string

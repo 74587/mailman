@@ -66,6 +66,9 @@ interface ProxyGatewayTabProps {
 }
 
 type AccountDraft = Partial<ProxyGatewayAccount> & { password?: string; tagIds?: number[] }
+type RouteStrategyDraft = Partial<ProxyGatewayRouteStrategy> & {
+    accountOverrideContext?: { overrideIndex: number; gatewayId: number; accountDraft: AccountDraft }
+}
 type MetaDraft = { id?: number; type: 'group' | 'tag'; name: string; description?: string; color?: string; sortOrder?: number }
 type SearchOption = { id: number; name: string; description?: string; color?: string; meta?: string }
 type ProxyExportProtocol = 'http' | 'socks5'
@@ -172,6 +175,7 @@ const defaultAccount = (defaultGatewayId?: number): AccountDraft => ({
     proxyIndexOverflowMode: 'reject',
     allowAllRouteStrategies: false,
     allowedRouteStrategyIds: [],
+    routeStrategyOverrides: [],
     proxyIds: [],
     proxyMatchGroupIds: [],
     proxyMatchTagIds: [],
@@ -340,7 +344,8 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
 
     const [listenerDraft, setListenerDraft] = useState<Partial<ProxyGatewayListener> | null>(null)
     const [accountDraft, setAccountDraft] = useState<AccountDraft | null>(null)
-    const [routeDraft, setRouteDraft] = useState<Partial<ProxyGatewayRouteStrategy> | null>(null)
+    const [routeDraft, setRouteDraft] = useState<RouteStrategyDraft | null>(null)
+    const [replacementDraftContext, setReplacementDraftContext] = useState<{ overrideIndex: number; gatewayId: number } | null>(null)
     const [targetRouteDraft, setTargetRouteDraft] = useState<Partial<ProxyGatewayTargetRoute> | null>(null)
     const [securityDraft, setSecurityDraft] = useState<Partial<ProxyGatewaySecurityPolicy> | null>(null)
     const [dnsDraft, setDNSDraft] = useState<Partial<ProxyGatewayDNSPolicy> | null>(null)
@@ -476,14 +481,31 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
         }
     }
 
-    const saveRouteStrategy = async () => {
-        if (!routeDraft) return
-        const payload = { ...routeDraft, gatewayId: routeDraft.gatewayId || currentGatewayId }
+    const saveRouteStrategy = async (draftToSave?: RouteStrategyDraft) => {
+        const currentRouteDraft = draftToSave || routeDraft
+        if (!currentRouteDraft) return
+        const { accountOverrideContext: replacementContext, ...routePayload } = currentRouteDraft
+        const payload = { ...routePayload, gatewayId: currentRouteDraft.gatewayId || currentGatewayId }
         try {
-            if (payload.id) {
-                await proxyGatewayService.updateRouteStrategy(payload.id, payload)
-            } else {
-                await proxyGatewayService.createRouteStrategy(payload)
+            const saved = payload.id
+                ? await proxyGatewayService.updateRouteStrategy(payload.id, payload)
+                : await proxyGatewayService.createRouteStrategy(payload)
+            if (replacementContext) {
+                setRouteStrategies(current => {
+                    const withoutSaved = current.filter(item => item.id !== saved.id)
+                    return [...withoutSaved, saved]
+                })
+                const current = replacementContext.accountDraft
+                const overrides = [...(current.routeStrategyOverrides || [])]
+                const target = overrides[replacementContext.overrideIndex]
+                if (target && target.gatewayId === replacementContext.gatewayId) {
+                    overrides[replacementContext.overrideIndex] = {
+                        ...target,
+                        replacementRouteStrategyId: saved.id,
+                    }
+                    setAccountDraft({ ...current, routeStrategyOverrides: overrides })
+                }
+                setReplacementDraftContext(null)
             }
             setRouteDraft(null)
             await loadData()
@@ -652,11 +674,18 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                         await proxyGatewayService.deleteListener(item.id)
                                         await loadData()
                                     }}
-                                    onCreateRoute={() => currentGatewayId && setRouteDraft({
-                                        ...defaultRouteStrategy(currentGatewayId),
-                                        flagNo: nextRouteStrategyFlag(safeRouteStrategies, currentGatewayId),
-                                    })}
-                                    onEditRoute={item => setRouteDraft({ ...item })}
+                                    onCreateRoute={() => {
+                                        if (!currentGatewayId) return
+                                        setReplacementDraftContext(null)
+                                        setRouteDraft({
+                                            ...defaultRouteStrategy(currentGatewayId),
+                                            flagNo: nextRouteStrategyFlag(safeRouteStrategies, currentGatewayId),
+                                        })
+                                    }}
+                                    onEditRoute={item => {
+                                        setReplacementDraftContext(null)
+                                        setRouteDraft({ ...item })
+                                    }}
                                     onDeleteRoute={async item => {
                                         if (!(await confirm.confirm({ title: '删除出口策略', description: `确认删除 ${item.name}？引用它的目标路由需要先删除，已授权账号也将无法继续使用 ?route=${item.flagNo}（兼容账号为 #${item.flagNo}）。` }))) return
                                         await proxyGatewayService.deleteRouteStrategy(item.id)
@@ -684,7 +713,19 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                     accounts={safeAccounts}
                                     gateways={safeListeners}
                                     routeStrategies={safeRouteStrategies}
-                                    onEdit={item => setAccountDraft({ ...item, password: item.password || '', tagIds: item.tags?.map(tag => tag.id) || [] })}
+                                    onEdit={item => setAccountDraft({
+                                        ...item,
+                                        password: item.password || '',
+                                        tagIds: item.tags?.map(tag => tag.id) || [],
+                                        routeStrategyOverrides: (item.routeStrategyOverrides || []).map(override => ({
+                                            id: override.id,
+                                            orgId: override.orgId,
+                                            accountId: override.accountId,
+                                            gatewayId: override.gatewayId,
+                                            sourceRouteStrategyId: override.sourceRouteStrategyId,
+                                            replacementRouteStrategyId: override.replacementRouteStrategyId,
+                                        })),
+                                    })}
                                     onDelete={async item => {
                                         if (!(await confirm.confirm({ title: '删除网关用户', description: `确认删除 ${item.username}？` }))) return
                                         await proxyGatewayService.deleteAccount(item.id)
@@ -739,6 +780,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                 <AccountModal
                     draft={accountDraft}
                     setDraft={setAccountDraft}
+                    suspended={!!replacementDraftContext}
                     gateways={safeListeners}
                     accountGroups={safeAccountGroups}
                     accountTags={safeAccountTags}
@@ -746,9 +788,38 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                     proxyGroups={safeProxyGroups}
                     proxyTags={safeProxyTags}
                     proxies={safeProxies}
+                    onCreateReplacementStrategy={(overrideIndex, gatewayId, currentAccountDraft) => {
+                        const accountOverrideContext = {
+                            overrideIndex,
+                            gatewayId,
+                            accountDraft: {
+                                ...currentAccountDraft,
+                                routeStrategyOverrides: (currentAccountDraft.routeStrategyOverrides || []).map(override => ({ ...override })),
+                            },
+                        }
+                        setReplacementDraftContext({ overrideIndex, gatewayId })
+                        setRouteDraft({
+                            ...defaultRouteStrategy(gatewayId),
+                            name: `${currentAccountDraft.name || currentAccountDraft.username || '用户'}专属出口`,
+                            flagNo: nextRouteStrategyFlag(safeRouteStrategies, gatewayId),
+                            accountOverrideContext,
+                        })
+                    }}
                     onSave={saveAccount}
                 />
-                <RouteStrategyModal draft={routeDraft} setDraft={setRouteDraft} proxyGroups={safeProxyGroups} proxyTags={safeProxyTags} proxies={safeProxies} securityPolicies={safeSecurityPolicies} dnsPolicies={safeDNSPolicies} onSave={saveRouteStrategy} />
+                <RouteStrategyModal
+                    draft={routeDraft}
+                    setDraft={setRouteDraft}
+                    onCancel={() => {
+                        setReplacementDraftContext(null)
+                    }}
+                    proxyGroups={safeProxyGroups}
+                    proxyTags={safeProxyTags}
+                    proxies={safeProxies}
+                    securityPolicies={safeSecurityPolicies}
+                    dnsPolicies={safeDNSPolicies}
+                    onSave={saveRouteStrategy}
+                />
                 <TargetRouteModal draft={targetRouteDraft} setDraft={setTargetRouteDraft} routeStrategies={safeRouteStrategies.filter(item => item.gatewayId === currentGatewayId || item.gatewayId === 0)} onSave={saveTargetRoute} />
                 <SecurityModal draft={securityDraft} setDraft={setSecurityDraft} onSave={saveSecurity} />
                 <DNSModal draft={dnsDraft} setDraft={setDNSDraft} onSave={saveDNS} />
@@ -1152,6 +1223,7 @@ function AccountsView({ accounts, gateways, routeStrategies, onEdit, onDelete }:
                                             <div>
                                                 <Badge tone="green">遵循网关</Badge>
                                                 <div className="mt-1 text-xs text-gray-500">目标路由 / 默认出口</div>
+                                                {!!item.routeStrategyOverrides?.length && <div className="mt-1"><Badge tone="blue">出口覆盖 {item.routeStrategyOverrides.length} 条</Badge></div>}
                                             </div>
                                         ) : (
                                             <div>
@@ -1245,6 +1317,7 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
     const [separator, setSeparator] = useState('#')
     const [quantity, setQuantity] = useState(0)
     const [indexMode, setIndexMode] = useState<ProxyExportIndexMode>('sequential')
+    const [startIndex, setStartIndex] = useState(1)
     const [randomSeed, setRandomSeed] = useState(1)
     const [format, setFormat] = useState<ProxyExportFormat>('url')
 
@@ -1289,12 +1362,22 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
         setQuantity(usesProxyIndex ? 20 : (availableStrategies.length ? Math.min(availableStrategies.length, 20) : 0))
     }, [account?.id, selectedGateway?.id, usesProxyIndex, availableStrategies.length])
 
+    useEffect(() => {
+        setStartIndex(1)
+    }, [account?.id])
+
+    const maxStartIndex = Number.MAX_SAFE_INTEGER - Math.max(0, quantity - 1)
+
+    useEffect(() => {
+        setStartIndex(current => Math.min(current, maxStartIndex))
+    }, [maxStartIndex])
+
     const routingEntries = useMemo(
         () => {
             if (usesProxyIndex) {
                 const numbers = indexMode === 'random'
                     ? createRandomExportNumbers(quantity, randomSeed)
-                    : Array.from({ length: quantity }, (_, index) => index + 1)
+                    : Array.from({ length: quantity }, (_, index) => startIndex + index)
                 return numbers.map(number => ({ key: `index-${number}`, number }))
             }
             const strategies = indexMode === 'random'
@@ -1302,7 +1385,7 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
                 : availableStrategies
             return strategies.slice(0, quantity).map(strategy => ({ key: `strategy-${strategy.id}`, number: strategy.flagNo }))
         },
-        [availableStrategies, indexMode, quantity, randomSeed, usesProxyIndex]
+        [availableStrategies, indexMode, quantity, randomSeed, startIndex, usesProxyIndex]
     )
 
     if (!account) return null
@@ -1421,7 +1504,7 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
                             <FieldLabel
                                 label="索引生成"
                                 help={usesProxyIndex
-                                    ? '顺序模式生成 1 到 N；随机数模式生成 N 个不重复的正整数，适合配合取模循环。'
+                                    ? '顺序模式从指定起始索引递增生成 N 条；随机数模式生成 N 个不重复的正整数，适合配合取模循环。'
                                     : '兼容模式按策略标志号升序生成，随机仅改变已授权策略的顺序。'}
                             />
                             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1457,6 +1540,23 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
                                         重新随机
                                     </button>
                                 )}
+                                {usesProxyIndex && indexMode === 'sequential' && (
+                                    <label className="inline-flex min-h-[38px] items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-sm dark:border-gray-700 dark:bg-gray-900">
+                                        <span className="whitespace-nowrap text-gray-600 dark:text-gray-300">起始索引</span>
+                                        <input
+                                            aria-label="起始索引"
+                                            type="number"
+                                            min={1}
+                                            max={maxStartIndex}
+                                            value={startIndex}
+                                            onChange={event => {
+                                                const value = Number(event.target.value)
+                                                setStartIndex(Math.max(1, Math.min(Math.trunc(value || 1), maxStartIndex)))
+                                            }}
+                                            className="w-28 border-0 bg-transparent p-0 text-right font-medium text-gray-900 outline-none dark:text-white"
+                                        />
+                                    </label>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -1475,7 +1575,7 @@ function AccountProxyExportModal({ account, gateways, routeStrategies, onClose }
                                     <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
                                         <span>共 {exportLines.length} 条</span>
                                         <span aria-hidden="true">·</span>
-                                        <span>{indexMode === 'random' ? (usesProxyIndex ? '随机数' : '随机策略顺序') : '顺序索引'}</span>
+                                        <span>{indexMode === 'random' ? (usesProxyIndex ? '随机数' : '随机策略顺序') : usesProxyIndex ? `顺序索引 · 从 ${startIndex} 开始` : '顺序索引'}</span>
                                         <div className="flex max-h-14 flex-wrap gap-1 overflow-auto" aria-label={usesProxyIndex ? '已生成池内代理索引' : '已生成策略编号'}>
                                             {routingEntries.map(entry => <Badge key={entry.key} tone="blue">{effectiveSeparator}{entry.number}</Badge>)}
                                         </div>
@@ -2513,7 +2613,7 @@ function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]
                     </details>
                 </div>
                 <TableShell>
-                    <table className="min-w-[920px] divide-y divide-gray-200 text-sm dark:divide-gray-800">
+                    <table className="w-full min-w-[920px] divide-y divide-gray-200 text-sm dark:divide-gray-800">
                         <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/60">
                             <tr>
                                 <th className="px-4 py-3 text-left">时间</th>
@@ -2531,7 +2631,7 @@ function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]
                                     <td className="whitespace-nowrap px-4 py-3 text-gray-500">{formatTime(item.createdAt)}</td>
                                     <td className="min-w-64 px-4 py-3">
                                         <div>{item.username || '-'}</div>
-                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo || item.proxyIndex || item.targetRouteId || item.routeFailoverUsed) && (
+                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo || item.proxyIndex || item.targetRouteId || item.routeFailoverUsed || item.routeStrategyOverrideSourceId) && (
                                             <div className="mt-1 flex flex-wrap gap-1 text-xs text-gray-500">
                                                 {item.requestedUsername && <span>{item.requestedUsername}</span>}
                                                 {item.clientIp && (
@@ -2541,6 +2641,9 @@ function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]
                                                 )}
                                                 {item.accountId ? <Badge>用户 ID {item.accountId}</Badge> : null}
                                                 {item.routeStrategyFlagNo ? <Badge tone="blue">#{item.routeStrategyFlagNo}</Badge> : null}
+                                                {item.routeStrategyOverrideSourceId && item.routeStrategyOverrideReplacementId ? (
+                                                    <Badge tone="blue">出口覆盖 · 策略 ID {item.routeStrategyOverrideSourceId} → {item.routeStrategyOverrideReplacementId}</Badge>
+                                                ) : null}
                                                 {item.proxyIndex ? (
                                                     <Badge tone="green">
                                                         池内 #{item.proxyIndex}
@@ -2744,9 +2847,10 @@ function ListenerModal({ draft, setDraft, securityPolicies, dnsPolicies, onSave 
     )
 }
 
-function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, routeStrategies, proxyGroups, proxyTags, proxies, onSave }: {
+function AccountModal({ draft, setDraft, suspended, gateways, accountGroups, accountTags, routeStrategies, proxyGroups, proxyTags, proxies, onCreateReplacementStrategy, onSave }: {
     draft: AccountDraft | null
     setDraft: (draft: AccountDraft | null) => void
+    suspended?: boolean
     gateways: ProxyGatewayListener[]
     accountGroups: ProxyGatewayAccountGroup[]
     accountTags: ProxyGatewayAccountTag[]
@@ -2754,6 +2858,7 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
     proxyGroups: ProxyGroup[]
     proxyTags: ProxyTag[]
     proxies: ProxyPoolItem[]
+    onCreateReplacementStrategy: (overrideIndex: number, gatewayId: number, accountDraft: AccountDraft) => void
     onSave: () => void
 }) {
     const [step, setStep] = useState<AccountStep>('identity')
@@ -2775,7 +2880,7 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
     }, [proxySelectionSource, step])
 
     useEffect(() => {
-        if (!draft) return
+        if (!draft || suspended) return
         const username = (draft.username || '').trim()
         if (!username) {
             setUsernameCheck(null)
@@ -2791,11 +2896,14 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
                 setCheckingUsername(false)
             }
         }, 450)
-        return () => clearTimeout(timer)
-    }, [draft?.username, draft?.id])
+        return () => {
+            clearTimeout(timer)
+            setCheckingUsername(false)
+        }
+    }, [draft?.username, draft?.id, suspended])
 
     useEffect(() => {
-        if (!draft) return
+        if (!draft || suspended) return
         const password = draft.password || ''
         if (!password) {
             setPasswordCheck(null)
@@ -2811,17 +2919,34 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
                 setCheckingPassword(false)
             }
         }, 450)
-        return () => clearTimeout(timer)
-    }, [draft?.password])
+        return () => {
+            clearTimeout(timer)
+            setCheckingPassword(false)
+        }
+    }, [draft?.password, suspended])
 
-    if (!draft) return null
+    if (!draft || suspended) return null
     const gatewayIds = draft.allowedGatewayIds || []
     const allowedGatewaySet = new Set(draft.allowAllGateways ? gateways.map(item => item.id) : gatewayIds)
     const routeChoices = routeStrategies.filter(item => allowedGatewaySet.has(item.gatewayId) || !item.gatewayId)
     const gatewayValid = !!draft.allowAllGateways || gatewayIds.length > 0
-    const passwordValid = draft.id && !draft.password ? true : !!passwordCheck?.valid
-    const usernameValid = !!usernameCheck?.valid
-    const canSave = usernameValid && passwordValid && gatewayValid && !checkingUsername && !checkingPassword
+    const passwordValid = draft.id && !draft.password
+        ? true
+        : passwordCheck ? !!passwordCheck.valid : !!draft.password
+    const usernameValid = usernameCheck ? !!usernameCheck.valid : !!draft.username?.trim()
+    const overrideKeys = new Set<string>()
+    const overridesValid = proxySelectionSource !== 'gateway' || (draft.routeStrategyOverrides || []).every(override => {
+        const key = `${override.gatewayId}:${override.sourceRouteStrategyId}`
+        const valid = !!override.gatewayId
+            && !!override.sourceRouteStrategyId
+            && !!override.replacementRouteStrategyId
+            && override.sourceRouteStrategyId !== override.replacementRouteStrategyId
+            && (draft.allowAllGateways || gatewayIds.includes(override.gatewayId))
+            && !overrideKeys.has(key)
+        overrideKeys.add(key)
+        return valid
+    })
+    const canSave = usernameValid && passwordValid && gatewayValid && overridesValid
     const steps: Array<{ id: AccountStep; label: string; description: string }> = [
         { id: 'identity', label: '账号信息', description: '用户名、密码、分组和标签' },
         { id: 'authorization', label: '网关授权', description: '选择账号可登录的网关' },
@@ -2842,7 +2967,7 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
     const generatePassword = generateGatewayPassword
 
     return (
-        <Modal open={!!draft} onOpenChange={open => !open && setDraft(null)}>
+        <Modal open={true} onOpenChange={open => !open && setDraft(null)}>
             <ModalContent size="6xl">
                 <ModalHeader>
                     <ModalTitle>{draft.id ? '编辑网关用户' : '新增网关用户'}</ModalTitle>
@@ -2892,7 +3017,18 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
                                 <div className="space-y-4 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
                                     <Toggle label="允许全部网关" help="开启后该用户可登录所有网关；关闭后只允许选择的网关。" checked={!!draft.allowAllGateways} onChange={value => setDraft({ ...draft, allowAllGateways: value })} />
                                     {!draft.allowAllGateways && (
-                                        <SearchMultiSelect label="可使用的网关" help="通过搜索下拉选择网关，已选网关会以标签回显，可移除。" items={gatewayOptions} selected={gatewayIds} onChange={value => setDraft({ ...draft, allowedGatewayIds: value })} placeholder="搜索网关名称、监听地址或协议" />
+                                        <SearchMultiSelect
+                                            label="可使用的网关"
+                                            help="通过搜索下拉选择网关；移除网关时，该网关对应的出口覆盖也会移除。"
+                                            items={gatewayOptions}
+                                            selected={gatewayIds}
+                                            onChange={value => setDraft({
+                                                ...draft,
+                                                allowedGatewayIds: value,
+                                                routeStrategyOverrides: (draft.routeStrategyOverrides || []).filter(override => value.includes(override.gatewayId)),
+                                            })}
+                                            placeholder="搜索网关名称、监听地址或协议"
+                                        />
                                     )}
                                     {!gatewayValid && <div className="text-xs text-rose-600">请至少选择一个可用网关</div>}
                                 </div>
@@ -2957,7 +3093,15 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
                             </>
                         )}
 
-                        {step === 'source' && <ProxySelectionSourceFields draft={draft} setDraft={setDraft} />}
+                        {step === 'source' && (
+                            <ProxySelectionSourceFields
+                                draft={draft}
+                                setDraft={setDraft}
+                                gateways={gateways}
+                                routeStrategies={routeStrategies}
+                                onCreateReplacementStrategy={onCreateReplacementStrategy}
+                            />
+                        )}
                         {step === 'proxy' && <ProxyStrategyFields draft={draft} setDraft={setDraft} proxyGroups={proxyGroups} proxyTags={proxyTags} proxies={proxies} section="selection" />}
                         {step === 'fallback' && <ProxyStrategyFields draft={draft} setDraft={setDraft} proxyGroups={proxyGroups} proxyTags={proxyTags} proxies={proxies} section="fallback" />}
                         {step === 'limits' && <AccountLimitsFields draft={draft} setDraft={setDraft} />}
@@ -2974,9 +3118,12 @@ function AccountModal({ draft, setDraft, gateways, accountGroups, accountTags, r
     )
 }
 
-function ProxySelectionSourceFields({ draft, setDraft }: {
+function ProxySelectionSourceFields({ draft, setDraft, gateways, routeStrategies, onCreateReplacementStrategy }: {
     draft: AccountDraft
     setDraft: (draft: AccountDraft | null) => void
+    gateways: ProxyGatewayListener[]
+    routeStrategies: ProxyGatewayRouteStrategy[]
+    onCreateReplacementStrategy: (overrideIndex: number, gatewayId: number, accountDraft: AccountDraft) => void
 }) {
     const source = draft.proxySelectionSource || (draft.id ? 'account' : 'gateway')
     const options = [
@@ -2991,6 +3138,48 @@ function ProxySelectionSourceFields({ draft, setDraft }: {
             description: '保留账号自己的代理池、调度和 Fallback，适用于现有接入。',
         },
     ]
+    const authorizedGateways = draft.allowAllGateways
+        ? gateways
+        : gateways.filter(item => (draft.allowedGatewayIds || []).includes(item.id))
+    const overrides = draft.routeStrategyOverrides || []
+    const gatewayOptions = toSearchOptions(authorizedGateways, item => `${item.listenIp}:${item.port} · ${item.protocol.toUpperCase()}`)
+    const strategiesForGateway = (gatewayId: number) => routeStrategies.filter(item => item.enabled && (item.gatewayId === 0 || item.gatewayId === gatewayId))
+    const strategyOptions = (gatewayId: number, excludedID?: number) => strategiesForGateway(gatewayId)
+        .filter(item => item.id !== excludedID)
+        .map(item => ({
+            id: item.id,
+            name: `#${item.flagNo} ${item.name}`,
+            description: item.description,
+            meta: item.gatewayId === 0 ? '全局策略' : '当前网关策略',
+        }))
+    const updateOverride = (index: number, next: Partial<(typeof overrides)[number]>) => {
+        const items = [...overrides]
+        items[index] = { ...items[index], ...next }
+        setDraft({ ...draft, routeStrategyOverrides: items })
+    }
+    const addOverride = () => {
+        const gateway = authorizedGateways[0]
+        if (!gateway) return
+        const strategies = strategiesForGateway(gateway.id)
+        const sourceStrategy = strategies[0]
+        const replacementStrategy = strategies.find(item => item.id !== sourceStrategy?.id)
+        setDraft({
+            ...draft,
+            routeStrategyOverrides: [
+                ...overrides,
+                {
+                    gatewayId: gateway.id,
+                    sourceRouteStrategyId: sourceStrategy?.id || 0,
+                    replacementRouteStrategyId: replacementStrategy?.id || 0,
+                },
+            ],
+        })
+    }
+    const duplicateKeys = overrides.reduce((keys, override) => {
+        const key = `${override.gatewayId}:${override.sourceRouteStrategyId}`
+        keys.set(key, (keys.get(key) || 0) + 1)
+        return keys
+    }, new Map<string, number>())
     return (
         <>
             <SectionTitle label="代理策略来源" />
@@ -3024,8 +3213,101 @@ function ProxySelectionSourceFields({ draft, setDraft }: {
                 </div>
             </fieldset>
             {source === 'gateway' ? (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
-                    用户级代理池配置会被保留但不参与选路。请求未命中目标路由时，网关必须提供默认出口，或由用户显式调用已授权的用户名路由策略。
+                <div className="space-y-4">
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+                        目标匹配、默认路由、失败切换和熔断参数仍由网关维护；下面只替换命中时使用的出口策略，包括代理池、调度和该策略的覆盖项。未配置覆盖的策略保持原样。
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-700">
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+                            <div>
+                                <div className="text-sm font-medium text-gray-900 dark:text-white">覆盖目标出口策略</div>
+                                <div className="mt-0.5 text-xs text-gray-500">按网关映射“原出口 → 用户专属出口”，主出口和兜底出口都支持。</div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={addOverride}
+                                disabled={!authorizedGateways.length || overrides.length >= 100}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"
+                            >
+                                <Plus className="h-4 w-4" />
+                                添加覆盖
+                            </button>
+                        </div>
+                        <div className="space-y-3 p-4">
+                            {overrides.map((override, index) => {
+                                const key = `${override.gatewayId}:${override.sourceRouteStrategyId}`
+                                const selfReplacement = !!override.sourceRouteStrategyId && override.sourceRouteStrategyId === override.replacementRouteStrategyId
+                                return (
+                                    <div key={override.id || `${index}-${override.gatewayId}`} className="rounded-lg bg-gray-50 p-3 dark:bg-gray-950/50">
+                                        <div className="grid gap-3 lg:grid-cols-[minmax(180px,0.8fr)_minmax(220px,1fr)_minmax(220px,1fr)_40px]">
+                                            <SearchSelect
+                                                label="网关"
+                                                items={gatewayOptions}
+                                                value={override.gatewayId || undefined}
+                                                clearable={false}
+                                                onChange={gatewayId => {
+                                                    const nextGatewayId = gatewayId || 0
+                                                    const strategies = strategiesForGateway(nextGatewayId)
+                                                    const sourceStrategy = strategies[0]
+                                                    updateOverride(index, {
+                                                        gatewayId: nextGatewayId,
+                                                        sourceRouteStrategyId: sourceStrategy?.id || 0,
+                                                        replacementRouteStrategyId: strategies.find(item => item.id !== sourceStrategy?.id)?.id || 0,
+                                                    })
+                                                }}
+                                                placeholder="选择网关"
+                                            />
+                                            <SearchSelect
+                                                label="网关原出口"
+                                                help="目标路由命中该策略时触发覆盖。"
+                                                items={strategyOptions(override.gatewayId)}
+                                                value={override.sourceRouteStrategyId || undefined}
+                                                clearable={false}
+                                                onChange={sourceRouteStrategyId => updateOverride(index, {
+                                                    sourceRouteStrategyId: sourceRouteStrategyId || 0,
+                                                    replacementRouteStrategyId: override.replacementRouteStrategyId === sourceRouteStrategyId ? 0 : override.replacementRouteStrategyId,
+                                                })}
+                                                placeholder="选择原出口策略"
+                                            />
+                                            <div>
+                                                <SearchSelect
+                                                    label="替换为"
+                                                    help="只替换代理池和该出口自身的调度、Fallback、安全与 DNS 设置。"
+                                                    items={strategyOptions(override.gatewayId, override.sourceRouteStrategyId)}
+                                                    value={override.replacementRouteStrategyId || undefined}
+                                                    clearable={false}
+                                                    onChange={replacementRouteStrategyId => updateOverride(index, { replacementRouteStrategyId: replacementRouteStrategyId || 0 })}
+                                                    placeholder="选择用户专属出口"
+                                                    emptyLabel="没有其他出口策略，请先新建"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    disabled={!override.gatewayId}
+                                                    onClick={() => onCreateReplacementStrategy(index, override.gatewayId, draft)}
+                                                    className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:cursor-not-allowed disabled:text-gray-400"
+                                                >
+                                                    <Plus className="h-3.5 w-3.5" />
+                                                    新建替换策略
+                                                </button>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                aria-label={`删除第 ${index + 1} 条出口覆盖`}
+                                                onClick={() => setDraft({ ...draft, routeStrategyOverrides: overrides.filter((_, itemIndex) => itemIndex !== index) })}
+                                                className="mt-6 flex h-9 w-9 items-center justify-center rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-950/30"
+                                            >
+                                                <Trash2 className="h-4 w-4" />
+                                            </button>
+                                        </div>
+                                        {(!override.gatewayId || !override.sourceRouteStrategyId || !override.replacementRouteStrategyId) && <div className="mt-2 text-xs text-rose-600">请完整选择网关、原出口和替换出口。</div>}
+                                        {selfReplacement && <div className="mt-2 text-xs text-rose-600">替换出口不能与原出口相同。</div>}
+                                        {(duplicateKeys.get(key) || 0) > 1 && <div className="mt-2 text-xs text-rose-600">同一网关的同一原出口只能配置一次。</div>}
+                                    </div>
+                                )
+                            })}
+                            {!overrides.length && <div className="py-5 text-center text-sm text-gray-500">当前用户不覆盖出口，完全遵循网关配置。</div>}
+                        </div>
+                    </div>
                 </div>
             ) : (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
@@ -3244,15 +3526,16 @@ function TargetRouteModal({ draft, setDraft, routeStrategies, onSave }: {
     )
 }
 
-function RouteStrategyModal({ draft, setDraft, proxyGroups, proxyTags, proxies, securityPolicies, dnsPolicies, onSave }: {
-    draft: Partial<ProxyGatewayRouteStrategy> | null
-    setDraft: (draft: Partial<ProxyGatewayRouteStrategy> | null) => void
+function RouteStrategyModal({ draft, setDraft, proxyGroups, proxyTags, proxies, securityPolicies, dnsPolicies, onSave, onCancel }: {
+    draft: RouteStrategyDraft | null
+    setDraft: (draft: RouteStrategyDraft | null) => void
     proxyGroups: ProxyGroup[]
     proxyTags: ProxyTag[]
     proxies: ProxyPoolItem[]
     securityPolicies: ProxyGatewaySecurityPolicy[]
     dnsPolicies: ProxyGatewayDNSPolicy[]
-    onSave: () => void
+    onSave: (draft: RouteStrategyDraft) => void
+    onCancel?: () => void
 }) {
     const [step, setStep] = useState<RouteStep>('basic')
 
@@ -3270,9 +3553,13 @@ function RouteStrategyModal({ draft, setDraft, proxyGroups, proxyTags, proxies, 
     const stepIndex = Math.max(0, steps.findIndex(item => item.id === step))
     const securityOptions = toSearchOptions(securityPolicies, item => item.description || (item.isDefault ? '默认安全策略' : undefined))
     const dnsOptions = toSearchOptions(dnsPolicies, item => item.description || `${item.mode} · TTL ${item.cacheTtlSeconds}s`)
+    const close = () => {
+        setDraft(null)
+        onCancel?.()
+    }
 
     return (
-        <Modal open={!!draft} onOpenChange={open => !open && setDraft(null)}>
+        <Modal open={!!draft} onOpenChange={open => !open && close()}>
             <ModalContent size="6xl">
                 <ModalHeader>
                     <ModalTitle>{draft.id ? '编辑出口策略' : '新增出口策略'}</ModalTitle>
@@ -3309,10 +3596,10 @@ function RouteStrategyModal({ draft, setDraft, proxyGroups, proxyTags, proxies, 
                     </div>
                 </ModalBody>
                 <ModalFooter>
-                    <button onClick={() => setDraft(null)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm dark:border-gray-700">取消</button>
+                    <button onClick={close} className="rounded-lg border border-gray-200 px-4 py-2 text-sm dark:border-gray-700">取消</button>
                     {stepIndex > 0 && <button onClick={() => setStep(steps[stepIndex - 1].id)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm dark:border-gray-700">上一步</button>}
                     {stepIndex < steps.length - 1 && <button onClick={() => setStep(steps[stepIndex + 1].id)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm dark:border-gray-700">下一步</button>}
-                    <button onClick={onSave} className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white">保存</button>
+                    <button onClick={() => onSave(draft)} className="rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white">保存</button>
                 </ModalFooter>
             </ModalContent>
         </Modal>

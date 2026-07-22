@@ -212,6 +212,8 @@ const accessLogs = [
         routeStrategyFlagNo: 4,
         primaryRouteStrategyId: 101,
         fallbackRouteStrategyId: 102,
+        routeStrategyOverrideSourceId: 101,
+        routeStrategyOverrideReplacementId: 102,
         routeFailoverUsed: true,
         routeFailoverReason: 'primary route unavailable',
         routeCircuitState: 'open',
@@ -227,6 +229,10 @@ const accessLogs = [
 ]
 
 const gatewayLogRequests = []
+const accountUpdateRequests = []
+const routeStrategyCreateRequests = []
+const accountValidationRequests = []
+const mutationRequests = []
 
 function mockPayload(requestUrl) {
     const url = typeof requestUrl === 'string' ? new URL(requestUrl) : requestUrl
@@ -272,7 +278,46 @@ async function configurePage(page, width, height) {
     })
     await page.setRequestInterception(true)
     page.on('request', request => {
-        const payload = mockPayload(new URL(request.url()))
+        const requestUrl = new URL(request.url())
+        const pathname = requestUrl.pathname
+        if (request.method() !== 'GET') mutationRequests.push({ method: request.method(), pathname })
+        if (request.method() === 'OPTIONS' && pathname.includes('/proxy-gateway/')) {
+            request.respond({
+                status: 204,
+                headers: {
+                    'access-control-allow-origin': '*',
+                    'access-control-allow-headers': '*',
+                    'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+                },
+            })
+            return
+        }
+        if (request.method() === 'POST' && pathname.endsWith('/proxy-gateway/accounts/validate-username')) {
+            accountValidationRequests.push('username')
+            request.respond({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ valid: true, available: true, message: '用户名可用' }) })
+            return
+        }
+        if (request.method() === 'POST' && pathname.endsWith('/proxy-gateway/accounts/validate-password')) {
+            accountValidationRequests.push('password')
+            request.respond({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ valid: true, strength: 'strong', message: '密码强度良好' }) })
+            return
+        }
+        if (request.method() === 'POST' && pathname.endsWith('/proxy-gateway/route-strategies')) {
+            const body = JSON.parse(request.postData() || '{}')
+            routeStrategyCreateRequests.push(body)
+            const saved = { ...body, id: 108 }
+            routeStrategies.push(saved)
+            request.respond({ status: 201, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(saved) })
+            return
+        }
+        if ((request.method() === 'PUT' && pathname.includes('/proxy-gateway/accounts/'))
+            || (request.method() === 'POST' && pathname.endsWith('/proxy-gateway/accounts'))) {
+            const body = JSON.parse(request.postData() || '{}')
+            accountUpdateRequests.push({ ...body, __method: request.method(), __pathname: pathname })
+            request.respond({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify({ ...accounts[0], ...body }) })
+            return
+        }
+        const payload = mockPayload(requestUrl)
         if (payload === undefined) {
             request.continue()
             return
@@ -372,6 +417,98 @@ async function run() {
         const exportButtonCount = await desktop.$$eval('button[aria-label="批量导出智能路由代理"]', elements => elements.length)
         assert(exportButtonCount === 1, `only smart-routing accounts should expose export, received ${exportButtonCount}`)
 
+        await desktop.click('tbody tr:first-child button[aria-label="编辑"]')
+        await desktop.waitForFunction(() => Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).some(element => element.textContent?.includes('编辑网关用户')))
+        await desktop.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.includes('出口来源'))
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Account egress source wizard step not found')
+            button.click()
+        })
+        await desktop.waitForFunction(() => document.body.innerText.includes('覆盖目标出口策略'))
+        await desktop.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '添加覆盖')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Add account route override action not found')
+            button.click()
+        })
+        await desktop.waitForFunction(() => {
+            const source = document.querySelector('input[aria-label="网关原出口"]')
+            const replacement = document.querySelector('input[aria-label="替换为"]')
+            return source?.value.includes('IPv6 默认池') && replacement?.value.includes('IPv4 服务池')
+        })
+        const accountOverrideMetrics = await desktop.evaluate(() => {
+            const source = document.querySelector('input[aria-label="网关原出口"]')
+            const replacement = document.querySelector('input[aria-label="替换为"]')
+            return {
+                source: source?.value,
+                replacement: replacement?.value,
+                bodyScrollWidth: document.body.scrollWidth,
+                viewportWidth: window.innerWidth,
+            }
+        })
+        assert(accountOverrideMetrics.bodyScrollWidth <= accountOverrideMetrics.viewportWidth, 'account route override editor should not create desktop body overflow')
+        await desktop.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '新建替换策略')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Create replacement route strategy action not found')
+            button.click()
+        })
+        await desktop.waitForFunction(() => document.body.innerText.includes('新增出口策略'))
+        await desktop.evaluate(() => {
+            const modal = Array.from(document.querySelectorAll('[role="dialog"]')).find(element => element.textContent?.includes('新增出口策略'))
+            const button = Array.from(modal?.querySelectorAll('button') || []).find(element => element.textContent?.trim() === '保存')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Save replacement route strategy action not found')
+            button.click()
+        })
+        for (let attempt = 0; attempt < 30; attempt++) {
+            const accountReopened = await desktop.evaluate(() => Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).some(element => element.textContent?.includes('编辑网关用户')))
+            if (accountReopened) break
+            await delay(100)
+        }
+        const handoffDialogs = await desktop.evaluate(() => Array.from(document.querySelectorAll('[role="dialog"]')).map(element => ({
+            state: element.getAttribute('data-state'),
+            text: (element.textContent || '').slice(0, 200),
+        })))
+        const handoffBodyText = await desktop.evaluate(() => document.body.innerText.slice(-800))
+        assert(handoffDialogs.some(dialog => dialog.state === 'open' && dialog.text.includes('编辑网关用户')), `account modal did not reopen after replacement creation: dialogs=${JSON.stringify(handoffDialogs)} body=${handoffBodyText}`)
+        const replacementAfterCreate = await desktop.evaluate(() => ({
+            value: document.querySelector('[role="dialog"][data-state="open"] input[aria-label="替换为"]')?.value || '',
+            text: document.body.innerText,
+        }))
+        assert(replacementAfterCreate.value.includes('智能路由测试用户专属出口'), `new replacement strategy should be selected after modal handoff: value=${replacementAfterCreate.value} requests=${JSON.stringify(routeStrategyCreateRequests)}`)
+        assert(routeStrategyCreateRequests.length === 1 && routeStrategyCreateRequests[0].gatewayId === 11, `replacement route strategy should be created for gateway 11: ${JSON.stringify(routeStrategyCreateRequests)}`)
+        for (let attempt = 0; attempt < 30; attempt++) {
+            const enabled = await desktop.evaluate(() => {
+                const modal = Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).find(element => element.textContent?.includes('编辑网关用户'))
+                const button = Array.from(modal?.querySelectorAll('button') || []).find(element => element.textContent?.trim() === '保存')
+                return button instanceof HTMLButtonElement && !button.disabled
+            })
+            if (enabled) break
+            await delay(100)
+        }
+        const accountSaveState = await desktop.evaluate(() => {
+            const modal = Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).find(element => element.textContent?.includes('编辑网关用户'))
+            const button = Array.from(modal?.querySelectorAll('button') || []).find(element => element.textContent?.trim() === '保存')
+            return { disabled: button instanceof HTMLButtonElement ? button.disabled : null, text: modal?.textContent || '' }
+        })
+        assert(accountSaveState.disabled === false, `account override save stayed disabled: validations=${JSON.stringify(accountValidationRequests)} state=${JSON.stringify(accountSaveState)}`)
+        await desktop.evaluate(() => {
+            const modal = Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).find(element => element.textContent?.includes('编辑网关用户'))
+            const button = Array.from(modal?.querySelectorAll('button') || []).find(element => element.textContent?.trim() === '保存')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Save account override action not found')
+            button.click()
+        })
+        for (let attempt = 0; attempt < 30; attempt++) {
+            const stillOpen = await desktop.evaluate(() => Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).some(element => element.textContent?.includes('编辑网关用户')))
+            if (!stillOpen) break
+            await delay(100)
+        }
+        const accountStillOpen = await desktop.evaluate(() => Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).some(element => element.textContent?.includes('编辑网关用户')))
+        const accountSaveBody = await desktop.evaluate(() => document.body.innerText.slice(-500))
+        assert(!accountStillOpen, `account modal stayed open after save: requests=${JSON.stringify(accountUpdateRequests)} mutations=${JSON.stringify(mutationRequests)} body=${accountSaveBody}`)
+        assert(accountUpdateRequests.length === 1, `account override save request count=${accountUpdateRequests.length}`)
+        assert(accountUpdateRequests[0].__method === 'PUT' && accountUpdateRequests[0].__pathname.endsWith('/accounts/21'), `editing an account should use its update endpoint: ${JSON.stringify(accountUpdateRequests[0])}`)
+        const savedOverride = accountUpdateRequests[0].routeStrategyOverrides?.[0]
+        assert(savedOverride?.gatewayId === 11 && savedOverride?.sourceRouteStrategyId === 101 && savedOverride?.replacementRouteStrategyId === 108, `account override payload is incorrect: ${JSON.stringify(savedOverride)}`)
+
         await desktop.click('button[aria-label="批量导出智能路由代理"]')
         await desktop.waitForSelector('pre code')
         const focusedOnOpen = await desktop.evaluate(() => document.activeElement?.tagName)
@@ -391,6 +528,17 @@ async function run() {
         assert(preview.split('\n').length === 2, `generated quantity should equal output rows, received ${preview.split('\n').length}`)
         const activeProtocols = await desktop.$$eval('[role="radiogroup"][aria-label="代理协议"] [role="radio"][aria-checked="true"]', buttons => buttons.map(button => button.textContent?.trim()))
         assert(activeProtocols.length === 1 && activeProtocols[0] === 'HTTP', 'protocol selector should be a single-choice control')
+
+        await setNumberByLabel(desktop, '起始索引', 25)
+        await desktop.waitForFunction(() => {
+            const text = document.querySelector('pre code')?.textContent || ''
+            return text.includes('route-user%2325') && text.includes('route-user%2326')
+        })
+        preview = await desktop.$eval('pre code', element => element.textContent || '')
+        assert(!preview.includes('route-user%231:'), 'custom sequential start should replace the default index one')
+        assert((await desktop.evaluate(() => document.body.innerText)).includes('顺序索引 · 从 25 开始'), 'preview should identify the selected sequential start index')
+        await setNumberByLabel(desktop, '起始索引', 1)
+        await desktop.waitForFunction(() => document.querySelector('pre code')?.textContent?.includes('route-user%231:'))
 
         await setNumberByLabel(desktop, '生成数量', 20)
         await desktop.waitForFunction(() => (document.querySelector('pre code')?.textContent || '').split('\n').length === 20)
@@ -443,6 +591,7 @@ async function run() {
         await setNumberByLabel(desktop, '生成数量', 4)
         await selectRadioByGroup(desktop, '索引生成方式', '随机数')
         await desktop.waitForSelector('button')
+        assert(await desktop.$('input[aria-label="起始索引"]') === null, 'random mode should hide the sequential start index control')
         await selectByLabel(desktop, '导出格式', 'url')
         await desktop.waitForFunction(() => (document.querySelector('pre code')?.textContent || '').split('\n').length === 4)
         const randomIndexes = await desktop.$$eval('[aria-label="已生成池内代理索引"] span', badges => badges.map(badge => badge.textContent?.trim()))
@@ -455,6 +604,7 @@ async function run() {
             button.click()
         })
         await selectRadioByGroup(desktop, '索引生成方式', '顺序')
+        await desktop.waitForSelector('input[aria-label="起始索引"]')
         await setNumberByLabel(desktop, '生成数量', 1)
         await desktop.waitForFunction(() => document.querySelector('pre code')?.textContent?.includes('route-user--1'))
         preview = await desktop.$eval('pre code', element => element.textContent || '')
@@ -519,6 +669,53 @@ async function run() {
         await configurePage(mobile, 390, 844)
         await mobile.goto(`${baseUrl}${routePath}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
         await mobile.waitForFunction(() => document.body.innerText.includes('route-user'), { timeout: 60_000 })
+        await mobile.click('tbody tr:first-child button[aria-label="编辑"]')
+        await mobile.waitForFunction(() => Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).some(element => element.textContent?.includes('编辑网关用户')))
+        await mobile.evaluate(() => {
+            const sourceStep = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.includes('出口来源'))
+            if (!(sourceStep instanceof HTMLButtonElement)) throw new Error('Mobile account egress source step not found')
+            sourceStep.click()
+        })
+        await mobile.waitForFunction(() => document.body.innerText.includes('覆盖目标出口策略'))
+        await mobile.evaluate(() => {
+            const add = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '添加覆盖')
+            if (!(add instanceof HTMLButtonElement)) throw new Error('Mobile add route override action not found')
+            add.click()
+        })
+        await delay(250)
+        await mobile.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"][data-state="open"]')
+            const replacement = dialog?.querySelector('input[aria-label="替换为"]')
+            replacement?.scrollIntoView({ block: 'center', inline: 'nearest' })
+        })
+        await delay(150)
+        const mobileOverrideMetrics = await mobile.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"][data-state="open"]')
+            const replacement = dialog?.querySelector('input[aria-label="替换为"]')
+            const dialogRect = dialog?.getBoundingClientRect()
+            const replacementRect = replacement?.getBoundingClientRect()
+            return {
+                viewportWidth: window.innerWidth,
+                bodyScrollWidth: document.body.scrollWidth,
+                dialogLeft: dialogRect?.left || 0,
+                dialogRight: dialogRect?.right || 0,
+                replacementTop: replacementRect?.top || 0,
+                replacementRight: replacementRect?.right || 0,
+                replacementBottom: replacementRect?.bottom || 0,
+            }
+        })
+        assert(mobileOverrideMetrics.bodyScrollWidth <= mobileOverrideMetrics.viewportWidth, 'mobile account route override editor should not create body overflow')
+        assert(mobileOverrideMetrics.dialogLeft >= 0 && mobileOverrideMetrics.dialogRight <= mobileOverrideMetrics.viewportWidth, 'mobile account route override modal should stay inside the viewport')
+        assert(mobileOverrideMetrics.replacementRight <= mobileOverrideMetrics.viewportWidth, 'mobile replacement strategy selector should stay inside the viewport')
+        assert(mobileOverrideMetrics.replacementTop >= 0 && mobileOverrideMetrics.replacementBottom <= 844, 'mobile replacement strategy selector should be reachable inside the viewport')
+        await mobile.screenshot({ path: join(artifactDir, 'account-route-override-mobile.png'), fullPage: true })
+        await mobile.evaluate(() => {
+            const dialog = document.querySelector('[role="dialog"][data-state="open"]')
+            const cancel = Array.from(dialog?.querySelectorAll('button') || []).find(element => element.textContent?.trim() === '取消')
+            if (!(cancel instanceof HTMLButtonElement)) throw new Error('Close mobile account override editor action not found')
+            cancel.click()
+        })
+        await mobile.waitForFunction(() => !Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]')).some(element => element.textContent?.includes('编辑网关用户')))
         await mobile.click('button[aria-label="批量导出智能路由代理"]')
         await mobile.waitForSelector('[role="dialog"]')
         await delay(300)
@@ -582,7 +779,7 @@ async function run() {
             const label = Array.from(document.querySelectorAll('label')).find(element => element.innerText.includes('标志号'))
             return label?.querySelector('input[type="number"]')?.value
         })
-        assert(nextFlagNo === '2', `new route strategies should choose the first unused gateway flag, received ${nextFlagNo}`)
+        assert(nextFlagNo === '3', `new route strategies should skip the flag used by the account replacement strategy, received ${nextFlagNo}`)
         await gatewayPage.evaluate(() => {
             const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.includes('代理选择'))
             if (!(button instanceof HTMLButtonElement)) throw new Error('Proxy selection wizard step not found')
@@ -698,6 +895,7 @@ async function run() {
         assert(failoverLogText.includes('api.example.test:443'), 'gateway log should display the destination host and port')
         assert(failoverLogText.includes('主策略失败：primary route unavailable'), 'gateway log should label the primary failure reason on a successful failover')
         assert(failoverLogText.includes('熔断 open'), 'gateway log should display the circuit state')
+        assert(failoverLogText.includes('出口覆盖 · 策略 ID 101 → 102'), 'gateway log should expose the effective account egress override')
         const failoverLogMetrics = await gatewayPage.evaluate(() => {
             const table = Array.from(document.querySelectorAll('table')).find(element => element.innerText.includes('熔断缓存命中'))
             const row = table?.querySelector('tbody tr')
@@ -765,6 +963,22 @@ async function run() {
 
         await gatewayPage.screenshot({ path: join(artifactDir, 'gateway-failover-log.png'), fullPage: true })
 
+        await gatewayPage.setViewport({ width: 2880, height: 1080, deviceScaleFactor: 1 })
+        await delay(300)
+        const gatewayLogWideMetrics = await gatewayPage.evaluate(() => {
+            const table = Array.from(document.querySelectorAll('table')).find(element => element.innerText.includes('熔断缓存命中'))
+            const scrollContainer = table?.parentElement
+            return {
+                viewportWidth: window.innerWidth,
+                bodyScrollWidth: document.body.scrollWidth,
+                tableWidth: table?.getBoundingClientRect().width || 0,
+                scrollContainerWidth: scrollContainer?.getBoundingClientRect().width || 0,
+            }
+        })
+        assert(gatewayLogWideMetrics.bodyScrollWidth <= gatewayLogWideMetrics.viewportWidth, 'wide gateway logs should not create body overflow')
+        assert(Math.abs(gatewayLogWideMetrics.tableWidth - gatewayLogWideMetrics.scrollContainerWidth) <= 2, `gateway log table should fill its panel on wide screens: ${JSON.stringify(gatewayLogWideMetrics)}`)
+        await gatewayPage.screenshot({ path: join(artifactDir, 'gateway-log-wide.png'), fullPage: true })
+
         await gatewayPage.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 })
         await delay(300)
         const gatewayLogMobileMetrics = await gatewayPage.evaluate(() => ({
@@ -782,6 +996,7 @@ async function run() {
             exportRows: preview.split('\n').length,
             desktopModal: modalMetrics,
             mobileModal: mobileMetrics,
+            mobileAccountOverride: mobileOverrideMetrics,
             defaultGatewaySeparator: defaultSeparator,
             nextRouteStrategyFlag: nextFlagNo,
             defaultIndexOverflowMode: defaultOverflowMode,
@@ -791,6 +1006,7 @@ async function run() {
             targetRouteMobileModal: targetRouteMobileMetrics,
             failoverLogMetrics,
             filteredLogRequest,
+            gatewayLogWideMetrics,
             gatewayLogMobileMetrics,
             artifacts: artifactDir,
         }, null, 2))

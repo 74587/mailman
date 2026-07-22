@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"mailman/internal/repository"
 	"mailman/internal/services"
 
+	"github.com/gorilla/mux"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -167,6 +169,122 @@ func TestValidateProxyGatewayUsernameRoutingSettings(t *testing.T) {
 	validOverflow := models.ProxyGatewayIndexOverflowModulo
 	if message := validateUsernameRoutingSettings(&validRouting, &validOverflow); message != "" {
 		t.Fatalf("valid username routing settings rejected: %s", message)
+	}
+}
+
+func TestProxyGatewayAccountRouteStrategyOverridesValidateAndPersist(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:account-route-overrides?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(
+		&models.ProxyGatewayListener{},
+		&models.ProxyGatewayAccount{},
+		&models.ProxyGatewayRouteStrategy{},
+		&models.ProxyGatewayAccountRouteStrategyOverride{},
+		&models.ProxyGatewayTargetRoute{},
+		&models.ProxyGatewayAccountGroup{},
+		&models.ProxyGatewayAccountTag{},
+		&models.ProxyGatewayAccountTagLink{},
+		&models.ProxyGatewaySecurityPolicy{},
+		&models.ProxyGatewayDNSPolicy{},
+	); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	listener := models.ProxyGatewayListener{OrgID: defaultOrgID, Name: "override gateway", ListenIP: "127.0.0.1", Port: 18171, Protocol: models.ProxyGatewayProtocolMixed}
+	otherListener := models.ProxyGatewayListener{OrgID: defaultOrgID, Name: "other gateway", ListenIP: "127.0.0.1", Port: 18172, Protocol: models.ProxyGatewayProtocolMixed}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	if err := db.Create(&otherListener).Error; err != nil {
+		t.Fatalf("create other listener: %v", err)
+	}
+	source := models.ProxyGatewayRouteStrategy{OrgID: defaultOrgID, GatewayID: listener.ID, Name: "shared", FlagNo: 1, Enabled: true}
+	replacement := models.ProxyGatewayRouteStrategy{OrgID: defaultOrgID, GatewayID: listener.ID, Name: "account pool", FlagNo: 2, Enabled: true}
+	wrongGateway := models.ProxyGatewayRouteStrategy{OrgID: defaultOrgID, GatewayID: otherListener.ID, Name: "wrong", FlagNo: 1, Enabled: true}
+	for _, strategy := range []*models.ProxyGatewayRouteStrategy{&source, &replacement, &wrongGateway} {
+		if err := db.Create(strategy).Error; err != nil {
+			t.Fatalf("create route strategy %s: %v", strategy.Name, err)
+		}
+	}
+	repo := repository.NewProxyGatewayRepository(db)
+	handler := NewProxyGatewayHandlers(repo, services.NewProxyGatewayService(repo, repository.NewProxyPoolRepository(db)))
+	account := models.ProxyGatewayAccount{
+		OrgID: defaultOrgID, Username: "override-user", Enabled: true,
+		ProxySelectionSource: models.ProxyGatewaySelectionSourceGateway,
+		AllowedGatewayIDs:    models.UintSlice{listener.ID},
+	}
+	overrides := []models.ProxyGatewayAccountRouteStrategyOverride{{
+		GatewayID: listener.ID, SourceRouteStrategyID: source.ID, ReplacementRouteStrategyID: replacement.ID,
+	}}
+	if err := handler.validateAccountRouteStrategyOverrides(defaultOrgID, &account, overrides); err != nil {
+		t.Fatalf("valid route strategy override rejected: %v", err)
+	}
+	duplicate := append(append([]models.ProxyGatewayAccountRouteStrategyOverride{}, overrides...), overrides[0])
+	if err := handler.validateAccountRouteStrategyOverrides(defaultOrgID, &account, duplicate); err == nil || !strings.Contains(err.Error(), "duplicates") {
+		t.Fatalf("duplicate override error=%v", err)
+	}
+	crossGateway := []models.ProxyGatewayAccountRouteStrategyOverride{{
+		GatewayID: listener.ID, SourceRouteStrategyID: source.ID, ReplacementRouteStrategyID: wrongGateway.ID,
+	}}
+	if err := handler.validateAccountRouteStrategyOverrides(defaultOrgID, &account, crossGateway); err == nil || !strings.Contains(err.Error(), "another gateway") {
+		t.Fatalf("cross-gateway replacement error=%v", err)
+	}
+	if err := repo.SaveAccount(&account); err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	if err := repo.SetAccountRouteStrategyOverrides(defaultOrgID, account.ID, overrides); err != nil {
+		t.Fatalf("persist route strategy override: %v", err)
+	}
+	loaded, err := repo.GetAccount(defaultOrgID, account.ID)
+	if err != nil {
+		t.Fatalf("reload account: %v", err)
+	}
+	if len(loaded.RouteStrategyOverrides) != 1 || loaded.RouteStrategyOverrides[0].ReplacementRouteStrategy == nil || loaded.RouteStrategyOverrides[0].ReplacementRouteStrategy.ID != replacement.ID {
+		t.Fatalf("persisted override relation=%+v", loaded.RouteStrategyOverrides)
+	}
+	updateRequest := httptest.NewRequest(http.MethodPut, "/api/proxy-gateway/accounts/1", strings.NewReader(`{"username":"override-user","enabled":true}`))
+	updateRequest = mux.SetURLVars(updateRequest, map[string]string{"id": strconv.FormatUint(uint64(account.ID), 10)})
+	updateRecorder := httptest.NewRecorder()
+	handler.UpdateAccount(updateRecorder, updateRequest)
+	if updateRecorder.Code != http.StatusOK {
+		t.Fatalf("legacy account update status=%d body=%s", updateRecorder.Code, updateRecorder.Body.String())
+	}
+	var overrideCount int64
+	if err := db.Model(&models.ProxyGatewayAccountRouteStrategyOverride{}).Where("account_id = ?", account.ID).Count(&overrideCount).Error; err != nil || overrideCount != 1 {
+		t.Fatalf("omitted override update changed stored mappings count=%d err=%v", overrideCount, err)
+	}
+	account.ProxySelectionSource = models.ProxyGatewaySelectionSourceAccount
+	if err := repo.SaveAccount(&account); err != nil {
+		t.Fatalf("switch account to legacy source: %v", err)
+	}
+	if err := db.Model(&models.ProxyGatewayAccountRouteStrategyOverride{}).
+		Where("account_id = ?", account.ID).
+		Update("replacement_route_strategy_id", wrongGateway.ID).Error; err != nil {
+		t.Fatalf("seed inactive invalid override: %v", err)
+	}
+	gatewaySource := models.ProxyGatewaySelectionSourceGateway
+	switchBody := fmt.Sprintf(`{"username":"override-user","enabled":true,"proxySelectionSource":%q}`, gatewaySource)
+	switchRequest := httptest.NewRequest(http.MethodPut, "/api/proxy-gateway/accounts/1", strings.NewReader(switchBody))
+	switchRequest = mux.SetURLVars(switchRequest, map[string]string{"id": strconv.FormatUint(uint64(account.ID), 10)})
+	switchRecorder := httptest.NewRecorder()
+	handler.UpdateAccount(switchRecorder, switchRequest)
+	if switchRecorder.Code != http.StatusBadRequest || !strings.Contains(switchRecorder.Body.String(), "another gateway") {
+		t.Fatalf("switching to gateway source accepted invalid preserved override status=%d body=%s", switchRecorder.Code, switchRecorder.Body.String())
+	}
+	if err := db.Model(&models.ProxyGatewayAccountRouteStrategyOverride{}).
+		Where("account_id = ?", account.ID).
+		Update("replacement_route_strategy_id", replacement.ID).Error; err != nil {
+		t.Fatalf("restore valid override: %v", err)
+	}
+	if err := repo.DeleteRouteStrategy(defaultOrgID, replacement.ID); err == nil || !strings.Contains(err.Error(), "account override") {
+		t.Fatalf("referenced replacement deletion error=%v", err)
+	}
+	if err := repo.DeleteListener(defaultOrgID, listener.ID); err != nil {
+		t.Fatalf("delete listener: %v", err)
+	}
+	if err := db.Model(&models.ProxyGatewayAccountRouteStrategyOverride{}).Where("gateway_id = ?", listener.ID).Count(&overrideCount).Error; err != nil || overrideCount != 0 {
+		t.Fatalf("listener deletion left stale account overrides count=%d err=%v", overrideCount, err)
 	}
 }
 

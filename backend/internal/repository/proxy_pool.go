@@ -180,6 +180,7 @@ func (r *ProxyPoolRepository) List(orgID uint, filter ProxyPoolFilter) ([]models
 		Preload("Group").
 		Preload("Tags").
 		Order(order).
+		Order("id DESC").
 		Limit(filter.Limit).
 		Offset((filter.Page - 1) * filter.Limit).
 		Find(&proxies).Error
@@ -454,7 +455,7 @@ func (r *ProxyPoolRepository) CreateCheckChannel(channel *models.ProxyCheckChann
 }
 
 func (r *ProxyPoolRepository) UpdateCheckChannel(channel *models.ProxyCheckChannel) error {
-	return r.db.Select("name", "provider", "description", "mode", "url_template", "method", "response_format", "ip_field", "country_field", "region_field", "city_field", "isp_field", "status_field", "failure_value", "message_field", "headers", "auth_type", "auth_name", "auth_value", "enabled", "supports_ipv4", "supports_ipv6", "timeout_seconds", "sort_order", "updated_at").Save(channel).Error
+	return r.db.Select("name", "provider", "description", "mode", "url_template", "method", "response_format", "response_regex", "ip_field", "country_field", "region_field", "city_field", "isp_field", "status_field", "failure_value", "message_field", "headers", "auth_type", "auth_name", "auth_value", "enabled", "supports_ipv4", "supports_ipv6", "timeout_seconds", "sort_order", "updated_at").Save(channel).Error
 }
 
 func (r *ProxyPoolRepository) DeleteCheckChannel(orgID, id uint) error {

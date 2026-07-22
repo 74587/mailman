@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -408,6 +410,94 @@ func TestProxyCheckChannelValidationRejectsBrokenEnabledPathAuthAndExcessiveTime
 	base.URLTemplate = "https://user:password@example.test/{{credential}}/{{ip}}"
 	if err := applyProxyCheckChannelRequest(&models.ProxyCheckChannel{}, base, true); err == nil || !strings.Contains(err.Error(), "embedded credentials") {
 		t.Fatalf("embedded credential validation error=%v", err)
+	}
+}
+
+func TestProxyCheckChannelTrialReturnsRawRegexDiagnosticsWithoutMutatingProxy(t *testing.T) {
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if r.URL.Path == "/conflict" {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`channel quota exhausted`))
+			return
+		}
+		_, _ = w.Write([]byte(`IP=203.0.113.42; country=SG; status=ok`))
+	}))
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	proxyPort, err := strconv.Atoi(proxyURL.Port())
+	if err != nil {
+		t.Fatalf("parse proxy port: %v", err)
+	}
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	if err := db.AutoMigrate(&models.ProxyPoolItem{}, &models.ProxyCheckChannel{}); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	proxyItem := models.ProxyPoolItem{OrgID: defaultOrgID, Type: models.ProxyTypeHTTP, Host: proxyURL.Hostname(), Port: proxyPort, Status: models.ProxyStatusUnknown}
+	if err := db.Create(&proxyItem).Error; err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	repo := repository.NewProxyPoolRepository(db)
+	handler := NewProxyPoolHandlers(repo, services.NewProxyPoolService(repo, nil))
+	body := fmt.Sprintf(`{"proxyId":%d,"channel":{"key":"regex-preview","name":"Regex preview","mode":"self","urlTemplate":"http://public-channel.example/check","method":"GET","responseFormat":"regex","responseRegex":"IP=([0-9.]+); country=([^;]+); status=(\\w+)","ipField":"$1","countryField":"$2","statusField":"$3","failureValue":"fail","authType":"none","enabled":true,"supportsIPv4":true,"supportsIPv6":true,"timeoutSeconds":3}}`, proxyItem.ID)
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/check-channels/test", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.TestCheckChannel(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("TestCheckChannel status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var result services.ProxyCheckChannelTestResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode trial result: %v", err)
+	}
+	if !result.Success || result.HTTPStatus != http.StatusOK || result.ExitIP != "203.0.113.42" || result.Country != "SG" || result.StatusValue != "ok" {
+		t.Fatalf("trial result=%+v", result)
+	}
+	if result.RawBody != `IP=203.0.113.42; country=SG; status=ok` || len(result.Captures) != 4 || result.UsedProxyID != proxyItem.ID {
+		t.Fatalf("trial diagnostics=%+v", result)
+	}
+	stored, err := repo.GetByID(defaultOrgID, proxyItem.ID)
+	if err != nil {
+		t.Fatalf("reload proxy: %v", err)
+	}
+	if stored.Status != models.ProxyStatusUnknown || stored.CheckCount != 0 || stored.LastCheckAt != nil {
+		t.Fatalf("channel trial mutated proxy: %+v", stored)
+	}
+
+	conflictReq := httptest.NewRequest(http.MethodPost, "/api/proxy-pool/check-channels/test", strings.NewReader(strings.Replace(body, "/check", "/conflict", 1)))
+	conflictRec := httptest.NewRecorder()
+	handler.TestCheckChannel(conflictRec, conflictReq)
+	if conflictRec.Code != http.StatusOK {
+		t.Fatalf("conflict trial status=%d body=%s", conflictRec.Code, conflictRec.Body.String())
+	}
+	var conflictResult services.ProxyCheckChannelTestResult
+	if err := json.NewDecoder(conflictRec.Body).Decode(&conflictResult); err != nil {
+		t.Fatalf("decode conflict result: %v", err)
+	}
+	if conflictResult.Success || conflictResult.HTTPStatus != http.StatusConflict || conflictResult.RawBody != "channel quota exhausted" || !strings.Contains(conflictResult.Error, "HTTP 409") {
+		t.Fatalf("conflict diagnostics=%+v, want HTTP status and raw response", conflictResult)
+	}
+}
+
+func TestProxyCheckChannelValidationRejectsInvalidRegexAndUnpairedFailureRule(t *testing.T) {
+	base := proxyCheckChannelRequest{
+		Key: "regex", Name: "Regex", Mode: "self", URLTemplate: "https://example.test/me", Method: http.MethodGet,
+		ResponseFormat: "regex", ResponseRegex: "(", IPField: "$1", AuthType: "none", Enabled: true, SupportsIPv4: true, TimeoutSeconds: 12,
+	}
+	if err := applyProxyCheckChannelRequest(&models.ProxyCheckChannel{}, base, true); err == nil || !strings.Contains(err.Error(), "invalid response regex") {
+		t.Fatalf("invalid regex error=%v", err)
+	}
+	base.ResponseRegex = `IP=([0-9.]+)`
+	base.StatusField = "$2"
+	if err := applyProxyCheckChannelRequest(&models.ProxyCheckChannel{}, base, true); err == nil || !strings.Contains(err.Error(), "configured together") {
+		t.Fatalf("unpaired failure rule error=%v", err)
 	}
 }
 

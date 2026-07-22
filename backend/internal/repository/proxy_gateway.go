@@ -52,6 +52,12 @@ func NewProxyGatewayRepository(db *gorm.DB) *ProxyGatewayRepository {
 	return &ProxyGatewayRepository{db: db}
 }
 
+func (r *ProxyGatewayRepository) Transaction(fn func(*ProxyGatewayRepository) error) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		return fn(NewProxyGatewayRepository(tx))
+	})
+}
+
 func (r *ProxyGatewayRepository) GetDB() *gorm.DB {
 	return r.db
 }
@@ -193,6 +199,9 @@ func (r *ProxyGatewayRepository) DeleteListener(orgID, id uint) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var item models.ProxyGatewayListener
 		_ = tx.First(&item, "org_id = ? AND id = ?", orgID, id).Error
+		if err := tx.Where("org_id = ? AND gateway_id = ?", orgID, id).Delete(&models.ProxyGatewayAccountRouteStrategyOverride{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGatewayListener{}).Error; err != nil {
 			return err
 		}
@@ -226,6 +235,12 @@ func (r *ProxyGatewayRepository) ListAccounts(orgID uint, filter ProxyGatewayAcc
 	var items []models.ProxyGatewayAccount
 	err := r.applyAccountFilter(r.db.Model(&models.ProxyGatewayAccount{}), orgID, filter).
 		Preload("Group").Preload("Tags").Preload("SecurityPolicy").Preload("DNSPolicy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy.SecurityPolicy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy.DNSPolicy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy.SecurityPolicy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy.DNSPolicy").
 		Order("updated_at DESC").
 		Limit(filter.Limit).
 		Offset((filter.Page - 1) * filter.Limit).
@@ -258,6 +273,12 @@ func (r *ProxyGatewayRepository) applyAccountFilter(query *gorm.DB, orgID uint, 
 func (r *ProxyGatewayRepository) GetAccount(orgID, id uint) (*models.ProxyGatewayAccount, error) {
 	var item models.ProxyGatewayAccount
 	err := r.db.Preload("Group").Preload("Tags").Preload("SecurityPolicy").Preload("DNSPolicy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy.SecurityPolicy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy.DNSPolicy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy.SecurityPolicy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy.DNSPolicy").
 		First(&item, "org_id = ? AND id = ?", orgID, id).Error
 	return &item, err
 }
@@ -265,6 +286,12 @@ func (r *ProxyGatewayRepository) GetAccount(orgID, id uint) (*models.ProxyGatewa
 func (r *ProxyGatewayRepository) GetAccountByUsername(orgID uint, username string) (*models.ProxyGatewayAccount, error) {
 	var item models.ProxyGatewayAccount
 	err := r.db.Preload("Group").Preload("Tags").Preload("SecurityPolicy").Preload("DNSPolicy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy.SecurityPolicy").
+		Preload("RouteStrategyOverrides.SourceRouteStrategy.DNSPolicy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy.SecurityPolicy").
+		Preload("RouteStrategyOverrides.ReplacementRouteStrategy.DNSPolicy").
 		First(&item, "org_id = ? AND username = ?", orgID, username).Error
 	return &item, err
 }
@@ -286,7 +313,34 @@ func (r *ProxyGatewayRepository) SaveAccount(item *models.ProxyGatewayAccount) e
 }
 
 func (r *ProxyGatewayRepository) DeleteAccount(orgID, id uint) error {
-	return r.db.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGatewayAccount{}).Error
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("org_id = ? AND account_id = ?", orgID, id).Delete(&models.ProxyGatewayAccountRouteStrategyOverride{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGatewayAccount{}).Error
+	})
+}
+
+func (r *ProxyGatewayRepository) SetAccountRouteStrategyOverrides(orgID, accountID uint, overrides []models.ProxyGatewayAccountRouteStrategyOverride) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("org_id = ? AND account_id = ?", orgID, accountID).Delete(&models.ProxyGatewayAccountRouteStrategyOverride{}).Error; err != nil {
+			return err
+		}
+		if len(overrides) == 0 {
+			return nil
+		}
+		items := make([]models.ProxyGatewayAccountRouteStrategyOverride, 0, len(overrides))
+		for _, override := range overrides {
+			items = append(items, models.ProxyGatewayAccountRouteStrategyOverride{
+				OrgID:                      orgID,
+				AccountID:                  accountID,
+				GatewayID:                  override.GatewayID,
+				SourceRouteStrategyID:      override.SourceRouteStrategyID,
+				ReplacementRouteStrategyID: override.ReplacementRouteStrategyID,
+			})
+		}
+		return tx.Create(&items).Error
+	})
 }
 
 func (r *ProxyGatewayRepository) ListRouteStrategies(orgID uint, gatewayID *uint) ([]models.ProxyGatewayRouteStrategy, error) {
@@ -345,6 +399,15 @@ func (r *ProxyGatewayRepository) DeleteRouteStrategy(orgID, id uint) error {
 	}
 	if targetRouteCount > 0 {
 		return errors.New("route strategy is still referenced by a target route")
+	}
+	var overrideCount int64
+	if err := r.db.Model(&models.ProxyGatewayAccountRouteStrategyOverride{}).
+		Where("org_id = ? AND (source_route_strategy_id = ? OR replacement_route_strategy_id = ?)", orgID, id, id).
+		Count(&overrideCount).Error; err != nil {
+		return err
+	}
+	if overrideCount > 0 {
+		return errors.New("route strategy is still referenced by a gateway account override")
 	}
 	return r.db.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGatewayRouteStrategy{}).Error
 }

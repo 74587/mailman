@@ -60,6 +60,7 @@ import {
     proxyPoolService,
     ProxyCheckChannel,
     ProxyCheckChannelPayload,
+    ProxyCheckChannelTestResult,
     ProxyCheckResult,
     ProxyPayload,
     proxyToUrl,
@@ -124,6 +125,7 @@ const emptyCheckChannelDraft = (): ProxyCheckChannelPayload => ({
     urlTemplate: '',
     method: 'GET',
     responseFormat: 'json',
+    responseRegex: '',
     ipField: 'ip',
     countryField: '',
     regionField: '',
@@ -388,6 +390,8 @@ export default function ProxyPoolTab() {
     const [editingChannel, setEditingChannel] = useState<ProxyCheckChannel | null | 'new'>(null)
     const [channelDraft, setChannelDraft] = useState<ProxyCheckChannelPayload>(emptyCheckChannelDraft())
     const [savingChannel, setSavingChannel] = useState(false)
+    const [testingChannel, setTestingChannel] = useState(false)
+    const [channelTestResult, setChannelTestResult] = useState<ProxyCheckChannelTestResult | null>(null)
     const [deleteReplacement, setDeleteReplacement] = useState<BulkDeleteProxyPayload['replacement']>({ mode: 'clear' })
     const [editingProxy, setEditingProxy] = useState<ProxyPoolItem | null>(null)
     const [detailProxy, setDetailProxy] = useState<ProxyPoolItem | null>(null)
@@ -539,6 +543,7 @@ export default function ProxyPoolTab() {
     }
 
     const editCheckChannel = (channel: ProxyCheckChannel) => {
+        setChannelTestResult(null)
         setEditingChannel(channel)
         setChannelDraft({
             key: channel.key,
@@ -549,6 +554,7 @@ export default function ProxyPoolTab() {
             urlTemplate: channel.urlTemplate,
             method: 'GET',
             responseFormat: channel.responseFormat,
+            responseRegex: channel.responseRegex || '',
             ipField: channel.ipField || '',
             countryField: channel.countryField || '',
             regionField: channel.regionField || '',
@@ -570,8 +576,36 @@ export default function ProxyPoolTab() {
     }
 
     const createCheckChannel = () => {
+        setChannelTestResult(null)
         setEditingChannel('new')
         setChannelDraft(emptyCheckChannelDraft())
+    }
+
+    const testCheckChannel = async (proxyId?: number, lookupIp?: string) => {
+        if (!channelDraft.name.trim() || !channelDraft.urlTemplate.trim()) {
+            toast.error('请先填写渠道名称和请求地址')
+            return
+        }
+        if (editingChannel === 'new' && !channelDraft.key.trim()) {
+            toast.error('请先填写渠道标识')
+            return
+        }
+        setTestingChannel(true)
+        setChannelTestResult(null)
+        try {
+            const result = await proxyPoolService.testCheckChannel({
+                channelId: editingChannel && editingChannel !== 'new' ? editingChannel.id : undefined,
+                proxyId,
+                lookupIp,
+                channel: channelDraft,
+            })
+            setChannelTestResult(result)
+            if (result.success) toast.success('渠道试运行通过')
+        } catch (error: any) {
+            toast.error(error.message || '渠道试运行失败')
+        } finally {
+            setTestingChannel(false)
+        }
     }
 
     const saveCheckChannel = async () => {
@@ -724,10 +758,30 @@ export default function ProxyPoolTab() {
             } else {
                 toast.error(`${proxy.host}:${proxy.port} 不可用`)
             }
+            if (status && result.status !== status) {
+                await loadData()
+            } else {
+                try {
+                    const refreshed = await proxyPoolService.get(proxy.id)
+                    setProxies(prev => prev.map(item => item.id === proxy.id ? refreshed : item))
+                    setDetailProxy(current => current?.id === proxy.id ? refreshed : current)
+                } catch {
+                    setProxies(prev => prev.map(item => item.id === proxy.id ? {
+                        ...item,
+                        status: result.status,
+                        checkLatencyMs: result.latencyMs,
+                        exitIp: result.exitIp || item.exitIp,
+                        country: result.country || item.country,
+                        region: result.region || item.region,
+                        city: result.city || item.city,
+                        isp: result.isp || item.isp,
+                        lastError: result.error || '',
+                    } : item))
+                }
+            }
         } catch (error: any) {
+            setProxies(prev => prev.map(item => item.id === proxy.id ? proxy : item))
             toast.error(error.message || '代理检测失败')
-        } finally {
-            loadData()
         }
     }
 
@@ -1240,12 +1294,23 @@ export default function ProxyPoolTab() {
                 channels={managedChannels}
                 editing={editingChannel}
                 draft={channelDraft}
-                setDraft={setChannelDraft}
+                setDraft={(nextDraft) => {
+                    setChannelDraft(nextDraft)
+                    setChannelTestResult(null)
+                }}
                 saving={savingChannel}
+                testing={testingChannel}
+                testResult={channelTestResult}
+                proxies={proxies}
                 onCreate={createCheckChannel}
                 onEdit={editCheckChannel}
-                onBack={() => setEditingChannel(null)}
+                onBack={() => {
+                    setEditingChannel(null)
+                    setChannelTestResult(null)
+                }}
                 onSave={saveCheckChannel}
+                onTest={testCheckChannel}
+                onClearTest={() => setChannelTestResult(null)}
                 onDelete={deleteCheckChannel}
             />
             <Modal open={showDeleteModal} onOpenChange={setShowDeleteModal}>
@@ -1615,7 +1680,7 @@ function CriteriaBar({ groups, tags, selectedGroupIds, selectedTagIds, tagMode, 
     )
 }
 
-function CheckChannelManagerModal({ open, onOpenChange, channels, editing, draft, setDraft, saving, onCreate, onEdit, onBack, onSave, onDelete }: {
+function CheckChannelManagerModal({ open, onOpenChange, channels, editing, draft, setDraft, saving, testing, testResult, proxies, onCreate, onEdit, onBack, onSave, onTest, onClearTest, onDelete }: {
     open: boolean
     onOpenChange: (open: boolean) => void
     channels: ProxyCheckChannel[]
@@ -1623,15 +1688,43 @@ function CheckChannelManagerModal({ open, onOpenChange, channels, editing, draft
     draft: ProxyCheckChannelPayload
     setDraft: (draft: ProxyCheckChannelPayload) => void
     saving: boolean
+    testing: boolean
+    testResult: ProxyCheckChannelTestResult | null
+    proxies: ProxyPoolItem[]
     onCreate: () => void
     onEdit: (channel: ProxyCheckChannel) => void
     onBack: () => void
     onSave: () => void
+    onTest: (proxyId?: number, lookupIp?: string) => void
+    onClearTest: () => void
     onDelete: (channel: ProxyCheckChannel) => void
 }) {
     const inputClass = 'w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40'
     const field = (key: keyof ProxyCheckChannelPayload, value: unknown) => setDraft({ ...draft, [key]: value })
     const formOpen = editing !== null
+    const [testProxyId, setTestProxyId] = useState('')
+    const [lookupIp, setLookupIp] = useState('8.8.8.8')
+    const testResultRef = useRef<HTMLDivElement>(null)
+
+    useEffect(() => {
+        setTestProxyId('')
+        setLookupIp('8.8.8.8')
+    }, [editing])
+
+    useEffect(() => {
+        if (!testResult) return
+        const frame = window.requestAnimationFrame(() => testResultRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
+        return () => window.cancelAnimationFrame(frame)
+    }, [testResult])
+
+    const copyTestResponse = async () => {
+        try {
+            await navigator.clipboard.writeText(testResult?.rawBody || '')
+            toast.success('原始响应已复制')
+        } catch {
+            toast.error('复制失败，请手动选择原始响应')
+        }
+    }
 
     return (
         <Modal open={open} onOpenChange={onOpenChange}>
@@ -1740,22 +1833,100 @@ function CheckChannelManagerModal({ open, onOpenChange, channels, editing, draft
                             <label className="block text-sm"><span className="mb-1.5 block font-medium">说明</span><textarea value={draft.description || ''} onChange={event => field('description', event.target.value)} rows={2} className={inputClass} /></label>
 
                             <div className="grid gap-4 rounded-xl border border-gray-200 p-4 dark:border-gray-700 sm:grid-cols-2 lg:grid-cols-4">
-                                <label className="text-sm"><span className="mb-1.5 block font-medium">响应格式</span><select value={draft.responseFormat} onChange={event => field('responseFormat', event.target.value)} className={inputClass}><option value="json">JSON</option><option value="text">纯文本 IP</option></select></label>
+                                <label className="text-sm"><span className="mb-1.5 block font-medium">响应格式</span><select value={draft.responseFormat} onChange={event => field('responseFormat', event.target.value)} className={inputClass}><option value="json">JSON</option><option value="text">纯文本 IP</option><option value="regex">正则提取</option></select></label>
                                 <label className="text-sm"><span className="mb-1.5 block font-medium">认证方式</span><select value={draft.authType} onChange={event => field('authType', event.target.value)} className={inputClass}><option value="none">无需认证</option><option value="bearer">Bearer Token</option><option value="query">Query 参数</option><option value="header">请求头</option><option value="path">URL 路径</option></select></label>
                                 <label className="text-sm"><span className="mb-1.5 block font-medium">认证参数名</span><input value={draft.authName || ''} disabled={!['query', 'header'].includes(draft.authType)} onChange={event => field('authName', event.target.value)} placeholder="apiKey" className={cn(inputClass, 'disabled:bg-gray-100 dark:disabled:bg-gray-800')} /></label>
                                 <label className="text-sm"><span className="mb-1.5 block font-medium"><KeyRound className="mr-1 inline h-3.5 w-3.5" />凭据</span><input type="password" value={draft.credential || ''} disabled={draft.authType === 'none'} onChange={event => field('credential', event.target.value)} placeholder={editing !== 'new' ? '留空保留原值' : ''} className={cn(inputClass, 'disabled:bg-gray-100 dark:disabled:bg-gray-800')} /></label>
+                                {draft.responseFormat === 'regex' && (
+                                    <label className="text-sm sm:col-span-2 lg:col-span-4">
+                                        <span className="mb-1.5 block font-medium">响应正则</span>
+                                        <textarea value={draft.responseRegex || ''} onChange={event => field('responseRegex', event.target.value)} rows={3} placeholder={'IP=([0-9a-fA-F:.]+).*country=([^;]+).*status=(\\w+)'} className={cn(inputClass, 'font-mono')} />
+                                        <span className="mt-1 block text-xs text-gray-400">使用 Go/RE2 正则语法。下方字段映射可填写 $1、$2，或组合模板如 $1-$2。</span>
+                                    </label>
+                                )}
                             </div>
 
-                            <details className="rounded-xl border border-gray-200 dark:border-gray-700">
+                            {draft.responseFormat !== 'text' && <details open={draft.responseFormat === 'regex' || undefined} className="rounded-xl border border-gray-200 dark:border-gray-700">
                                 <summary className="cursor-pointer px-4 py-3 text-sm font-medium">响应字段映射与失败判定</summary>
                                 <div className="grid gap-4 border-t border-gray-200 p-4 dark:border-gray-700 sm:grid-cols-2 lg:grid-cols-4">
                                     {[
                                         ['ipField', '出口 IP 字段'], ['countryField', '国家字段'], ['regionField', '地区字段'], ['cityField', '城市字段'], ['ispField', 'ISP 字段'], ['statusField', '状态字段'], ['failureValue', '失败值'], ['messageField', '错误信息字段'],
                                     ].map(([key, label]) => (
-                                        <label key={key} className="text-sm"><span className="mb-1.5 block font-medium">{label}</span><input value={String(draft[key as keyof ProxyCheckChannelPayload] || '')} onChange={event => field(key as keyof ProxyCheckChannelPayload, event.target.value)} placeholder={key === 'ipField' ? 'ip' : ''} className={cn(inputClass, 'font-mono')} /></label>
+                                        <label key={key} className="text-sm"><span className="mb-1.5 block font-medium">{label}</span><input value={String(draft[key as keyof ProxyCheckChannelPayload] || '')} onChange={event => field(key as keyof ProxyCheckChannelPayload, event.target.value)} placeholder={draft.responseFormat === 'regex' ? key === 'ipField' ? '$1' : '$2' : key === 'ipField' ? 'data.ip' : ''} className={cn(inputClass, 'font-mono')} /></label>
                                     ))}
+                                    <p className="text-xs leading-5 text-gray-400 sm:col-span-2 lg:col-span-4">{draft.responseFormat === 'regex' ? '状态字段同样填写捕获组模板；其提取值与“失败值”忽略大小写比较，命中即判定失败。' : '字段支持点号路径，例如 data.location.country；状态字段的实际值与“失败值”忽略大小写比较。'}</p>
                                 </div>
-                            </details>
+                            </details>}
+
+                            <section className="rounded-xl border border-blue-200 bg-blue-50/50 p-4 dark:border-blue-900 dark:bg-blue-950/20">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div>
+                                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">渠道试运行</h3>
+                                        <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">使用尚未保存的当前配置发起请求，不改变代理状态；返回原始正文、捕获组、字段映射及失败判定。</p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => onTest(testProxyId ? Number(testProxyId) : undefined, lookupIp)}
+                                        disabled={testing}
+                                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                                    >
+                                        {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+                                        {testing ? '请求中…' : '试运行当前配置'}
+                                    </button>
+                                </div>
+                                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                                    {draft.mode === 'self' ? (
+                                        <label className="text-sm">
+                                            <span className="mb-1.5 block font-medium">请求路径</span>
+                                            <select aria-label="渠道试运行请求路径" value={testProxyId} onChange={event => { setTestProxyId(event.target.value); onClearTest() }} className={inputClass}>
+                                                <option value="">服务端直连（只验证渠道）</option>
+                                                {proxies.map(proxy => <option key={proxy.id} value={proxy.id}>经代理 #{proxy.id} · {proxy.host}:{proxy.port}</option>)}
+                                            </select>
+                                        </label>
+                                    ) : (
+                                        <label className="text-sm">
+                                            <span className="mb-1.5 block font-medium">查询 IP</span>
+                                            <input aria-label="渠道试运行查询 IP" value={lookupIp} onChange={event => { setLookupIp(event.target.value); onClearTest() }} placeholder="8.8.8.8 或 IPv6" className={cn(inputClass, 'font-mono')} />
+                                        </label>
+                                    )}
+                                </div>
+                                {testResult && (
+                                    <div ref={testResultRef} data-testid="channel-test-result" className={cn('mt-4 overflow-hidden rounded-xl border bg-white dark:bg-gray-950', testResult.success ? 'border-emerald-200 dark:border-emerald-900' : 'border-rose-200 dark:border-rose-900')}>
+                                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-4 py-3 dark:border-gray-800">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                {testResult.success ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <XCircle className="h-4 w-4 text-rose-600" />}
+                                                <span className="text-sm font-medium">{testResult.decision}</span>
+                                                {testResult.httpStatus && <span className="rounded-full bg-gray-100 px-2 py-0.5 font-mono text-xs dark:bg-gray-800">HTTP {testResult.httpStatus}</span>}
+                                                <span className="rounded-full bg-gray-100 px-2 py-0.5 font-mono text-xs dark:bg-gray-800">{testResult.latencyMs}ms</span>
+                                                {testResult.usedProxyId && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-xs text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">经代理 #{testResult.usedProxyId}</span>}
+                                            </div>
+                                            {testResult.contentType && <span className="font-mono text-xs text-gray-400">{testResult.contentType}</span>}
+                                        </div>
+                                        <div className="space-y-4 p-4">
+                                            {testResult.error && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300">{testResult.error}</div>}
+                                            <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                                                {[
+                                                    ['出口 IP', testResult.exitIp], ['国家', testResult.country], ['地区', testResult.region], ['城市', testResult.city], ['ISP', testResult.isp], ['状态提取值', testResult.statusValue],
+                                                ].map(([label, value]) => <div key={label} className="min-w-0"><dt className="text-xs text-gray-400">{label}</dt><dd className="mt-1 break-all font-mono text-gray-800 dark:text-gray-200">{value || '—'}</dd></div>)}
+                                                <div><dt className="text-xs text-gray-400">失败判定</dt><dd className={cn('mt-1 font-medium', testResult.failureMatched ? 'text-rose-600' : 'text-emerald-600')}>{testResult.failureMatched ? `命中 ${testResult.failureValue}` : testResult.failureValue ? `未命中 ${testResult.failureValue}` : '未配置'}</dd></div>
+                                            </dl>
+                                            {testResult.captures && testResult.captures.length > 0 && (
+                                                <div>
+                                                    <div className="mb-2 text-xs font-medium text-gray-500">正则捕获组</div>
+                                                    <div className="flex flex-wrap gap-2">{testResult.captures.map((capture, index) => <span key={index} className="max-w-full break-all rounded-md border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-xs dark:border-gray-700 dark:bg-gray-900"><strong>${index}</strong> = {capture || '∅'}</span>)}</div>
+                                                </div>
+                                            )}
+                                            <div>
+                                                <div className="mb-2 flex items-center justify-between gap-3">
+                                                    <span className="text-xs font-medium text-gray-500">原始响应{testResult.bodyTruncated ? '（已截断）' : ''}</span>
+                                                    <button type="button" onClick={copyTestResponse} className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700"><ClipboardPaste className="h-3.5 w-3.5" />复制</button>
+                                                </div>
+                                                <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-gray-950 p-3 font-mono text-xs leading-5 text-gray-100">{testResult.rawBody || '（空响应）'}</pre>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </section>
 
                             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                                 <label className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700"><span>启用渠道</span><input type="checkbox" checked={draft.enabled} onChange={event => field('enabled', event.target.checked)} /></label>
@@ -1770,6 +1941,7 @@ function CheckChannelManagerModal({ open, onOpenChange, channels, editing, draft
                     {formOpen ? (
                         <>
                             <button onClick={onBack} className="rounded-lg border border-gray-200 px-4 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">返回列表</button>
+                            <button onClick={() => onTest(testProxyId ? Number(testProxyId) : undefined, lookupIp)} disabled={testing} className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-60 dark:border-blue-900 dark:text-blue-300 dark:hover:bg-blue-950/30">{testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}试运行</button>
                             <button onClick={onSave} disabled={saving} className="inline-flex items-center gap-1.5 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-60">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}保存渠道</button>
                         </>
                     ) : <button onClick={() => onOpenChange(false)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800">关闭</button>}

@@ -21,6 +21,39 @@ func TestNormalizeProxyPoolFilterKeepsUnlimitedPageSizeWithoutOffsetOverflow(t *
 	}
 }
 
+func TestProxyPoolListOrderIsStableWhenCreatedAtTies(t *testing.T) {
+	db := mustOpenRealSyncConfigTestDB(t)
+	if err := db.AutoMigrate(&models.ProxyPoolItem{}); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+	createdAt := time.Date(2026, 7, 22, 8, 0, 0, 0, time.UTC)
+	for i := 1; i <= 3; i++ {
+		item := models.ProxyPoolItem{OrgID: 1, Type: models.ProxyTypeSocks5, Host: "same.example", Port: 1000 + i, Status: models.ProxyStatusUnknown, CreatedAt: createdAt, UpdatedAt: createdAt}
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create proxy %d: %v", i, err)
+		}
+	}
+	repo := NewProxyPoolRepository(db)
+	assertOrder := func(label string) {
+		items, _, err := repo.List(1, ProxyPoolFilter{Page: 1, Limit: 10})
+		if err != nil {
+			t.Fatalf("%s list: %v", label, err)
+		}
+		ids := make([]uint, len(items))
+		for index := range items {
+			ids[index] = items[index].ID
+		}
+		if len(items) != 3 || items[0].ID != 3 || items[1].ID != 2 || items[2].ID != 1 {
+			t.Fatalf("%s IDs=%v, want [3 2 1]", label, ids)
+		}
+	}
+	assertOrder("before check")
+	if err := repo.UpdateCheckResult(2, map[string]interface{}{"status": models.ProxyStatusAvailable, "last_check_at": time.Now()}); err != nil {
+		t.Fatalf("update check result: %v", err)
+	}
+	assertOrder("after check")
+}
+
 func TestProxyPoolRepositoryListsCreatedGroupsAndTags(t *testing.T) {
 	db := mustOpenRealSyncConfigTestDB(t)
 	if err := db.AutoMigrate(&models.ProxyGroup{}, &models.ProxyTag{}); err != nil {

@@ -97,6 +97,39 @@ func TestParseProxyIPInfoUsesConfiguredNestedFields(t *testing.T) {
 	}
 }
 
+func TestParseProxyIPInfoUsesRegexCaptureMappings(t *testing.T) {
+	channel := models.ProxyCheckChannel{
+		Mode: "self", ResponseFormat: "regex",
+		ResponseRegex: `IP=([0-9.]+); country=([^;]+); region=([^;]+); status=(\w+); message=(.*)`,
+		IPField:       "$1", CountryField: "$2", RegionField: "$3", StatusField: "$4", FailureValue: "fail", MessageField: "$5",
+	}
+	info, trace, err := parseProxyIPInfoWithTrace(channel, []byte(`IP=203.0.113.9; country=SG; region=Singapore; status=ok; message=none`))
+	if err != nil {
+		t.Fatalf("parse regex response: %v", err)
+	}
+	if info.ExitIP != "203.0.113.9" || info.Country != "SG" || info.Region != "Singapore" {
+		t.Fatalf("info=%+v, want mapped regex captures", info)
+	}
+	if len(trace.Captures) != 6 || trace.Captures[1] != "203.0.113.9" || trace.StatusValue != "ok" || trace.FailureMatched {
+		t.Fatalf("trace=%+v, want captures and non-failure status", trace)
+	}
+}
+
+func TestParseProxyIPInfoRegexFailureUsesCapturedMessage(t *testing.T) {
+	channel := models.ProxyCheckChannel{
+		Mode: "self", ResponseFormat: "regex",
+		ResponseRegex: `IP=([0-9.]+); status=(\w+); message=(.*)`,
+		IPField:       "$1", StatusField: "$2", FailureValue: "fail", MessageField: "$3",
+	}
+	_, trace, err := parseProxyIPInfoWithTrace(channel, []byte(`IP=203.0.113.10; status=FAIL; message=quota exceeded`))
+	if err == nil || err.Error() != "quota exceeded" {
+		t.Fatalf("error=%v, want captured failure message", err)
+	}
+	if !trace.FailureMatched || trace.StatusValue != "FAIL" || trace.MessageValue != "quota exceeded" {
+		t.Fatalf("trace=%+v, want matched failure diagnostics", trace)
+	}
+}
+
 func TestLookupChannelRejectsPrivateAndLoopbackTargets(t *testing.T) {
 	var called atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

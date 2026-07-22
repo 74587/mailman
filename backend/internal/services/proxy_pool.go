@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,30 @@ type ProxyCheckResult struct {
 	Warning      string             `json:"warning,omitempty"`
 	CheckChannel string             `json:"checkChannel"`
 	UsedChannel  string             `json:"usedChannel,omitempty"`
+}
+
+// ProxyCheckChannelTestResult exposes enough of a channel response to tune its
+// parser without mutating the proxy used for the trial request.
+type ProxyCheckChannelTestResult struct {
+	Success        bool     `json:"success"`
+	HTTPStatus     int      `json:"httpStatus,omitempty"`
+	LatencyMs      int64    `json:"latencyMs"`
+	ContentType    string   `json:"contentType,omitempty"`
+	RawBody        string   `json:"rawBody,omitempty"`
+	BodyTruncated  bool     `json:"bodyTruncated,omitempty"`
+	ExitIP         string   `json:"exitIp,omitempty"`
+	Country        string   `json:"country,omitempty"`
+	Region         string   `json:"region,omitempty"`
+	City           string   `json:"city,omitempty"`
+	ISP            string   `json:"isp,omitempty"`
+	Captures       []string `json:"captures,omitempty"`
+	StatusValue    string   `json:"statusValue,omitempty"`
+	FailureValue   string   `json:"failureValue,omitempty"`
+	FailureMatched bool     `json:"failureMatched"`
+	MessageValue   string   `json:"messageValue,omitempty"`
+	UsedProxyID    uint     `json:"usedProxyId,omitempty"`
+	Decision       string   `json:"decision"`
+	Error          string   `json:"error,omitempty"`
 }
 
 func NewProxyPoolService(proxyRepo *repository.ProxyPoolRepository, accountRepo *repository.EmailAccountRepository) *ProxyPoolService {
@@ -341,6 +366,20 @@ type proxyIPInfo struct {
 	ISP     string
 }
 
+type proxyCheckParseTrace struct {
+	Captures       []string
+	StatusValue    string
+	FailureMatched bool
+	MessageValue   string
+}
+
+type proxyCheckHTTPResponse struct {
+	StatusCode    int
+	ContentType   string
+	Body          []byte
+	BodyTruncated bool
+}
+
 type proxyChannelError struct {
 	Channel    string
 	StatusCode int
@@ -438,6 +477,81 @@ func (s *ProxyPoolService) lookupChannel(ctx context.Context, channel models.Pro
 	return s.requestCheckChannel(ctx, client, channel, exitIP, timeout)
 }
 
+// TestCheckChannel performs one diagnostic request with the current draft
+// configuration. A nil proxy makes self-check channels use a protected direct
+// client; lookup channels are always direct and substitute lookupIP.
+func (s *ProxyPoolService) TestCheckChannel(ctx context.Context, channel models.ProxyCheckChannel, proxyItem *models.ProxyPoolItem, lookupIP string) ProxyCheckChannelTestResult {
+	timeout := time.Duration(channel.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 12 * time.Second
+	}
+	result := ProxyCheckChannelTestResult{FailureValue: channel.FailureValue}
+	var client *http.Client
+	if strings.EqualFold(channel.Mode, "lookup") {
+		lookupIP = strings.TrimSpace(lookupIP)
+		if net.ParseIP(lookupIP) == nil {
+			result.Decision = "未发送请求"
+			result.Error = "查询型渠道试运行需要有效的 IPv4 或 IPv6 地址"
+			return result
+		}
+		client = newDirectProxyCheckClient(timeout)
+	} else if proxyItem != nil {
+		var err error
+		client, err = s.createHTTPClient(*proxyItem, timeout)
+		if err != nil {
+			result.Decision = "未发送请求"
+			result.Error = err.Error()
+			return result
+		}
+		result.UsedProxyID = proxyItem.ID
+	} else {
+		client = newDirectProxyCheckClient(timeout)
+	}
+
+	startedAt := time.Now()
+	response, err := performCheckChannelRequest(ctx, client, channel, lookupIP, timeout)
+	result.LatencyMs = time.Since(startedAt).Milliseconds()
+	result.HTTPStatus = response.StatusCode
+	result.ContentType = response.ContentType
+	result.BodyTruncated = response.BodyTruncated
+	const diagnosticBodyLimit = 64 << 10
+	diagnosticBody := response.Body
+	if len(diagnosticBody) > diagnosticBodyLimit {
+		diagnosticBody = diagnosticBody[:diagnosticBodyLimit]
+		result.BodyTruncated = true
+	}
+	result.RawBody = strings.ToValidUTF8(string(diagnosticBody), "�")
+	if err != nil {
+		result.Decision = "请求失败"
+		result.Error = err.Error()
+		return result
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		result.Decision = fmt.Sprintf("HTTP %d 判定为失败", response.StatusCode)
+		result.Error = channelHTTPStatusError(channel, response).Error()
+		return result
+	}
+
+	info, trace, err := parseProxyIPInfoWithTrace(channel, response.Body)
+	result.ExitIP = info.ExitIP
+	result.Country = info.Country
+	result.Region = info.Region
+	result.City = info.City
+	result.ISP = info.ISP
+	result.Captures = trace.Captures
+	result.StatusValue = trace.StatusValue
+	result.FailureMatched = trace.FailureMatched
+	result.MessageValue = trace.MessageValue
+	if err != nil {
+		result.Decision = "响应成功，但字段解析或失败判定未通过"
+		result.Error = err.Error()
+		return result
+	}
+	result.Success = true
+	result.Decision = "响应成功，字段映射与失败判定通过"
+	return result
+}
+
 func newDirectProxyCheckClient(timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{Timeout: timeout}
 	transport := &http.Transport{
@@ -505,6 +619,24 @@ func isPublicProxyCheckIP(ip net.IP) bool {
 }
 
 func (s *ProxyPoolService) requestCheckChannel(ctx context.Context, client *http.Client, channel models.ProxyCheckChannel, exitIP string, timeout time.Duration) (proxyIPInfo, error) {
+	response, err := performCheckChannelRequest(ctx, client, channel, exitIP, timeout)
+	if err != nil {
+		return proxyIPInfo{}, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return proxyIPInfo{}, channelHTTPStatusError(channel, response)
+	}
+	info, err := parseProxyIPInfo(channel, response.Body)
+	if err != nil {
+		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: err}
+	}
+	return info, nil
+}
+
+const maxProxyCheckResponseBytes = 1 << 20
+
+func performCheckChannelRequest(ctx context.Context, client *http.Client, channel models.ProxyCheckChannel, exitIP string, timeout time.Duration) (proxyCheckHTTPResponse, error) {
+	response := proxyCheckHTTPResponse{}
 	if channel.TimeoutSeconds > 0 && time.Duration(channel.TimeoutSeconds)*time.Second < timeout {
 		timeout = time.Duration(channel.TimeoutSeconds) * time.Second
 	}
@@ -515,13 +647,13 @@ func (s *ProxyPoolService) requestCheckChannel(ctx context.Context, client *http
 	requestURL = strings.ReplaceAll(requestURL, "{{credential}}", url.PathEscape(credential))
 	parsedURL, err := url.Parse(requestURL)
 	if err != nil || parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: errors.New("渠道 URL 必须是有效的 HTTP/HTTPS 地址")}
+		return response, &proxyChannelError{Channel: channel.Key, Err: errors.New("渠道 URL 必须是有效的 HTTP/HTTPS 地址")}
 	}
 	if strings.EqualFold(channel.Mode, "lookup") && !strings.Contains(channel.URLTemplate, "{{ip}}") {
-		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: errors.New("查询型渠道 URL 缺少 {{ip}} 占位符")}
+		return response, &proxyChannelError{Channel: channel.Key, Err: errors.New("查询型渠道 URL 缺少 {{ip}} 占位符")}
 	}
 	if strings.EqualFold(channel.AuthType, "path") && credential == "" {
-		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: errors.New("渠道尚未配置凭据")}
+		return response, &proxyChannelError{Channel: channel.Key, Err: errors.New("渠道尚未配置凭据")}
 	}
 	if credential != "" && strings.EqualFold(channel.AuthType, "query") {
 		query := parsedURL.Query()
@@ -534,7 +666,7 @@ func (s *ProxyPoolService) requestCheckChannel(ctx context.Context, client *http
 	}
 	req, err := http.NewRequestWithContext(reqCtx, method, parsedURL.String(), nil)
 	if err != nil {
-		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: err}
+		return response, &proxyChannelError{Channel: channel.Key, Err: err}
 	}
 	for name, value := range channel.Headers {
 		req.Header.Set(name, fmt.Sprint(value))
@@ -549,25 +681,32 @@ func (s *ProxyPoolService) requestCheckChannel(ctx context.Context, client *http
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return proxyIPInfo{}, err
+		return response, err
 	}
 	defer resp.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	response.StatusCode = resp.StatusCode
+	response.ContentType = resp.Header.Get("Content-Type")
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxProxyCheckResponseBytes+1))
 	if readErr != nil {
-		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: readErr}
+		return response, &proxyChannelError{Channel: channel.Key, Err: readErr}
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message := strings.TrimSpace(string(body))
-		if len(message) > 200 {
-			message = message[:200]
-		}
-		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, StatusCode: resp.StatusCode, Err: errors.New(message)}
+	if len(body) > maxProxyCheckResponseBytes {
+		body = body[:maxProxyCheckResponseBytes]
+		response.BodyTruncated = true
 	}
-	info, err := parseProxyIPInfo(channel, body)
-	if err != nil {
-		return proxyIPInfo{}, &proxyChannelError{Channel: channel.Key, Err: err}
+	response.Body = body
+	return response, nil
+}
+
+func channelHTTPStatusError(channel models.ProxyCheckChannel, response proxyCheckHTTPResponse) error {
+	message := strings.TrimSpace(string(response.Body))
+	if len(message) > 200 {
+		message = message[:200]
 	}
-	return info, nil
+	if message == "" {
+		message = http.StatusText(response.StatusCode)
+	}
+	return &proxyChannelError{Channel: channel.Key, StatusCode: response.StatusCode, Err: errors.New(message)}
 }
 
 func (s *ProxyPoolService) createHTTPClient(proxyItem models.ProxyPoolItem, timeout time.Duration) (*http.Client, error) {
@@ -627,35 +766,71 @@ func (s *ProxyPoolService) createHTTPClient(proxyItem models.ProxyPoolItem, time
 }
 
 func parseProxyIPInfo(channel models.ProxyCheckChannel, body []byte) (proxyIPInfo, error) {
+	info, _, err := parseProxyIPInfoWithTrace(channel, body)
+	return info, err
+}
+
+func parseProxyIPInfoWithTrace(channel models.ProxyCheckChannel, body []byte) (proxyIPInfo, proxyCheckParseTrace, error) {
 	text := strings.TrimSpace(string(body))
 	info := proxyIPInfo{}
+	trace := proxyCheckParseTrace{}
 	if strings.EqualFold(channel.ResponseFormat, "text") {
 		info.ExitIP = text
+	} else if strings.EqualFold(channel.ResponseFormat, "regex") {
+		expression, err := regexp.Compile(channel.ResponseRegex)
+		if err != nil {
+			return info, trace, fmt.Errorf("响应正则无效: %w", err)
+		}
+		match := expression.FindStringSubmatchIndex(text)
+		if match == nil {
+			return info, trace, errors.New("响应正文未匹配配置的正则表达式")
+		}
+		submatches := expression.FindStringSubmatch(text)
+		trace.Captures = append([]string(nil), submatches...)
+		expand := func(template string) string {
+			if strings.TrimSpace(template) == "" {
+				return ""
+			}
+			return strings.TrimSpace(string(expression.ExpandString(nil, template, text, match)))
+		}
+		info.ExitIP = expand(channel.IPField)
+		info.Country = expand(channel.CountryField)
+		info.Region = expand(channel.RegionField)
+		info.City = expand(channel.CityField)
+		info.ISP = expand(channel.ISPField)
+		trace.StatusValue = expand(channel.StatusField)
+		trace.MessageValue = expand(channel.MessageField)
 	} else {
 		var raw interface{}
 		if err := json.Unmarshal(body, &raw); err != nil {
-			return info, err
-		}
-		if channel.StatusField != "" && strings.EqualFold(jsonPathString(raw, channel.StatusField), channel.FailureValue) {
-			message := jsonPathString(raw, channel.MessageField)
-			if message == "" {
-				message = "IP 查询渠道返回失败"
-			}
-			return info, errors.New(message)
+			return info, trace, err
 		}
 		info.ExitIP = jsonPathString(raw, channel.IPField)
 		info.Country = jsonPathString(raw, channel.CountryField)
 		info.Region = jsonPathString(raw, channel.RegionField)
 		info.City = jsonPathString(raw, channel.CityField)
 		info.ISP = jsonPathString(raw, channel.ISPField)
+		trace.StatusValue = jsonPathString(raw, channel.StatusField)
+		trace.MessageValue = jsonPathString(raw, channel.MessageField)
+	}
+	if strings.TrimSpace(channel.FailureValue) != "" && strings.EqualFold(trace.StatusValue, channel.FailureValue) {
+		trace.FailureMatched = true
+		message := trace.MessageValue
+		if message == "" {
+			message = "IP 查询渠道返回失败"
+		}
+		return info, trace, errors.New(message)
 	}
 	if strings.Contains(info.ExitIP, ",") {
 		info.ExitIP = strings.TrimSpace(strings.Split(info.ExitIP, ",")[0])
 	}
 	if info.ExitIP == "" && !strings.EqualFold(channel.Mode, "lookup") {
-		return info, errors.New("IP 查询渠道未返回出口 IP")
+		return info, trace, errors.New("IP 查询渠道未返回出口 IP")
 	}
-	return info, nil
+	if info.ExitIP != "" && net.ParseIP(info.ExitIP) == nil {
+		return info, trace, fmt.Errorf("IP 查询渠道返回了无效出口 IP: %s", info.ExitIP)
+	}
+	return info, trace, nil
 }
 
 func jsonPathString(raw interface{}, path string) string {

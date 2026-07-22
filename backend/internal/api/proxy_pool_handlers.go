@@ -105,6 +105,7 @@ type proxyCheckChannelRequest struct {
 	URLTemplate    string         `json:"urlTemplate"`
 	Method         string         `json:"method"`
 	ResponseFormat string         `json:"responseFormat"`
+	ResponseRegex  string         `json:"responseRegex"`
 	IPField        string         `json:"ipField"`
 	CountryField   string         `json:"countryField"`
 	RegionField    string         `json:"regionField"`
@@ -122,6 +123,13 @@ type proxyCheckChannelRequest struct {
 	SupportsIPv6   bool           `json:"supportsIPv6"`
 	TimeoutSeconds int            `json:"timeoutSeconds"`
 	SortOrder      int            `json:"sortOrder"`
+}
+
+type proxyCheckChannelTestRequest struct {
+	ChannelID uint                     `json:"channelId"`
+	ProxyID   *uint                    `json:"proxyId"`
+	LookupIP  string                   `json:"lookupIp"`
+	Channel   proxyCheckChannelRequest `json:"channel"`
 }
 
 var proxyCheckChannelKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
@@ -598,6 +606,40 @@ func (h *ProxyPoolHandlers) DeleteCheckChannel(w http.ResponseWriter, r *http.Re
 	writeJSON(w, map[string]bool{"success": true})
 }
 
+func (h *ProxyPoolHandlers) TestCheckChannel(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+	var req proxyCheckChannelTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	channel := &models.ProxyCheckChannel{OrgID: orgID}
+	creating := true
+	if req.ChannelID != 0 {
+		stored, err := h.repo.GetCheckChannelByID(orgID, req.ChannelID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		channel = stored
+		creating = false
+	}
+	if err := applyProxyCheckChannelRequest(channel, req.Channel, creating); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var proxyItem *models.ProxyPoolItem
+	if req.ProxyID != nil && *req.ProxyID != 0 {
+		item, err := h.repo.GetByID(orgID, *req.ProxyID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		proxyItem = item
+	}
+	writeJSON(w, h.service.TestCheckChannel(r.Context(), *channel, proxyItem, req.LookupIP))
+}
+
 func (h *ProxyPoolHandlers) ListGroups(w http.ResponseWriter, r *http.Request) {
 	groups, err := h.repo.ListGroups(GetCurrentOrgID(r))
 	if err != nil {
@@ -850,12 +892,24 @@ func applyProxyCheckChannelRequest(channel *models.ProxyCheckChannel, req proxyC
 		return fmt.Errorf("only GET check channels are supported")
 	}
 	channel.ResponseFormat = strings.ToLower(strings.TrimSpace(req.ResponseFormat))
-	if channel.ResponseFormat != "json" && channel.ResponseFormat != "text" {
-		return fmt.Errorf("response format must be json or text")
+	if channel.ResponseFormat != "json" && channel.ResponseFormat != "text" && channel.ResponseFormat != "regex" {
+		return fmt.Errorf("response format must be json, text, or regex")
+	}
+	channel.ResponseRegex = strings.TrimSpace(req.ResponseRegex)
+	if channel.ResponseFormat == "regex" {
+		if channel.ResponseRegex == "" {
+			return fmt.Errorf("regex response format requires a response regex")
+		}
+		if len(channel.ResponseRegex) > 8192 {
+			return fmt.Errorf("response regex cannot exceed 8192 characters")
+		}
+		if _, err := regexp.Compile(channel.ResponseRegex); err != nil {
+			return fmt.Errorf("invalid response regex: %w", err)
+		}
 	}
 	channel.IPField = strings.TrimSpace(req.IPField)
-	if channel.Mode == "self" && channel.ResponseFormat == "json" && channel.IPField == "" {
-		return fmt.Errorf("JSON self check channels require an IP field")
+	if channel.Mode == "self" && (channel.ResponseFormat == "json" || channel.ResponseFormat == "regex") && channel.IPField == "" {
+		return fmt.Errorf("JSON and regex self check channels require an IP field")
 	}
 	channel.CountryField = strings.TrimSpace(req.CountryField)
 	channel.RegionField = strings.TrimSpace(req.RegionField)
@@ -864,6 +918,9 @@ func applyProxyCheckChannelRequest(channel *models.ProxyCheckChannel, req proxyC
 	channel.StatusField = strings.TrimSpace(req.StatusField)
 	channel.FailureValue = strings.TrimSpace(req.FailureValue)
 	channel.MessageField = strings.TrimSpace(req.MessageField)
+	if (channel.StatusField == "") != (channel.FailureValue == "") {
+		return fmt.Errorf("status field and failure value must be configured together")
+	}
 	channel.Headers = req.Headers
 	channel.AuthType = strings.ToLower(strings.TrimSpace(req.AuthType))
 	if channel.AuthType == "" {
@@ -913,6 +970,7 @@ func (h *ProxyPoolHandlers) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/proxy-pool/select", h.SelectProxy).Methods("POST")
 	router.HandleFunc("/proxy-pool/check-channels", h.GetCheckChannels).Methods("GET")
 	router.HandleFunc("/proxy-pool/check-channels", h.CreateCheckChannel).Methods("POST")
+	router.HandleFunc("/proxy-pool/check-channels/test", h.TestCheckChannel).Methods("POST")
 	router.HandleFunc("/proxy-pool/check-channels/{id}", h.UpdateCheckChannel).Methods("PUT")
 	router.HandleFunc("/proxy-pool/check-channels/{id}", h.DeleteCheckChannel).Methods("DELETE")
 	router.HandleFunc("/proxy-pool/{id}", h.GetProxy).Methods("GET")

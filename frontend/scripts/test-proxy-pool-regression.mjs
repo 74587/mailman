@@ -77,6 +77,23 @@ async function configure(page, width, height) {
         const apiPath = parsed.pathname.replace(/^\/api/, '')
         requestsSeen.push({ method: request.method(), url: parsed.toString(), body: request.postData() || '' })
         if (request.method() === 'OPTIONS') return jsonResponse(request, {}, 204)
+        if (apiPath === '/proxy-pool/check-channels/test') {
+            const body = JSON.parse(request.postData() || '{}')
+            const regexMode = body.channel?.responseFormat === 'regex'
+            return jsonResponse(request, {
+                success: true,
+                httpStatus: 200,
+                latencyMs: 84,
+                contentType: regexMode ? 'text/plain; charset=utf-8' : 'application/json',
+                rawBody: regexMode ? 'IP=203.0.113.42; status=ok' : '{"ip":"203.0.113.42","status":"ok"}',
+                exitIp: '203.0.113.42',
+                captures: regexMode ? ['IP=203.0.113.42; status=ok', '203.0.113.42', 'ok'] : undefined,
+                statusValue: 'ok',
+                failureValue: body.channel?.failureValue || '',
+                failureMatched: false,
+                decision: '响应成功，字段映射与失败判定通过',
+            })
+        }
         if (apiPath === '/proxy-pool/check-channels') {
             return jsonResponse(request, parsed.searchParams.get('includeDisabled') === 'true' ? channels : channels.filter(channel => channel.enabled))
         }
@@ -89,6 +106,14 @@ async function configure(page, width, height) {
                 return jsonResponse(request, { created: [], errors: [{ line: submitted, content: 'bad-row', error: '测试导入错误' }], checks: [], summary: { processed: submitted - 1, created: submitted - 1, updated: 0, skipped: 0, errors: 1, submitted } })
             }
             return jsonResponse(request, { created: [], errors: [], checks: [], summary: { processed: submitted, created: submitted, updated: 0, skipped: 0, errors: 0, submitted } })
+        }
+        if (/^\/proxy-pool\/\d+\/test$/.test(apiPath)) {
+            const id = Number(apiPath.split('/')[2])
+            return jsonResponse(request, { proxyId: id, success: true, status: 'available', latencyMs: 55, exitIp: '203.0.113.10', checkChannel: 'ip-sb', usedChannel: 'ip-sb' })
+        }
+        if (/^\/proxy-pool\/\d+$/.test(apiPath)) {
+            const id = Number(apiPath.split('/')[2])
+            return jsonResponse(request, { id, orgId: 1, type: 'socks5', host: `proxy-page-${id}.example`, port: 1080, status: 'available', tags: [], checkLatencyMs: 55, exitIp: '203.0.113.10', trafficBytesIn: 1024, trafficBytesOut: 2048 })
         }
         if (apiPath === '/proxy-pool') {
             const pageNumber = Number(parsed.searchParams.get('page') || 1)
@@ -121,6 +146,17 @@ async function clickButton(page, label) {
     }, label)
 }
 
+async function clickVisibleTitle(page, title) {
+    await page.evaluate(title => {
+        const button = Array.from(document.querySelectorAll(`button[title="${title}"]`)).find(item => {
+            const rect = item.getBoundingClientRect()
+            return rect.width > 0 && rect.height > 0
+        })
+        if (!(button instanceof HTMLButtonElement)) throw new Error(`Visible titled button not found: ${title}`)
+        button.click()
+    }, title)
+}
+
 async function run() {
     const port = await getFreePort()
     const baseUrl = `http://127.0.0.1:${port}`
@@ -134,6 +170,14 @@ async function run() {
         await configure(page, 1280, 900)
         await page.goto(`${baseUrl}${routePath}`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
         await page.waitForFunction(() => document.body.innerText.includes('代理池管理') && document.body.innerText.includes('共 2000 条'))
+
+        await page.evaluate(() => new Promise(resolve => window.setTimeout(resolve, 250)))
+        const listRequestsBeforeCheck = requestsSeen.filter(item => new URL(item.url).pathname === '/api/proxy-pool').length
+        await page.click('button[title="检测"]')
+        await page.waitForFunction(() => document.body.innerText.includes('203.0.113.10'))
+        const listRequestsAfterCheck = requestsSeen.filter(item => new URL(item.url).pathname === '/api/proxy-pool').length
+        assert(listRequestsAfterCheck === listRequestsBeforeCheck, 'single proxy check reloaded and potentially reordered the whole list')
+        assert(requestsSeen.some(item => new URL(item.url).pathname === '/api/proxy-pool/1' && item.method === 'GET'), 'single proxy check did not refresh the tested row in place')
 
         await page.click('input[aria-label="每页数量"]', { clickCount: 3 })
         await page.type('input[aria-label="每页数量"]', '750')
@@ -167,6 +211,37 @@ async function run() {
         })
         assert(channelModal.left >= 0 && channelModal.right <= channelModal.width && channelModal.top >= 0 && channelModal.bottom <= channelModal.height, 'channel modal overflows desktop viewport')
         await page.screenshot({ path: join(artifactDir, 'channels-desktop.png'), fullPage: true })
+        await clickVisibleTitle(page, '编辑')
+        await page.waitForFunction(() => document.body.innerText.includes('编辑 IP.SB') && document.body.innerText.includes('渠道试运行'))
+        await clickButton(page, '试运行当前配置')
+        await page.waitForFunction(() => document.body.innerText.includes('原始响应') && document.body.innerText.includes('203.0.113.42'))
+        await page.evaluate(() => {
+            const label = Array.from(document.querySelectorAll('label')).find(item => item.textContent?.includes('响应格式'))
+            const select = label?.querySelector('select')
+            if (!(select instanceof HTMLSelectElement)) throw new Error('Response format selector not found')
+            select.value = 'regex'
+            select.dispatchEvent(new Event('change', { bubbles: true }))
+        })
+        await page.waitForFunction(() => document.body.innerText.includes('响应正则') && document.body.innerText.includes('正则捕获组') === false)
+        await page.evaluate(() => {
+            const setValue = (labelText, value) => {
+                const label = Array.from(document.querySelectorAll('label')).find(item => item.textContent?.includes(labelText))
+                const input = label?.querySelector('input, textarea')
+                if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) throw new Error(`Field not found: ${labelText}`)
+                const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+                Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(input, value)
+                input.dispatchEvent(new Event('input', { bubbles: true }))
+            }
+            setValue('响应正则', 'IP=([0-9.]+); status=(\\w+)')
+            setValue('出口 IP 字段', '$1')
+            setValue('状态字段', '$2')
+            setValue('失败值', 'fail')
+        })
+        await clickButton(page, '试运行当前配置')
+        await page.waitForFunction(() => document.body.innerText.includes('$1 = 203.0.113.42') && document.body.innerText.includes('$2 = ok'))
+        await page.$eval('[data-testid="channel-test-result"]', element => element.scrollIntoView({ block: 'center' }))
+        await page.screenshot({ path: join(artifactDir, 'channel-regex-trial-desktop.png'), fullPage: true })
+        await clickButton(page, '返回列表')
         await clickButton(page, '关闭')
 
         await clickButton(page, '批量新增')
@@ -201,8 +276,16 @@ async function run() {
         assert(mobile.left >= 0 && mobile.right <= mobile.viewportWidth && mobile.top >= 0 && mobile.bottom <= mobile.viewportHeight, 'channel modal overflows mobile viewport')
         assert(mobile.bodyWidth <= mobile.viewportWidth, 'proxy pool creates mobile body overflow')
         await page.screenshot({ path: join(artifactDir, 'channels-mobile.png'), fullPage: true })
+        await clickVisibleTitle(page, '编辑')
+        await page.waitForFunction(() => document.body.innerText.includes('编辑 IP.SB') && document.body.innerText.includes('渠道试运行'))
+        await clickButton(page, '试运行当前配置')
+        await page.waitForSelector('[data-testid="channel-test-result"]')
+        await page.$eval('[data-testid="channel-test-result"]', element => element.scrollIntoView({ block: 'start' }))
+        const mobileTrialWidth = await page.evaluate(() => ({ bodyWidth: document.body.scrollWidth, viewportWidth: window.innerWidth }))
+        assert(mobileTrialWidth.bodyWidth <= mobileTrialWidth.viewportWidth, 'channel trial creates mobile body overflow')
+        await page.screenshot({ path: join(artifactDir, 'channel-trial-mobile.png'), fullPage: true })
 
-        console.log(JSON.stringify({ status: 'ok', channelModal, mobile, pagination: { page: 3, limit: 750 }, importedRows: 2000, artifacts: artifactDir }, null, 2))
+        console.log(JSON.stringify({ status: 'ok', channelModal, mobile, mobileTrialWidth, pagination: { page: 3, limit: 750 }, singleCheckInPlace: true, regexTrial: true, importedRows: 2000, artifacts: artifactDir }, null, 2))
     } finally {
         if (browser) await browser.close()
         server.kill('SIGTERM')

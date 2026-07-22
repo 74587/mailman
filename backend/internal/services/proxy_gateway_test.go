@@ -1121,9 +1121,9 @@ func TestProxyGatewayRouteCircuitKeyChangesWithPolicyConfiguration(t *testing.T)
 		account:    &models.ProxyGatewayAccount{SecurityPolicy: security, DNSPolicy: dns},
 		targetHost: "Example.COM.", targetPort: 443,
 	}
-	firstKey := routeCircuitKey(session, route)
+	firstKey := routeCircuitKey(session, route, strategy, fallback)
 	security.UpdatedAt = baseTime.Add(time.Second)
-	secondKey := routeCircuitKey(session, route)
+	secondKey := routeCircuitKey(session, route, strategy, fallback)
 	if firstKey == secondKey {
 		t.Fatal("route circuit key did not change after an effective security policy update")
 	}
@@ -1132,13 +1132,172 @@ func TestProxyGatewayRouteCircuitKeyChangesWithPolicyConfiguration(t *testing.T)
 	}
 	protocolSession := session
 	protocolSession.protocol = "socks5"
-	if protocolKey := routeCircuitKey(protocolSession, route); protocolKey == secondKey {
+	if protocolKey := routeCircuitKey(protocolSession, route, strategy, fallback); protocolKey == secondKey {
 		t.Fatal("route circuit key did not isolate protocol-specific dialing behavior")
 	}
 	timeoutSession := session
 	timeoutSession.account.ConnectTimeoutSeconds = 45
-	if timeoutKey := routeCircuitKey(timeoutSession, route); timeoutKey == secondKey {
+	if timeoutKey := routeCircuitKey(timeoutSession, route, strategy, fallback); timeoutKey == secondKey {
 		t.Fatal("route circuit key did not isolate account connect timeout behavior")
+	}
+}
+
+func TestProxyGatewayTargetRouteUsesAccountEgressStrategyOverrides(t *testing.T) {
+	service := NewProxyGatewayService(nil, nil)
+	listener := models.ProxyGatewayListener{ID: 7, OrgID: 1, Name: "shared gateway"}
+	primarySource := &models.ProxyGatewayRouteStrategy{
+		ID: 11, OrgID: 1, GatewayID: listener.ID, Name: "shared primary", FlagNo: 11, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{101},
+	}
+	primaryReplacement := &models.ProxyGatewayRouteStrategy{
+		ID: 21, OrgID: 1, GatewayID: listener.ID, Name: "account primary", FlagNo: 21, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{201},
+	}
+	fallbackSource := &models.ProxyGatewayRouteStrategy{
+		ID: 12, OrgID: 1, GatewayID: listener.ID, Name: "shared fallback", FlagNo: 12, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{102},
+	}
+	fallbackReplacement := &models.ProxyGatewayRouteStrategy{
+		ID: 22, OrgID: 1, GatewayID: listener.ID, Name: "account fallback", FlagNo: 22, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{202},
+	}
+	account := &models.ProxyGatewayAccount{
+		OrgID: 1, Username: "managed", ProxySelectionSource: models.ProxyGatewaySelectionSourceGateway,
+		RouteStrategyOverrides: []models.ProxyGatewayAccountRouteStrategyOverride{
+			{GatewayID: listener.ID, SourceRouteStrategyID: primarySource.ID, ReplacementRouteStrategyID: primaryReplacement.ID, ReplacementRouteStrategy: primaryReplacement},
+			{GatewayID: listener.ID, SourceRouteStrategyID: fallbackSource.ID, ReplacementRouteStrategyID: fallbackReplacement.ID, ReplacementRouteStrategy: fallbackReplacement},
+		},
+	}
+	route := &models.ProxyGatewayTargetRoute{
+		ID: 31, OrgID: 1, GatewayID: listener.ID, Name: "shared topology", Enabled: true,
+		RouteStrategyID: primarySource.ID, RouteStrategy: primarySource,
+		FailoverEnabled: true, FallbackRouteStrategyID: &fallbackSource.ID, FallbackRouteStrategy: fallbackSource,
+	}
+	session := gatewaySession{listener: listener, account: account}
+	if err := service.applyTargetRouteStrategy(&session, route, "*.example.com"); err != nil {
+		t.Fatalf("apply target route strategy: %v", err)
+	}
+	if session.targetRouteID == nil || *session.targetRouteID != route.ID || session.targetRouteMatcher != "*.example.com" {
+		t.Fatalf("gateway target-route topology was not retained: %+v", session)
+	}
+	if session.primaryStrategyID == nil || *session.primaryStrategyID != primaryReplacement.ID || session.fallbackStrategyID == nil || *session.fallbackStrategyID != fallbackReplacement.ID {
+		t.Fatalf("effective strategies primary=%v fallback=%v", session.primaryStrategyID, session.fallbackStrategyID)
+	}
+	if session.primaryRouteStrategy != primaryReplacement || session.fallbackRouteStrategy != fallbackReplacement {
+		t.Fatalf("effective strategy pointers primary=%+v fallback=%+v", session.primaryRouteStrategy, session.fallbackRouteStrategy)
+	}
+	if len(session.account.ProxyIDs) != 1 || session.account.ProxyIDs[0] != 201 {
+		t.Fatalf("primary replacement proxy pool was not applied: %v", session.account.ProxyIDs)
+	}
+	if session.routeStrategyOverrideSourceID == nil || *session.routeStrategyOverrideSourceID != primarySource.ID || session.routeStrategyOverrideReplacementID == nil || *session.routeStrategyOverrideReplacementID != primaryReplacement.ID {
+		t.Fatalf("active override audit context source=%v replacement=%v", session.routeStrategyOverrideSourceID, session.routeStrategyOverrideReplacementID)
+	}
+
+	legacyAccount := *account
+	legacyAccount.ProxySelectionSource = models.ProxyGatewaySelectionSourceAccount
+	legacySession := gatewaySession{listener: listener, account: &legacyAccount}
+	if err := service.applyTargetRouteStrategy(&legacySession, route, ""); err != nil {
+		t.Fatalf("apply target route for legacy account: %v", err)
+	}
+	if legacySession.primaryStrategyID == nil || *legacySession.primaryStrategyID != primarySource.ID || legacySession.primaryStrategyOverride != nil {
+		t.Fatalf("legacy account unexpectedly used an override: %+v", legacySession)
+	}
+
+	primaryReplacement.Enabled = false
+	invalidSession := gatewaySession{listener: listener, account: account}
+	if err := service.applyTargetRouteStrategy(&invalidSession, route, ""); err == nil || !strings.Contains(err.Error(), "disabled replacement strategy") {
+		t.Fatalf("disabled replacement strategy did not fail closed: %v", err)
+	}
+}
+
+func TestProxyGatewaySmartUsernameUsesAccountEgressStrategyOverride(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	repo := repository.NewProxyGatewayRepository(db)
+	service := NewProxyGatewayService(repo, repository.NewProxyPoolRepository(db))
+	listener := models.ProxyGatewayListener{
+		OrgID: 1, Name: "smart override", ListenIP: "127.0.0.1", Port: 18170,
+		Protocol: models.ProxyGatewayProtocolMixed, Enabled: true, RequireAuth: true,
+	}
+	if err := db.Create(&listener).Error; err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+	source := models.ProxyGatewayRouteStrategy{
+		OrgID: 1, GatewayID: listener.ID, Name: "shared smart", FlagNo: 5, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{301},
+	}
+	replacement := models.ProxyGatewayRouteStrategy{
+		OrgID: 1, GatewayID: listener.ID, Name: "account smart", FlagNo: 6, Enabled: true,
+		SelectionMode: models.ProxyGatewaySelectionExplicit, ProxyIDs: models.UintSlice{302},
+	}
+	if err := db.Create(&source).Error; err != nil {
+		t.Fatalf("create source route strategy: %v", err)
+	}
+	if err := db.Create(&replacement).Error; err != nil {
+		t.Fatalf("create replacement route strategy: %v", err)
+	}
+	account := models.ProxyGatewayAccount{
+		OrgID: 1, Username: "smart-user", Password: "StrongSmartPass123!", Enabled: true,
+		ProxySelectionSource: models.ProxyGatewaySelectionSourceGateway,
+		AllowAllGateways:     true, EnableUsernameRouting: true,
+		UsernameRoutingMode:     models.ProxyGatewayUsernameRoutingStrategy,
+		AllowAllRouteStrategies: true,
+	}
+	if err := account.SetPassword(account.Password); err != nil {
+		t.Fatalf("hash account password: %v", err)
+	}
+	if err := repo.SaveAccount(&account); err != nil {
+		t.Fatalf("save account: %v", err)
+	}
+	if err := repo.SetAccountRouteStrategyOverrides(1, account.ID, []models.ProxyGatewayAccountRouteStrategyOverride{{
+		GatewayID: listener.ID, SourceRouteStrategyID: source.ID, ReplacementRouteStrategyID: replacement.ID,
+	}}); err != nil {
+		t.Fatalf("save account override: %v", err)
+	}
+	auth, err := service.authenticateAccount(listener, "smart-user#5", account.Password)
+	if err != nil {
+		t.Fatalf("authenticate smart username: %v", err)
+	}
+	if auth.routeStrategy == nil || auth.routeStrategy.ID != replacement.ID || auth.routeStrategyOverride == nil {
+		t.Fatalf("smart username effective strategy=%+v override=%+v", auth.routeStrategy, auth.routeStrategyOverride)
+	}
+	if auth.account == nil || len(auth.account.ProxyIDs) != 1 || auth.account.ProxyIDs[0] != 302 {
+		t.Fatalf("smart username replacement pool=%v", auth.account)
+	}
+}
+
+func TestProxyGatewayRouteCircuitKeyIsolatesReplacementStrategies(t *testing.T) {
+	updatedAt := time.Date(2026, 7, 22, 18, 0, 0, 0, time.UTC)
+	source := &models.ProxyGatewayRouteStrategy{ID: 1, UpdatedAt: updatedAt}
+	fallback := &models.ProxyGatewayRouteStrategy{ID: 2, UpdatedAt: updatedAt}
+	replacementA := &models.ProxyGatewayRouteStrategy{ID: 101, UpdatedAt: updatedAt}
+	replacementB := &models.ProxyGatewayRouteStrategy{ID: 102, UpdatedAt: updatedAt}
+	route := models.ProxyGatewayTargetRoute{ID: 8, RouteStrategyID: source.ID, UpdatedAt: updatedAt, RouteStrategy: source, FallbackRouteStrategy: fallback}
+	session := gatewaySession{listener: models.ProxyGatewayListener{ID: 7, OrgID: 1}, targetHost: "example.com", targetPort: 443}
+	keyA := routeCircuitKey(session, route, replacementA, fallback)
+	keyB := routeCircuitKey(session, route, replacementB, fallback)
+	if keyA == keyB {
+		t.Fatalf("different account replacement pools share a route circuit key: %s", keyA)
+	}
+}
+
+func TestProxyGatewayAccessLogPersistsActiveEgressOverride(t *testing.T) {
+	db := newProxyGatewayTestDB(t)
+	repo := repository.NewProxyGatewayRepository(db)
+	service := NewProxyGatewayService(repo, repository.NewProxyPoolRepository(db))
+	sourceID := uint(41)
+	replacementID := uint(42)
+	service.finishSessionWithPolicies(gatewaySession{
+		listener:                           models.ProxyGatewayListener{ID: 7, OrgID: 1},
+		startedAt:                          time.Now(),
+		routeStrategyOverrideSourceID:      &sourceID,
+		routeStrategyOverrideReplacementID: &replacementID,
+	}, nil, nil, "success", "", nil, nil, nil)
+	var log models.ProxyGatewayAccessLog
+	if err := db.Last(&log).Error; err != nil {
+		t.Fatalf("load access log: %v", err)
+	}
+	if log.RouteStrategyOverrideSourceID == nil || *log.RouteStrategyOverrideSourceID != sourceID || log.RouteStrategyOverrideReplacementID == nil || *log.RouteStrategyOverrideReplacementID != replacementID {
+		t.Fatalf("access log override source=%v replacement=%v", log.RouteStrategyOverrideSourceID, log.RouteStrategyOverrideReplacementID)
 	}
 }
 
@@ -1600,6 +1759,7 @@ func newProxyGatewayTestDB(t *testing.T) *gorm.DB {
 		&models.ProxyGatewayListener{},
 		&models.ProxyGatewayAccount{},
 		&models.ProxyGatewayRouteStrategy{},
+		&models.ProxyGatewayAccountRouteStrategyOverride{},
 		&models.ProxyGatewayTargetRoute{},
 		&models.ProxyGatewayAccountGroup{},
 		&models.ProxyGatewayAccountTag{},

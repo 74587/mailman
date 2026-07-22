@@ -129,43 +129,50 @@ type routeCircuitDecision struct {
 }
 
 type gatewaySession struct {
-	listener             models.ProxyGatewayListener
-	account              *models.ProxyGatewayAccount
-	clientIP             string
-	clientPort           string
-	protocol             string
-	command              string
-	targetHost           string
-	targetPort           int
-	startedAt            time.Time
-	bytesIn              int64
-	bytesOut             int64
-	rawUsername          string
-	routeStrategyID      *uint
-	routeStrategyFlagNo  int
-	proxyIndex           int
-	resolvedProxyIndex   int
-	proxyPoolSize        int
-	routeParams          models.JSONMapInterface
-	targetRouteID        *uint
-	targetRouteMatcher   string
-	targetRouteDefault   bool
-	targetRoute          *models.ProxyGatewayTargetRoute
-	primaryStrategyID    *uint
-	fallbackStrategyID   *uint
-	routeFailoverUsed    bool
-	routeFailoverReason  string
-	routeCircuitState    string
-	routeCircuitCacheHit bool
-	routeCircuitProbe    bool
+	listener                           models.ProxyGatewayListener
+	account                            *models.ProxyGatewayAccount
+	clientIP                           string
+	clientPort                         string
+	protocol                           string
+	command                            string
+	targetHost                         string
+	targetPort                         int
+	startedAt                          time.Time
+	bytesIn                            int64
+	bytesOut                           int64
+	rawUsername                        string
+	routeStrategyID                    *uint
+	routeStrategyFlagNo                int
+	proxyIndex                         int
+	resolvedProxyIndex                 int
+	proxyPoolSize                      int
+	routeParams                        models.JSONMapInterface
+	targetRouteID                      *uint
+	targetRouteMatcher                 string
+	targetRouteDefault                 bool
+	targetRoute                        *models.ProxyGatewayTargetRoute
+	primaryStrategyID                  *uint
+	fallbackStrategyID                 *uint
+	primaryRouteStrategy               *models.ProxyGatewayRouteStrategy
+	fallbackRouteStrategy              *models.ProxyGatewayRouteStrategy
+	primaryStrategyOverride            *models.ProxyGatewayAccountRouteStrategyOverride
+	fallbackStrategyOverride           *models.ProxyGatewayAccountRouteStrategyOverride
+	routeStrategyOverrideSourceID      *uint
+	routeStrategyOverrideReplacementID *uint
+	routeFailoverUsed                  bool
+	routeFailoverReason                string
+	routeCircuitState                  string
+	routeCircuitCacheHit               bool
+	routeCircuitProbe                  bool
 }
 
 type gatewayAuthResult struct {
-	account       *models.ProxyGatewayAccount
-	rawUsername   string
-	routeStrategy *models.ProxyGatewayRouteStrategy
-	proxyIndex    int
-	routeParams   models.JSONMapInterface
+	account               *models.ProxyGatewayAccount
+	rawUsername           string
+	routeStrategy         *models.ProxyGatewayRouteStrategy
+	routeStrategyOverride *models.ProxyGatewayAccountRouteStrategyOverride
+	proxyIndex            int
+	routeParams           models.JSONMapInterface
 }
 
 func NewProxyGatewayService(repo *repository.ProxyGatewayRepository, proxyRepo *repository.ProxyPoolRepository) *ProxyGatewayService {
@@ -930,8 +937,13 @@ func (s *ProxyGatewayService) authenticateAccount(listener models.ProxyGatewayLi
 	if err := authorizeUsernameRouteStrategy(account, listener, strategy); err != nil {
 		return auth, err
 	}
-	auth.account = applyRouteStrategyToAccount(account, strategy)
-	auth.routeStrategy = strategy
+	effectiveStrategy, override, err := s.resolveAccountRouteStrategy(listener, account, strategy)
+	if err != nil {
+		return auth, err
+	}
+	auth.account = applyRouteStrategyToAccount(account, effectiveStrategy)
+	auth.routeStrategy = effectiveStrategy
+	auth.routeStrategyOverride = override
 	return auth, nil
 }
 
@@ -1106,6 +1118,55 @@ func applyRouteStrategyToAccount(account *models.ProxyGatewayAccount, strategy *
 	return &next
 }
 
+// resolveAccountRouteStrategy applies a one-level account-specific egress
+// override while retaining the gateway-owned target-route topology. Overrides
+// are intentionally ignored for legacy account-managed proxy selection.
+func (s *ProxyGatewayService) resolveAccountRouteStrategy(listener models.ProxyGatewayListener, account *models.ProxyGatewayAccount, source *models.ProxyGatewayRouteStrategy) (*models.ProxyGatewayRouteStrategy, *models.ProxyGatewayAccountRouteStrategyOverride, error) {
+	if source == nil || account == nil || account.ProxySelectionSource != models.ProxyGatewaySelectionSourceGateway {
+		return source, nil, nil
+	}
+	for index := range account.RouteStrategyOverrides {
+		override := &account.RouteStrategyOverrides[index]
+		if override.GatewayID != listener.ID || override.SourceRouteStrategyID != source.ID {
+			continue
+		}
+		replacement := override.ReplacementRouteStrategy
+		if replacement == nil || replacement.ID != override.ReplacementRouteStrategyID {
+			item, err := s.repo.GetRouteStrategy(listener.OrgID, override.ReplacementRouteStrategyID)
+			if err != nil {
+				return nil, override, fmt.Errorf("route strategy override for %s references unavailable replacement strategy %d: %w", source.Name, override.ReplacementRouteStrategyID, err)
+			}
+			replacement = item
+		}
+		if replacement.OrgID != listener.OrgID {
+			return nil, override, fmt.Errorf("route strategy override for %s references a replacement strategy from another organization", source.Name)
+		}
+		if !replacement.Enabled {
+			return nil, override, fmt.Errorf("route strategy override for %s references disabled replacement strategy %s", source.Name, replacement.Name)
+		}
+		if replacement.GatewayID != 0 && replacement.GatewayID != listener.ID {
+			return nil, override, fmt.Errorf("route strategy override for %s references a replacement strategy from another gateway", source.Name)
+		}
+		return replacement, override, nil
+	}
+	return source, nil, nil
+}
+
+func applySessionRouteStrategyOverride(session *gatewaySession, override *models.ProxyGatewayAccountRouteStrategyOverride) {
+	if session == nil {
+		return
+	}
+	session.routeStrategyOverrideSourceID = nil
+	session.routeStrategyOverrideReplacementID = nil
+	if override == nil {
+		return
+	}
+	sourceID := override.SourceRouteStrategyID
+	replacementID := override.ReplacementRouteStrategyID
+	session.routeStrategyOverrideSourceID = &sourceID
+	session.routeStrategyOverrideReplacementID = &replacementID
+}
+
 func (s *ProxyGatewayService) applyAuthResultToSession(session *gatewaySession, auth gatewayAuthResult) {
 	session.rawUsername = auth.rawUsername
 	if auth.routeStrategy != nil {
@@ -1113,6 +1174,7 @@ func (s *ProxyGatewayService) applyAuthResultToSession(session *gatewaySession, 
 		session.routeStrategyID = &id
 		session.routeStrategyFlagNo = auth.routeStrategy.FlagNo
 	}
+	applySessionRouteStrategyOverride(session, auth.routeStrategyOverride)
 	if auth.proxyIndex > 0 {
 		session.proxyIndex = auth.proxyIndex
 	}
@@ -1171,12 +1233,12 @@ func (s *ProxyGatewayService) applyTargetRoute(session *gatewaySession) error {
 		}
 		for _, matcher := range route.Matchers {
 			if models.ProxyGatewayTargetMatches(session.targetHost, matcher) {
-				return applyTargetRouteStrategy(session, route, matcher)
+				return s.applyTargetRouteStrategy(session, route, matcher)
 			}
 		}
 	}
 	if defaultIndex >= 0 {
-		return applyTargetRouteStrategy(session, &routes[defaultIndex], "")
+		return s.applyTargetRouteStrategy(session, &routes[defaultIndex], "")
 	}
 	if session.account != nil &&
 		session.account.ProxySelectionSource == models.ProxyGatewaySelectionSourceGateway &&
@@ -1186,7 +1248,7 @@ func (s *ProxyGatewayService) applyTargetRoute(session *gatewaySession) error {
 	return nil
 }
 
-func applyTargetRouteStrategy(session *gatewaySession, route *models.ProxyGatewayTargetRoute, matcher string) error {
+func (s *ProxyGatewayService) applyTargetRouteStrategy(session *gatewaySession, route *models.ProxyGatewayTargetRoute, matcher string) error {
 	if route == nil {
 		return nil
 	}
@@ -1206,15 +1268,35 @@ func applyTargetRouteStrategy(session *gatewaySession, route *models.ProxyGatewa
 	if strategy.GatewayID != 0 && strategy.GatewayID != session.listener.ID {
 		return fmt.Errorf("target route %s references a strategy from another gateway", route.Name)
 	}
-	strategyID := strategy.ID
+	effectiveStrategy, primaryOverride, err := s.resolveAccountRouteStrategy(session.listener, session.account, strategy)
+	if err != nil {
+		return err
+	}
+	strategyID := effectiveStrategy.ID
 	session.routeStrategyID = &strategyID
 	session.primaryStrategyID = &strategyID
-	session.routeStrategyFlagNo = strategy.FlagNo
+	session.primaryRouteStrategy = effectiveStrategy
+	session.primaryStrategyOverride = primaryOverride
+	session.routeStrategyFlagNo = effectiveStrategy.FlagNo
+	applySessionRouteStrategyOverride(session, primaryOverride)
 	if route.FailoverEnabled && route.FallbackRouteStrategy != nil {
-		fallbackID := route.FallbackRouteStrategy.ID
+		fallbackSource := route.FallbackRouteStrategy
+		if !fallbackSource.Enabled {
+			return fmt.Errorf("target route %s references disabled fallback route strategy %s", route.Name, fallbackSource.Name)
+		}
+		if fallbackSource.GatewayID != 0 && fallbackSource.GatewayID != session.listener.ID {
+			return fmt.Errorf("target route %s references a fallback strategy from another gateway", route.Name)
+		}
+		fallbackStrategy, fallbackOverride, err := s.resolveAccountRouteStrategy(session.listener, session.account, fallbackSource)
+		if err != nil {
+			return err
+		}
+		fallbackID := fallbackStrategy.ID
 		session.fallbackStrategyID = &fallbackID
+		session.fallbackRouteStrategy = fallbackStrategy
+		session.fallbackStrategyOverride = fallbackOverride
 	}
-	session.account = applyRouteStrategyToAccount(session.account, strategy)
+	session.account = applyRouteStrategyToAccount(session.account, effectiveStrategy)
 	return nil
 }
 
@@ -1236,19 +1318,13 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session *gatew
 	if route == nil || !route.FailoverEnabled {
 		return s.dialWithAccountPolicy(ctx, session, session.account, targetHost, targetPort, true)
 	}
-	if route.FallbackRouteStrategy == nil || route.FallbackRouteStrategy.ID == 0 {
+	if session.fallbackRouteStrategy == nil || session.fallbackRouteStrategy.ID == 0 {
 		return nil, nil, nil, nil, fmt.Errorf("target route %s references an unavailable fallback route strategy", route.Name)
 	}
 
-	fallbackStrategy := route.FallbackRouteStrategy
-	if !fallbackStrategy.Enabled {
-		return nil, nil, nil, nil, fmt.Errorf("target route %s references disabled fallback route strategy %s", route.Name, fallbackStrategy.Name)
-	}
-	if fallbackStrategy.GatewayID != 0 && fallbackStrategy.GatewayID != session.listener.ID {
-		return nil, nil, nil, nil, fmt.Errorf("target route %s references a fallback strategy from another gateway", route.Name)
-	}
+	fallbackStrategy := session.fallbackRouteStrategy
 	fallbackAccount := applyRouteStrategyToAccount(baseAccount, fallbackStrategy)
-	circuitKey := routeCircuitKey(*session, *route)
+	circuitKey := routeCircuitKey(*session, *route, session.primaryRouteStrategy, fallbackStrategy)
 	decision := s.routeCircuitDecision(circuitKey, *route)
 	session.routeCircuitState = decision.State
 	session.routeCircuitCacheHit = decision.CacheHit
@@ -1281,6 +1357,7 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session *gatew
 	fallbackID := fallbackStrategy.ID
 	session.routeStrategyID = &fallbackID
 	session.routeStrategyFlagNo = fallbackStrategy.FlagNo
+	applySessionRouteStrategyOverride(session, session.fallbackStrategyOverride)
 	session.account = fallbackAccount
 	session.resolvedProxyIndex = 0
 	session.proxyPoolSize = 0
@@ -1305,11 +1382,11 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session *gatew
 	if fallbackAccount.FallbackMode == models.ProxyGatewayFallbackDirect && fallbackAccount.AllowDirectFallback {
 		directAccount = fallbackAccount
 		directStrategy = fallbackStrategy
-	} else if session.primaryStrategyID != nil && route.RouteStrategy != nil && session.account != nil {
-		primaryAccount := applyRouteStrategyToAccount(baseAccount, route.RouteStrategy)
+	} else if session.primaryStrategyID != nil && session.primaryRouteStrategy != nil && session.account != nil {
+		primaryAccount := applyRouteStrategyToAccount(baseAccount, session.primaryRouteStrategy)
 		if primaryAccount.FallbackMode == models.ProxyGatewayFallbackDirect && primaryAccount.AllowDirectFallback {
 			directAccount = primaryAccount
-			directStrategy = route.RouteStrategy
+			directStrategy = session.primaryRouteStrategy
 		}
 	}
 	if directAccount != nil && directStrategy != nil {
@@ -1317,6 +1394,11 @@ func (s *ProxyGatewayService) dialWithPolicy(ctx context.Context, session *gatew
 		session.routeStrategyID = &directID
 		session.routeStrategyFlagNo = directStrategy.FlagNo
 		session.account = directAccount
+		if directStrategy.ID == fallbackStrategy.ID {
+			applySessionRouteStrategyOverride(session, session.fallbackStrategyOverride)
+		} else {
+			applySessionRouteStrategyOverride(session, session.primaryStrategyOverride)
+		}
 		directConn, directSecurity, directDNS, directErr := s.dialDirectWithAccountPolicy(ctx, session, directAccount, targetHost, targetPort)
 		if directErr == nil {
 			return directConn, nil, directSecurity, directDNS, nil
@@ -1427,7 +1509,7 @@ func (s *ProxyGatewayService) dialDirectWithAccountPolicy(ctx context.Context, s
 	return conn, securityPolicy, dnsPolicy, err
 }
 
-func routeCircuitKey(session gatewaySession, route models.ProxyGatewayTargetRoute) string {
+func routeCircuitKey(session gatewaySession, route models.ProxyGatewayTargetRoute, primaryStrategy, fallbackStrategy *models.ProxyGatewayRouteStrategy) string {
 	indexScope := "pool"
 	if session.proxyIndex > 0 {
 		indexScope = fmt.Sprintf("index:%d", session.proxyIndex)
@@ -1451,8 +1533,8 @@ func routeCircuitKey(session gatewaySession, route models.ProxyGatewayTargetRout
 		route.ID,
 		route.RouteStrategyID,
 		route.UpdatedAt.UnixNano(),
-		routeStrategyCircuitVersion(route.RouteStrategy),
-		routeStrategyCircuitVersion(route.FallbackRouteStrategy),
+		routeStrategyCircuitVersion(primaryStrategy),
+		routeStrategyCircuitVersion(fallbackStrategy),
 		policyCircuitVersion(session.listener.SecurityPolicy, session.listener.DNSPolicy),
 		policyCircuitVersion(accountSecurity, accountDNS),
 		session.listener.ConnectTimeoutSeconds,
@@ -1468,7 +1550,7 @@ func routeStrategyCircuitVersion(strategy *models.ProxyGatewayRouteStrategy) str
 	if strategy == nil {
 		return "0"
 	}
-	return fmt.Sprintf("%d.%s", strategy.UpdatedAt.UnixNano(), policyCircuitVersion(strategy.SecurityPolicy, strategy.DNSPolicy))
+	return fmt.Sprintf("%d.%d.%s", strategy.ID, strategy.UpdatedAt.UnixNano(), policyCircuitVersion(strategy.SecurityPolicy, strategy.DNSPolicy))
 }
 
 func policyCircuitVersion(security *models.ProxyGatewaySecurityPolicy, dns *models.ProxyGatewayDNSPolicy) string {
@@ -2567,43 +2649,45 @@ func (s *ProxyGatewayService) finishSessionWithPolicies(session gatewaySession, 
 		errText = err.Error()
 	}
 	_ = s.repo.CreateAccessLog(&models.ProxyGatewayAccessLog{
-		OrgID:                   session.listener.OrgID,
-		ListenerID:              listenerID,
-		AccountID:               accountID,
-		Username:                username,
-		RequestedUsername:       session.rawUsername,
-		ClientIP:                session.clientIP,
-		ClientPort:              session.clientPort,
-		Protocol:                session.protocol,
-		Command:                 session.command,
-		TargetHost:              session.targetHost,
-		TargetPort:              session.targetPort,
-		UpstreamProxyID:         proxyID,
-		Status:                  status,
-		DenyReason:              denyReason,
-		Error:                   errText,
-		BytesIn:                 session.bytesIn,
-		BytesOut:                session.bytesOut,
-		DurationMs:              time.Since(session.startedAt).Milliseconds(),
-		DNSMode:                 dnsMode,
-		SecurityPolicyID:        securityID,
-		DNSPolicyID:             dnsID,
-		RouteStrategyID:         session.routeStrategyID,
-		RouteStrategyFlagNo:     session.routeStrategyFlagNo,
-		PrimaryRouteStrategyID:  session.primaryStrategyID,
-		FallbackRouteStrategyID: session.fallbackStrategyID,
-		RouteFailoverUsed:       session.routeFailoverUsed,
-		RouteFailoverReason:     session.routeFailoverReason,
-		RouteCircuitState:       session.routeCircuitState,
-		RouteCircuitCacheHit:    session.routeCircuitCacheHit,
-		RouteCircuitProbe:       session.routeCircuitProbe,
-		ProxyIndex:              session.proxyIndex,
-		ResolvedProxyIndex:      session.resolvedProxyIndex,
-		ProxyPoolSize:           session.proxyPoolSize,
-		RouteParams:             session.routeParams,
-		TargetRouteID:           session.targetRouteID,
-		TargetRouteMatcher:      session.targetRouteMatcher,
-		TargetRouteDefault:      session.targetRouteDefault,
+		OrgID:                              session.listener.OrgID,
+		ListenerID:                         listenerID,
+		AccountID:                          accountID,
+		Username:                           username,
+		RequestedUsername:                  session.rawUsername,
+		ClientIP:                           session.clientIP,
+		ClientPort:                         session.clientPort,
+		Protocol:                           session.protocol,
+		Command:                            session.command,
+		TargetHost:                         session.targetHost,
+		TargetPort:                         session.targetPort,
+		UpstreamProxyID:                    proxyID,
+		Status:                             status,
+		DenyReason:                         denyReason,
+		Error:                              errText,
+		BytesIn:                            session.bytesIn,
+		BytesOut:                           session.bytesOut,
+		DurationMs:                         time.Since(session.startedAt).Milliseconds(),
+		DNSMode:                            dnsMode,
+		SecurityPolicyID:                   securityID,
+		DNSPolicyID:                        dnsID,
+		RouteStrategyID:                    session.routeStrategyID,
+		RouteStrategyFlagNo:                session.routeStrategyFlagNo,
+		PrimaryRouteStrategyID:             session.primaryStrategyID,
+		FallbackRouteStrategyID:            session.fallbackStrategyID,
+		RouteStrategyOverrideSourceID:      session.routeStrategyOverrideSourceID,
+		RouteStrategyOverrideReplacementID: session.routeStrategyOverrideReplacementID,
+		RouteFailoverUsed:                  session.routeFailoverUsed,
+		RouteFailoverReason:                session.routeFailoverReason,
+		RouteCircuitState:                  session.routeCircuitState,
+		RouteCircuitCacheHit:               session.routeCircuitCacheHit,
+		RouteCircuitProbe:                  session.routeCircuitProbe,
+		ProxyIndex:                         session.proxyIndex,
+		ResolvedProxyIndex:                 session.resolvedProxyIndex,
+		ProxyPoolSize:                      session.proxyPoolSize,
+		RouteParams:                        session.routeParams,
+		TargetRouteID:                      session.targetRouteID,
+		TargetRouteMatcher:                 session.targetRouteMatcher,
+		TargetRouteDefault:                 session.targetRouteDefault,
 	})
 }
 

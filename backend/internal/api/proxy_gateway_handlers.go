@@ -55,46 +55,47 @@ type proxyGatewayListenerRequest struct {
 }
 
 type proxyGatewayAccountRequest struct {
-	Username                string                                  `json:"username"`
-	Password                string                                  `json:"password"`
-	Name                    string                                  `json:"name"`
-	Remark                  string                                  `json:"remark"`
-	Enabled                 bool                                    `json:"enabled"`
-	ExpiresAt               *time.Time                              `json:"expiresAt"`
-	AllowAllGateways        bool                                    `json:"allowAllGateways"`
-	AllowedGatewayIDs       []uint                                  `json:"allowedGatewayIds"`
-	GroupID                 *uint                                   `json:"groupId"`
-	TagIDs                  []uint                                  `json:"tagIds"`
-	ProxySelectionSource    *models.ProxyGatewaySelectionSource     `json:"proxySelectionSource"`
-	SelectionMode           models.ProxyGatewaySelectionMode        `json:"selectionMode"`
-	ProxyIDs                []uint                                  `json:"proxyIds"`
-	ProxyMatchGroupIDs      []uint                                  `json:"proxyMatchGroupIds"`
-	ProxyMatchTagIDs        []uint                                  `json:"proxyMatchTagIds"`
-	ProxyMatchTagMode       models.ProxyTagFilterMode               `json:"proxyMatchTagMode"`
-	SelectionAlgorithm      models.ProxyGatewaySelectionAlgorithm   `json:"selectionAlgorithm"`
-	StickyMode              models.ProxyGatewayStickyMode           `json:"stickyMode"`
-	StickyTTLSeconds        int                                     `json:"stickyTtlSeconds"`
-	PreferLastSuccess       bool                                    `json:"preferLastSuccess"`
-	FallbackMode            models.ProxyGatewayFallbackMode         `json:"fallbackMode"`
-	FallbackProxyIDs        []uint                                  `json:"fallbackProxyIds"`
-	FallbackGroupIDs        []uint                                  `json:"fallbackGroupIds"`
-	FallbackTagIDs          []uint                                  `json:"fallbackTagIds"`
-	FallbackTagMode         models.ProxyTagFilterMode               `json:"fallbackTagMode"`
-	MaxRetries              int                                     `json:"maxRetries"`
-	AllowDirectFallback     bool                                    `json:"allowDirectFallback"`
-	SecurityPolicyID        *uint                                   `json:"securityPolicyId"`
-	DNSPolicyID             *uint                                   `json:"dnsPolicyId"`
-	MaxConcurrent           int                                     `json:"maxConcurrent"`
-	RateLimitPerMinute      int                                     `json:"rateLimitPerMinute"`
-	BandwidthLimitKBps      int                                     `json:"bandwidthLimitKbps"`
-	ConnectTimeoutSeconds   int                                     `json:"connectTimeoutSeconds"`
-	IdleTimeoutSeconds      int                                     `json:"idleTimeoutSeconds"`
-	MaxSessionSeconds       int                                     `json:"maxSessionSeconds"`
-	EnableUsernameRouting   bool                                    `json:"enableUsernameRouting"`
-	UsernameRoutingMode     *models.ProxyGatewayUsernameRoutingMode `json:"usernameRoutingMode"`
-	ProxyIndexOverflowMode  *models.ProxyGatewayIndexOverflowMode   `json:"proxyIndexOverflowMode"`
-	AllowAllRouteStrategies bool                                    `json:"allowAllRouteStrategies"`
-	AllowedRouteStrategyIDs []uint                                  `json:"allowedRouteStrategyIds"`
+	Username                string                                             `json:"username"`
+	Password                string                                             `json:"password"`
+	Name                    string                                             `json:"name"`
+	Remark                  string                                             `json:"remark"`
+	Enabled                 bool                                               `json:"enabled"`
+	ExpiresAt               *time.Time                                         `json:"expiresAt"`
+	AllowAllGateways        bool                                               `json:"allowAllGateways"`
+	AllowedGatewayIDs       []uint                                             `json:"allowedGatewayIds"`
+	GroupID                 *uint                                              `json:"groupId"`
+	TagIDs                  []uint                                             `json:"tagIds"`
+	ProxySelectionSource    *models.ProxyGatewaySelectionSource                `json:"proxySelectionSource"`
+	SelectionMode           models.ProxyGatewaySelectionMode                   `json:"selectionMode"`
+	ProxyIDs                []uint                                             `json:"proxyIds"`
+	ProxyMatchGroupIDs      []uint                                             `json:"proxyMatchGroupIds"`
+	ProxyMatchTagIDs        []uint                                             `json:"proxyMatchTagIds"`
+	ProxyMatchTagMode       models.ProxyTagFilterMode                          `json:"proxyMatchTagMode"`
+	SelectionAlgorithm      models.ProxyGatewaySelectionAlgorithm              `json:"selectionAlgorithm"`
+	StickyMode              models.ProxyGatewayStickyMode                      `json:"stickyMode"`
+	StickyTTLSeconds        int                                                `json:"stickyTtlSeconds"`
+	PreferLastSuccess       bool                                               `json:"preferLastSuccess"`
+	FallbackMode            models.ProxyGatewayFallbackMode                    `json:"fallbackMode"`
+	FallbackProxyIDs        []uint                                             `json:"fallbackProxyIds"`
+	FallbackGroupIDs        []uint                                             `json:"fallbackGroupIds"`
+	FallbackTagIDs          []uint                                             `json:"fallbackTagIds"`
+	FallbackTagMode         models.ProxyTagFilterMode                          `json:"fallbackTagMode"`
+	MaxRetries              int                                                `json:"maxRetries"`
+	AllowDirectFallback     bool                                               `json:"allowDirectFallback"`
+	SecurityPolicyID        *uint                                              `json:"securityPolicyId"`
+	DNSPolicyID             *uint                                              `json:"dnsPolicyId"`
+	MaxConcurrent           int                                                `json:"maxConcurrent"`
+	RateLimitPerMinute      int                                                `json:"rateLimitPerMinute"`
+	BandwidthLimitKBps      int                                                `json:"bandwidthLimitKbps"`
+	ConnectTimeoutSeconds   int                                                `json:"connectTimeoutSeconds"`
+	IdleTimeoutSeconds      int                                                `json:"idleTimeoutSeconds"`
+	MaxSessionSeconds       int                                                `json:"maxSessionSeconds"`
+	EnableUsernameRouting   bool                                               `json:"enableUsernameRouting"`
+	UsernameRoutingMode     *models.ProxyGatewayUsernameRoutingMode            `json:"usernameRoutingMode"`
+	ProxyIndexOverflowMode  *models.ProxyGatewayIndexOverflowMode              `json:"proxyIndexOverflowMode"`
+	AllowAllRouteStrategies bool                                               `json:"allowAllRouteStrategies"`
+	AllowedRouteStrategyIDs []uint                                             `json:"allowedRouteStrategyIds"`
+	RouteStrategyOverrides  *[]models.ProxyGatewayAccountRouteStrategyOverride `json:"routeStrategyOverrides"`
 }
 
 type proxyGatewayRouteStrategyRequest struct {
@@ -347,16 +348,32 @@ func (h *ProxyGatewayHandlers) CreateAccount(w http.ResponseWriter, r *http.Requ
 	}
 	item := models.ProxyGatewayAccount{OrgID: orgID}
 	applyAccountRequest(&item, req)
+	if item.ProxySelectionSource == models.ProxyGatewaySelectionSourceGateway {
+		overrides := item.RouteStrategyOverrides
+		if req.RouteStrategyOverrides != nil {
+			overrides = *req.RouteStrategyOverrides
+		}
+		if err := h.validateAccountRouteStrategyOverrides(orgID, &item, overrides); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	if err := item.SetPassword(req.Password); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	item.Password = req.Password
-	if err := h.repo.SaveAccount(&item); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := h.repo.SetAccountTags(item.ID, req.TagIDs); err != nil {
+	if err := h.repo.Transaction(func(txRepo *repository.ProxyGatewayRepository) error {
+		if err := txRepo.SaveAccount(&item); err != nil {
+			return err
+		}
+		if req.RouteStrategyOverrides != nil {
+			if err := txRepo.SetAccountRouteStrategyOverrides(orgID, item.ID, *req.RouteStrategyOverrides); err != nil {
+				return err
+			}
+		}
+		return txRepo.SetAccountTags(item.ID, req.TagIDs)
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -409,6 +426,16 @@ func (h *ProxyGatewayHandlers) UpdateAccount(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	applyAccountRequest(item, req)
+	if item.ProxySelectionSource == models.ProxyGatewaySelectionSourceGateway {
+		overrides := item.RouteStrategyOverrides
+		if req.RouteStrategyOverrides != nil {
+			overrides = *req.RouteStrategyOverrides
+		}
+		if err := h.validateAccountRouteStrategyOverrides(orgID, item, overrides); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	if req.Password != "" {
 		if err := item.SetPassword(req.Password); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -416,11 +443,17 @@ func (h *ProxyGatewayHandlers) UpdateAccount(w http.ResponseWriter, r *http.Requ
 		}
 		item.Password = req.Password
 	}
-	if err := h.repo.SaveAccount(item); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := h.repo.SetAccountTags(item.ID, req.TagIDs); err != nil {
+	if err := h.repo.Transaction(func(txRepo *repository.ProxyGatewayRepository) error {
+		if err := txRepo.SaveAccount(item); err != nil {
+			return err
+		}
+		if req.RouteStrategyOverrides != nil {
+			if err := txRepo.SetAccountRouteStrategyOverrides(orgID, item.ID, *req.RouteStrategyOverrides); err != nil {
+				return err
+			}
+		}
+		return txRepo.SetAccountTags(item.ID, req.TagIDs)
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -562,6 +595,62 @@ func validateUsernameRoutingSettings(routingMode *models.ProxyGatewayUsernameRou
 		return "proxyIndexOverflowMode must be reject or modulo"
 	}
 	return ""
+}
+
+func (h *ProxyGatewayHandlers) validateAccountRouteStrategyOverrides(orgID uint, account *models.ProxyGatewayAccount, overrides []models.ProxyGatewayAccountRouteStrategyOverride) error {
+	if len(overrides) > 100 {
+		return errors.New("a gateway account cannot define more than 100 route strategy overrides")
+	}
+	authorizedGateway := func(gatewayID uint) bool {
+		if account.AllowAllGateways || len(account.AllowedGatewayIDs) == 0 {
+			return true
+		}
+		for _, allowedID := range account.AllowedGatewayIDs {
+			if allowedID == gatewayID {
+				return true
+			}
+		}
+		return false
+	}
+	seen := make(map[string]struct{}, len(overrides))
+	for index, override := range overrides {
+		position := index + 1
+		if override.GatewayID == 0 || override.SourceRouteStrategyID == 0 || override.ReplacementRouteStrategyID == 0 {
+			return fmt.Errorf("route strategy override %d requires gateway, source strategy, and replacement strategy", position)
+		}
+		if override.SourceRouteStrategyID == override.ReplacementRouteStrategyID {
+			return fmt.Errorf("route strategy override %d cannot replace a strategy with itself", position)
+		}
+		if !authorizedGateway(override.GatewayID) {
+			return fmt.Errorf("route strategy override %d uses a gateway not authorized for this account", position)
+		}
+		if _, err := h.repo.GetListener(orgID, override.GatewayID); err != nil {
+			return fmt.Errorf("route strategy override %d references unavailable gateway %d", position, override.GatewayID)
+		}
+		key := fmt.Sprintf("%d:%d", override.GatewayID, override.SourceRouteStrategyID)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("route strategy override %d duplicates the same gateway and source strategy", position)
+		}
+		seen[key] = struct{}{}
+		source, err := h.repo.GetRouteStrategy(orgID, override.SourceRouteStrategyID)
+		if err != nil {
+			return fmt.Errorf("route strategy override %d references unavailable source strategy %d", position, override.SourceRouteStrategyID)
+		}
+		replacement, err := h.repo.GetRouteStrategy(orgID, override.ReplacementRouteStrategyID)
+		if err != nil {
+			return fmt.Errorf("route strategy override %d references unavailable replacement strategy %d", position, override.ReplacementRouteStrategyID)
+		}
+		if !source.Enabled || !replacement.Enabled {
+			return fmt.Errorf("route strategy override %d requires enabled source and replacement strategies", position)
+		}
+		if source.GatewayID != 0 && source.GatewayID != override.GatewayID {
+			return fmt.Errorf("route strategy override %d source strategy belongs to another gateway", position)
+		}
+		if replacement.GatewayID != 0 && replacement.GatewayID != override.GatewayID {
+			return fmt.Errorf("route strategy override %d replacement strategy belongs to another gateway", position)
+		}
+	}
+	return nil
 }
 
 func applyRouteStrategyRequest(item *models.ProxyGatewayRouteStrategy, req proxyGatewayRouteStrategyRequest) {

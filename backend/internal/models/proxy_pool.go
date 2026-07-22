@@ -119,6 +119,7 @@ type ProxyCheckChannel struct {
 	URLTemplate    string    `gorm:"not null;type:text" json:"urlTemplate"`
 	Method         string    `gorm:"not null;type:varchar(8);default:'GET'" json:"method"`
 	ResponseFormat string    `gorm:"not null;type:varchar(16);default:'json'" json:"responseFormat"`
+	ResponseRegex  string    `gorm:"type:text" json:"responseRegex,omitempty"`
 	IPField        string    `gorm:"type:varchar(128)" json:"ipField,omitempty"`
 	CountryField   string    `gorm:"type:varchar(128)" json:"countryField,omitempty"`
 	RegionField    string    `gorm:"type:varchar(128)" json:"regionField,omitempty"`

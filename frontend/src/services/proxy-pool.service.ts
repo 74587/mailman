@@ -45,7 +45,8 @@ export interface ProxyCheckChannel {
     mode: 'self' | 'lookup'
     urlTemplate: string
     method: 'GET'
-    responseFormat: 'json' | 'text'
+    responseFormat: 'json' | 'text' | 'regex'
+    responseRegex?: string
     ipField?: string
     countryField?: string
     regionField?: string
@@ -70,6 +71,28 @@ export interface ProxyCheckChannel {
 
 export type ProxyCheckChannelPayload = Omit<ProxyCheckChannel, 'id' | 'orgId' | 'hasCredential' | 'builtIn' | 'createdAt' | 'updatedAt'> & {
     credential?: string
+}
+
+export interface ProxyCheckChannelTestResult {
+    success: boolean
+    httpStatus?: number
+    latencyMs: number
+    contentType?: string
+    rawBody?: string
+    bodyTruncated?: boolean
+    exitIp?: string
+    country?: string
+    region?: string
+    city?: string
+    isp?: string
+    captures?: string[]
+    statusValue?: string
+    failureValue?: string
+    failureMatched: boolean
+    messageValue?: string
+    usedProxyId?: number
+    decision: string
+    error?: string
 }
 
 export interface ProxyCheckResult {
@@ -199,6 +222,15 @@ class ProxyPoolService {
 
     async deleteCheckChannel(id: number): Promise<void> {
         await apiClient.delete(`${this.basePath}/check-channels/${id}`)
+    }
+
+    async testCheckChannel(payload: {
+        channelId?: number
+        proxyId?: number
+        lookupIp?: string
+        channel: ProxyCheckChannelPayload
+    }): Promise<ProxyCheckChannelTestResult> {
+        return apiClient.post(`${this.basePath}/check-channels/test`, payload)
     }
 
     async listGroups(): Promise<ProxyGroup[]> {

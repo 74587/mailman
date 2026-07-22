@@ -134,6 +134,7 @@ func Migrate() error {
 		&models.ProxyGatewayListener{},
 		&models.ProxyGatewayAccount{},
 		&models.ProxyGatewayRouteStrategy{},
+		&models.ProxyGatewayAccountRouteStrategyOverride{},
 		&models.ProxyGatewayTargetRoute{},
 		&models.ProxyGatewayAccountGroup{},
 		&models.ProxyGatewayAccountTag{},
