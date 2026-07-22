@@ -1348,6 +1348,7 @@ export default function EnhancedClassicMailboxView() {
         if (!data?.locateEmail) return
 
         const { accountId, emailId } = data.locateEmail
+        const targetDirection: 'received' | 'sent' = data.locateEmail.direction === 'sent' ? 'sent' : 'received'
         const targetAccountId = Number(accountId)
         const targetEmailId = emailId === undefined || emailId === null ? null : Number(emailId)
         if (!Number.isFinite(targetAccountId) || targetAccountId <= 0) return
@@ -1366,13 +1367,13 @@ export default function EnhancedClassicMailboxView() {
         // 选中账户
         const isAlreadySelectedAccount = selectedAccountRef.current?.id === targetAccountForSelection.id
         selectedAccountRef.current = targetAccountForSelection
-        const shouldResetDirectionForNotification = targetEmailId && directionFilter !== 'received'
+        const shouldResetDirectionForNotification = targetEmailId && directionFilter !== targetDirection
         if (targetEmailId && (!isAlreadySelectedAccount || shouldResetDirectionForNotification)) {
             suppressNextSelectedAccountLoadRef.current = true
         }
         setSelectedAccount(current => current?.id === targetAccountForSelection.id ? current : targetAccountForSelection)
         if (shouldResetDirectionForNotification) {
-            setDirectionFilter('received')
+            setDirectionFilter(targetDirection)
         }
         requestAccountScroll(targetAccountForSelection.id)
 
@@ -1398,7 +1399,7 @@ export default function EnhancedClassicMailboxView() {
                 sort_by: 'date_desc',
                 cursor: true,
                 anchor_email_id: targetEmailId,
-                direction: 'received',
+                direction: targetDirection,
             }, targetAccountId)
             if (!isCurrentLocateRequest()) return
 

@@ -92,6 +92,7 @@ func Migrate() error {
 		&models.BusinessAccount{},
 		&models.BusinessEmailExclusion{},
 		&models.Email{},
+		&models.EmailShareLink{},
 		&models.Attachment{},
 		&models.Mailbox{},
 		&models.IncrementalSyncRecord{},

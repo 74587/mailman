@@ -362,6 +362,10 @@ class ProxyGatewayService {
         return apiClient.put(`${this.basePath}/target-routes/${id}`, payload)
     }
 
+    reorderTargetRoutes(gatewayId: number, routeIds: number[]): Promise<ProxyGatewayTargetRoute[]> {
+        return apiClient.put(`${this.basePath}/target-routes/reorder`, { gatewayId, routeIds })
+    }
+
     deleteTargetRoute(id: number): Promise<void> {
         return apiClient.delete(`${this.basePath}/target-routes/${id}`)
     }

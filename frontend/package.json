@@ -12,6 +12,7 @@
     "test:plugin-config-form": "node scripts/test-plugin-config-form.mjs",
     "test:configuration-menu-overflow": "node scripts/test-configuration-menu-overflow.mjs",
     "test:proxy-gateway-smart-export": "node scripts/test-proxy-gateway-smart-export.mjs",
+    "test:email-share": "node scripts/test-email-share-regression.mjs",
     "test:proxy-pool-regression": "node scripts/test-proxy-pool-regression.mjs",
     "test:ui-regression": "npm run test:action-dropdown && npm run test:plugin-config-form && npm run test:configuration-menu-overflow",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,css,scss,md}\""

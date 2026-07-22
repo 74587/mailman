@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/auth-context';
+import { getAuthReturnUrl } from '@/lib/auth-return-url';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mail, Lock, Loader2, User, Shield, ArrowRight } from 'lucide-react';
 
@@ -136,7 +137,7 @@ export default function ElegantLoginPage() {
 
     useEffect(() => {
         if (!authLoading && isAuthenticated) {
-            router.push('/main');
+            router.push(getAuthReturnUrl());
         }
     }, [isAuthenticated, authLoading, router]);
 

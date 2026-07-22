@@ -6,6 +6,7 @@ import { authService, User, AuthOrganization, AuthRole, AuthPermission } from '@
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
+import { getAuthReturnUrl, rememberAuthReturnUrl } from '@/lib/auth-return-url';
 
 interface AuthContextType {
     user: User | null;
@@ -97,6 +98,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                             const isOAuth2Callback = currentPath.startsWith('/oauth2/callback') ||
                                                    currentPath.match(/^\/oauth2\/callback\/[^\/]+$/);
                             if (currentPath !== '/login' && !isOAuth2Callback) {
+                                rememberAuthReturnUrl();
                                 router.push('/login');
                             }
                         }
@@ -143,7 +145,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 // 忽略，至少 user 已经设置
             }
             toast.success('登录成功');
-            router.push('/main');
+            router.push(getAuthReturnUrl());
         } catch (error) {
             const message = error instanceof Error ? error.message : '登录失败';
             toast.error(message);

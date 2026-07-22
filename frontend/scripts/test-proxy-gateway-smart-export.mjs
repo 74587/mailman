@@ -190,12 +190,38 @@ const targetRoutes = [
         circuitJitterPercent: 10,
         circuitHalfOpenProbes: 1,
     },
+    {
+        id: 302,
+        gatewayId: 11,
+        name: 'IPv4 API',
+        description: 'IPv4-only services',
+        enabled: true,
+        isDefault: false,
+        sortOrder: 10,
+        matchers: ['api.ipv4.example'],
+        routeStrategyId: 102,
+        routeStrategy: routeStrategies[1],
+        failoverEnabled: false,
+    },
+    {
+        id: 303,
+        gatewayId: 11,
+        name: 'IPv4 CDN',
+        enabled: true,
+        isDefault: false,
+        sortOrder: 20,
+        matchers: ['*.cdn.example'],
+        routeStrategyId: 102,
+        routeStrategy: routeStrategies[1],
+        failoverEnabled: false,
+    },
 ]
 
 const accessLogs = [
     {
         id: 401,
         listenerId: 11,
+        accountId: 21,
         username: 'route-user',
         requestedUsername: 'route-user#2',
         clientIp: '198.51.100.8',
@@ -231,6 +257,7 @@ const accessLogs = [
 const gatewayLogRequests = []
 const accountUpdateRequests = []
 const routeStrategyCreateRequests = []
+const targetRouteReorderRequests = []
 const accountValidationRequests = []
 const mutationRequests = []
 
@@ -308,6 +335,16 @@ async function configurePage(page, width, height) {
             const saved = { ...body, id: 108 }
             routeStrategies.push(saved)
             request.respond({ status: 201, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(saved) })
+            return
+        }
+        if (request.method() === 'PUT' && pathname.endsWith('/proxy-gateway/target-routes/reorder')) {
+            const body = JSON.parse(request.postData() || '{}')
+            targetRouteReorderRequests.push(body)
+            const byId = new Map(targetRoutes.map(item => [item.id, item]))
+            const reordered = (body.routeIds || []).map((id, index) => ({ ...byId.get(id), sortOrder: (index + 1) * 10 }))
+            const defaults = targetRoutes.filter(item => item.isDefault).map(item => ({ ...item, sortOrder: (reordered.length + 1) * 10 }))
+            targetRoutes.splice(0, targetRoutes.length, ...reordered, ...defaults)
+            request.respond({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(targetRoutes) })
             return
         }
         if ((request.method() === 'PUT' && pathname.includes('/proxy-gateway/accounts/'))
@@ -752,6 +789,18 @@ async function run() {
             return textarea?.value
         })
         assert(defaultSeparator === '#', `new gateways should default to #, received ${defaultSeparator}`)
+        const separatorAfterEnter = await gatewayPage.evaluate(async () => {
+            const label = Array.from(document.querySelectorAll('label')).find(element => element.innerText.includes('智能用户名分隔符'))
+            const textarea = label?.querySelector('textarea')
+            if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('Gateway separator textarea not found')
+            textarea.focus()
+            const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+            setter?.call(textarea, '#\n')
+            textarea.dispatchEvent(new Event('input', { bubbles: true }))
+            await new Promise(resolve => requestAnimationFrame(resolve))
+            return textarea.value
+        })
+        assert(separatorAfterEnter === '#\n', `gateway separator textarea should retain a trailing newline, received ${JSON.stringify(separatorAfterEnter)}`)
         await gatewayPage.evaluate(() => {
             const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '取消')
             if (!(button instanceof HTMLButtonElement)) throw new Error('Cancel gateway action not found')
@@ -810,6 +859,18 @@ async function run() {
             button.click()
         })
         await gatewayPage.waitForFunction(() => document.body.innerText.includes('失败切换'))
+        const matcherAfterEnter = await gatewayPage.evaluate(async () => {
+            const label = Array.from(document.querySelectorAll('label')).find(element => element.innerText.includes('目标匹配项'))
+            const textarea = label?.querySelector('textarea')
+            if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('Target matcher textarea not found')
+            textarea.focus()
+            const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+            setter?.call(textarea, 'api.example.test\n')
+            textarea.dispatchEvent(new Event('input', { bubbles: true }))
+            await new Promise(resolve => requestAnimationFrame(resolve))
+            return textarea.value
+        })
+        assert(matcherAfterEnter === 'api.example.test\n', `target matcher textarea should retain a trailing newline, received ${JSON.stringify(matcherAfterEnter)}`)
         const failoverInitiallyHidden = await gatewayPage.evaluate(() => {
             const dialog = document.querySelector('[role="dialog"]')
             return !dialog?.innerText.includes('兜底出口策略')
@@ -885,6 +946,24 @@ async function run() {
             button.click()
         })
         await gatewayPage.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 })
+        await gatewayPage.waitForSelector('button[aria-label="拖拽排序 IPv4 API"]')
+        const dragPoints = await gatewayPage.evaluate(() => {
+            const point = label => {
+                const element = document.querySelector(`button[aria-label="${label}"]`)
+                if (!(element instanceof HTMLButtonElement)) throw new Error(`Drag handle not found: ${label}`)
+                const rect = element.getBoundingClientRect()
+                return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+            }
+            return { from: point('拖拽排序 IPv4 API'), to: point('拖拽排序 IPv4 CDN') }
+        })
+        await gatewayPage.mouse.move(dragPoints.from.x, dragPoints.from.y)
+        await gatewayPage.mouse.down()
+        await gatewayPage.mouse.move(dragPoints.to.x, dragPoints.to.y, { steps: 12 })
+        await gatewayPage.mouse.up()
+        await delay(500)
+        assert(targetRouteReorderRequests.length === 1, `target route reorder should make one atomic request, received ${targetRouteReorderRequests.length}`)
+        assert(JSON.stringify(targetRouteReorderRequests[0].routeIds) === JSON.stringify([303, 302]), `unexpected target route order: ${JSON.stringify(targetRouteReorderRequests[0])}`)
+        await gatewayPage.screenshot({ path: join(artifactDir, 'target-route-order.png'), fullPage: true })
         await gatewayPage.evaluate(() => {
             const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '网关日志')
             if (!(button instanceof HTMLButtonElement)) throw new Error('Gateway logs navigation not found')
@@ -896,6 +975,12 @@ async function run() {
         assert(failoverLogText.includes('主策略失败：primary route unavailable'), 'gateway log should label the primary failure reason on a successful failover')
         assert(failoverLogText.includes('熔断 open'), 'gateway log should display the circuit state')
         assert(failoverLogText.includes('出口覆盖 · 策略 ID 101 → 102'), 'gateway log should expose the effective account egress override')
+        await gatewayPage.hover('button[aria-label="用户 ID 21，悬浮查看详情"]')
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('智能路由测试用户') && document.body.innerText.includes('出口来源：遵循网关配置'))
+        await gatewayPage.hover('button[aria-label="#4，悬浮查看详情"]')
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('IPv4 服务池') && document.body.innerText.includes('本次主策略 ID：101'))
+        await gatewayPage.hover('button[aria-label="路由 #301 · 默认，悬浮查看详情"]')
+        await gatewayPage.waitForFunction(() => document.body.innerText.includes('缺失兜底策略测试') && document.body.innerText.includes('本次命中：默认兜底'))
         const failoverLogMetrics = await gatewayPage.evaluate(() => {
             const table = Array.from(document.querySelectorAll('table')).find(element => element.innerText.includes('熔断缓存命中'))
             const row = table?.querySelector('tbody tr')
@@ -908,7 +993,7 @@ async function run() {
         })
         assert(failoverLogMetrics.bodyScrollWidth <= failoverLogMetrics.viewportWidth, 'gateway logs should not create horizontal body scrolling')
         assert(failoverLogMetrics.tableWidth >= 900, 'gateway log columns should keep a readable minimum width')
-        assert(failoverLogMetrics.rowHeight < 180, 'gateway log rows should not collapse into excessive wrapped lines')
+        assert(failoverLogMetrics.rowHeight < 180, `gateway log rows should not collapse into excessive wrapped lines: ${JSON.stringify(failoverLogMetrics)}`)
 
         await gatewayPage.evaluate(() => {
             const setInput = (label, value) => {

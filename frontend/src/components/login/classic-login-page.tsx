@@ -10,6 +10,7 @@ import { Card } from '@/components/ui/card';
 import { Mail, Lock, Loader2, User, Shield } from 'lucide-react';
 import LoginParticles from '@/components/login-particles';
 import FloatingIcons from '@/components/floating-icons';
+import { getAuthReturnUrl } from '@/lib/auth-return-url';
 
 export default function ClassicLoginPage() {
     const [username, setUsername] = useState('');
@@ -21,7 +22,7 @@ export default function ClassicLoginPage() {
     // 如果已经登录，重定向到主页
     useEffect(() => {
         if (!authLoading && isAuthenticated) {
-            router.push('/main');
+            router.push(getAuthReturnUrl());
         }
     }, [isAuthenticated, authLoading, router]);
 

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/auth-context';
+import { getAuthReturnUrl } from '@/lib/auth-return-url';
 import { motion, useSpring, useTransform, AnimatePresence } from 'framer-motion';
 import { Loader2, User, Lock, Shield, Eye, EyeOff } from 'lucide-react';
 
@@ -277,7 +278,7 @@ export default function PlayfulLoginPage() {
 
     useEffect(() => {
         if (!authLoading && isAuthenticated) {
-            router.push('/main');
+            router.push(getAuthReturnUrl());
         }
     }, [isAuthenticated, authLoading, router]);
 

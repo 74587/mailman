@@ -204,6 +204,7 @@ export interface Email {
     MailboxName: string;
     Flags?: string[];
     Size: number;
+    direction?: 'received' | 'sent';
     CreatedAt: string;
     UpdatedAt: string;
     DeletedAt?: {

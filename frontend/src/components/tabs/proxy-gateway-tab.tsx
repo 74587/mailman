@@ -2,8 +2,21 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
+    closestCenter,
+    DndContext,
+    KeyboardSensor,
+    PointerSensor,
+    type DragEndEvent,
+    useSensor,
+    useSensors,
+} from '@dnd-kit/core'
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
     ArrowLeft,
     BookOpen,
+    ChevronDown,
+    ChevronUp,
     ChevronsLeft,
     ChevronsRight,
     Code2,
@@ -11,6 +24,7 @@ import {
     FileDown,
     FileText,
     GitBranch,
+    GripVertical,
     HelpCircle,
     KeyRound,
     ListFilter,
@@ -402,7 +416,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
             const [nextRoutes, nextTargetRoutes, nextSecurity, nextDNS] = nextGatewayId
                 ? await Promise.all([
                     proxyGatewayService.listRouteStrategies(),
-                    proxyGatewayService.listTargetRoutes({ gatewayId: nextGatewayId }),
+                    proxyGatewayService.listTargetRoutes(),
                     proxyGatewayService.listSecurityPolicies({ gatewayId: nextGatewayId }),
                     proxyGatewayService.listDNSPolicies({ gatewayId: nextGatewayId }),
                 ])
@@ -554,6 +568,15 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
         }
     }
 
+    const reorderTargetRoutes = async (gatewayId: number, routeIds: number[]) => {
+        const reordered = await proxyGatewayService.reorderTargetRoutes(gatewayId, routeIds)
+        setTargetRoutes(current => [
+            ...current.filter(item => item.gatewayId !== gatewayId),
+            ...asArray<ProxyGatewayTargetRoute>(reordered),
+        ])
+        toast.success('目标路由顺序已保存')
+    }
+
     const saveSecurity = async () => {
         if (!securityDraft) return
         const payload = { ...securityDraft, gatewayId: securityDraft.gatewayId || currentGatewayId }
@@ -694,7 +717,13 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                     onCreateTargetRoute={() => {
                                         if (!currentGatewayId) return
                                         const firstStrategy = safeRouteStrategies.find(item => item.enabled && (item.gatewayId === currentGatewayId || item.gatewayId === 0))
-                                        setTargetRouteDraft(defaultTargetRoute(currentGatewayId, firstStrategy?.id))
+                                        const lastSortOrder = safeTargetRoutes
+                                            .filter(item => item.gatewayId === currentGatewayId && !item.isDefault)
+                                            .reduce((maximum, item) => Math.max(maximum, item.sortOrder || 0), 0)
+                                        setTargetRouteDraft({
+                                            ...defaultTargetRoute(currentGatewayId, firstStrategy?.id),
+                                            sortOrder: (Math.floor(lastSortOrder / 10) + 1) * 10,
+                                        })
                                     }}
                                     onEditTargetRoute={item => setTargetRouteDraft({ ...item, matchers: [...(item.matchers || [])] })}
                                     onDeleteTargetRoute={async item => {
@@ -702,6 +731,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                         await proxyGatewayService.deleteTargetRoute(item.id)
                                         await loadData()
                                     }}
+                                    onReorderTargetRoutes={routeIds => reorderTargetRoutes(currentGatewayId, routeIds)}
                                     onCreateSecurity={() => currentGatewayId && setSecurityDraft(defaultSecurityPolicy(currentGatewayId))}
                                     onEditSecurity={item => setSecurityDraft({ ...item })}
                                     onCreateDNS={() => currentGatewayId && setDNSDraft(defaultDNSPolicy(currentGatewayId))}
@@ -771,7 +801,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                     }}
                                 />
                             )}
-                            {normalizedSection === 'logs' && <LogsView auditLogs={safeAuditLogs} />}
+                            {normalizedSection === 'logs' && <LogsView auditLogs={safeAuditLogs} accounts={safeAccounts} strategies={safeRouteStrategies} targetRoutes={safeTargetRoutes} />}
                         </>
                     )}
                 </div>
@@ -885,6 +915,7 @@ function GatewaysView({
     onCreateTargetRoute,
     onEditTargetRoute,
     onDeleteTargetRoute,
+    onReorderTargetRoutes,
     onCreateSecurity,
     onEditSecurity,
     onCreateDNS,
@@ -913,6 +944,7 @@ function GatewaysView({
     onCreateTargetRoute: () => void
     onEditTargetRoute: (item: ProxyGatewayTargetRoute) => void
     onDeleteTargetRoute: (item: ProxyGatewayTargetRoute) => void
+    onReorderTargetRoutes: (routeIds: number[]) => Promise<void>
     onCreateSecurity: () => void
     onEditSecurity: (item: ProxyGatewaySecurityPolicy) => void
     onCreateDNS: () => void
@@ -997,7 +1029,7 @@ function GatewaysView({
                     {detailSection === 'target-routes' && (
                         <Panel>
                             <div className="p-4">
-                                <TargetRoutesView routes={gatewayTargetRoutes} strategies={gatewayRoutes} onCreate={onCreateTargetRoute} onEdit={onEditTargetRoute} onDelete={onDeleteTargetRoute} />
+                                <TargetRoutesView routes={gatewayTargetRoutes} strategies={gatewayRoutes} onCreate={onCreateTargetRoute} onEdit={onEditTargetRoute} onDelete={onDeleteTargetRoute} onReorder={onReorderTargetRoutes} />
                             </div>
                         </Panel>
                     )}
@@ -1022,7 +1054,7 @@ function GatewaysView({
                             </div>
                         </Panel>
                     )}
-                    {detailSection === 'logs' && <LogsView auditLogs={[]} listenerId={detailGateway.id} />}
+                    {detailSection === 'logs' && <LogsView auditLogs={[]} listenerId={detailGateway.id} accounts={accounts} strategies={gatewayRoutes} targetRoutes={gatewayTargetRoutes} />}
                 </div>
             </div>
         )
@@ -2046,19 +2078,72 @@ function buildPlaywrightProxySnippet(account: ProxyGatewayAccount, gateway: Prox
     return `import { chromium } from 'playwright'\n\nconst browser = await chromium.launch({\n  proxy: {\n    server: ${jsonString(gatewayProxyServer(gateway, scheme))}${authLines},\n  },\n})`
 }
 
-function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
+function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete, onReorder }: {
     routes: ProxyGatewayTargetRoute[]
     strategies: ProxyGatewayRouteStrategy[]
     onCreate: () => void
     onEdit: (item: ProxyGatewayTargetRoute) => void
     onDelete: (item: ProxyGatewayTargetRoute) => void
+    onReorder: (routeIds: number[]) => Promise<void>
 }) {
     const strategyById = new Map(strategies.map(item => [item.id, item]))
     const hasDefault = routes.some(item => item.isDefault && item.enabled)
+    const [displayRoutes, setDisplayRoutes] = useState(routes)
+    const [reordering, setReordering] = useState(false)
+    const sensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    )
+
+    useEffect(() => {
+        if (!reordering) setDisplayRoutes(routes)
+    }, [routes, reordering])
+
+    const orderedRoutes = [
+        ...displayRoutes.filter(item => !item.isDefault),
+        ...displayRoutes.filter(item => item.isDefault),
+    ]
+    const sortableRoutes = orderedRoutes.filter(item => !item.isDefault)
+    const defaultRoutes = orderedRoutes.filter(item => item.isDefault)
+
+    const persistOrder = async (nextNonDefault: ProxyGatewayTargetRoute[]) => {
+        const previous = displayRoutes
+        setDisplayRoutes([...nextNonDefault, ...defaultRoutes])
+        setReordering(true)
+        try {
+            await onReorder(nextNonDefault.map(item => item.id))
+        } catch (error: any) {
+            setDisplayRoutes(previous)
+            toast.error(error.message || '目标路由排序失败，请刷新后重试')
+        } finally {
+            setReordering(false)
+        }
+    }
+
+    const handleDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event
+        if (!over || active.id === over.id || reordering) return
+        const oldIndex = sortableRoutes.findIndex(item => item.id === Number(active.id))
+        const newIndex = sortableRoutes.findIndex(item => item.id === Number(over.id))
+        if (oldIndex < 0 || newIndex < 0) return
+        void persistOrder(arrayMove(sortableRoutes, oldIndex, newIndex))
+    }
+
+    const moveRoute = (routeID: number, offset: -1 | 1) => {
+        if (reordering) return
+        const currentIndex = sortableRoutes.findIndex(item => item.id === routeID)
+        const nextIndex = currentIndex + offset
+        if (currentIndex < 0 || nextIndex < 0 || nextIndex >= sortableRoutes.length) return
+        void persistOrder(arrayMove(sortableRoutes, currentIndex, nextIndex))
+    }
+
     return (
         <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-sm text-gray-500 dark:text-gray-400">按顺序匹配目标，首条命中后使用对应出口策略。</div>
+                <div className="text-sm text-gray-500 dark:text-gray-400">
+                    拖拽调整匹配顺序，保存后自动编号为 10、20、30…；默认兜底固定在最后。
+                    {reordering && <span className="ml-2 inline-flex items-center gap-1 text-primary-600"><Loader2 className="h-3.5 w-3.5 animate-spin" />正在保存</span>}
+                </div>
                 <CreateButton onClick={onCreate} label="新增目标路由" />
             </div>
             {!!routes.length && !hasDefault && (
@@ -2069,7 +2154,7 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
             {!routes.length ? <EmptyState label="当前网关还没有目标路由，所有请求沿用网关用户的代理策略" /> : (
                 <>
                     <div className="space-y-3 md:hidden">
-                        {routes.map(item => {
+                        {orderedRoutes.map((item, index) => {
                             const strategy = item.routeStrategy || strategyById.get(item.routeStrategyId)
                             const fallbackStrategy = item.fallbackRouteStrategy || (item.fallbackRouteStrategyId ? strategyById.get(item.fallbackRouteStrategyId) : undefined)
                             const strategyUnavailable = !strategy || (item.failoverEnabled && !fallbackStrategy) || strategy.enabled === false || fallbackStrategy?.enabled === false
@@ -2085,7 +2170,15 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                                             </div>
                                             {item.description && <div className="mt-1 text-xs text-gray-500">{item.description}</div>}
                                         </div>
-                                        <RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} />
+                                        <div className="flex items-center gap-1">
+                                            {!item.isDefault && (
+                                                <div className="flex rounded-lg border border-gray-200 dark:border-gray-700" aria-label="调整目标路由顺序">
+                                                    <button type="button" aria-label={`上移 ${item.name}`} disabled={reordering || index === 0} onClick={() => moveRoute(item.id, -1)} className="p-1.5 text-gray-500 hover:bg-gray-50 disabled:opacity-30 dark:hover:bg-gray-800"><ChevronUp className="h-4 w-4" /></button>
+                                                    <button type="button" aria-label={`下移 ${item.name}`} disabled={reordering || index >= sortableRoutes.length - 1} onClick={() => moveRoute(item.id, 1)} className="border-l border-gray-200 p-1.5 text-gray-500 hover:bg-gray-50 disabled:opacity-30 dark:border-gray-700 dark:hover:bg-gray-800"><ChevronDown className="h-4 w-4" /></button>
+                                                </div>
+                                            )}
+                                            <RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} />
+                                        </div>
                                     </div>
                                     <dl className="mt-3 grid grid-cols-[72px_minmax(0,1fr)] gap-x-2 gap-y-2 text-sm">
                                         <dt className="text-gray-500">匹配顺序</dt>
@@ -2115,11 +2208,13 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                         })}
                     </div>
                     <div className="hidden md:block">
+                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                    <SortableContext items={sortableRoutes.map(item => item.id)} strategy={verticalListSortingStrategy}>
                     <TableShell>
                     <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-800">
                         <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/60">
                             <tr>
-                                <th className="w-20 px-4 py-3 text-left">顺序</th>
+                                <th className="w-24 px-4 py-3 text-left">顺序</th>
                                 <th className="px-4 py-3 text-left">规则</th>
                                 <th className="px-4 py-3 text-left">目标</th>
                                 <th className="px-4 py-3 text-left">出口策略</th>
@@ -2128,51 +2223,84 @@ function TargetRoutesView({ routes, strategies, onCreate, onEdit, onDelete }: {
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                            {routes.map(item => {
-                                const strategy = item.routeStrategy || strategyById.get(item.routeStrategyId)
-                                const fallbackStrategy = item.fallbackRouteStrategy || (item.fallbackRouteStrategyId ? strategyById.get(item.fallbackRouteStrategyId) : undefined)
-                                const strategyUnavailable = !strategy || (item.failoverEnabled && !fallbackStrategy) || strategy.enabled === false || fallbackStrategy?.enabled === false
-                                return (
-                                    <tr key={item.id} className="hover:bg-gray-50/80 dark:hover:bg-gray-800/40">
-                                        <td className="px-4 py-3 font-mono text-xs text-gray-500">{item.isDefault ? '—' : item.sortOrder}</td>
-                                        <td className="px-4 py-3">
-                                            <div className="font-medium text-gray-900 dark:text-white">{item.name}</div>
-                                            {item.description && <div className="mt-0.5 text-xs text-gray-500">{item.description}</div>}
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            {item.isDefault ? <Badge tone="amber">未命中时默认</Badge> : (
-                                                <div className="flex max-w-xl flex-wrap gap-1">
-                                                    {(item.matchers || []).map(matcher => <Badge key={matcher}>{matcher}</Badge>)}
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            <div className="font-medium text-gray-800 dark:text-gray-200">{strategy?.name || `#${item.routeStrategyId}`}</div>
-                                            {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge><Badge tone={strategy.proxyIndexOverflowMode === 'modulo' ? 'green' : 'gray'}>索引{strategy.proxyIndexOverflowMode === 'modulo' ? '取模' : '越界拒绝'}</Badge></div>}
-                                            {item.failoverEnabled && (
-                                                <div className="mt-2 flex flex-wrap items-center gap-1 text-xs text-gray-500">
-                                                    <Badge tone="amber">失败切换</Badge>
-                                                    <span>→ {fallbackStrategy?.name || (item.fallbackRouteStrategyId ? `#${item.fallbackRouteStrategyId}` : '未找到')}</span>
-                                                    <span>· 退避 {item.circuitBaseSeconds || 60}–{item.circuitMaxSeconds || 300}s</span>
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td className="px-4 py-3">
-											<Badge tone={item.enabled ? (strategyUnavailable ? 'amber' : 'green') : 'gray'}>
-												{!item.enabled ? '已停用' : strategyUnavailable ? '关联策略不可用' : '已启用'}
-                                            </Badge>
-                                        </td>
-                                        <td className="px-4 py-3 text-right"><RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} /></td>
-                                    </tr>
-                                )
-                            })}
+                            {sortableRoutes.map(item => <SortableTargetRouteRow key={item.id} item={item} strategyById={strategyById} reordering={reordering} onEdit={onEdit} onDelete={onDelete} />)}
+                            {defaultRoutes.map(item => <TargetRouteTableRow key={item.id} item={item} strategyById={strategyById} onEdit={onEdit} onDelete={onDelete} />)}
                         </tbody>
                     </table>
                     </TableShell>
+                    </SortableContext>
+                    </DndContext>
                     </div>
                 </>
             )}
         </div>
+    )
+}
+
+function SortableTargetRouteRow({ item, strategyById, reordering, onEdit, onDelete }: {
+    item: ProxyGatewayTargetRoute
+    strategyById: Map<number, ProxyGatewayRouteStrategy>
+    reordering: boolean
+    onEdit: (item: ProxyGatewayTargetRoute) => void
+    onDelete: (item: ProxyGatewayTargetRoute) => void
+}) {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: reordering })
+    return (
+        <TargetRouteTableRow
+            item={item}
+            strategyById={strategyById}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            rowRef={setNodeRef}
+            rowStyle={{ transform: CSS.Transform.toString(transform), transition }}
+            dragging={isDragging}
+            dragHandleProps={{ ...attributes, ...listeners }}
+        />
+    )
+}
+
+function TargetRouteTableRow({ item, strategyById, onEdit, onDelete, rowRef, rowStyle, dragging = false, dragHandleProps }: {
+    item: ProxyGatewayTargetRoute
+    strategyById: Map<number, ProxyGatewayRouteStrategy>
+    onEdit: (item: ProxyGatewayTargetRoute) => void
+    onDelete: (item: ProxyGatewayTargetRoute) => void
+    rowRef?: (node: HTMLTableRowElement | null) => void
+    rowStyle?: React.CSSProperties
+    dragging?: boolean
+    dragHandleProps?: React.HTMLAttributes<HTMLButtonElement>
+}) {
+    const strategy = item.routeStrategy || strategyById.get(item.routeStrategyId)
+    const fallbackStrategy = item.fallbackRouteStrategy || (item.fallbackRouteStrategyId ? strategyById.get(item.fallbackRouteStrategyId) : undefined)
+    const strategyUnavailable = !strategy || (item.failoverEnabled && !fallbackStrategy) || strategy.enabled === false || fallbackStrategy?.enabled === false
+    return (
+        <tr ref={rowRef} style={rowStyle} className={cn('hover:bg-gray-50/80 dark:hover:bg-gray-800/40', dragging && 'relative z-20 bg-white shadow-lg dark:bg-gray-900')}>
+            <td className="px-4 py-3 font-mono text-xs text-gray-500">
+                {item.isDefault ? '—' : (
+                    <div className="flex items-center gap-2">
+                        <button type="button" aria-label={`拖拽排序 ${item.name}`} title="拖拽调整顺序；也可聚焦后使用键盘" className="touch-none cursor-grab rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 active:cursor-grabbing dark:hover:bg-gray-800 dark:hover:text-gray-200" {...dragHandleProps}>
+                            <GripVertical className="h-4 w-4" />
+                        </button>
+                        <span>{item.sortOrder}</span>
+                    </div>
+                )}
+            </td>
+            <td className="px-4 py-3">
+                <div className="font-medium text-gray-900 dark:text-white">{item.name}</div>
+                {item.description && <div className="mt-0.5 text-xs text-gray-500">{item.description}</div>}
+            </td>
+            <td className="px-4 py-3">
+                {item.isDefault ? <Badge tone="amber">未命中时默认</Badge> : (
+                    <div className="flex max-w-xl flex-wrap gap-1">{(item.matchers || []).map(matcher => <Badge key={matcher}>{matcher}</Badge>)}</div>
+                )}
+            </td>
+            <td className="px-4 py-3">
+                <div className="font-medium text-gray-800 dark:text-gray-200">{strategy?.name || `#${item.routeStrategyId}`}</div>
+                {strategy && <div className="mt-1 flex flex-wrap gap-1"><Badge>{strategy.selectionMode}</Badge><Badge>{strategy.selectionAlgorithm}</Badge><Badge tone={strategy.proxyIndexOverflowMode === 'modulo' ? 'green' : 'gray'}>索引{strategy.proxyIndexOverflowMode === 'modulo' ? '取模' : '越界拒绝'}</Badge></div>}
+                {item.failoverEnabled && <div className="mt-2 flex flex-wrap items-center gap-1 text-xs text-gray-500"><Badge tone="amber">失败切换</Badge><span>→ {fallbackStrategy?.name || (item.fallbackRouteStrategyId ? `#${item.fallbackRouteStrategyId}` : '未找到')}</span><span>· 退避 {item.circuitBaseSeconds || 60}–{item.circuitMaxSeconds || 300}s</span></div>}
+            </td>
+            <td className="px-4 py-3"><Badge tone={item.enabled ? (strategyUnavailable ? 'amber' : 'green') : 'gray'}>{!item.enabled ? '已停用' : strategyUnavailable ? '关联策略不可用' : '已启用'}</Badge></td>
+            <td className="px-4 py-3 text-right"><RowActions onEdit={() => onEdit(item)} onDelete={() => onDelete(item)} /></td>
+        </tr>
     )
 }
 
@@ -2429,7 +2557,34 @@ function MetaTable<T extends { id: number; name: string; color?: string; descrip
     )
 }
 
-function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]; listenerId?: number }) {
+function GatewayLogHoverBadge({ label, tone = 'gray', title, children }: {
+    label: string
+    tone?: 'gray' | 'green' | 'red' | 'blue' | 'amber'
+    title: string
+    children: React.ReactNode
+}) {
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                <button type="button" aria-label={`${label}，悬浮查看详情`} className="rounded-full text-left outline-none focus:ring-2 focus:ring-primary-400 focus:ring-offset-1">
+                    <Badge tone={tone}>{label}</Badge>
+                </button>
+            </TooltipTrigger>
+            <TooltipContent className="w-80 whitespace-normal px-3 py-2 text-left leading-5">
+                <div className="font-semibold text-white">{title}</div>
+                <div className="mt-1 text-gray-200">{children}</div>
+            </TooltipContent>
+        </Tooltip>
+    )
+}
+
+function LogsView({ auditLogs, listenerId, accounts = [], strategies = [], targetRoutes = [] }: {
+    auditLogs: ProxyGatewayAuditLog[]
+    listenerId?: number
+    accounts?: ProxyGatewayAccount[]
+    strategies?: ProxyGatewayRouteStrategy[]
+    targetRoutes?: ProxyGatewayTargetRoute[]
+}) {
     const [logs, setLogs] = useState<ProxyGatewayAccessLog[]>([])
     const [loading, setLoading] = useState(false)
     const [total, setTotal] = useState(0)
@@ -2440,6 +2595,9 @@ function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]
     const [filters, setFilters] = useState<GatewayLogFilters>(emptyGatewayLogFilters)
     const [refreshRevision, setRefreshRevision] = useState(0)
     const requestSequence = useRef(0)
+    const accountById = useMemo(() => new Map(accounts.map(item => [item.id, item])), [accounts])
+    const strategyById = useMemo(() => new Map(strategies.map(item => [item.id, item])), [strategies])
+    const targetRouteById = useMemo(() => new Map(targetRoutes.map(item => [item.id, item])), [targetRoutes])
 
     const loadLogs = useCallback(async () => {
         const sequence = ++requestSequence.current
@@ -2630,8 +2788,22 @@ function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]
                                 <tr key={item.id}>
                                     <td className="whitespace-nowrap px-4 py-3 text-gray-500">{formatTime(item.createdAt)}</td>
                                     <td className="min-w-64 px-4 py-3">
-                                        <div>{item.username || '-'}</div>
-                                        {(item.requestedUsername || item.clientIp || item.routeStrategyFlagNo || item.proxyIndex || item.targetRouteId || item.routeFailoverUsed || item.routeStrategyOverrideSourceId) && (
+                                        <div className="flex flex-wrap items-center gap-1.5">
+                                            <span>{item.username || '-'}</span>
+                                            {item.accountId ? (() => {
+                                                const account = accountById.get(item.accountId)
+                                                return (
+                                                    <GatewayLogHoverBadge label={`用户 ID ${item.accountId}`} title={account?.name || account?.username || item.username || `用户 #${item.accountId}`}>
+                                                        <div>登录名：{account?.username || item.username || '-'}</div>
+                                                        {item.requestedUsername && item.requestedUsername !== item.username && <div>请求用户名：{item.requestedUsername}</div>}
+                                                        {account?.group?.name && <div>分组：{account.group.name}</div>}
+                                                        <div>出口来源：{account?.proxySelectionSource === 'account' ? '用户自选代理池' : '遵循网关配置'}</div>
+                                                        <div>当前状态：{account ? (account.enabled ? '已启用' : '已停用') : '配置已删除或未加载'}</div>
+                                                    </GatewayLogHoverBadge>
+                                                )
+                                            })() : null}
+                                        </div>
+                                        {(item.requestedUsername || item.clientIp || item.routeStrategyId || item.routeStrategyFlagNo || item.proxyIndex || item.targetRouteId || item.routeFailoverUsed || item.routeStrategyOverrideSourceId) && (
                                             <div className="mt-1 flex flex-wrap gap-1 text-xs text-gray-500">
                                                 {item.requestedUsername && <span>{item.requestedUsername}</span>}
                                                 {item.clientIp && (
@@ -2639,8 +2811,18 @@ function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]
                                                         来源 {item.clientIp}{item.clientPort ? `:${item.clientPort}` : ''}
                                                     </span>
                                                 )}
-                                                {item.accountId ? <Badge>用户 ID {item.accountId}</Badge> : null}
-                                                {item.routeStrategyFlagNo ? <Badge tone="blue">#{item.routeStrategyFlagNo}</Badge> : null}
+                                                {item.routeStrategyId ? (() => {
+                                                    const strategy = strategyById.get(item.routeStrategyId)
+                                                    return (
+                                                        <GatewayLogHoverBadge label={item.routeStrategyFlagNo ? `#${item.routeStrategyFlagNo}` : `策略 #${item.routeStrategyId}`} tone="blue" title={strategy?.name || `出口策略 #${item.routeStrategyId}`}>
+                                                            <div>智能编号：{strategy ? `#${strategy.flagNo}` : item.routeStrategyFlagNo ? `#${item.routeStrategyFlagNo}` : '-'}</div>
+                                                            <div>选择范围：{strategy?.selectionMode || '配置已删除或未加载'}</div>
+                                                            {strategy && <div>调度算法：{strategy.selectionAlgorithm} · 索引{strategy.proxyIndexOverflowMode === 'modulo' ? '取模' : '越界拒绝'}</div>}
+                                                            {item.primaryRouteStrategyId && <div>本次主策略 ID：{item.primaryRouteStrategyId}</div>}
+                                                            {item.fallbackRouteStrategyId && <div>本次兜底策略 ID：{item.fallbackRouteStrategyId}</div>}
+                                                        </GatewayLogHoverBadge>
+                                                    )
+                                                })() : item.routeStrategyFlagNo ? <Badge tone="blue">#{item.routeStrategyFlagNo}</Badge> : null}
                                                 {item.routeStrategyOverrideSourceId && item.routeStrategyOverrideReplacementId ? (
                                                     <Badge tone="blue">出口覆盖 · 策略 ID {item.routeStrategyOverrideSourceId} → {item.routeStrategyOverrideReplacementId}</Badge>
                                                 ) : null}
@@ -2651,7 +2833,19 @@ function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]
                                                         {item.proxyPoolSize ? ` / ${item.proxyPoolSize}` : ''}
                                                     </Badge>
                                                 ) : null}
-                                                {item.targetRouteId ? <Badge tone="amber">目标路由 #{item.targetRouteId}{item.targetRouteDefault ? ' 默认' : item.targetRouteMatcher ? ` · ${item.targetRouteMatcher}` : ''}</Badge> : null}
+                                                {item.targetRouteId ? (() => {
+                                                    const route = targetRouteById.get(item.targetRouteId)
+                                                    return (
+                                                        <GatewayLogHoverBadge label={`路由 #${item.targetRouteId}${item.targetRouteDefault ? ' · 默认' : ''}`} tone="amber" title={route?.name || `目标路由 #${item.targetRouteId}`}>
+                                                            <div>本次命中：{item.targetRouteDefault ? '默认兜底' : item.targetRouteMatcher || '-'}</div>
+                                                            {route?.description && <div>说明：{route.description}</div>}
+                                                            <div>当前顺序：{route ? (route.isDefault ? '默认兜底' : route.sortOrder) : '配置已删除或未加载'}</div>
+                                                            {route && !route.isDefault && <div>匹配项：{(route.matchers || []).slice(0, 4).join('、') || '-'}{(route.matchers || []).length > 4 ? ` 等 ${route.matchers!.length} 项` : ''}</div>}
+                                                            <div>主出口策略 ID：{route?.routeStrategyId || item.primaryRouteStrategyId || item.routeStrategyId || '-'}</div>
+                                                            {(route?.failoverEnabled || item.routeFailoverUsed) && <div>失败切换：{item.routeFailoverUsed ? '本次已使用' : '已配置，未触发'}</div>}
+                                                        </GatewayLogHoverBadge>
+                                                    )
+                                                })() : null}
                                                 {item.routeFailoverUsed ? <Badge tone="amber">失败切换 → 策略 #{item.fallbackRouteStrategyId || item.routeStrategyId}</Badge> : null}
                                                 {item.routeCircuitState && item.routeCircuitState !== 'closed' ? <Badge tone="blue">熔断 {item.routeCircuitState}</Badge> : null}
                                                 {item.routeCircuitCacheHit ? <Badge tone="blue">熔断缓存命中</Badge> : null}
@@ -3456,7 +3650,12 @@ function TargetRouteModal({ draft, setDraft, routeStrategies, onSave }: {
                 <ModalBody className="space-y-5">
                     <div className="grid gap-3 md:grid-cols-2">
                         <TextField label="规则名称" help="用于规则列表和访问日志识别。" value={draft.name || ''} onChange={value => setDraft({ ...draft, name: value })} />
-                        <NumberField label="匹配顺序" help="数值越小越先匹配；默认规则不参与顺序。" value={draft.sortOrder ?? 100} onChange={value => setDraft({ ...draft, sortOrder: value })} />
+                        <div className="text-sm">
+                            <FieldLabel label="匹配顺序" help="保存后在目标路由列表拖拽调整；系统会统一编号为 10、20、30…。" />
+                            <div className="flex min-h-[38px] items-center rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-gray-600 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-300">
+                                {draft.id ? `当前 ${draft.sortOrder ?? 100}；列表中可拖拽调整` : '保存后追加到现有规则末尾'}
+                            </div>
+                        </div>
                         <SearchSelect label="出口策略" help="命中后先使用该策略；策略自身的重试和备用池会先执行。" items={strategyOptions} value={draft.routeStrategyId} onChange={value => setDraft({ ...draft, routeStrategyId: value, fallbackRouteStrategyId: value === draft.fallbackRouteStrategyId ? undefined : draft.fallbackRouteStrategyId })} noneLabel="请选择出口策略" placeholder="搜索出口策略" />
                         <div className="grid gap-2 sm:grid-cols-2">
                             <Toggle label="启用规则" help="停用后不参与匹配。" checked={draft.enabled !== false} onChange={value => setDraft({ ...draft, enabled: value })} />
@@ -3857,11 +4056,11 @@ function OptionalNumberField({ label, value, onChange, help }: { label: string; 
     )
 }
 
-function TextareaField({ label, value, onChange, help }: { label: string; value: string; onChange: (value: string) => void; help?: string }) {
+function TextareaField({ label, value, onChange, onFocus, onBlur, help }: { label: string; value: string; onChange: (value: string) => void; onFocus?: () => void; onBlur?: () => void; help?: string }) {
     return (
         <label className="block text-sm">
             <FieldLabel label={label} help={help} />
-            <textarea value={value} onChange={event => onChange(event.target.value)} rows={3} className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40" />
+            <textarea value={value} onChange={event => onChange(event.target.value)} onFocus={onFocus} onBlur={onBlur} rows={3} className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-primary-950/40" />
         </label>
     )
 }
@@ -3887,7 +4086,35 @@ function Toggle({ label, checked, onChange, help }: { label: string; checked: bo
 }
 
 function ListField({ label, value, onChange, help }: { label: string; value: string[]; onChange: (value: string[]) => void; help?: string }) {
-    return <TextareaField label={label} help={help} value={value.join('\n')} onChange={next => onChange(toStringList(next))} />
+    const canonicalValue = value.join('\n')
+    const [draftValue, setDraftValue] = useState(canonicalValue)
+    const focusedRef = useRef(false)
+
+    useEffect(() => {
+        if (!focusedRef.current) setDraftValue(canonicalValue)
+    }, [canonicalValue])
+
+    return (
+        <TextareaField
+            label={label}
+            help={help}
+            value={draftValue}
+            onFocus={() => { focusedRef.current = true }}
+            onChange={next => {
+                // Keep the raw draft while typing. Parsing removes empty
+                // values, so binding the textarea directly to the parsed
+                // array would make a trailing Enter disappear immediately.
+                setDraftValue(next)
+                onChange(toStringList(next))
+            }}
+            onBlur={() => {
+                focusedRef.current = false
+                const normalized = toStringList(draftValue)
+                setDraftValue(normalized.join('\n'))
+                onChange(normalized)
+            }}
+        />
+    )
 }
 
 function CheckList<T extends { id: number; name: string }>({ label, items, selected, onChange, help }: {

@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -160,6 +161,24 @@ func TestProxyGatewayTargetRouteHandlersValidateAndPersistRules(t *testing.T) {
 	}
 	if reloadedFirst.IsDefault {
 		t.Fatal("saving a second default did not clear the first default")
+	}
+
+	if err := repo.ReorderTargetRoutes(defaultOrgID, listener.ID, []uint{disabledFailover.ID, created.ID, firstDefault.ID}); err != nil {
+		t.Fatalf("reorder target routes: %v", err)
+	}
+	reordered, err := repo.ListTargetRoutes(defaultOrgID, &listener.ID)
+	if err != nil {
+		t.Fatalf("list reordered target routes: %v", err)
+	}
+	if len(reordered) != 4 || reordered[0].ID != disabledFailover.ID || reordered[0].SortOrder != 10 || reordered[1].ID != created.ID || reordered[1].SortOrder != 20 || reordered[2].ID != firstDefault.ID || reordered[2].SortOrder != 30 || !reordered[len(reordered)-1].IsDefault || reordered[len(reordered)-1].SortOrder != 40 {
+		t.Fatalf("unexpected reordered routes: %+v", reordered)
+	}
+	if err := repo.ReorderTargetRoutes(defaultOrgID, listener.ID, []uint{created.ID, created.ID, firstDefault.ID}); !errors.Is(err, repository.ErrTargetRouteOrderConflict) {
+		t.Fatalf("duplicate reorder error=%v", err)
+	}
+	afterConflict, err := repo.ListTargetRoutes(defaultOrgID, &listener.ID)
+	if err != nil || afterConflict[0].ID != disabledFailover.ID || afterConflict[0].SortOrder != 10 {
+		t.Fatalf("invalid reorder was not atomic: routes=%+v err=%v", afterConflict, err)
 	}
 
 	if err := repo.DeleteRouteStrategy(defaultOrgID, strategy.ID); err == nil {

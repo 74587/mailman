@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { logger } from '@/lib/logger'
 import { useAuth } from '@/context/auth-context'
@@ -30,6 +30,9 @@ import { hasRefreshCallback, registerTabCallback, unregisterTabCallback } from '
 import type { ShortcutAction, ShortcutCategory } from '@/components/command-palette/command-palette'
 import { registerPaletteCategory, updatePaletteCategory } from '@/components/command-palette/command-palette'
 import { useAIRuntime } from '@/components/ai'
+import { emailService } from '@/services/email.service'
+import { clearAuthReturnUrl, rememberAuthReturnUrl } from '@/lib/auth-return-url'
+import { toast } from 'sonner'
 
 // Tab 名称映射表 - 格式: 中文名[英文名]
 const tabNameMap: { [key: string]: string } = {
@@ -146,6 +149,7 @@ export default function MainPage() {
     const { isAuthenticated, isLoading, hasPermission } = useAuth()
     const { setNavigationContext } = useAIRuntime()
     const router = useRouter()
+    const resolvedMailShareRef = useRef<string | null>(null)
 
     // 存储待处理的Tab数据
     const [pendingTabData, setPendingTabData] = useState<{ [key: string]: any }>({})
@@ -153,6 +157,7 @@ export default function MainPage() {
     // 如果未登录，重定向到登录页
     useEffect(() => {
         if (!isLoading && !isAuthenticated) {
+            rememberAuthReturnUrl()
             router.push('/login')
         }
     }, [isAuthenticated, isLoading, router])
@@ -520,6 +525,40 @@ export default function MainPage() {
             window.removeEventListener('switchTab', handleSwitchTab as EventListener);
         }
     }, [handleTabChange]);
+
+    useEffect(() => {
+        if (isLoading || !isAuthenticated) return
+        clearAuthReturnUrl()
+
+        const url = new URL(window.location.href)
+        const token = url.searchParams.get('mailShare')
+        if (!token || resolvedMailShareRef.current === token) return
+        resolvedMailShareRef.current = token
+
+        // Remove the bearer-like token before calling the API so it is not
+        // retained in history or copied into same-origin Referer headers.
+        url.searchParams.delete('mailShare')
+        window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+
+        emailService.resolveShareLink(token)
+            .then(target => {
+                window.dispatchEvent(new CustomEvent('switchTab', {
+                    detail: {
+                        tab: 'classic-mailbox',
+                        data: {
+                            locateEmail: {
+                                accountId: target.accountId,
+                                emailId: target.emailId,
+                                direction: target.direction,
+                            },
+                        },
+                    },
+                }))
+            })
+            .catch((error: any) => {
+                toast.error('无法打开邮件分享链接', { description: error?.message || '链接无效、已过期，或当前账号无权访问' })
+            })
+    }, [isAuthenticated, isLoading])
 
     // 监听 closeTab 事件 - 用于程序化关闭 Tab
     useEffect(() => {

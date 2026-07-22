@@ -15,6 +15,8 @@ type ProxyGatewayRepository struct {
 	db *gorm.DB
 }
 
+var ErrTargetRouteOrderConflict = errors.New("target route list changed; reload and try again")
+
 func (r *ProxyGatewayRepository) notDeleted(query *gorm.DB) *gorm.DB {
 	if r.db.Dialector.Name() == "mysql" {
 		return query.Where("(deleted_at IS NULL OR deleted_at = ? OR deleted_at = ?)", "0000-00-00 00:00:00", "0001-01-01 00:00:00")
@@ -493,6 +495,67 @@ func (r *ProxyGatewayRepository) SaveTargetRoute(item *models.ProxyGatewayTarget
 
 func (r *ProxyGatewayRepository) DeleteTargetRoute(orgID, id uint) error {
 	return r.db.Where("org_id = ? AND id = ?", orgID, id).Delete(&models.ProxyGatewayTargetRoute{}).Error
+}
+
+// ReorderTargetRoutes atomically assigns stable, sparse sort values to every
+// non-default route in a gateway. The default route is deliberately excluded
+// from the submitted order because runtime matching always evaluates it last.
+func (r *ProxyGatewayRepository) ReorderTargetRoutes(orgID, gatewayID uint, routeIDs []uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var gateway models.ProxyGatewayListener
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id").
+			First(&gateway, "org_id = ? AND id = ?", orgID, gatewayID).Error; err != nil {
+			return err
+		}
+
+		var routes []models.ProxyGatewayTargetRoute
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "is_default").
+			Where("org_id = ? AND gateway_id = ?", orgID, gatewayID)
+		query = r.notDeleted(query)
+		if err := query.Order("is_default ASC, sort_order ASC, id ASC").Find(&routes).Error; err != nil {
+			return err
+		}
+
+		expected := make(map[uint]struct{}, len(routes))
+		for _, route := range routes {
+			if !route.IsDefault {
+				expected[route.ID] = struct{}{}
+			}
+		}
+		if len(routeIDs) != len(expected) {
+			return ErrTargetRouteOrderConflict
+		}
+		seen := make(map[uint]struct{}, len(routeIDs))
+		for _, routeID := range routeIDs {
+			if routeID == 0 {
+				return ErrTargetRouteOrderConflict
+			}
+			if _, ok := expected[routeID]; !ok {
+				return ErrTargetRouteOrderConflict
+			}
+			if _, duplicate := seen[routeID]; duplicate {
+				return ErrTargetRouteOrderConflict
+			}
+			seen[routeID] = struct{}{}
+		}
+
+		for index, routeID := range routeIDs {
+			result := tx.Model(&models.ProxyGatewayTargetRoute{}).
+				Where("org_id = ? AND gateway_id = ? AND id = ? AND is_default = ?", orgID, gatewayID, routeID, false).
+				Updates(map[string]interface{}{"sort_order": (index + 1) * 10, "updated_at": time.Now().UTC()})
+			if result.Error != nil {
+				return result.Error
+			}
+		}
+
+		// Keep the stored value understandable even though the default route is
+		// always ordered last explicitly by repository/runtime queries.
+		return tx.Model(&models.ProxyGatewayTargetRoute{}).
+			Where("org_id = ? AND gateway_id = ? AND is_default = ?", orgID, gatewayID, true).
+			Updates(map[string]interface{}{"sort_order": (len(routeIDs) + 1) * 10, "updated_at": time.Now().UTC()}).Error
+	})
 }
 
 func (r *ProxyGatewayRepository) SetAccountTags(accountID uint, tagIDs []uint) error {

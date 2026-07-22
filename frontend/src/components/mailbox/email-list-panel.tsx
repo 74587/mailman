@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { Search, RefreshCw, Mail, Paperclip, ChevronDown, Filter, Play, Pause, Locate, MoreVertical, Zap, Download } from 'lucide-react'
+import { Search, RefreshCw, Mail, Paperclip, ChevronDown, Filter, Play, Pause, Locate, MoreVertical, Zap, Download, Share2, Copy, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Email, EmailAccount } from '@/types'
 import { formatDate, truncate } from '@/lib/utils'
@@ -13,6 +13,8 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { toast } from 'sonner'
+import { emailService } from '@/services/email.service'
+import { Modal, ModalBody, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle } from '@/components/ui/modal'
 
 interface EmailListPanelProps {
     emails: Email[]
@@ -67,6 +69,12 @@ export default function EmailListPanel({
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
     const [triggeringEmailId, setTriggeringEmailId] = useState<number | null>(null)
     const [syncingAttachmentsEmailId, setSyncingAttachmentsEmailId] = useState<number | null>(null)
+    const [shareEmail, setShareEmail] = useState<Email | null>(null)
+    const [shareExpiresDays, setShareExpiresDays] = useState(7)
+    const [shareLink, setShareLink] = useState('')
+    const [shareExpiresAt, setShareExpiresAt] = useState('')
+    const [creatingShare, setCreatingShare] = useState(false)
+    const [shareCopied, setShareCopied] = useState(false)
     const listContainerRef = React.useRef<HTMLDivElement>(null)
     const previousScrollHeightRef = React.useRef<number | null>(null)
     const loadingPreviousRequestRef = React.useRef(false)
@@ -111,6 +119,68 @@ export default function EmailListPanel({
             })
         } finally {
             setSyncingAttachmentsEmailId(null)
+        }
+    }
+
+    const createShareLink = async (email: Email, expiresInDays: number) => {
+        setCreatingShare(true)
+        setShareLink('')
+        setShareCopied(false)
+        try {
+            const response = await emailService.createShareLink(email.ID, expiresInDays)
+            if (!response.token) throw new Error('分享接口未返回令牌')
+            const url = new URL('/main', window.location.origin)
+            url.searchParams.set('mailShare', response.token)
+            setShareLink(url.toString())
+            setShareExpiresAt(response.expiresAt)
+        } catch (error: any) {
+            toast.error('生成分享链接失败', { description: error?.message || '请稍后重试' })
+        } finally {
+            setCreatingShare(false)
+        }
+    }
+
+    const openShareDialog = (email: Email, event: React.MouseEvent) => {
+        event.stopPropagation()
+        onSelectEmail(email)
+        setShareEmail(email)
+        setShareExpiresDays(7)
+        setShareExpiresAt('')
+        void createShareLink(email, 7)
+    }
+
+    const copyShareLink = async () => {
+        if (!shareLink) return
+        try {
+            let copied = false
+            if (navigator.clipboard?.writeText) {
+                try {
+                    await navigator.clipboard.writeText(shareLink)
+                    copied = true
+                } catch {
+                    // Fall back below for non-secure origins and restricted
+                    // embedded browsers.
+                }
+            }
+            if (!copied) {
+                const textarea = document.createElement('textarea')
+                textarea.value = shareLink
+                textarea.style.position = 'fixed'
+                textarea.style.opacity = '0'
+                document.body.appendChild(textarea)
+                textarea.select()
+                try {
+                    copied = document.execCommand('copy')
+                } finally {
+                    textarea.remove()
+                }
+                if (!copied) throw new Error('copy command failed')
+            }
+            setShareCopied(true)
+            toast.success('分享链接已复制')
+            window.setTimeout(() => setShareCopied(false), 1600)
+        } catch {
+            toast.error('复制失败，请手动选择链接复制')
         }
     }
 
@@ -504,6 +574,7 @@ export default function EmailListPanel({
                                 onContextMenu={(e) => {
                                     e.preventDefault()
                                     e.stopPropagation()
+                                    onSelectEmail(email)
                                     // 打开该邮件的右键菜单
                                     setDropdownOpenEmailId(email.ID)
                                 }}
@@ -621,6 +692,13 @@ export default function EmailListPanel({
                                         </DropdownMenuTrigger>
                                         <DropdownMenuContent align="end" className="w-48">
                                             <DropdownMenuItem
+                                                onClick={(e: React.MouseEvent) => openShareDialog(email, e)}
+                                                className="flex items-center gap-2 cursor-pointer"
+                                            >
+                                                <Share2 className="h-4 w-4" />
+                                                <span>分享邮件</span>
+                                            </DropdownMenuItem>
+                                            <DropdownMenuItem
                                                 onClick={(e: React.MouseEvent) => handleTriggerEmail(email, e)}
                                                 disabled={triggeringEmailId === email.ID}
                                                 className="flex items-center gap-2 cursor-pointer"
@@ -694,6 +772,67 @@ export default function EmailListPanel({
                     </span>
                 </div>
             </div>
+
+            <Modal open={!!shareEmail} onOpenChange={open => {
+                if (!open) {
+                    setShareEmail(null)
+                    setShareLink('')
+                    setShareExpiresAt('')
+                }
+            }}>
+                <ModalContent size="lg">
+                    <ModalHeader>
+                        <ModalTitle>分享邮件</ModalTitle>
+                        <ModalDescription>
+                            生成内部安全链接。打开后会进入经典邮件管理器，并自动选择对应邮箱账户和邮件。
+                        </ModalDescription>
+                    </ModalHeader>
+                    <ModalBody className="space-y-4">
+                        <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/60">
+                            <div className="truncate text-sm font-medium text-gray-900 dark:text-white">{shareEmail?.Subject || '(无主题)'}</div>
+                            <div className="mt-1 text-xs text-gray-500">仅同一组织中已登录且拥有邮件查看权限的用户可以打开。</div>
+                        </div>
+                        <label className="block text-sm">
+                            <span className="mb-1.5 block font-medium text-gray-700 dark:text-gray-200">有效期</span>
+                            <div className="flex flex-wrap gap-2">
+                                {[1, 7, 30].map(days => (
+                                    <button
+                                        key={days}
+                                        type="button"
+                                        disabled={creatingShare}
+                                        onClick={() => {
+                                            setShareExpiresDays(days)
+                                            if (shareEmail) void createShareLink(shareEmail, days)
+                                        }}
+                                        className={cn(
+                                            'rounded-lg border px-3 py-1.5 text-sm transition disabled:opacity-50',
+                                            shareExpiresDays === days
+                                                ? 'border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+                                                : 'border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800'
+                                        )}
+                                    >
+                                        {days} 天
+                                    </button>
+                                ))}
+                            </div>
+                        </label>
+                        <div>
+                            <span className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-200">分享链接</span>
+                            <div className="flex gap-2">
+                                <input readOnly value={creatingShare ? '正在生成安全链接…' : shareLink} onFocus={event => event.currentTarget.select()} className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 outline-none focus:border-blue-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200" />
+                                <button type="button" disabled={!shareLink || creatingShare} onClick={copyShareLink} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+                                    {shareCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                                    {shareCopied ? '已复制' : '复制'}
+                                </button>
+                            </div>
+                            {shareExpiresAt && <div className="mt-1.5 text-xs text-gray-500">有效至 {new Date(shareExpiresAt).toLocaleString()}</div>}
+                        </div>
+                    </ModalBody>
+                    <ModalFooter>
+                        <button type="button" onClick={() => setShareEmail(null)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800">关闭</button>
+                    </ModalFooter>
+                </ModalContent>
+            </Modal>
         </div>
     )
 }

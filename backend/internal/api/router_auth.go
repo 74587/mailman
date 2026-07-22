@@ -202,6 +202,8 @@ func NewRouterWithAuth(
 	emailRouter.HandleFunc("/emails/search", handler.SearchEmailsHandler).Methods("GET")                         // 添加搜索路由
 	emailRouter.HandleFunc("/emails/{id}/trigger", handler.TriggerEmailHandler).Methods("POST")                  // Manual trigger for email event (must be before /emails/{id})
 	emailRouter.HandleFunc("/emails/{id}/sync-attachments", handler.SyncEmailAttachmentsHandler).Methods("POST") // Sync email attachments
+	emailRouter.HandleFunc("/emails/{id}/share-links", handler.CreateEmailShareLinkHandler).Methods("POST")
+	emailRouter.HandleFunc("/email-share-links/{token}", handler.ResolveEmailShareLinkHandler).Methods("GET")
 	emailRouter.HandleFunc("/emails/{id}", handler.GetEmailHandler).Methods("GET")
 	emailRouter.HandleFunc("/emails/fetch-now", handler.FetchNowHandler).Methods("POST")
 	emailRouter.HandleFunc("/emails/send", emailSendHandler.SendEmailHandler).Methods("POST")

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"gorm.io/gorm"
 )
 
 type ProxyGatewayHandlers struct {
@@ -144,6 +145,11 @@ type proxyGatewayTargetRouteRequest struct {
 	CircuitBackoffMultiplier int      `json:"circuitBackoffMultiplier"`
 	CircuitJitterPercent     *int     `json:"circuitJitterPercent"`
 	CircuitHalfOpenProbes    int      `json:"circuitHalfOpenProbes"`
+}
+
+type proxyGatewayTargetRouteReorderRequest struct {
+	GatewayID uint   `json:"gatewayId"`
+	RouteIDs  []uint `json:"routeIds"`
 }
 
 type proxyGatewayMetaRequest struct {
@@ -1092,6 +1098,42 @@ func (h *ProxyGatewayHandlers) DeleteTargetRoute(w http.ResponseWriter, r *http.
 	writeJSON(w, map[string]bool{"success": true})
 }
 
+func (h *ProxyGatewayHandlers) ReorderTargetRoutes(w http.ResponseWriter, r *http.Request) {
+	orgID := GetCurrentOrgID(r)
+	var req proxyGatewayTargetRouteReorderRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.GatewayID == 0 {
+		http.Error(w, "gatewayId is required", http.StatusBadRequest)
+		return
+	}
+	if err := h.repo.ReorderTargetRoutes(orgID, req.GatewayID, req.RouteIDs); err != nil {
+		if errors.Is(err, repository.ErrTargetRouteOrderConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, "gateway not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.service.RefreshTargetRoutes(orgID, req.GatewayID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.audit(r, "reorder", "target_route", nil, fmt.Sprintf("gateway %d · %d routes", req.GatewayID, len(req.RouteIDs)))
+	items, err := h.repo.ListTargetRoutes(orgID, &req.GatewayID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, items)
+}
+
 func (h *ProxyGatewayHandlers) ListAccountGroups(w http.ResponseWriter, r *http.Request) {
 	items, err := h.repo.ListAccountGroups(GetCurrentOrgID(r))
 	if err != nil {
@@ -1414,6 +1456,7 @@ func (h *ProxyGatewayHandlers) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/proxy-gateway/route-strategies/{id}", h.DeleteRouteStrategy).Methods("DELETE")
 	router.HandleFunc("/proxy-gateway/target-routes", h.ListTargetRoutes).Methods("GET")
 	router.HandleFunc("/proxy-gateway/target-routes", h.CreateTargetRoute).Methods("POST")
+	router.HandleFunc("/proxy-gateway/target-routes/reorder", h.ReorderTargetRoutes).Methods("PUT")
 	router.HandleFunc("/proxy-gateway/target-routes/{id}", h.UpdateTargetRoute).Methods("PUT")
 	router.HandleFunc("/proxy-gateway/target-routes/{id}", h.DeleteTargetRoute).Methods("DELETE")
 	router.HandleFunc("/proxy-gateway/account-groups", h.ListAccountGroups).Methods("GET")

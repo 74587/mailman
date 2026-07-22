@@ -168,6 +168,14 @@ export interface EmailStatsResponse {
     enabledTriggers: number;
 }
 
+export interface EmailShareLinkTarget {
+    token?: string
+    emailId: number
+    accountId: number
+    direction: 'received' | 'sent'
+    expiresAt: string
+}
+
 class EmailService {
     // 获取账户邮件列表
     async getEmails(accountId: number, params: EmailSearchParams = {}) {
@@ -187,6 +195,14 @@ class EmailService {
     async getEmail(emailId: number) {
         const response = await apiClient.get(`/emails/${emailId}`)
         return response
+    }
+
+    async createShareLink(emailId: number, expiresInDays = 7): Promise<EmailShareLinkTarget> {
+        return apiClient.post(`/emails/${emailId}/share-links`, { expiresInDays })
+    }
+
+    async resolveShareLink(token: string): Promise<EmailShareLinkTarget> {
+        return apiClient.get(`/email-share-links/${encodeURIComponent(token)}`)
     }
 
     // 提取邮件内容（全局）
