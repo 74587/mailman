@@ -708,6 +708,52 @@ func (m *PerAccountSyncManager) GetAllAccountSyncerStatuses() []AccountSyncerSta
 	return statuses
 }
 
+// RunAccountExclusive serializes a maintenance operation with the account's
+// automatic sync loop. Accounts without an active syncer can run immediately.
+func (m *PerAccountSyncManager) RunAccountExclusive(accountID uint, operation func() error) error {
+	return m.RunAccountExclusiveWithContext(context.Background(), accountID, operation)
+}
+
+// RunAccountExclusiveWithContext is the cancellable form used by HTTP
+// maintenance requests so disconnected clients do not leave queued repairs.
+func (m *PerAccountSyncManager) RunAccountExclusiveWithContext(ctx context.Context, accountID uint, operation func() error) error {
+	if operation == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Keep the map stable for the whole maintenance window. Otherwise a config
+	// refresh could remove this syncer and start a replacement while repair is
+	// still holding only the old syncer's mutex.
+	syncer := m.accountSyncers[accountID]
+	if syncer == nil {
+		return operation()
+	}
+
+	retry := time.NewTicker(25 * time.Millisecond)
+	defer retry.Stop()
+	for !syncer.syncMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-retry.C:
+		}
+	}
+	defer syncer.syncMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return operation()
+}
+
 // AccountSyncerStatus 账户同步器状态
 type AccountSyncerStatus struct {
 	AccountID     uint      `json:"account_id"`
@@ -889,14 +935,17 @@ func (as *AccountSyncer) doSyncWithContext(parentCtx context.Context, startTime 
 	as.logger.Debug("Sync window ends now: %v", endDate)
 
 	// 创建获取选项
+	checkpoint := &FetchSyncCheckpoint{}
 	options := FetchEmailsOptions{
 		Context:         ctx,
+		SyncMode:        "incremental",
 		Folders:         as.Config.SyncFolders,
 		StartDate:       startDate,
 		EndDate:         &endDate,
 		FetchFromServer: true,
 		IncludeBody:     true,
 		Source:          source,
+		Checkpoint:      checkpoint,
 	}
 	as.logger.Debug("Fetching emails with options: Folders=%v, StartDate=%v, EndDate=%v", options.Folders, options.StartDate, options.EndDate)
 
@@ -919,6 +968,10 @@ func (as *AccountSyncer) doSyncWithContext(parentCtx context.Context, startTime 
 	}
 	newEmailCount = len(newEmails)
 	as.logger.Debug("Processed %d new emails", newEmailCount)
+
+	if err := as.manager.fetcherService.CommitFetchCheckpoint(as.AccountID, checkpoint); err != nil {
+		return nil, fmt.Errorf("failed to commit provider sync checkpoint: %w", err)
+	}
 
 	// 更新同步配置
 	activeSync.Stage("update_sync_cursor")

@@ -98,15 +98,18 @@ export function AdaptiveActions({ actions, maxVisible = 4 }: AdaptiveActionsProp
                         <Tooltip key={action.id}>
                             <TooltipTrigger asChild>
                                 <button
+                                    type="button"
                                     onClick={action.onClick}
                                     disabled={action.disabled}
+                                    aria-label={action.label}
+                                    aria-busy={action.loading || undefined}
                                     className={cn(
                                         'p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-50',
                                         colorClasses[action.color || 'default'],
                                         action.loading && 'animate-pulse'
                                     )}
                                 >
-                                    <Icon className={cn('h-4 w-4', action.loading && 'animate-spin')} />
+                                    <Icon aria-hidden="true" className={cn('h-4 w-4', action.loading && 'animate-spin')} />
                                 </button>
                             </TooltipTrigger>
                             <TooltipContent className="px-2 py-1 text-xs bg-gray-900 text-white rounded shadow-sm">
@@ -122,9 +125,11 @@ export function AdaptiveActions({ actions, maxVisible = 4 }: AdaptiveActionsProp
                             <TooltipTrigger asChild>
                                 <DropdownMenuTrigger asChild>
                                     <button
+                                        type="button"
+                                        aria-label={`更多操作，还有 ${overflowActions.length} 项`}
                                         className="p-1.5 rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 transition-colors"
                                     >
-                                        <MoreHorizontal className="h-4 w-4" />
+                                        <MoreHorizontal aria-hidden="true" className="h-4 w-4" />
                                     </button>
                                 </DropdownMenuTrigger>
                             </TooltipTrigger>
@@ -141,9 +146,10 @@ export function AdaptiveActions({ actions, maxVisible = 4 }: AdaptiveActionsProp
                                         <DropdownMenuItem
                                             onClick={action.onClick}
                                             disabled={action.disabled}
+                                            aria-busy={action.loading || undefined}
                                             className={menuColorClasses[action.color || 'default']}
                                         >
-                                            <Icon className={cn('h-4 w-4 mr-2', action.loading && 'animate-spin')} />
+                                            <Icon aria-hidden="true" className={cn('h-4 w-4 mr-2', action.loading && 'animate-spin')} />
                                             {action.label}
                                         </DropdownMenuItem>
                                     </React.Fragment>

@@ -377,8 +377,10 @@ func (h *APIHandler) FetchAndStoreEmailsHandler(w http.ResponseWriter, r *http.R
 			http.Error(w, fmt.Sprintf("Invalid end_date format: %v", err), http.StatusBadRequest)
 			return
 		}
-	} else {
-		// Default to now
+	} else if request.SyncMode != "full" {
+		// Incremental non-provider syncs use an explicit upper bound. A current
+		// Gmail full sync intentionally has no upper bound so its pre-scan
+		// History ID cannot move past messages in a timestamp gap.
 		now := time.Now()
 		endDate = &now
 	}
@@ -390,7 +392,8 @@ func (h *APIHandler) FetchAndStoreEmailsHandler(w http.ResponseWriter, r *http.R
 	var messages []string
 
 	for _, mailboxName := range request.Mailboxes {
-		result := h.processSingleMailbox(
+		result := h.processSingleMailboxWithSourceAndContext(
+			r.Context(),
 			*account,
 			mailboxName,
 			request.SyncMode,
@@ -398,6 +401,7 @@ func (h *APIHandler) FetchAndStoreEmailsHandler(w http.ResponseWriter, r *http.R
 			endDate,
 			request.MaxEmailsPerMailbox,
 			request.IncludeBody,
+			services.EmailIngestSourceManualSync,
 		)
 
 		mailboxResults = append(mailboxResults, result)

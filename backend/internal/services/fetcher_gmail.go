@@ -208,69 +208,114 @@ func (s *FetcherService) fetchEmailsFromGmailAPI(account models.EmailAccount, op
 		s.logger.Debug("Using Gmail History ID from legacy sync config: %s", historyID)
 	}
 
+	explicitFull := strings.EqualFold(strings.TrimSpace(options.SyncMode), "full")
+	// A historically bounded full scan is a backfill, not a snapshot of the
+	// current mailbox, so it must not replace the live Gmail checkpoint.
+	advanceCheckpoint := shouldAdvanceGmailCheckpoint(options.SyncMode, options.EndDate)
+	checkpoint := options.Checkpoint
+	if checkpoint != nil {
+		*checkpoint = FetchSyncCheckpoint{}
+		if advanceCheckpoint {
+			checkpoint.Provider = models.SyncCursorProviderGmail
+		}
+	}
+
 	var emails []models.Email
 	var newHistoryID string
 
-	// Try incremental sync using History API if we have a previous History ID
-	if historyID != "" {
+	// Full sync must bypass any existing Gmail History ID. Empty SyncMode keeps
+	// backward-compatible incremental behavior for existing internal callers.
+	if shouldUseGmailHistory(options.SyncMode, historyID) {
 		s.logger.Debug("Attempting Gmail unified incremental sync using History ID: %s", historyID)
 
 		// Use unified Gmail API sync - gets ALL email changes in one call
 		historyEmails, latestHistoryID, err := s.fetchGmailHistoryChangesUnified(gmailService, historyID, account.ID, options)
 		if err != nil {
 			s.logger.Warn("Gmail unified History API sync failed, falling back to full sync: %v", err)
+			newHistoryID = s.snapshotGmailHistoryID(ctx, gmailService)
+			fullOptions := options
+			fullOptions.EndDate = nil
 			// Fall back to full sync
-			messages, err := s.fetchGmailMessagesUnified(gmailService, options)
+			messages, complete, err := s.fetchGmailMessagesUnified(gmailService, fullOptions)
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch Gmail messages (unified): %w", err)
 			}
-			emails = s.convertGmailMessages(messages, account.ID)
+			if !complete {
+				newHistoryID = ""
+				markGmailCheckpointIncomplete(checkpoint, options.Limit)
+			}
+			emails, err = s.convertGmailMessages(messages, account.ID)
+			if err != nil {
+				return nil, err
+			}
 		} else {
 			emails = historyEmails
 			newHistoryID = latestHistoryID
 		}
 	} else {
-		s.logger.Debug("No previous History ID found, performing Gmail unified full sync")
+		s.logger.Debug("Performing Gmail unified full sync (sync_mode=%s, has_history_id=%v)", options.SyncMode, historyID != "")
+		// Snapshot before listing. Messages arriving during the full scan will be
+		// replayed by the next History API call and safely deduplicated on ingest.
+		if advanceCheckpoint {
+			newHistoryID = s.snapshotGmailHistoryID(ctx, gmailService)
+		}
+		fullOptions := options
+		if !explicitFull {
+			fullOptions.EndDate = nil
+		}
 		// Full sync for first time or when no history ID available
-		messages, err := s.fetchGmailMessagesUnified(gmailService, options)
+		messages, complete, err := s.fetchGmailMessagesUnified(gmailService, fullOptions)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch Gmail messages (unified): %w", err)
 		}
-		emails = s.convertGmailMessages(messages, account.ID)
-	}
-
-	// Get current profile to update History ID
-	if newHistoryID == "" {
-		profile, err := gmailService.Users.GetProfile("me").Context(ctx).Do()
+		if !complete {
+			newHistoryID = ""
+			markGmailCheckpointIncomplete(checkpoint, options.Limit)
+		}
+		emails, err = s.convertGmailMessages(messages, account.ID)
 		if err != nil {
-			s.logger.Warn("Failed to get user profile for History ID: %v", err)
-		} else {
-			newHistoryID = fmt.Sprintf("%d", profile.HistoryId)
+			return nil, err
 		}
 	}
 
-	// Update sync config with new History ID
-	if syncConfig != nil && newHistoryID != "" {
-		syncConfig.LastHistoryID = newHistoryID
-		if err := syncConfigRepo.Update(syncConfig); err != nil {
-			s.logger.Warn("Failed to update History ID in sync config: %v", err)
-		} else {
-			s.logger.Debug("Updated History ID to: %s", newHistoryID)
-		}
-	}
-	if newHistoryID != "" {
-		if err := syncConfigRepo.UpsertAccountSyncCursorHistoryID(account.ID, models.SyncCursorProviderGmail, newHistoryID); err != nil {
-			s.logger.Warn("Failed to update Gmail History ID in sync cursor: %v", err)
-		}
-	}
-
-	// Update last sync time
-	if err := s.accountRepo.UpdateLastSync(account.ID); err != nil {
-		s.logger.Warn("Failed to update last sync time: %v", err)
+	if checkpoint != nil && advanceCheckpoint {
+		checkpoint.GmailHistoryID = newHistoryID
 	}
 
 	s.logger.Debug("email: %s, historyId: %s, newEmails: %d", account.EmailAddress, newHistoryID, len(emails))
 	return emails, nil
+}
+
+func shouldUseGmailHistory(syncMode, historyID string) bool {
+	return historyID != "" && !strings.EqualFold(strings.TrimSpace(syncMode), "full")
+}
+
+func shouldAdvanceGmailCheckpoint(syncMode string, endDate *time.Time) bool {
+	return !strings.EqualFold(strings.TrimSpace(syncMode), "full") || endDate == nil
+}
+
+func markGmailCheckpointIncomplete(checkpoint *FetchSyncCheckpoint, limit int) {
+	if checkpoint == nil {
+		return
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	checkpoint.Incomplete = true
+	checkpoint.IncompleteReason = fmt.Sprintf("Gmail full scan exceeded the configured limit of %d messages", limit)
+}
+
+func (s *FetcherService) snapshotGmailHistoryID(ctx context.Context, gmailService *gmail.Service) string {
+	profile, err := gmailService.Users.GetProfile("me").Context(ctx).Do()
+	if err != nil {
+		s.logger.Warn("Failed to snapshot Gmail History ID: %v", err)
+		return ""
+	}
+	if profile.HistoryId == 0 {
+		s.logger.Warn("Gmail profile returned an empty History ID")
+		return ""
+	}
+	return fmt.Sprintf("%d", profile.HistoryId)
 }
 
 // createGmailService creates a Gmail API service client
@@ -479,8 +524,7 @@ func (s *FetcherService) fetchGmailMessages(service *gmail.Service, options Fetc
 		}
 		msg, err := service.Users.Messages.Get("me", msgRef.Id).Context(ctx).Do()
 		if err != nil {
-			s.logger.Warn("Failed to get message %s: %v", msgRef.Id, err)
-			continue
+			return nil, fmt.Errorf("failed to get Gmail message %s: %w", msgRef.Id, err)
 		}
 		messages = append(messages, msg)
 	}
@@ -503,10 +547,10 @@ func (s *FetcherService) buildGmailQuery(service *gmail.Service, options FetchEm
 
 	// Date filter
 	if options.StartDate != nil {
-		queryParts = append(queryParts, fmt.Sprintf("after:%s", options.StartDate.Format("2006/01/02")))
+		queryParts = append(queryParts, fmt.Sprintf("after:%d", options.StartDate.Unix()))
 	}
 	if options.EndDate != nil {
-		queryParts = append(queryParts, fmt.Sprintf("before:%s", options.EndDate.Format("2006/01/02")))
+		queryParts = append(queryParts, fmt.Sprintf("before:%d", options.EndDate.Unix()))
 	}
 
 	// Search query
@@ -525,6 +569,12 @@ func (s *FetcherService) buildGmailQuery(service *gmail.Service, options FetchEm
 // convertGmailMessage converts Gmail message to Email model
 
 func (s *FetcherService) convertGmailMessage(gmailMsg *gmail.Message, accountID uint) (*models.Email, error) {
+	if gmailMsg == nil {
+		return nil, fmt.Errorf("Gmail returned an empty message")
+	}
+	if gmailMsg.Payload == nil {
+		return nil, fmt.Errorf("Gmail message %s has no payload", gmailMsg.Id)
+	}
 	email := &models.Email{
 		MessageID: gmailMsg.Id, // Use Gmail message ID
 		AccountID: accountID,
@@ -770,17 +820,16 @@ func (s *FetcherService) downloadGmailAttachmentContent(service *gmail.Service, 
 
 // convertGmailMessages batch converts Gmail messages to Email models
 
-func (s *FetcherService) convertGmailMessages(messages []*gmail.Message, accountID uint) []models.Email {
+func (s *FetcherService) convertGmailMessages(messages []*gmail.Message, accountID uint) ([]models.Email, error) {
 	var emails []models.Email
 	for _, msg := range messages {
 		email, err := s.convertGmailMessage(msg, accountID)
 		if err != nil {
-			s.logger.Warn("Failed to convert Gmail message %s: %v", msg.Id, err)
-			continue
+			return nil, err
 		}
 		emails = append(emails, *email)
 	}
-	return emails
+	return emails, nil
 }
 
 // fetchGmailHistoryChanges fetches email changes using Gmail History API
@@ -862,8 +911,7 @@ func (s *FetcherService) fetchGmailHistoryChanges(service *gmail.Service, startH
 		}
 		msg, err := service.Users.Messages.Get("me", messageID).Context(ctx).Do()
 		if err != nil {
-			s.logger.Warn("Failed to get message %s: %v", messageID, err)
-			continue
+			return nil, "", fmt.Errorf("failed to get Gmail history message %s: %w", messageID, err)
 		}
 		messages = append(messages, msg)
 	}
@@ -895,7 +943,10 @@ func (s *FetcherService) fetchGmailHistoryChanges(service *gmail.Service, startH
 	s.logger.Info("Found %d changed messages in history, %d after label filtering, %d after all filters", len(messages), len(filteredByLabel), len(filteredMessages))
 
 	// Convert to Email models
-	emails := s.convertGmailMessages(filteredMessages, accountID)
+	emails, err := s.convertGmailMessages(filteredMessages, accountID)
+	if err != nil {
+		return nil, "", err
+	}
 
 	return emails, fmt.Sprintf("%d", historyResp.HistoryId), nil
 }
@@ -1129,14 +1180,16 @@ func (s *FetcherService) fetchGmailHistoryChangesUnified(service *gmail.Service,
 
 		// Safety check to prevent infinite loops
 		if pageCount >= 100 {
-			s.logger.Warn("Reached maximum page limit (100) for History API, stopping pagination")
-			break
+			return nil, "", fmt.Errorf("Gmail History API exceeded the 100-page safety limit")
 		}
 	}
 
 	s.logger.Debug("Processed %d pages from Gmail History API", pageCount)
 
 	if len(messageIDSet) == 0 {
+		if finalHistoryID == 0 {
+			return nil, "", fmt.Errorf("Gmail History API returned an empty checkpoint")
+		}
 		return []models.Email{}, fmt.Sprintf("%d", finalHistoryID), nil
 	}
 
@@ -1150,8 +1203,7 @@ func (s *FetcherService) fetchGmailHistoryChangesUnified(service *gmail.Service,
 		}
 		msg, err := service.Users.Messages.Get("me", messageID).Context(ctx).Do()
 		if err != nil {
-			s.logger.Warn("Failed to get message %s: %v", messageID, err)
-			continue
+			return nil, "", fmt.Errorf("failed to get Gmail history message %s: %w", messageID, err)
 		}
 		messages = append(messages, msg)
 	}
@@ -1161,14 +1213,20 @@ func (s *FetcherService) fetchGmailHistoryChangesUnified(service *gmail.Service,
 	s.logger.Debug("Gmail unified incremental sync: found %d changed messages", len(messages))
 
 	// Convert to Email models directly - Gmail labels are stored in LabelIds
-	emails := s.convertGmailMessages(messages, accountID)
+	emails, err := s.convertGmailMessages(messages, accountID)
+	if err != nil {
+		return nil, "", err
+	}
 
+	if finalHistoryID == 0 {
+		return nil, "", fmt.Errorf("Gmail History API returned an empty checkpoint")
+	}
 	return emails, fmt.Sprintf("%d", finalHistoryID), nil
 }
 
 // fetchGmailMessagesUnified fetches Gmail messages for full sync without label filtering with pagination
 
-func (s *FetcherService) fetchGmailMessagesUnified(service *gmail.Service, options FetchEmailsOptions) ([]*gmail.Message, error) {
+func (s *FetcherService) fetchGmailMessagesUnified(service *gmail.Service, options FetchEmailsOptions) ([]*gmail.Message, bool, error) {
 	s.logger.Debug("Fetching Gmail messages (unified full sync with pagination)")
 	ctx := options.contextOrBackground()
 
@@ -1192,7 +1250,7 @@ func (s *FetcherService) fetchGmailMessagesUnified(service *gmail.Service, optio
 	// Paginate through all message lists
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		listCall := service.Users.Messages.List("me").Q(query).MaxResults(pageLimit)
 		if pageToken != "" {
@@ -1202,7 +1260,7 @@ func (s *FetcherService) fetchGmailMessagesUnified(service *gmail.Service, optio
 		listResp, err := listCall.Context(ctx).Do()
 		if err != nil {
 			s.logger.Error("Failed to list Gmail messages on page %d: %v", pageCount+1, err)
-			return nil, fmt.Errorf("failed to list Gmail messages: %w", err)
+			return nil, false, fmt.Errorf("failed to list Gmail messages: %w", err)
 		}
 
 		pageCount++
@@ -1217,8 +1275,8 @@ func (s *FetcherService) fetchGmailMessagesUnified(service *gmail.Service, optio
 		// Add messages from this page
 		for _, msgRef := range listResp.Messages {
 			if totalFetched >= totalLimit {
-				s.logger.Info("Reached total limit of %d messages", totalLimit)
-				goto fetchDetails
+				s.logger.Warn("Full Gmail scan exceeded total limit of %d messages", totalLimit)
+				goto fetchPartialDetails
 			}
 			allMessageRefs = append(allMessageRefs, &gmail.Message{Id: msgRef.Id})
 			totalFetched++
@@ -1228,33 +1286,42 @@ func (s *FetcherService) fetchGmailMessagesUnified(service *gmail.Service, optio
 		if listResp.NextPageToken == "" {
 			break
 		}
+		if totalFetched >= totalLimit {
+			s.logger.Warn("Full Gmail scan has more messages beyond total limit %d", totalLimit)
+			goto fetchPartialDetails
+		}
 		pageToken = listResp.NextPageToken
 
 		// Safety check to prevent infinite loops
 		if pageCount >= 50 {
-			s.logger.Warn("Reached maximum page limit (50) for Messages List API, stopping pagination")
-			break
+			s.logger.Warn("Full Gmail scan exceeded the 50-page safety limit")
+			goto fetchPartialDetails
 		}
 	}
 
-fetchDetails:
 	s.logger.Debug("Processed %d pages from Gmail Messages List API, collected %d message IDs", pageCount, len(allMessageRefs))
+	return s.fetchGmailMessageDetails(ctx, service, allMessageRefs, pageCount, true)
 
+fetchPartialDetails:
+	s.logger.Debug("Processed a partial Gmail scan across %d pages, collected %d message IDs", pageCount, len(allMessageRefs))
+	return s.fetchGmailMessageDetails(ctx, service, allMessageRefs, pageCount, false)
+}
+
+func (s *FetcherService) fetchGmailMessageDetails(ctx context.Context, service *gmail.Service, allMessageRefs []*gmail.Message, pageCount int, complete bool) ([]*gmail.Message, bool, error) {
 	if len(allMessageRefs) == 0 {
 		s.logger.Debug("No messages found in unified full sync")
-		return []*gmail.Message{}, nil
+		return []*gmail.Message{}, complete, nil
 	}
 
 	// Fetch full message details for all collected messages
 	var messages []*gmail.Message
 	for i, msgRef := range allMessageRefs {
 		if err := ctx.Err(); err != nil {
-			return messages, err
+			return nil, false, err
 		}
 		msg, err := service.Users.Messages.Get("me", msgRef.Id).Context(ctx).Do()
 		if err != nil {
-			s.logger.Warn("Failed to get message %s: %v", msgRef.Id, err)
-			continue
+			return nil, false, fmt.Errorf("failed to get Gmail message %s: %w", msgRef.Id, err)
 		}
 		messages = append(messages, msg)
 
@@ -1265,7 +1332,7 @@ fetchDetails:
 	}
 
 	s.logger.Debug("Gmail unified full sync: fetched %d messages across %d pages", len(messages), pageCount)
-	return messages, nil
+	return messages, complete, nil
 }
 
 // buildGmailQueryUnified builds Gmail search query without label filters
@@ -1275,10 +1342,10 @@ func (s *FetcherService) buildGmailQueryUnified(options FetchEmailsOptions) stri
 
 	// Date filter
 	if options.StartDate != nil {
-		queryParts = append(queryParts, fmt.Sprintf("after:%s", options.StartDate.Format("2006/01/02")))
+		queryParts = append(queryParts, fmt.Sprintf("after:%d", options.StartDate.Unix()))
 	}
 	if options.EndDate != nil {
-		queryParts = append(queryParts, fmt.Sprintf("before:%s", options.EndDate.Format("2006/01/02")))
+		queryParts = append(queryParts, fmt.Sprintf("before:%d", options.EndDate.Unix()))
 	}
 
 	// Search query

@@ -39,6 +39,7 @@ type FetcherService struct {
 type FetchEmailsOptions struct {
 	Context         context.Context
 	Mailbox         string
+	SyncMode        string
 	Limit           int
 	Offset          int
 	StartDate       *time.Time
@@ -49,6 +50,17 @@ type FetchEmailsOptions struct {
 	SortBy          string
 	Folders         []string // List of folders to fetch from
 	Source          EmailIngestSource
+	Checkpoint      *FetchSyncCheckpoint
+}
+
+// FetchSyncCheckpoint carries a provider checkpoint back to the workflow that
+// persists fetched emails. Callers that provide one must commit it only after
+// the fetched batch has been stored successfully.
+type FetchSyncCheckpoint struct {
+	Provider         string
+	GmailHistoryID   string
+	Incomplete       bool
+	IncompleteReason string
 }
 
 func (o FetchEmailsOptions) contextOrBackground() context.Context {
@@ -94,6 +106,40 @@ func (s *FetcherService) SetProxyPoolService(proxyPoolService *ProxyPoolService)
 	if proxyPoolService != nil {
 		s.proxyPoolService = proxyPoolService
 	}
+}
+
+// CommitFetchCheckpoint advances a provider cursor after the corresponding
+// email batch has been persisted. Keeping this separate from fetching prevents
+// a failed ingest from permanently skipping Gmail history entries.
+func (s *FetcherService) CommitFetchCheckpoint(accountID uint, checkpoint *FetchSyncCheckpoint) error {
+	if checkpoint == nil {
+		return nil
+	}
+	if checkpoint.Incomplete {
+		reason := checkpoint.IncompleteReason
+		if reason == "" {
+			reason = "provider scan was incomplete"
+		}
+		return fmt.Errorf("sync checkpoint was not advanced: %s", reason)
+	}
+	if checkpoint.Provider == "" {
+		return nil
+	}
+
+	if checkpoint.Provider == models.SyncCursorProviderGmail {
+		if checkpoint.GmailHistoryID == "" {
+			return fmt.Errorf("Gmail checkpoint is unavailable; fetched emails were retained and the sync must be retried")
+		}
+		syncConfigRepo := repository.NewSyncConfigRepository(s.accountRepo.GetDB())
+		if err := syncConfigRepo.CommitAccountGmailHistoryID(accountID, checkpoint.GmailHistoryID); err != nil {
+			return fmt.Errorf("failed to commit Gmail history checkpoint: %w", err)
+		}
+	}
+
+	if err := s.accountRepo.UpdateLastSync(accountID); err != nil {
+		s.logger.Warn("Failed to update last sync time after checkpoint commit: %v", err)
+	}
+	return nil
 }
 
 // NewFetcherService creates a new FetcherService.
@@ -163,12 +209,9 @@ func (s *FetcherService) FetchEmailsFromMultipleMailboxes(account models.EmailAc
 		// Gmail账户：使用统一的Gmail API同步方法
 		s.logger.Debug("Detected Gmail account, using unified Gmail API sync")
 
-		// 为Gmail账户移除日期过滤器，让Gmail History API自己处理增量同步
-		gmailOptions := options
-		gmailOptions.StartDate = nil
-
-		// 直接调用Gmail API统一同步方法
-		return s.fetchEmailsFromGmailAPI(account, gmailOptions)
+		// History API 本身不会应用日期过滤；保留日期窗口供首次同步或
+		// History 失效后的安全全量回退使用。
+		return s.fetchEmailsFromGmailAPI(account, options)
 	}
 
 	// 检查是否应该使用Outlook Graph API

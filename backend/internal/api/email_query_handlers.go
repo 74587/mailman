@@ -111,7 +111,34 @@ func (h *APIHandler) processSingleMailboxWithSource(
 	includeBody bool,
 	source services.EmailIngestSource,
 ) MailboxSyncResult {
+	return h.processSingleMailboxWithSourceAndContext(
+		context.Background(),
+		account,
+		mailboxName,
+		syncMode,
+		defaultStartDate,
+		endDate,
+		maxEmails,
+		includeBody,
+		source,
+	)
+}
+
+func (h *APIHandler) processSingleMailboxWithSourceAndContext(
+	ctx context.Context,
+	account models.EmailAccount,
+	mailboxName string,
+	syncMode string,
+	defaultStartDate *time.Time,
+	endDate *time.Time,
+	maxEmails int,
+	includeBody bool,
+	source services.EmailIngestSource,
+) MailboxSyncResult {
 	syncStartTime := time.Now()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if source == "" {
 		source = services.EmailIngestSourceManualSync
 	}
@@ -143,8 +170,11 @@ func (h *APIHandler) processSingleMailboxWithSource(
 	}
 
 	// Prepare fetch options
+	checkpoint := &services.FetchSyncCheckpoint{}
 	options := services.FetchEmailsOptions{
+		Context:         ctx,
 		Mailbox:         mailboxName,
+		SyncMode:        syncMode,
 		Limit:           maxEmails,
 		Offset:          0,
 		StartDate:       startDate,
@@ -153,6 +183,7 @@ func (h *APIHandler) processSingleMailboxWithSource(
 		IncludeBody:     includeBody,
 		SortBy:          "date_desc",
 		Source:          source,
+		Checkpoint:      checkpoint,
 	}
 
 	// Fetch emails from server
@@ -206,6 +237,12 @@ func (h *APIHandler) processSingleMailboxWithSource(
 	}
 
 	result.NewEmails = len(newEmails)
+
+	if err := h.Fetcher.CommitFetchCheckpoint(account.ID, checkpoint); err != nil {
+		result.Error = err.Error()
+		result.SyncEndTime = time.Now()
+		return result
+	}
 
 	if len(newEmails) > 0 {
 		h.logger.Info("Stored %d new emails for account %d mailbox %s", len(newEmails), account.ID, mailboxName)

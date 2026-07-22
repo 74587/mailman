@@ -193,6 +193,10 @@ func NewRouterWithAuth(
 	accountRouter.HandleFunc("/accounts/{id}/sync-records", handler.GetIncrementalSyncRecordsHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/{id}/last-sync-record", handler.GetLastSyncRecordHandler).Methods("GET")
 	accountRouter.HandleFunc("/accounts/{id}/sync-records", handler.DeleteIncrementalSyncRecordHandler).Methods("DELETE")
+	accountRouter.Handle(
+		"/accounts/{id}/repair-sync",
+		RequirePermission(models.ResourceEmailAccount, models.ActionUpdate)(http.HandlerFunc(handler.RepairAccountSyncHandler)),
+	).Methods("POST")
 
 	// --- Email resources ---
 	emailRouter := authRouter.PathPrefix("").Subrouter()

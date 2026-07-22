@@ -32,6 +32,7 @@ import {
     ArrowUp,
     ArrowDown,
     RotateCcw,
+    Wrench,
 } from 'lucide-react'
 import { DataTable, createSelectColumn } from '@/components/ui/data-table'
 import { Button } from '@/components/ui/button'
@@ -68,6 +69,7 @@ interface AccountsDataTableProps {
     onViewEmails: (account: EmailAccount) => void
     onPickupMail: (account: EmailAccount) => void
     onSync: (account: EmailAccount) => void
+    onRepairSync?: (account: EmailAccount) => void
     onVerify: (account: EmailAccount) => void
     onEdit: (account: EmailAccount) => void
     onDelete: (id: number) => void
@@ -76,6 +78,7 @@ interface AccountsDataTableProps {
     onAccountChange?: () => void
     // 状态
     syncingId?: number
+    repairingId?: number
     verifyingId?: number
     syncStatuses?: Map<number, AccountSyncStatus>
     // 排序
@@ -344,6 +347,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
     onViewEmails,
     onPickupMail,
     onSync,
+    onRepairSync,
     onVerify,
     onEdit,
     onDelete,
@@ -351,6 +355,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
     onTagsChange,
     onAccountChange,
     syncingId,
+    repairingId,
     verifyingId,
     syncStatuses,
     sorting,
@@ -927,7 +932,10 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                 cell: ({ row }) => {
                     const account = row.original
                     const isSyncing = syncingId === account.id
+                    const isRepairing = repairingId === account.id
+                    const isAnyRepairing = repairingId !== undefined
                     const isVerifying = verifyingId === account.id
+                    const canRepairSync = account.authType === 'oauth2' && account.mailProvider?.type === 'gmail'
 
                     const actions: ActionItem[] = [
                         {
@@ -942,6 +950,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Download,
                             label: '取件',
                             onClick: () => onPickupMail(account),
+                            disabled: isRepairing,
                             color: 'success',
                         },
                         {
@@ -949,7 +958,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: RefreshCw,
                             label: '同步',
                             onClick: () => onSync(account),
-                            disabled: isSyncing,
+                            disabled: isSyncing || isRepairing,
                             loading: isSyncing,
                         },
                         {
@@ -957,7 +966,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Link2,
                             label: '验证连接',
                             onClick: () => onVerify(account),
-                            disabled: isVerifying,
+                            disabled: isVerifying || isRepairing,
                             loading: isVerifying,
                         },
                         ...(account.authType === 'oauth2' && onOAuth2Config ? [{
@@ -965,13 +974,25 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Key,
                             label: 'OAuth2配置',
                             onClick: () => onOAuth2Config(account),
+                            disabled: isRepairing,
                             color: 'info' as const,
+                        }] : []),
+                        ...(canRepairSync && onRepairSync ? [{
+                            id: 'repair-sync',
+                            icon: Wrench,
+                            label: '修复同步',
+                            onClick: () => onRepairSync(account),
+                            disabled: isAnyRepairing || isSyncing,
+                            loading: isRepairing,
+                            color: 'warning' as const,
+                            separator: true,
                         }] : []),
                         {
                             id: 'edit',
                             icon: Edit2,
                             label: '编辑',
                             onClick: () => onEdit(account),
+                            disabled: isRepairing,
                             separator: true,
                         },
                         {
@@ -979,6 +1000,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Trash2,
                             label: '删除',
                             onClick: () => onDelete(account.id),
+                            disabled: isRepairing,
                             color: 'danger',
                         },
                     ]
@@ -987,7 +1009,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                 },
             },
         ],
-        [syncingId, verifyingId, syncStatuses, openNoteDialog, openConfigEditor, onViewEmails, onPickupMail, onSync, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
+        [syncingId, repairingId, verifyingId, syncStatuses, openNoteDialog, openConfigEditor, onViewEmails, onPickupMail, onSync, onRepairSync, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
     )
 
     const columns = React.useMemo<ColumnDef<EmailAccount, unknown>[]>(() => {

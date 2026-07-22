@@ -387,7 +387,7 @@ func (h *APIHandler) runFetchAndStoreForAccountWithSource(r *http.Request, accou
 			return nil, fmt.Errorf("Invalid end_date format: %v", err)
 		}
 		endDate = &parsed
-	} else {
+	} else if syncRequest.SyncMode != "full" {
 		now := time.Now()
 		endDate = &now
 	}
@@ -398,7 +398,8 @@ func (h *APIHandler) runFetchAndStoreForAccountWithSource(r *http.Request, accou
 	var messages []string
 
 	for _, mailboxName := range syncRequest.Mailboxes {
-		result := h.processSingleMailboxWithSource(
+		result := h.processSingleMailboxWithSourceAndContext(
+			r.Context(),
 			account,
 			mailboxName,
 			syncRequest.SyncMode,

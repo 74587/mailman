@@ -621,6 +621,55 @@ func (r *SyncConfigRepository) UpsertAccountSyncCursorHistoryID(accountID uint, 
 	})
 }
 
+// CommitAccountGmailHistoryID stores the Gmail checkpoint in both the current
+// cursor table and the legacy sync config in one transaction.
+func (r *SyncConfigRepository) CommitAccountGmailHistoryID(accountID uint, historyID string) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.EmailAccountSyncConfig{}).
+			Where("account_id = ?", accountID).
+			Update("last_history_id", historyID).Error; err != nil {
+			return err
+		}
+
+		txRepo := &SyncConfigRepository{db: tx}
+		return txRepo.upsertSyncCursorFieldsWithContext(
+			context.Background(),
+			accountID,
+			models.SyncCursorProviderGmail,
+			models.SyncCursorMailboxAccount,
+			map[string]interface{}{"last_history_id": historyID},
+		)
+	})
+}
+
+// ResetAccountSyncState clears mutable sync checkpoints while preserving the
+// account's automatic-sync settings. It is used before a repair full sync.
+func (r *SyncConfigRepository) ResetAccountSyncState(accountID uint) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.EmailAccountSyncConfig{}).
+			Where("account_id = ?", accountID).
+			Updates(map[string]interface{}{
+				"last_history_id":      "",
+				"last_sync_time":       nil,
+				"last_sync_end_time":   nil,
+				"last_sync_message_id": "",
+				"last_sync_error":      "",
+				"sync_status":          models.SyncStatusIdle,
+			}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Where("account_id = ? AND provider IN ?", accountID, []string{
+			models.SyncCursorProviderGmail,
+			models.SyncCursorProviderGeneric,
+		}).Delete(&models.SyncCursor{}).Error; err != nil {
+			return err
+		}
+
+		return tx.Where("account_id = ?", accountID).Delete(&models.IncrementalSyncRecord{}).Error
+	})
+}
+
 func (r *SyncConfigRepository) upsertSyncCursorFields(accountID uint, provider, mailboxName string, updates map[string]interface{}) error {
 	return r.upsertSyncCursorFieldsWithContext(context.Background(), accountID, provider, mailboxName, updates)
 }

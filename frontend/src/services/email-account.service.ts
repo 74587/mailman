@@ -25,10 +25,12 @@ export interface FetchAndStoreResponse {
 
 // 邮箱同步结果
 export interface MailboxSyncResult {
-    mailbox: string;
+    mailbox_name: string;
     emails_processed: number;
     new_emails: number;
-    last_sync_time?: string;
+    sync_start_time: string;
+    sync_end_time: string;
+    previous_sync_end_time?: string;
     error?: string;
 }
 
@@ -39,6 +41,17 @@ export interface FetchAndStoreRequest {
     include_body?: boolean;
     default_start_date?: string;
     end_date?: string;
+}
+
+export interface RepairAccountSyncResponse {
+    status: 'success' | 'failed';
+    account_id: number;
+    mailbox: string;
+    total_emails_processed: number;
+    total_new_emails: number;
+    processing_time_ms: number;
+    message?: string;
+    mailbox_result?: MailboxSyncResult;
 }
 
 export interface OAuth2AccountOnboardingRequest extends CreateEmailAccountRequest {
@@ -569,6 +582,17 @@ export class EmailAccountService {
             options
         );
         return response;
+    }
+
+    /**
+     * 修复 Gmail 同步状态：清理失效游标并重新同步最近一个月。
+     */
+    async repairAccountSync(id: number): Promise<RepairAccountSyncResponse> {
+        return apiClient.post<RepairAccountSyncResponse>(
+            `${this.basePath}/${id}/repair-sync`,
+            {},
+            { timeout: 300000 }
+        );
     }
 
     /**

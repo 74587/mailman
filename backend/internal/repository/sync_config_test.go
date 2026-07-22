@@ -11,6 +11,109 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestSyncConfigRepositoryCommitsAndResetsGmailCheckpoint(t *testing.T) {
+	db := mustOpenRealSyncConfigTestDB(t)
+	if err := db.AutoMigrate(
+		&models.EmailAccount{},
+		&models.EmailAccountSyncConfig{},
+		&models.SyncCursor{},
+		&models.IncrementalSyncRecord{},
+	); err != nil {
+		t.Fatalf("failed to migrate test db: %v", err)
+	}
+
+	account := models.EmailAccount{
+		OrgID:        1,
+		EmailAddress: "repair@gmail.com",
+		AuthType:     models.AuthTypeOAuth2,
+		IsVerified:   true,
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatalf("failed to create account: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	config := models.EmailAccountSyncConfig{
+		AccountID:         account.ID,
+		EnableAutoSync:    true,
+		SyncInterval:      90,
+		SyncFolders:       models.StringSlice{"INBOX"},
+		LastSyncTime:      &now,
+		LastSyncEndTime:   &now,
+		LastHistoryID:     "old-history",
+		LastSyncMessageID: "old-message",
+		LastSyncError:     "old-error",
+		SyncStatus:        models.SyncStatusError,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("failed to create sync config: %v", err)
+	}
+
+	repo := NewSyncConfigRepository(db)
+	if err := repo.UpsertAccountSyncCursorHistoryID(account.ID, models.SyncCursorProviderGmail, "old-history"); err != nil {
+		t.Fatalf("failed to create Gmail cursor: %v", err)
+	}
+	if err := repo.UpsertAccountSyncCursorTimes(account.ID, models.SyncCursorProviderGeneric, &now, &now); err != nil {
+		t.Fatalf("failed to create generic cursor: %v", err)
+	}
+	if err := db.Create(&models.IncrementalSyncRecord{
+		AccountID:         account.ID,
+		MailboxName:       "INBOX",
+		LastSyncStartTime: now,
+		LastSyncEndTime:   now,
+		EmailsProcessed:   5,
+	}).Error; err != nil {
+		t.Fatalf("failed to create incremental record: %v", err)
+	}
+
+	if err := repo.CommitAccountGmailHistoryID(account.ID, "new-history"); err != nil {
+		t.Fatalf("CommitAccountGmailHistoryID failed: %v", err)
+	}
+	committedConfig, err := repo.GetByAccountID(account.ID)
+	if err != nil {
+		t.Fatalf("failed to reload committed config: %v", err)
+	}
+	if committedConfig.LastHistoryID != "new-history" {
+		t.Fatalf("legacy history = %q, want new-history", committedConfig.LastHistoryID)
+	}
+	committedCursor, err := repo.GetAccountSyncCursor(account.ID, models.SyncCursorProviderGmail)
+	if err != nil {
+		t.Fatalf("failed to reload committed cursor: %v", err)
+	}
+	if committedCursor.LastHistoryID != "new-history" {
+		t.Fatalf("cursor history = %q, want new-history", committedCursor.LastHistoryID)
+	}
+
+	if err := repo.ResetAccountSyncState(account.ID); err != nil {
+		t.Fatalf("ResetAccountSyncState failed: %v", err)
+	}
+	resetConfig, err := repo.GetByAccountID(account.ID)
+	if err != nil {
+		t.Fatalf("failed to reload reset config: %v", err)
+	}
+	if !resetConfig.EnableAutoSync || resetConfig.SyncInterval != 90 || len(resetConfig.SyncFolders) != 1 {
+		t.Fatalf("repair reset changed user settings: %+v", resetConfig)
+	}
+	if resetConfig.LastHistoryID != "" || resetConfig.LastSyncTime != nil || resetConfig.LastSyncEndTime != nil || resetConfig.LastSyncMessageID != "" || resetConfig.LastSyncError != "" || resetConfig.SyncStatus != models.SyncStatusIdle {
+		t.Fatalf("runtime state was not cleared: %+v", resetConfig)
+	}
+
+	var cursorCount int64
+	if err := db.Model(&models.SyncCursor{}).Where("account_id = ?", account.ID).Count(&cursorCount).Error; err != nil {
+		t.Fatalf("failed to count cursors: %v", err)
+	}
+	if cursorCount != 0 {
+		t.Fatalf("cursor count = %d, want 0", cursorCount)
+	}
+	var recordCount int64
+	if err := db.Model(&models.IncrementalSyncRecord{}).Where("account_id = ?", account.ID).Count(&recordCount).Error; err != nil {
+		t.Fatalf("failed to count sync records: %v", err)
+	}
+	if recordCount != 0 {
+		t.Fatalf("sync record count = %d, want 0", recordCount)
+	}
+}
+
 func TestSyncConfigRepositoryRecordsSyncRun(t *testing.T) {
 	db := mustOpenRealSyncConfigTestDB(t)
 	if err := db.AutoMigrate(&models.EmailAccount{}, &models.SyncRun{}); err != nil {

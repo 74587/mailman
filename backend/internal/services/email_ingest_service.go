@@ -112,7 +112,9 @@ func (s *EmailIngestService) IngestEmails(emails []models.Email, opts EmailInges
 		newEmails = append(newEmails, email)
 	}
 
-	if len(newEmails) == 0 && firstErr != nil {
+	// Never let callers advance a provider checkpoint after a partial ingest.
+	// The next run can safely retry because successfully stored emails dedupe.
+	if firstErr != nil {
 		return newEmails, firstErr
 	}
 	return newEmails, nil

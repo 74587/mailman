@@ -9,6 +9,7 @@ import { oauth2Service } from '@/services/oauth2.service'
 import { EmailAccount, AccountFilterParams } from '@/types'
 import { cn } from '@/lib/utils'
 import { useConfirmDialog } from '@/hooks/use-confirm-dialog'
+import { useAuth } from '@/context/auth-context'
 import AddAccountModal from '@/components/modals/add-account-modal'
 import EnhancedAddAccountModal from '@/components/modals/enhanced-add-account-modal'
 import EditAccountModal from '@/components/modals/edit-account-modal'
@@ -127,6 +128,8 @@ function Pagination({
 
 export default function AccountsTab() {
     const { confirm } = useConfirmDialog()
+    const { hasPermission } = useAuth()
+    const canRepairAccountSync = hasPermission('email_account', 'update')
     const dataTableRef = useRef<AccountsDataTableHandle>(null)
     const [accounts, setAccounts] = useState<EmailAccount[]>([])
     const [loading, setLoading] = useState(true)
@@ -141,6 +144,7 @@ export default function AccountsTab() {
     const [showBatchSyncConfigModal, setShowBatchSyncConfigModal] = useState(false)
     const [syncingAccount, setSyncingAccount] = useState<EmailAccount | null>(null)
     const [syncing, setSyncing] = useState<number | null>(null)
+    const [repairing, setRepairing] = useState<number | null>(null)
     const [verifying, setVerifying] = useState<number | null>(null)
     const [viewType, setViewType] = useState<ViewType>('datatable')
     const [pagination, setPagination] = useState({
@@ -385,6 +389,40 @@ export default function AccountsTab() {
         } finally {
             setSyncing(null)
             setSyncingAccount(null)
+        }
+    }
+
+    const handleRepairSync = async (account: EmailAccount) => {
+        if (repairing !== null) {
+            toast.warning('已有账户正在修复，请等待当前操作完成')
+            return
+        }
+
+        const confirmed = await confirm({
+            title: '修复 Gmail 同步',
+            description: `将清理 ${account.emailAddress} 的失效同步游标，并重新扫描最近 30 天邮件，耗时可能数分钟。已保存的邮件不会删除，重复邮件会自动跳过；修复期间该账户的其他同步会等待。`,
+            confirmText: '开始修复',
+            cancelText: '取消',
+            variant: 'warning',
+        })
+        if (!confirmed) return
+
+        setRepairing(account.id)
+        try {
+            const result = await emailAccountService.repairAccountSync(account.id)
+            toast.success(`同步修复完成：扫描 ${result.total_emails_processed} 封，补回 ${result.total_new_emails} 封`)
+            try {
+                await loadAccounts()
+            } catch (reloadError) {
+                console.error('Repair completed but account refresh failed:', reloadError)
+                toast.warning('同步修复已完成，但账户列表刷新失败，请稍后手动刷新')
+            }
+        } catch (error) {
+            console.error('Failed to repair account sync:', error)
+            const message = error instanceof Error ? error.message : '请求失败'
+            toast.error(`同步修复失败：${message}。如已有邮件完成入库，系统会保留并在重试时自动去重`)
+        } finally {
+            setRepairing(null)
         }
     }
 
@@ -1707,6 +1745,7 @@ export default function AccountsTab() {
                                     onViewEmails={handleViewEmails}
                                     onPickupMail={handlePickupMail}
                                     onSync={handleSyncClick}
+                                    onRepairSync={canRepairAccountSync ? handleRepairSync : undefined}
                                     onVerify={handleVerify}
                                     onEdit={handleEdit}
                                     onDelete={handleDelete}
@@ -1714,6 +1753,7 @@ export default function AccountsTab() {
                                     onTagsChange={loadAccounts}
                                     onAccountChange={loadAccounts}
                                     syncingId={syncing ?? undefined}
+                                    repairingId={repairing ?? undefined}
                                     verifyingId={verifying ?? undefined}
                                     syncStatuses={syncStatuses}
                                     sorting={sortBy ? [{ id: sortBy, desc: sortOrder === 'desc' }] : []}

@@ -18,7 +18,7 @@ export interface ConfirmDialogOptions {
     description?: string
     confirmText?: string
     cancelText?: string
-    variant?: 'default' | 'destructive'
+    variant?: 'default' | 'warning' | 'destructive'
 }
 
 // 确认对话框 Context
@@ -83,7 +83,13 @@ export function ConfirmDialogProvider({ children }: { children: React.ReactNode 
                         </AlertDialogCancel>
                         <AlertDialogAction
                             onClick={handleConfirm}
-                            className={options.variant === 'destructive' ? 'bg-red-600 hover:bg-red-700 focus:ring-red-600' : ''}
+                            className={
+                                options.variant === 'destructive'
+                                    ? 'bg-red-600 hover:bg-red-700 focus:ring-red-600'
+                                    : options.variant === 'warning'
+                                        ? 'bg-amber-600 hover:bg-amber-700 focus:ring-amber-600'
+                                        : ''
+                            }
                         >
                             {options.confirmText}
                         </AlertDialogAction>
