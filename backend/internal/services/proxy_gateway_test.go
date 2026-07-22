@@ -22,6 +22,20 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestAnnotateSocks5FakeIPError(t *testing.T) {
+	original := fmt.Errorf("upstream rejected destination")
+	annotated := annotateSocks5FakeIPError("198.19.50.238", original)
+	if annotated == nil || !strings.Contains(annotated.Error(), "DNS Fake-IP") || !strings.Contains(annotated.Error(), "socks5h://") || !strings.Contains(annotated.Error(), original.Error()) {
+		t.Fatalf("Fake-IP diagnostic=%v", annotated)
+	}
+	if got := annotateSocks5FakeIPError("8.8.8.8", original); got != original {
+		t.Fatalf("public destination error should stay unchanged: %v", got)
+	}
+	if isLikelyDNSFakeIP("198.20.0.1") || !isLikelyDNSFakeIP("198.18.0.1") || !isLikelyDNSFakeIP("198.19.255.255") {
+		t.Fatal("198.18.0.0/15 Fake-IP classification is incorrect")
+	}
+}
+
 func TestProxyGatewayMixedListenerSupportsHTTPConnectAndSocks5(t *testing.T) {
 	db := newProxyGatewayTestDB(t)
 	gatewayRepo := repository.NewProxyGatewayRepository(db)

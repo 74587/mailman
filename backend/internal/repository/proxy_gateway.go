@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"mailman/internal/models"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,13 +33,19 @@ type ProxyGatewayAccountFilter struct {
 }
 
 type ProxyGatewayLogFilter struct {
-	AccountID  *uint
-	ListenerID *uint
-	Status     string
-	Protocol   string
-	Search     string
-	Page       int
-	Limit      int
+	AccountID   *uint
+	AccountName string
+	ListenerID  *uint
+	SourceIP    string
+	Target      string
+	TargetMatch string
+	Status      string
+	Protocol    string
+	Search      string
+	StartTime   *time.Time
+	EndTime     *time.Time
+	Page        int
+	Limit       int
 }
 
 func NewProxyGatewayRepository(db *gorm.DB) *ProxyGatewayRepository {
@@ -649,30 +656,119 @@ func (r *ProxyGatewayRepository) ListAccessLogs(orgID uint, filter ProxyGatewayL
 	if filter.Limit > 500 {
 		filter.Limit = 500
 	}
-	query := r.db.Model(&models.ProxyGatewayAccessLog{}).Where("org_id = ?", orgID)
+	query := r.db.Model(&models.ProxyGatewayAccessLog{}).Where("proxy_gateway_access_logs.org_id = ?", orgID)
 	if filter.AccountID != nil {
-		query = query.Where("account_id = ?", *filter.AccountID)
+		query = query.Where("proxy_gateway_access_logs.account_id = ?", *filter.AccountID)
+	}
+	if filter.AccountName != "" {
+		term := "%" + escapeSQLLike(strings.TrimSpace(filter.AccountName)) + "%"
+		query = query.
+			Joins("LEFT JOIN proxy_gateway_accounts AS log_account ON log_account.id = proxy_gateway_access_logs.account_id AND log_account.org_id = proxy_gateway_access_logs.org_id").
+			Where("(LOWER(log_account.name) LIKE LOWER(?) ESCAPE '!' OR LOWER(proxy_gateway_access_logs.username) LIKE LOWER(?) ESCAPE '!')", term, term)
 	}
 	if filter.ListenerID != nil {
-		query = query.Where("listener_id = ?", *filter.ListenerID)
+		query = query.Where("proxy_gateway_access_logs.listener_id = ?", *filter.ListenerID)
+	}
+	if filter.SourceIP != "" {
+		query = query.Where("proxy_gateway_access_logs.client_ip = ?", strings.TrimSpace(filter.SourceIP))
 	}
 	if filter.Status != "" {
-		query = query.Where("status = ?", filter.Status)
+		query = query.Where("proxy_gateway_access_logs.status = ?", filter.Status)
 	}
 	if filter.Protocol != "" {
-		query = query.Where("protocol = ?", filter.Protocol)
+		query = query.Where("proxy_gateway_access_logs.protocol = ?", filter.Protocol)
+	}
+	if filter.StartTime != nil {
+		query = query.Where("proxy_gateway_access_logs.created_at >= ?", *filter.StartTime)
+	}
+	if filter.EndTime != nil {
+		query = query.Where("proxy_gateway_access_logs.created_at <= ?", *filter.EndTime)
 	}
 	if filter.Search != "" {
 		term := "%" + strings.TrimSpace(filter.Search) + "%"
-		query = query.Where("(username LIKE ? OR client_ip LIKE ? OR target_host LIKE ? OR deny_reason LIKE ?)", term, term, term, term)
+		query = query.Where("(proxy_gateway_access_logs.username LIKE ? OR proxy_gateway_access_logs.client_ip LIKE ? OR proxy_gateway_access_logs.target_host LIKE ? OR proxy_gateway_access_logs.deny_reason LIKE ?)", term, term, term, term)
+	}
+	if filter.Target != "" {
+		target := strings.TrimSpace(filter.Target)
+		if filter.TargetMatch == "regex" {
+			compiled, err := regexp.Compile("(?i:" + target + ")")
+			if err != nil {
+				return nil, 0, err
+			}
+			if r.db.Dialector.Name() == "sqlite" {
+				return listSQLiteRegexAccessLogs(query, compiled, filter.Page, filter.Limit)
+			}
+			if r.db.Dialector.Name() == "postgres" {
+				query = query.Where("proxy_gateway_access_logs.target_host ~* ?", target)
+			} else {
+				query = query.Where("LOWER(proxy_gateway_access_logs.target_host) REGEXP LOWER(?)", target)
+			}
+		} else {
+			query = query.Where("LOWER(proxy_gateway_access_logs.target_host) LIKE LOWER(?) ESCAPE '!'", wildcardSQLLike(target))
+		}
 	}
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 	var logs []models.ProxyGatewayAccessLog
-	err := query.Order("created_at DESC").Limit(filter.Limit).Offset((filter.Page - 1) * filter.Limit).Find(&logs).Error
+	err := query.Order("proxy_gateway_access_logs.created_at DESC").Limit(filter.Limit).Offset((filter.Page - 1) * filter.Limit).Find(&logs).Error
 	return logs, total, err
+}
+
+func escapeSQLLike(value string) string {
+	var builder strings.Builder
+	for _, char := range value {
+		if char == '!' || char == '%' || char == '_' {
+			builder.WriteRune('!')
+		}
+		builder.WriteRune(char)
+	}
+	return builder.String()
+}
+
+func wildcardSQLLike(value string) string {
+	var builder strings.Builder
+	for _, char := range value {
+		switch char {
+		case '*':
+			builder.WriteRune('%')
+		case '?':
+			builder.WriteRune('_')
+		case '!', '%', '_':
+			builder.WriteRune('!')
+			builder.WriteRune(char)
+		default:
+			builder.WriteRune(char)
+		}
+	}
+	return builder.String()
+}
+
+// SQLite has no REGEXP function by default. Keep development and test databases
+// feature-compatible by applying the validated RE2 expression after all other
+// indexed filters; production PostgreSQL/MySQL databases execute it in SQL.
+func listSQLiteRegexAccessLogs(query *gorm.DB, expression *regexp.Regexp, page, limit int) ([]models.ProxyGatewayAccessLog, int64, error) {
+	var candidates []models.ProxyGatewayAccessLog
+	if err := query.Order("proxy_gateway_access_logs.created_at DESC").Find(&candidates).Error; err != nil {
+		return nil, 0, err
+	}
+	matched := make([]models.ProxyGatewayAccessLog, 0, len(candidates))
+	for _, item := range candidates {
+		if expression.MatchString(item.TargetHost) {
+			matched = append(matched, item)
+		}
+	}
+	total := int64(len(matched))
+	start := (page - 1) * limit
+	if start >= len(matched) {
+		return []models.ProxyGatewayAccessLog{}, total, nil
+	}
+	end := start + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return matched[start:end], total, nil
 }
 
 func (r *ProxyGatewayRepository) CreateAuditLog(logEntry *models.ProxyGatewayAuditLog) error {

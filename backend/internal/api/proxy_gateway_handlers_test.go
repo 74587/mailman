@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"mailman/internal/models"
 	"mailman/internal/repository"
@@ -30,6 +31,41 @@ func TestValidateProxyGatewayListenerAllowsOptionalExternalPort(t *testing.T) {
 	item.ExternalPort = 32027
 	if message := validateProxyGatewayListener(item); message != "" {
 		t.Fatalf("expected mapped external port to be valid, got %q", message)
+	}
+}
+
+func TestGatewayLogFilterFromRequestParsesStructuredFilters(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/proxy-gateway/logs?"+
+		"page=2&limit=25&listenerId=11&accountId=21&accountName=operations&"+
+		"sourceIp=203.0.113.10&target=%5Eapi%5C.example%5C.com%24&targetMatch=regex&"+
+		"status=failed&protocol=socks5&startTime=2026-07-22T08%3A00%3A00Z&endTime=2026-07-22T09%3A00%3A00Z", nil)
+	filter, err := gatewayLogFilterFromRequest(request)
+	if err != nil {
+		t.Fatalf("parse gateway log filters: %v", err)
+	}
+	if filter.Page != 2 || filter.Limit != 25 || filter.ListenerID == nil || *filter.ListenerID != 11 || filter.AccountID == nil || *filter.AccountID != 21 {
+		t.Fatalf("pagination or IDs not parsed: %+v", filter)
+	}
+	if filter.AccountName != "operations" || filter.SourceIP != "203.0.113.10" || filter.TargetMatch != "regex" || filter.Status != "failed" || filter.Protocol != "socks5" {
+		t.Fatalf("structured filters not parsed: %+v", filter)
+	}
+	if filter.StartTime == nil || filter.EndTime == nil || !filter.EndTime.Equal(filter.StartTime.Add(time.Hour)) {
+		t.Fatalf("time range not parsed: start=%v end=%v", filter.StartTime, filter.EndTime)
+	}
+}
+
+func TestGatewayLogFilterFromRequestRejectsInvalidRangesAndPatterns(t *testing.T) {
+	tests := []string{
+		"target=%28&targetMatch=regex",
+		"target=test&targetMatch=contains",
+		"accountId=zero",
+		"startTime=2026-07-22T10%3A00%3A00Z&endTime=2026-07-22T09%3A00%3A00Z",
+	}
+	for _, query := range tests {
+		request := httptest.NewRequest(http.MethodGet, "/api/proxy-gateway/logs?"+query, nil)
+		if _, err := gatewayLogFilterFromRequest(request); err == nil {
+			t.Fatalf("query %q should be rejected", query)
+		}
 	}
 }
 

@@ -797,6 +797,8 @@ Fallback：
 | GET | `/api/proxy-gateway/status` | 查询运行状态。 |
 | POST | `/api/proxy-gateway/reload` | 热加载网关监听。 |
 
+访问日志接口返回 `{items,total,page,limit}`，支持 `page`、`limit`、`listenerId`、`startTime`、`endTime`、`sourceIp`、`status`、`accountId`、`accountName`、`target` 和 `targetMatch` 查询参数。时间使用 RFC3339；`targetMatch` 可取 `wildcard`（`*`、`?`）或 `regex`。
+
 网关用户请求中的 `proxySelectionSource` 可取 `gateway` 或 `account`。为兼容旧客户端，创建时省略该字段会按 `account` 保存；更新时省略则保持数据库中的现有值。新版界面创建用户时会显式发送 `gateway`。
 
 ## 15. 0 到 1 示例

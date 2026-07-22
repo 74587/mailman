@@ -10,6 +10,7 @@ import (
 	"mailman/internal/services"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1270,7 +1271,11 @@ func (h *ProxyGatewayHandlers) DeleteDNSPolicy(w http.ResponseWriter, r *http.Re
 
 func (h *ProxyGatewayHandlers) ListAccessLogs(w http.ResponseWriter, r *http.Request) {
 	orgID := GetCurrentOrgID(r)
-	filter := gatewayLogFilterFromRequest(r)
+	filter, err := gatewayLogFilterFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	items, total, err := h.repo.ListAccessLogs(orgID, filter)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1366,26 +1371,88 @@ func gatewayAccountFilterFromRequest(r *http.Request) repository.ProxyGatewayAcc
 	}
 }
 
-func gatewayLogFilterFromRequest(r *http.Request) repository.ProxyGatewayLogFilter {
+func gatewayLogFilterFromRequest(r *http.Request) (repository.ProxyGatewayLogFilter, error) {
 	q := r.URL.Query()
 	page, _ := strconv.Atoi(q.Get("page"))
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	filter := repository.ProxyGatewayLogFilter{
-		Status:   q.Get("status"),
-		Protocol: q.Get("protocol"),
-		Search:   q.Get("search"),
-		Page:     page,
-		Limit:    limit,
+	if page < 1 {
+		page = 1
 	}
-	if accountID, err := strconv.Atoi(q.Get("accountId")); err == nil && accountID > 0 {
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	targetMatch := strings.TrimSpace(q.Get("targetMatch"))
+	if targetMatch == "" {
+		targetMatch = "wildcard"
+	}
+	if targetMatch != "wildcard" && targetMatch != "regex" {
+		return repository.ProxyGatewayLogFilter{}, errors.New("targetMatch must be wildcard or regex")
+	}
+	target := strings.TrimSpace(q.Get("target"))
+	if len(target) > 512 {
+		return repository.ProxyGatewayLogFilter{}, errors.New("target pattern is too long")
+	}
+	if target != "" && targetMatch == "regex" {
+		if _, err := regexp.Compile(target); err != nil {
+			return repository.ProxyGatewayLogFilter{}, fmt.Errorf("invalid target regex: %w", err)
+		}
+	}
+	startTime, err := parseGatewayLogTime(q.Get("startTime"), "startTime")
+	if err != nil {
+		return repository.ProxyGatewayLogFilter{}, err
+	}
+	endTime, err := parseGatewayLogTime(q.Get("endTime"), "endTime")
+	if err != nil {
+		return repository.ProxyGatewayLogFilter{}, err
+	}
+	if startTime != nil && endTime != nil && startTime.After(*endTime) {
+		return repository.ProxyGatewayLogFilter{}, errors.New("startTime must not be later than endTime")
+	}
+	filter := repository.ProxyGatewayLogFilter{
+		AccountName: strings.TrimSpace(q.Get("accountName")),
+		SourceIP:    strings.TrimSpace(q.Get("sourceIp")),
+		Target:      target,
+		TargetMatch: targetMatch,
+		Status:      strings.TrimSpace(q.Get("status")),
+		Protocol:    strings.TrimSpace(q.Get("protocol")),
+		Search:      strings.TrimSpace(q.Get("search")),
+		StartTime:   startTime,
+		EndTime:     endTime,
+		Page:        page,
+		Limit:       limit,
+	}
+	if rawAccountID := strings.TrimSpace(q.Get("accountId")); rawAccountID != "" {
+		accountID, err := strconv.ParseUint(rawAccountID, 10, 64)
+		if err != nil || accountID == 0 {
+			return repository.ProxyGatewayLogFilter{}, errors.New("accountId must be a positive integer")
+		}
 		value := uint(accountID)
 		filter.AccountID = &value
 	}
-	if listenerID, err := strconv.Atoi(q.Get("listenerId")); err == nil && listenerID > 0 {
+	if rawListenerID := strings.TrimSpace(q.Get("listenerId")); rawListenerID != "" {
+		listenerID, err := strconv.ParseUint(rawListenerID, 10, 64)
+		if err != nil || listenerID == 0 {
+			return repository.ProxyGatewayLogFilter{}, errors.New("listenerId must be a positive integer")
+		}
 		value := uint(listenerID)
 		filter.ListenerID = &value
 	}
-	return filter
+	return filter, nil
+}
+
+func parseGatewayLogTime(value, field string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, fmt.Errorf("%s must use RFC3339 format", field)
+	}
+	return &parsed, nil
 }
 
 func gatewayIDFromRequest(r *http.Request) *uint {

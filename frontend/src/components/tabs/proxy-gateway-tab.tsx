@@ -4,6 +4,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
     ArrowLeft,
     BookOpen,
+    ChevronsLeft,
+    ChevronsRight,
     Code2,
     Copy,
     FileDown,
@@ -20,6 +22,7 @@ import {
     Search,
     Server,
     ShieldCheck,
+    SlidersHorizontal,
     Tags,
     Trash2,
     Users,
@@ -68,6 +71,29 @@ type SearchOption = { id: number; name: string; description?: string; color?: st
 type ProxyExportProtocol = 'http' | 'socks5'
 type ProxyExportIndexMode = 'sequential' | 'random'
 type ProxyExportFormat = 'url' | 'auth-at-host' | 'host-port-auth' | 'host-port-at-auth' | 'auth-host-port' | 'csv' | 'tsv' | 'jsonl'
+type GatewayLogTargetMatch = 'wildcard' | 'regex'
+
+type GatewayLogFilters = {
+    startTime: string
+    endTime: string
+    sourceIp: string
+    target: string
+    targetMatch: GatewayLogTargetMatch
+    status: string
+    accountId: string
+    accountName: string
+}
+
+const emptyGatewayLogFilters = (): GatewayLogFilters => ({
+    startTime: '',
+    endTime: '',
+    sourceIp: '',
+    target: '',
+    targetMatch: 'wildcard',
+    status: '',
+    accountId: '',
+    accountName: '',
+})
 
 const proxyExportFormatOptions: Array<[ProxyExportFormat, string]> = [
     ['url', '协议://用户:密码@地址:端口'],
@@ -306,7 +332,6 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
     const [targetRoutes, setTargetRoutes] = useState<ProxyGatewayTargetRoute[]>([])
     const [securityPolicies, setSecurityPolicies] = useState<ProxyGatewaySecurityPolicy[]>([])
     const [dnsPolicies, setDnsPolicies] = useState<ProxyGatewayDNSPolicy[]>([])
-    const [logs, setLogs] = useState<ProxyGatewayAccessLog[]>([])
     const [auditLogs, setAuditLogs] = useState<ProxyGatewayAuditLog[]>([])
     const [statuses, setStatuses] = useState<ProxyGatewayStatus[]>([])
     const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([])
@@ -329,7 +354,6 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
     const safeTargetRoutes = useMemo(() => asArray<ProxyGatewayTargetRoute>(targetRoutes), [targetRoutes])
     const safeSecurityPolicies = useMemo(() => asArray<ProxyGatewaySecurityPolicy>(securityPolicies), [securityPolicies])
     const safeDNSPolicies = useMemo(() => asArray<ProxyGatewayDNSPolicy>(dnsPolicies), [dnsPolicies])
-    const safeLogs = useMemo(() => asArray<ProxyGatewayAccessLog>(logs), [logs])
     const safeAuditLogs = useMemo(() => asArray<ProxyGatewayAuditLog>(auditLogs), [auditLogs])
     const safeStatuses = useMemo(() => asArray<ProxyGatewayStatus>(statuses), [statuses])
     const safeProxyGroups = useMemo(() => asArray<ProxyGroup>(proxyGroups), [proxyGroups])
@@ -348,7 +372,6 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                 accountResponse,
                 nextAccountGroups,
                 nextAccountTags,
-                nextLogs,
                 nextAuditLogs,
                 nextStatus,
                 nextProxyGroups,
@@ -359,7 +382,6 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                 proxyGatewayService.listAccounts({ limit: 200 }),
                 proxyGatewayService.listAccountGroups(),
                 proxyGatewayService.listAccountTags(),
-                proxyGatewayService.listLogs({ limit: 80 }),
                 proxyGatewayService.listAuditLogs(80),
                 proxyGatewayService.status(),
                 proxyPoolService.listGroups(),
@@ -368,7 +390,6 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
             ])
             const listenerItems = asArray<ProxyGatewayListener>(nextListeners)
             const accountItems = asArray<ProxyGatewayAccount>((accountResponse as any)?.items)
-            const logItems = asArray<ProxyGatewayAccessLog>((nextLogs as any)?.items)
             const proxyItems = asArray<ProxyPoolItem>((proxyResponse as any)?.items)
             const nextGatewayId = selectedGatewayId && listenerItems.some(item => item.id === selectedGatewayId)
                 ? selectedGatewayId
@@ -391,7 +412,6 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
             setTargetRoutes(asArray<ProxyGatewayTargetRoute>(nextTargetRoutes))
             setSecurityPolicies(asArray<ProxyGatewaySecurityPolicy>(nextSecurity))
             setDnsPolicies(asArray<ProxyGatewayDNSPolicy>(nextDNS))
-            setLogs(logItems)
             setAuditLogs(asArray<ProxyGatewayAuditLog>(nextAuditLogs))
             setStatuses(asArray<ProxyGatewayStatus>(nextStatus))
             setProxyGroups(asArray<ProxyGroup>(nextProxyGroups))
@@ -624,7 +644,6 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                     targetRoutes={safeTargetRoutes}
                                     securityPolicies={safeSecurityPolicies}
                                     dnsPolicies={safeDNSPolicies}
-                                    logs={safeLogs}
                                     accounts={safeAccounts}
                                     onReload={reloadGateway}
                                     onEditGateway={item => setListenerDraft({ ...item })}
@@ -711,7 +730,7 @@ export default function ProxyGatewayTab({ section = 'gateways' }: ProxyGatewayTa
                                     }}
                                 />
                             )}
-                            {normalizedSection === 'logs' && <LogsView logs={safeLogs} auditLogs={safeAuditLogs} />}
+                            {normalizedSection === 'logs' && <LogsView auditLogs={safeAuditLogs} />}
                         </>
                     )}
                 </div>
@@ -760,7 +779,7 @@ function Badge({ children, tone = 'gray' }: { children: React.ReactNode; tone?: 
 }
 
 function Panel({ children }: { children: React.ReactNode }) {
-    return <div className="rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">{children}</div>
+    return <div className="min-w-0 rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">{children}</div>
 }
 
 function TableShell({ children }: { children: React.ReactNode }) {
@@ -785,7 +804,6 @@ function GatewaysView({
     targetRoutes,
     securityPolicies,
     dnsPolicies,
-    logs,
     accounts,
     onReload,
     onEditGateway,
@@ -814,7 +832,6 @@ function GatewaysView({
     targetRoutes: ProxyGatewayTargetRoute[]
     securityPolicies: ProxyGatewaySecurityPolicy[]
     dnsPolicies: ProxyGatewayDNSPolicy[]
-    logs: ProxyGatewayAccessLog[]
     accounts: ProxyGatewayAccount[]
     onReload: () => void
     onEditGateway: (item: ProxyGatewayListener) => void
@@ -839,7 +856,6 @@ function GatewaysView({
         const gatewayTargetRoutes = targetRoutes.filter(item => item.gatewayId === detailGateway.id)
         const gatewaySecurity = securityPolicies.filter(item => item.gatewayId === detailGateway.id || item.gatewayId === 0)
         const gatewayDNS = dnsPolicies.filter(item => item.gatewayId === detailGateway.id || item.gatewayId === 0)
-        const gatewayLogs = logs.filter(item => !item.listenerId || item.listenerId === detailGateway.id)
         const gatewayStatus = statusByListener.get(detailGateway.id)
         const allowedAccounts = accounts.filter(account => account.allowAllGateways || !account.allowedGatewayIds?.length || account.allowedGatewayIds.includes(detailGateway.id))
         const detailMenuItems: Array<{ id: GatewayDetailSection; label: string; icon: React.ComponentType<{ className?: string }> }> = [
@@ -935,7 +951,7 @@ function GatewaysView({
                             </div>
                         </Panel>
                     )}
-                    {detailSection === 'logs' && <LogsView logs={gatewayLogs} auditLogs={[]} />}
+                    {detailSection === 'logs' && <LogsView auditLogs={[]} listenerId={detailGateway.id} />}
                 </div>
             </div>
         )
@@ -2313,10 +2329,189 @@ function MetaTable<T extends { id: number; name: string; color?: string; descrip
     )
 }
 
-function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLogs: ProxyGatewayAuditLog[] }) {
+function LogsView({ auditLogs, listenerId }: { auditLogs: ProxyGatewayAuditLog[]; listenerId?: number }) {
+    const [logs, setLogs] = useState<ProxyGatewayAccessLog[]>([])
+    const [loading, setLoading] = useState(false)
+    const [total, setTotal] = useState(0)
+    const [page, setPage] = useState(1)
+    const [limit, setLimit] = useState(50)
+    const [pageInput, setPageInput] = useState('1')
+    const [filterDraft, setFilterDraft] = useState<GatewayLogFilters>(emptyGatewayLogFilters)
+    const [filters, setFilters] = useState<GatewayLogFilters>(emptyGatewayLogFilters)
+    const [refreshRevision, setRefreshRevision] = useState(0)
+    const requestSequence = useRef(0)
+
+    const loadLogs = useCallback(async () => {
+        const sequence = ++requestSequence.current
+        setLoading(true)
+        try {
+            const response = await proxyGatewayService.listLogs({
+                page,
+                limit,
+                listenerId,
+                sourceIp: filters.sourceIp || undefined,
+                target: filters.target || undefined,
+                targetMatch: filters.targetMatch,
+                status: filters.status || undefined,
+                accountId: filters.accountId || undefined,
+                accountName: filters.accountName || undefined,
+                startTime: filters.startTime ? new Date(filters.startTime).toISOString() : undefined,
+                endTime: filters.endTime ? new Date(filters.endTime).toISOString() : undefined,
+            })
+            if (sequence !== requestSequence.current) return
+            setLogs(asArray<ProxyGatewayAccessLog>(response.items))
+            setTotal(Number(response.total || 0))
+        } catch (error: any) {
+            if (sequence === requestSequence.current) toast.error(error.message || '加载网关日志失败')
+        } finally {
+            if (sequence === requestSequence.current) setLoading(false)
+        }
+    }, [filters, limit, listenerId, page, refreshRevision])
+
+    useEffect(() => {
+        loadLogs()
+    }, [loadLogs])
+
+    const totalPages = Math.max(1, Math.ceil(total / limit))
+
+    useEffect(() => {
+        setPageInput(String(page))
+    }, [page])
+
+    useEffect(() => {
+        if (page > totalPages) setPage(totalPages)
+    }, [page, totalPages])
+
+    const activeFilterCount = useMemo(() => (
+        Number(!!filters.startTime)
+        + Number(!!filters.endTime)
+        + Number(!!filters.sourceIp)
+        + Number(!!filters.target)
+        + Number(!!filters.status)
+        + Number(!!filters.accountId)
+        + Number(!!filters.accountName)
+    ), [filters])
+
+    const applyFilters = () => {
+        const next = {
+            ...filterDraft,
+            sourceIp: filterDraft.sourceIp.trim(),
+            target: filterDraft.target.trim(),
+            accountId: filterDraft.accountId.trim(),
+            accountName: filterDraft.accountName.trim(),
+        }
+        if (next.accountId && (!Number.isSafeInteger(Number(next.accountId)) || Number(next.accountId) < 1)) {
+            toast.error('网关用户 ID 必须是大于 0 的整数')
+            return
+        }
+        if (next.target && next.targetMatch === 'regex') {
+            try {
+                new RegExp(next.target)
+            } catch {
+                toast.error('目标网站正则表达式无效')
+                return
+            }
+        }
+        if (next.startTime && next.endTime && new Date(next.startTime) > new Date(next.endTime)) {
+            toast.error('开始时间不能晚于结束时间')
+            return
+        }
+        setPage(1)
+        setFilters(next)
+        setRefreshRevision(value => value + 1)
+    }
+
+    const clearFilters = () => {
+        const empty = emptyGatewayLogFilters()
+        setFilterDraft(empty)
+        setFilters(empty)
+        setPage(1)
+        setRefreshRevision(value => value + 1)
+    }
+
+    const jumpToPage = () => {
+        const requested = Number(pageInput)
+        if (!Number.isSafeInteger(requested)) {
+            setPageInput(String(page))
+            return
+        }
+        const nextPage = Math.min(totalPages, Math.max(1, requested))
+        setPageInput(String(nextPage))
+        setPage(nextPage)
+    }
+
+    const inputClassName = 'w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-primary-400 focus:ring-4 focus:ring-primary-100 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:focus:ring-primary-950/40'
+
     return (
         <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_360px]">
             <Panel>
+                <div className="border-b border-gray-100 p-4 dark:border-gray-800">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(220px,1.4fr)_150px_minmax(180px,1fr)_150px_auto]">
+                        <label className="block text-sm">
+                            <span className="mb-1 block font-medium text-gray-700 dark:text-gray-200">目标网站</span>
+                            <input
+                                aria-label="目标网站"
+                                value={filterDraft.target}
+                                onChange={event => setFilterDraft(current => ({ ...current, target: event.target.value }))}
+                                onKeyDown={event => event.key === 'Enter' && applyFilters()}
+                                placeholder={filterDraft.targetMatch === 'wildcard' ? '*.example.com 或 198.51.100.*' : '^api\\.(example|test)\\.com$'}
+                                className={inputClassName}
+                            />
+                        </label>
+                        <label className="block text-sm">
+                            <span className="mb-1 block font-medium text-gray-700 dark:text-gray-200">匹配方式</span>
+                            <select aria-label="目标匹配方式" value={filterDraft.targetMatch} onChange={event => setFilterDraft(current => ({ ...current, targetMatch: event.target.value as GatewayLogTargetMatch }))} className={inputClassName}>
+                                <option value="wildcard">通配符</option>
+                                <option value="regex">正则表达式</option>
+                            </select>
+                        </label>
+                        <label className="block text-sm">
+                            <span className="mb-1 block font-medium text-gray-700 dark:text-gray-200">来源 IP</span>
+                            <input aria-label="来源 IP" value={filterDraft.sourceIp} onChange={event => setFilterDraft(current => ({ ...current, sourceIp: event.target.value }))} onKeyDown={event => event.key === 'Enter' && applyFilters()} placeholder="精确 IP" className={inputClassName} />
+                        </label>
+                        <label className="block text-sm">
+                            <span className="mb-1 block font-medium text-gray-700 dark:text-gray-200">状态</span>
+                            <select aria-label="日志状态" value={filterDraft.status} onChange={event => setFilterDraft(current => ({ ...current, status: event.target.value }))} className={inputClassName}>
+                                <option value="">全部状态</option>
+                                <option value="success">成功</option>
+                                <option value="failed">失败</option>
+                                <option value="denied">拒绝</option>
+                            </select>
+                        </label>
+                        <div className="flex items-end gap-2">
+                            <button type="button" onClick={applyFilters} disabled={loading} className="inline-flex h-[38px] items-center gap-1.5 rounded-lg bg-primary-600 px-3 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-50">
+                                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                                查询
+                            </button>
+                            <button type="button" onClick={clearFilters} disabled={loading || (!activeFilterCount && !Object.values(filterDraft).some(value => value && value !== 'wildcard'))} className="h-[38px] rounded-lg border border-gray-200 px-3 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">重置</button>
+                        </div>
+                    </div>
+                    <details className="mt-3 rounded-lg border border-gray-200 bg-gray-50/70 dark:border-gray-800 dark:bg-gray-950/40">
+                        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200">
+                            <SlidersHorizontal className="h-4 w-4" />
+                            时间与网关用户
+                            {activeFilterCount > 0 && <Badge tone="blue">已应用 {activeFilterCount} 项</Badge>}
+                        </summary>
+                        <div className="grid gap-3 border-t border-gray-200 p-3 sm:grid-cols-2 xl:grid-cols-4 dark:border-gray-800">
+                            <label className="block text-sm">
+                                <span className="mb-1 block font-medium text-gray-700 dark:text-gray-200">开始时间</span>
+                                <input aria-label="日志开始时间" type="datetime-local" value={filterDraft.startTime} onChange={event => setFilterDraft(current => ({ ...current, startTime: event.target.value }))} className={inputClassName} />
+                            </label>
+                            <label className="block text-sm">
+                                <span className="mb-1 block font-medium text-gray-700 dark:text-gray-200">结束时间</span>
+                                <input aria-label="日志结束时间" type="datetime-local" value={filterDraft.endTime} onChange={event => setFilterDraft(current => ({ ...current, endTime: event.target.value }))} className={inputClassName} />
+                            </label>
+                            <label className="block text-sm">
+                                <span className="mb-1 block font-medium text-gray-700 dark:text-gray-200">网关用户 ID</span>
+                                <input aria-label="网关用户 ID" type="number" min={1} value={filterDraft.accountId} onChange={event => setFilterDraft(current => ({ ...current, accountId: event.target.value }))} className={inputClassName} />
+                            </label>
+                            <label className="block text-sm">
+                                <span className="mb-1 block font-medium text-gray-700 dark:text-gray-200">网关用户名称</span>
+                                <input aria-label="网关用户名称" value={filterDraft.accountName} onChange={event => setFilterDraft(current => ({ ...current, accountName: event.target.value }))} onKeyDown={event => event.key === 'Enter' && applyFilters()} placeholder="显示名称或登录名" className={inputClassName} />
+                            </label>
+                        </div>
+                    </details>
+                </div>
                 <TableShell>
                     <table className="min-w-[920px] divide-y divide-gray-200 text-sm dark:divide-gray-800">
                         <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-900/60">
@@ -2344,6 +2539,7 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                                         来源 {item.clientIp}{item.clientPort ? `:${item.clientPort}` : ''}
                                                     </span>
                                                 )}
+                                                {item.accountId ? <Badge>用户 ID {item.accountId}</Badge> : null}
                                                 {item.routeStrategyFlagNo ? <Badge tone="blue">#{item.routeStrategyFlagNo}</Badge> : null}
                                                 {item.proxyIndex ? (
                                                     <Badge tone="green">
@@ -2361,7 +2557,8 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                         )}
                                     </td>
                                     <td className="whitespace-nowrap px-4 py-3">
-                                        {item.targetHost ? `${item.targetHost}:${item.targetPort || ''}` : '-'}
+                                        <div>{item.targetHost ? `${item.targetHost}:${item.targetPort || ''}` : '-'}</div>
+                                        {isLikelyDNSFakeIPHost(item.targetHost) && <div className="mt-1"><Badge tone="amber">疑似 Fake-IP</Badge></div>}
                                     </td>
                                     <td className="whitespace-nowrap px-4 py-3">{item.upstreamProxyId ? `#${item.upstreamProxyId}` : '直连/无'}</td>
                                     <td className="whitespace-nowrap px-4 py-3 text-xs text-gray-500">
@@ -2379,10 +2576,35 @@ function LogsView({ logs, auditLogs }: { logs: ProxyGatewayAccessLog[]; auditLog
                                     <td className="whitespace-nowrap px-4 py-3">{item.durationMs}ms</td>
                                 </tr>
                             ))}
+                            {loading && !logs.length && (
+                                <tr><td colSpan={7} className="px-4 py-12 text-center text-gray-400"><Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />正在加载日志</td></tr>
+                            )}
                         </tbody>
                     </table>
                 </TableShell>
-                {!logs.length && <EmptyState label="暂无访问日志" />}
+                {!loading && !logs.length && <EmptyState label="没有符合条件的访问日志" />}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 px-4 py-3 text-sm dark:border-gray-800">
+                    <div className="flex flex-wrap items-center gap-3 text-gray-500">
+                        <span>共 {total} 条 · 第 {page} / {totalPages} 页</span>
+                        <label className="inline-flex items-center gap-2">
+                            每页
+                            <select aria-label="日志每页数量" value={limit} onChange={event => { setLimit(Number(event.target.value)); setPage(1) }} className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-gray-900 outline-none focus:border-primary-400 dark:border-gray-700 dark:bg-gray-900 dark:text-white">
+                                {[20, 50, 100, 200, 500].map(value => <option key={value} value={value}>{value}</option>)}
+                            </select>
+                            条
+                        </label>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <button aria-label="日志第一页" disabled={page <= 1 || loading} onClick={() => setPage(1)} className="rounded-lg border border-gray-200 p-2 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"><ChevronsLeft className="h-4 w-4" /></button>
+                        <button disabled={page <= 1 || loading} onClick={() => setPage(value => Math.max(1, value - 1))} className="rounded-lg border border-gray-200 px-3 py-1.5 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800">上一页</button>
+                        <label className="inline-flex items-center gap-2 text-gray-500">
+                            跳至
+                            <input aria-label="日志跳转页码" type="number" min={1} max={totalPages} value={pageInput} onChange={event => setPageInput(event.target.value)} onBlur={jumpToPage} onKeyDown={event => event.key === 'Enter' && jumpToPage()} className="w-20 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-center text-gray-900 outline-none focus:border-primary-400 dark:border-gray-700 dark:bg-gray-900 dark:text-white" />
+                        </label>
+                        <button disabled={page >= totalPages || loading} onClick={() => setPage(value => Math.min(totalPages, value + 1))} className="rounded-lg border border-gray-200 px-3 py-1.5 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800">下一页</button>
+                        <button aria-label="日志最后一页" disabled={page >= totalPages || loading} onClick={() => setPage(totalPages)} className="rounded-lg border border-gray-200 p-2 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800"><ChevronsRight className="h-4 w-4" /></button>
+                    </div>
+                </div>
             </Panel>
             <Panel>
                 <div className="border-b border-gray-100 px-4 py-3 text-sm font-semibold dark:border-gray-800">配置审计</div>
@@ -3892,4 +4114,12 @@ function formatBytes(value: number) {
 function formatTime(value?: string) {
     if (!value) return '-'
     return new Date(value).toLocaleString()
+}
+
+function isLikelyDNSFakeIPHost(host?: string) {
+    if (!host) return false
+    const match = host.match(/^198\.(\d{1,3})\./)
+    if (!match) return false
+    const secondOctet = Number(match[1])
+    return secondOctet === 18 || secondOctet === 19
 }

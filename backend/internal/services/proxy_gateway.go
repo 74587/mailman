@@ -706,7 +706,12 @@ func (s *ProxyGatewayService) handleSocks5(conn net.Conn, reader *bufio.Reader, 
 	targetAddr := net.JoinHostPort(host, strconv.Itoa(port))
 	upstreamConn, proxyItem, policy, dnsPolicy, err := s.dialWithPolicy(context.Background(), &session, targetAddr)
 	if err != nil {
-		_ = writeSocks5Reply(conn, 0x05)
+		err = annotateSocks5FakeIPError(host, err)
+		replyCode := byte(0x05)
+		if isLikelyDNSFakeIP(host) {
+			replyCode = 0x04
+		}
+		_ = writeSocks5Reply(conn, replyCode)
 		s.finishSession(session, session.account, proxyItem, "failed", "", err)
 		return
 	}
@@ -832,6 +837,22 @@ func readSocks5ConnectRequest(reader *bufio.Reader) (string, int, error) {
 func writeSocks5Reply(conn net.Conn, code byte) error {
 	_, err := conn.Write([]byte{0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 	return err
+}
+
+func isLikelyDNSFakeIP(host string) bool {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return false
+	}
+	ipv4 := ip.To4()
+	return ipv4 != nil && ipv4[0] == 198 && (ipv4[1] == 18 || ipv4[1] == 19)
+}
+
+func annotateSocks5FakeIPError(host string, err error) error {
+	if err == nil || !isLikelyDNSFakeIP(host) {
+		return err
+	}
+	return fmt.Errorf("target %s is in reserved 198.18.0.0/15 and looks like a DNS Fake-IP; the gateway cannot recover the original domain from a locally resolved SOCKS5 request; use socks5h:// or disable Fake-IP DNS: %w", host, err)
 }
 
 func (s *ProxyGatewayService) authenticateHTTP(listener models.ProxyGatewayListener, req *http.Request) (gatewayAuthResult, error) {

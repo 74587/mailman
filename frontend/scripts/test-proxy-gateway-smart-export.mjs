@@ -226,7 +226,11 @@ const accessLogs = [
     },
 ]
 
-function mockPayload(pathname) {
+const gatewayLogRequests = []
+
+function mockPayload(requestUrl) {
+    const url = typeof requestUrl === 'string' ? new URL(requestUrl) : requestUrl
+    const pathname = url.pathname
     if (pathname.endsWith('/proxy-gateway/listeners')) return listeners
     if (pathname.endsWith('/proxy-gateway/accounts')) return { items: accounts, total: accounts.length, page: 1, limit: 200 }
     if (pathname.endsWith('/proxy-gateway/account-groups')) return []
@@ -235,7 +239,16 @@ function mockPayload(pathname) {
     if (pathname.endsWith('/proxy-gateway/target-routes')) return targetRoutes
     if (pathname.endsWith('/proxy-gateway/security-policies')) return []
     if (pathname.endsWith('/proxy-gateway/dns-policies')) return []
-    if (pathname.endsWith('/proxy-gateway/logs')) return { items: accessLogs, total: accessLogs.length, page: 1, limit: 80 }
+    if (pathname.endsWith('/proxy-gateway/logs')) {
+        const params = Object.fromEntries(url.searchParams.entries())
+        gatewayLogRequests.push(params)
+        return {
+            items: accessLogs,
+            total: 121,
+            page: Number(params.page || 1),
+            limit: Number(params.limit || 50),
+        }
+    }
     if (pathname.endsWith('/proxy-gateway/audit-logs')) return []
     if (pathname.endsWith('/proxy-gateway/status')) return []
     if (pathname.endsWith('/proxy-groups')) return []
@@ -259,7 +272,7 @@ async function configurePage(page, width, height) {
     })
     await page.setRequestInterception(true)
     page.on('request', request => {
-        const payload = mockPayload(new URL(request.url()).pathname)
+        const payload = mockPayload(new URL(request.url()))
         if (payload === undefined) {
             request.continue()
             return
@@ -698,7 +711,70 @@ async function run() {
         assert(failoverLogMetrics.bodyScrollWidth <= failoverLogMetrics.viewportWidth, 'gateway logs should not create horizontal body scrolling')
         assert(failoverLogMetrics.tableWidth >= 900, 'gateway log columns should keep a readable minimum width')
         assert(failoverLogMetrics.rowHeight < 180, 'gateway log rows should not collapse into excessive wrapped lines')
+
+        await gatewayPage.evaluate(() => {
+            const setInput = (label, value) => {
+                const element = document.querySelector(`[aria-label="${label}"]`)
+                if (!(element instanceof HTMLInputElement)) throw new Error(`Input not found: ${label}`)
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+                if (!setter) throw new Error('Native input setter unavailable')
+                setter.call(element, value)
+                element.dispatchEvent(new Event('input', { bubbles: true }))
+            }
+            const setSelect = (label, value) => {
+                const element = document.querySelector(`[aria-label="${label}"]`)
+                if (!(element instanceof HTMLSelectElement)) throw new Error(`Select not found: ${label}`)
+                element.value = value
+                element.dispatchEvent(new Event('change', { bubbles: true }))
+            }
+            setInput('目标网站', '^api\\.example\\.test$')
+            setSelect('目标匹配方式', 'regex')
+            setInput('来源 IP', '198.51.100.8')
+            setSelect('日志状态', 'success')
+            const advanced = Array.from(document.querySelectorAll('summary')).find(element => element.textContent?.includes('时间与网关用户'))
+            if (!(advanced instanceof HTMLElement)) throw new Error('Advanced gateway log filters not found')
+            advanced.click()
+            setInput('日志开始时间', '2026-07-22T07:00')
+            setInput('日志结束时间', '2026-07-22T09:00')
+            setInput('网关用户 ID', '21')
+            setInput('网关用户名称', '智能路由')
+        })
+        const filteredRequestCount = gatewayLogRequests.length
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '查询')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Gateway log query action not found')
+            button.click()
+        })
+        for (let i = 0; i < 20 && gatewayLogRequests.length === filteredRequestCount; i++) await delay(100)
+        const filteredLogRequest = gatewayLogRequests.at(-1) || {}
+        assert(filteredLogRequest.listenerId === '11', `gateway-detail logs should stay scoped to listener 11, received ${filteredLogRequest.listenerId}`)
+        assert(filteredLogRequest.target === '^api\\.example\\.test$' && filteredLogRequest.targetMatch === 'regex', `target regex filter was not sent: ${JSON.stringify(filteredLogRequest)}`)
+        assert(filteredLogRequest.sourceIp === '198.51.100.8' && filteredLogRequest.status === 'success', `source/status filters were not sent: ${JSON.stringify(filteredLogRequest)}`)
+        assert(filteredLogRequest.accountId === '21' && filteredLogRequest.accountName === '智能路由', `account filters were not sent: ${JSON.stringify(filteredLogRequest)}`)
+        assert(filteredLogRequest.startTime && filteredLogRequest.endTime, `time range filters were not sent: ${JSON.stringify(filteredLogRequest)}`)
+        assert((await gatewayPage.evaluate(() => document.body.innerText)).includes('共 121 条 · 第 1 / 3 页'), 'gateway logs should render server-side pagination totals')
+
+        const nextPageRequestCount = gatewayLogRequests.length
+        await gatewayPage.evaluate(() => {
+            const button = Array.from(document.querySelectorAll('button')).find(element => element.textContent?.trim() === '下一页')
+            if (!(button instanceof HTMLButtonElement)) throw new Error('Gateway log next-page action not found')
+            button.click()
+        })
+        for (let i = 0; i < 20 && gatewayLogRequests.length === nextPageRequestCount; i++) await delay(100)
+        assert(gatewayLogRequests.at(-1)?.page === '2', `next-page request should load page 2: ${JSON.stringify(gatewayLogRequests.at(-1))}`)
+
         await gatewayPage.screenshot({ path: join(artifactDir, 'gateway-failover-log.png'), fullPage: true })
+
+        await gatewayPage.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 })
+        await delay(300)
+        const gatewayLogMobileMetrics = await gatewayPage.evaluate(() => ({
+            viewportWidth: window.innerWidth,
+            bodyScrollWidth: document.body.scrollWidth,
+            filterRight: document.querySelector('input[aria-label="目标网站"]')?.getBoundingClientRect().right || 0,
+        }))
+        assert(gatewayLogMobileMetrics.bodyScrollWidth <= gatewayLogMobileMetrics.viewportWidth, 'gateway log filters should not create mobile body overflow')
+        assert(gatewayLogMobileMetrics.filterRight <= gatewayLogMobileMetrics.viewportWidth, 'gateway log target filter should remain inside the mobile viewport')
+        await gatewayPage.screenshot({ path: join(artifactDir, 'gateway-log-filters-mobile.png'), fullPage: true })
 
         console.log(JSON.stringify({
             status: 'ok',
@@ -714,6 +790,8 @@ async function run() {
             targetRouteModal: targetRouteModalMetrics,
             targetRouteMobileModal: targetRouteMobileMetrics,
             failoverLogMetrics,
+            filteredLogRequest,
+            gatewayLogMobileMetrics,
             artifacts: artifactDir,
         }, null, 2))
     } catch (error) {
