@@ -1,7 +1,9 @@
 package services
 
 import (
+	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,47 +55,93 @@ func (s *FetcherService) shouldUseOutlookGraphAPIWithSource(account models.Email
 		return false
 	}
 
-	// Check if explicitly set to use IMAP (e.g. from verification fallback)
-	if account.CustomSettings["connection_protocol"] == "imap" {
+	protocol := strings.ToLower(strings.TrimSpace(account.CustomSettings["connection_protocol"]))
+	if protocol == "" {
+		protocol = inferOutlookProtocolFromAccessToken(account.CustomSettings["access_token"])
+		if protocol == "" && strings.TrimSpace(account.CustomSettings["refresh_token"]) != "" {
+			if refreshed, err := s.refreshOutlookAccessTokenWithSource(account, source, false); err == nil {
+				protocol = inferOutlookProtocolFromAccessToken(refreshed.AccessToken)
+			} else {
+				s.logger.Warn("Unable to migrate Outlook protocol for account %d from its refresh token: %v", account.ID, err)
+			}
+		}
+		if protocol != "" && account.ID != 0 && s.oauth2Service != nil {
+			if err := s.oauth2Service.mergeAccountCustomSettings(string(models.ProviderTypeOutlook), account.ID, map[string]string{
+				"connection_protocol":       protocol,
+				"protocol_detection_method": "token_audience_migration",
+				"protocol_detected_at":      strconv.FormatInt(time.Now().Unix(), 10),
+			}); err != nil {
+				s.logger.Warn("Unable to persist migrated Outlook protocol for account %d: %v", account.ID, err)
+			}
+		}
+	}
+	if protocol != "graph" {
+		// The built-in Outlook OAuth flow grants IMAP/POP/SMTP scopes. Legacy
+		// accounts are migrated above only when their token audience proves Graph;
+		// unknown tokens remain on the safe IMAP path.
 		return false
 	}
 
-	// Try to get or refresh access token to check its format
-	accessToken, _ := account.CustomSettings["access_token"]
-	if accessToken == "" {
-		// No access token stored, try to refresh
-		refreshToken, _ := account.CustomSettings["refresh_token"]
-		if refreshToken == "" {
-			return false
-		}
-
-		// Get client_id
-		clientID, _ := account.CustomSettings["client_id"]
-		if clientID == "" {
-			return false
-		}
-
-		// Try to refresh token to check its format
-		newAccessToken, err := s.refreshOutlookGraphTokenWithSource(clientID, refreshToken, account.Proxy, source)
-		if err != nil {
-			s.logger.Debug("Failed to refresh Outlook token, falling back to IMAP: %v", err)
-			return false
-		}
-		accessToken = newAccessToken
+	accessToken := strings.TrimSpace(account.CustomSettings["access_token"])
+	if strings.HasPrefix(strings.ToUpper(accessToken), "EWA") {
+		// Repair accounts that were incorrectly marked as Graph by the old
+		// token-shape heuristic. EwA tokens are Exchange/IMAP resource tokens.
+		s.logger.Warn("Outlook account %d is marked graph but has an IMAP-scoped token; using IMAP", account.ID)
+		return false
 	}
 
-	// Check if the access token is JWT format (contains dots) or IMAP format (starts with EwA)
-	// JWT format: eyJ0eXAi...eyJhdWQi...signature (3 parts separated by dots)
-	// IMAP format: EwA... (no dots, starts with EwA)
-	isJWT := strings.Contains(accessToken, ".")
-	if !isJWT {
-		s.logger.Debug("Outlook access token is IMAP/REST format (EwA), will use Outlook REST API v2.0")
-		// Still return true to use the API-based fetcher (which handles fallback) instead of IMAP protocol
-		return true
-	}
-
-	s.logger.Debug("Outlook access token is JWT format, will use Graph API")
+	s.logger.Debug("Outlook account %d explicitly uses Microsoft Graph", account.ID)
 	return true
+}
+
+// inferOutlookProtocolFromAccessToken uses the token resource audience, not
+// JWT shape alone. This keeps legacy Graph accounts working without routing an
+// Exchange/IMAP token to Graph.
+func inferOutlookProtocolFromAccessToken(accessToken string) string {
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" {
+		return ""
+	}
+	if isOutlookExchangeResourceToken(accessToken) {
+		return "imap"
+	}
+	parts := strings.Split(accessToken, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	var audiences []string
+	switch value := claims["aud"].(type) {
+	case string:
+		audiences = append(audiences, value)
+	case []interface{}:
+		for _, item := range value {
+			if audience, ok := item.(string); ok {
+				audiences = append(audiences, audience)
+			}
+		}
+	}
+	for _, audience := range audiences {
+		normalized := strings.ToLower(strings.TrimSpace(audience))
+		switch {
+		case normalized == "00000003-0000-0000-c000-000000000000",
+			normalized == "https://graph.microsoft.com",
+			strings.HasPrefix(normalized, "https://graph.microsoft.com/"):
+			return "graph"
+		case normalized == "00000002-0000-0ff1-ce00-000000000000",
+			strings.Contains(normalized, "outlook.office.com"),
+			strings.Contains(normalized, "outlook.office365.com"):
+			return "imap"
+		}
+	}
+	return ""
 }
 
 // verifyOutlookGraphConnection verifies Outlook OAuth2 connection using Graph API or Outlook REST API v2.0
@@ -112,44 +160,22 @@ func (s *FetcherService) verifyOutlookGraphConnectionWithSource(account models.E
 		return fmt.Errorf("failed to get access token: %w", err)
 	}
 
-	// Check if token is JWT (Graph API) or not (Outlook REST API)
-	isJWT := strings.Contains(accessToken, ".")
-	if !isJWT {
-		s.logger.Info("Outlook access token is not JWT, falling back to Outlook REST API v2.0 verification")
-		return s.verifyOutlookRESTConnectionWithSource(account, accessToken, source)
-	}
-
-	// Create HTTP client with proxy support
-	httpClient := s.createOutlookHTTPClient(account.Proxy)
-
-	// Test connection by getting mail folders
-	req, err := http.NewRequest("GET", "https://graph.microsoft.com/v1.0/me/mailFolders", nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	releaseSlot, err := s.acquireOutlookRequestSlot(source, "mailFolders verification")
+	result, err := s.doOutlookGraphGET(
+		context.Background(),
+		account,
+		source,
+		"mailFolders",
+		"https://graph.microsoft.com/v1.0/me/mailFolders",
+		accessToken,
+		nil,
+	)
 	if err != nil {
 		return err
 	}
-	requestStart := time.Now()
-	resp, err := httpClient.Do(req)
-	recordOutlookHTTPRequest(source, "mailFolders", requestStart, resp, err)
-	if err != nil {
-		releaseSlot()
-		s.logger.Error("Failed to make Graph API request: %v", err)
-		return fmt.Errorf("Graph API request failed: %w", err)
-	}
-	defer releaseSlot()
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		s.logger.Error("Graph API returned status %d: %s", resp.StatusCode, string(body))
-		return fmt.Errorf("Graph API verification failed with status %d: %s", resp.StatusCode, string(body))
+	if result.StatusCode != http.StatusOK {
+		s.logger.Error("Graph API returned status %d: %s", result.StatusCode, string(result.Body))
+		return fmt.Errorf("Graph API verification failed with status %d: %s", result.StatusCode, string(result.Body))
 	}
 
 	// Parse response to verify we got folders
@@ -160,12 +186,7 @@ func (s *FetcherService) verifyOutlookGraphConnectionWithSource(account models.E
 		} `json:"value"`
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if err := json.Unmarshal(body, &foldersResponse); err != nil {
+	if err := json.Unmarshal(result.Body, &foldersResponse); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -246,175 +267,84 @@ func (s *FetcherService) getOutlookAccessToken(account models.EmailAccount) (str
 }
 
 func (s *FetcherService) getOutlookAccessTokenWithSource(account models.EmailAccount, source EmailIngestSource) (string, error) {
-	// Get tokens from CustomSettings
 	if account.CustomSettings == nil {
 		return "", fmt.Errorf("OAuth2 tokens not found in account settings")
 	}
 
-	// Check if we have an access_token stored
-	accessToken, hasAccessToken := account.CustomSettings["access_token"]
-	if hasAccessToken && accessToken != "" {
-		// Check if we have expiry info
-		if expiresAtStr, exists := account.CustomSettings["expires_at"]; exists && expiresAtStr != "" {
-			if expiresAt, err := strconv.ParseInt(expiresAtStr, 10, 64); err == nil {
-				// Token has expiry info
-				if time.Now().Unix() < expiresAt-300 {
-					// Token is still valid (more than 5 minutes remaining)
-					s.logger.Debug("Using existing Outlook access token (expires_at: %d)", expiresAt)
-					return accessToken, nil
-				}
-				// Token expired, try to refresh
-				s.logger.Debug("Outlook access token expired, will try to refresh")
-			}
-		} else {
-			// No expiry info - this is typical for "手动输入Token" accounts
-			// Just use the token directly and let the API call validate it
-			s.logger.Debug("Using Outlook access token without expiry info (manual token account)")
+	accessToken := strings.TrimSpace(account.CustomSettings["access_token"])
+	if accessToken != "" {
+		if expiresAt, err := strconv.ParseInt(account.CustomSettings["expires_at"], 10, 64); err == nil && time.Now().Unix() < expiresAt-300 {
+			s.logger.Debug("Using existing Outlook access token (expires_at: %d)", expiresAt)
 			return accessToken, nil
 		}
 	}
 
-	// If no valid access token, check if we have a refresh token
-	refreshToken, hasRefreshToken := account.CustomSettings["refresh_token"]
-	if !hasRefreshToken || refreshToken == "" {
-		// No refresh token - if we had an access_token, use it even if it might be expired
-		// Let the API call fail if it's really expired - user will need to update the token
-		if hasAccessToken && accessToken != "" {
-			s.logger.Debug("No refresh token available, using existing access token directly")
+	if strings.TrimSpace(account.CustomSettings["refresh_token"]) == "" {
+		if accessToken != "" {
+			s.logger.Debug("No refresh token available; validating the stored Outlook access token")
 			return accessToken, nil
 		}
 		return "", fmt.Errorf("no access_token or refresh_token found in account settings")
 	}
 
-	// Get client_id - prefer from CustomSettings (for manual token accounts)
-	clientID := ""
-	if customClientID, ok := account.CustomSettings["client_id"]; ok && customClientID != "" {
-		clientID = customClientID
-		s.logger.Debug("Using client_id from account CustomSettings for Graph API")
-	}
-
-	if clientID == "" {
-		// Try to get from OAuth2GlobalConfig
-		oauth2GlobalConfigRepo := repository.NewOAuth2GlobalConfigRepository(s.accountRepo.GetDB())
-		var oauth2Config *models.OAuth2GlobalConfig
-		var err error
-
-		if account.OAuth2ProviderID != nil && *account.OAuth2ProviderID > 0 {
-			oauth2Config, err = oauth2GlobalConfigRepo.GetByID(*account.OAuth2ProviderID)
-			if err != nil {
-				s.logger.Warn("Failed to get config from OAuth2ProviderID: %v", err)
-			}
-		}
-
-		if oauth2Config == nil {
-			oauth2Config, err = oauth2GlobalConfigRepo.GetByProviderType(models.ProviderTypeOutlook)
-			if err != nil {
-				return "", fmt.Errorf("failed to get OAuth2 config: %w", err)
-			}
-		}
-
-		if oauth2Config != nil {
-			clientID = oauth2Config.ClientID
-		}
-	}
-
-	if clientID == "" {
-		return "", fmt.Errorf("client_id not found for Outlook Graph API")
-	}
-
-	// Refresh token using Graph API scope
-	s.logger.Debug("Refreshing Outlook access token for Graph API")
-	accessToken, err := s.refreshOutlookGraphTokenWithSource(clientID, refreshToken, account.Proxy, source)
+	result, err := s.refreshOutlookAccessTokenWithSource(account, source, false)
 	if err != nil {
 		return "", fmt.Errorf("failed to refresh access token: %w", err)
 	}
-
-	// Update access token in database
-	newCustomSettings := make(models.JSONMap)
-	for k, v := range account.CustomSettings {
-		newCustomSettings[k] = v
-	}
-	newCustomSettings["access_token"] = accessToken
-	newCustomSettings["expires_at"] = fmt.Sprintf("%d", time.Now().Add(time.Hour).Unix())
-	account.CustomSettings = newCustomSettings
-
-	if err := s.accountRepo.Update(&account); err != nil {
-		s.logger.Warn("Failed to update access token in database: %v", err)
-	}
-
-	return accessToken, nil
+	return result.AccessToken, nil
 }
 
-// refreshOutlookGraphToken refreshes Outlook token with Graph API scope
-
-func (s *FetcherService) refreshOutlookGraphToken(clientID, refreshToken, proxyURL string) (string, error) {
-	return s.refreshOutlookGraphTokenWithSource(clientID, refreshToken, proxyURL, EmailIngestSourceManualSync)
-}
-
-func (s *FetcherService) refreshOutlookGraphTokenWithSource(clientID, refreshToken, proxyURL string, source EmailIngestSource) (string, error) {
-	tokenURL := "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-	// Note: Do NOT specify scope when refreshing - Microsoft will use the original authorization scope
-	// If we specify a different scope, it will fail with "unauthorized scope" error
-
-	data := url.Values{}
-	data.Set("client_id", clientID)
-	data.Set("grant_type", "refresh_token")
-	data.Set("refresh_token", refreshToken)
-	// Omitting scope parameter - use original scope from authorization
-
-	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
-	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	// Create HTTP client with proxy support
-	httpClient := s.createOutlookHTTPClient(proxyURL)
-
-	releaseSlot, err := s.acquireOutlookRequestSlot(source, "token refresh")
-	if err != nil {
-		return "", err
-	}
-	requestStart := time.Now()
-	resp, err := httpClient.Do(req)
-	recordOutlookHTTPRequest(source, "token", requestStart, resp, err)
-	if err != nil {
-		releaseSlot()
-		return "", fmt.Errorf("failed to refresh token: %w", err)
-	}
-	defer releaseSlot()
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("failed to read response: %w", err)
+func (s *FetcherService) refreshOutlookAccessTokenWithSource(account models.EmailAccount, source EmailIngestSource, force bool) (OAuth2TokenRefreshResult, error) {
+	refreshToken := strings.TrimSpace(account.CustomSettings["refresh_token"])
+	if refreshToken == "" {
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("refresh_token not found for Outlook account")
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		s.logger.Error("Failed to parse token response: %s", string(body))
-		return "", fmt.Errorf("failed to parse response: %w", err)
+	clientID := strings.TrimSpace(account.CustomSettings["client_id"])
+	clientSecret := strings.TrimSpace(account.CustomSettings["client_secret"])
+	if clientID == "" {
+		repo := repository.NewOAuth2GlobalConfigRepository(s.accountRepo.GetDB())
+		var config *models.OAuth2GlobalConfig
+		var err error
+		if account.OAuth2ProviderID != nil && *account.OAuth2ProviderID > 0 {
+			config, err = repo.GetByID(*account.OAuth2ProviderID)
+			if err != nil {
+				s.logger.Warn("Failed to get Outlook OAuth2 config %d: %v", *account.OAuth2ProviderID, err)
+			}
+		}
+		if config == nil {
+			config, err = repo.GetByProviderType(models.ProviderTypeOutlook)
+			if err != nil {
+				return OAuth2TokenRefreshResult{}, fmt.Errorf("failed to get Outlook OAuth2 config: %w", err)
+			}
+		}
+		if config != nil {
+			clientID = config.ClientID
+			clientSecret = config.ClientSecret
+		}
+	}
+	if clientID == "" {
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("client_id not found for Outlook OAuth2 account")
 	}
 
-	if errorMsg, ok := result["error"]; ok {
-		errorDesc, _ := result["error_description"].(string)
-		s.logger.Error("Outlook Graph API token refresh failed: %v - %s", errorMsg, errorDesc)
-		return "", fmt.Errorf("OAuth2 error: %v - %s", errorMsg, errorDesc)
-	}
-
-	accessToken, ok := result["access_token"].(string)
-	if !ok {
-		s.logger.Error("No access_token in response: %+v", result)
-		return "", fmt.Errorf("access_token not found in response")
-	}
-
-	s.logger.Debug("Successfully refreshed Outlook Graph API token (length: %d)", len(accessToken))
-	return accessToken, nil
+	s.logger.Debug("Refreshing Outlook Graph token for account %d (force=%t, source=%s)", account.ID, force, source)
+	return s.oauth2Service.RefreshAccessTokenWithCacheAndProxyResult(
+		string(models.ProviderTypeOutlook),
+		clientID,
+		clientSecret,
+		refreshToken,
+		account.ID,
+		account.Proxy,
+		OAuth2RefreshOptions{Force: force, OmitScopes: true},
+	)
 }
 
 // createOutlookHTTPClient creates an HTTP client with optional proxy support
 
 func (s *FetcherService) createOutlookHTTPClient(proxyURL string) *http.Client {
+	if s.outlookHTTPClientFactory != nil {
+		return s.outlookHTTPClientFactory(proxyURL)
+	}
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{},
 	}
@@ -432,7 +362,84 @@ func (s *FetcherService) createOutlookHTTPClient(proxyURL string) *http.Client {
 	}
 }
 
-// fetchEmailsFromOutlookGraphAPI fetches emails using Microsoft Graph API or Outlook REST API v2.0
+type outlookGraphHTTPResult struct {
+	StatusCode  int
+	Body        []byte
+	AccessToken string
+}
+
+// doOutlookGraphGET retries exactly once after a 401. The retry forces a token
+// refresh and persists any rotated refresh token before the request is replayed.
+func (s *FetcherService) doOutlookGraphGET(
+	ctx context.Context,
+	account models.EmailAccount,
+	source EmailIngestSource,
+	operation string,
+	requestURL string,
+	accessToken string,
+	headers map[string]string,
+) (outlookGraphHTTPResult, error) {
+	if err := validateOutlookGraphRequestURL(requestURL); err != nil {
+		return outlookGraphHTTPResult{}, err
+	}
+	client := s.createOutlookHTTPClient(account.Proxy)
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+		if err != nil {
+			return outlookGraphHTTPResult{}, fmt.Errorf("failed to create Graph API request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Content-Type", "application/json")
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+
+		releaseSlot, err := s.acquireOutlookRequestSlotWithContext(ctx, source, operation)
+		if err != nil {
+			return outlookGraphHTTPResult{}, err
+		}
+		requestStart := time.Now()
+		resp, requestErr := client.Do(req)
+		recordOutlookHTTPRequest(source, operation, requestStart, resp, requestErr)
+		if requestErr != nil {
+			releaseSlot()
+			return outlookGraphHTTPResult{}, fmt.Errorf("Graph API request failed: %w", requestErr)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		releaseSlot()
+		if readErr != nil {
+			return outlookGraphHTTPResult{}, fmt.Errorf("failed to read Graph API response: %w", readErr)
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			refreshed, refreshErr := s.refreshOutlookAccessTokenWithSource(account, source, true)
+			if refreshErr != nil {
+				return outlookGraphHTTPResult{}, fmt.Errorf("Graph API returned 401 and token refresh failed: %w", refreshErr)
+			}
+			accessToken = refreshed.AccessToken
+			continue
+		}
+		return outlookGraphHTTPResult{StatusCode: resp.StatusCode, Body: body, AccessToken: accessToken}, nil
+	}
+	return outlookGraphHTTPResult{}, fmt.Errorf("Graph API request retry exhausted")
+}
+
+func validateOutlookGraphRequestURL(requestURL string) error {
+	parsed, err := url.Parse(requestURL)
+	if err != nil {
+		return fmt.Errorf("invalid Graph API request URL: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") ||
+		!strings.EqualFold(parsed.Hostname(), "graph.microsoft.com") ||
+		(parsed.Port() != "" && parsed.Port() != "443") ||
+		parsed.User != nil {
+		return fmt.Errorf("refusing untrusted Graph API request URL %q", requestURL)
+	}
+	return nil
+}
+
+// fetchEmailsFromOutlookGraphAPI fetches emails using Microsoft Graph API.
 
 func (s *FetcherService) fetchEmailsFromOutlookGraphAPI(account models.EmailAccount, options FetchEmailsOptions) ([]models.Email, error) {
 	ctx := options.contextOrBackground()
@@ -446,110 +453,20 @@ func (s *FetcherService) fetchEmailsFromOutlookGraphAPI(account models.EmailAcco
 		return nil, fmt.Errorf("failed to get access token: %w", err)
 	}
 
-	// Check if token is JWT (Graph API) or not (Outlook REST API)
-	isJWT := strings.Contains(accessToken, ".")
-	if !isJWT {
-		s.logger.Info("Outlook access token is not JWT, falling back to Outlook REST API v2.0")
-		return s.fetchEmailsFromOutlookRESTAPI(account, accessToken, options)
-	}
-
 	s.logger.Debug("Fetching emails using Outlook Graph API for account %s", account.EmailAddress)
-
-	// Create HTTP client
-	httpClient := s.createOutlookHTTPClient(account.Proxy)
-
-	// Build the request URL with query parameters
-	baseURL := "https://graph.microsoft.com/v1.0/me/messages"
-
-	// Build OData query parameters
-	queryParams := url.Values{}
-
-	// Select fields to retrieve
-	queryParams.Set("$select", "id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,body,hasAttachments,isRead,importance,internetMessageId")
-
-	// Order by received date
-	queryParams.Set("$orderby", "receivedDateTime desc")
-
-	// Limit results
-	if options.Limit > 0 {
-		queryParams.Set("$top", strconv.Itoa(options.Limit))
-	} else {
-		queryParams.Set("$top", "50")
-	}
-
-	// Skip for pagination
-	if options.Offset > 0 {
-		queryParams.Set("$skip", strconv.Itoa(options.Offset))
-	}
-
-	// Build filter for date range
-	var filters []string
-	if options.StartDate != nil {
-		filters = append(filters, fmt.Sprintf("receivedDateTime ge %s", options.StartDate.Format(time.RFC3339)))
-	}
-	if options.EndDate != nil {
-		filters = append(filters, fmt.Sprintf("receivedDateTime le %s", options.EndDate.Format(time.RFC3339)))
-	}
-	if len(filters) > 0 {
-		queryParams.Set("$filter", strings.Join(filters, " and "))
-	}
-
-	// Search query
-	if options.SearchQuery != "" {
-		queryParams.Set("$search", fmt.Sprintf(`"%s"`, options.SearchQuery))
-	}
-
-	requestURL := baseURL + "?" + queryParams.Encode()
-	s.logger.Debug("Outlook Graph API request URL: %s", requestURL)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Prefer", "outlook.body-content-type=\"html\"")
-
-	releaseSlot, err := s.acquireOutlookRequestSlotWithContext(ctx, options.Source, "messages fetch")
+	targets, accessToken, err := s.resolveOutlookGraphFetchTargets(ctx, account, options, accessToken)
 	if err != nil {
 		return nil, err
 	}
-	requestStart := time.Now()
-	resp, err := httpClient.Do(req)
-	recordOutlookHTTPRequest(options.Source, "messages", requestStart, resp, err)
-	if err != nil {
-		releaseSlot()
-		return nil, fmt.Errorf("Graph API request failed: %w", err)
-	}
-	defer releaseSlot()
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		s.logger.Error("Graph API returned status %d: %s", resp.StatusCode, string(body))
-		return nil, fmt.Errorf("Graph API request failed with status %d", resp.StatusCode)
-	}
-
-	// Parse response
-	var messagesResponse struct {
-		Value []OutlookMessage `json:"value"`
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if err := json.Unmarshal(body, &messagesResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	// Convert to internal Email model
 	var emails []models.Email
-	for _, msg := range messagesResponse.Value {
-		email := s.convertOutlookMessage(msg, account.ID, options.Mailbox)
-		emails = append(emails, email)
+	for _, target := range targets {
+		folderEmails, refreshedToken, fetchErr := s.fetchOutlookGraphTarget(ctx, account, options, target, accessToken)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		accessToken = refreshedToken
+		emails = append(emails, folderEmails...)
 	}
 
 	// Update last sync time
@@ -559,6 +476,227 @@ func (s *FetcherService) fetchEmailsFromOutlookGraphAPI(account models.EmailAcco
 
 	s.logger.Info("Successfully fetched %d emails from Outlook Graph API for %s", len(emails), account.EmailAddress)
 	return emails, nil
+}
+
+const outlookGraphMessagePageSize = 100
+
+type outlookGraphFetchTarget struct {
+	FolderID string
+	Mailbox  string
+}
+
+func (s *FetcherService) resolveOutlookGraphFetchTargets(
+	ctx context.Context,
+	account models.EmailAccount,
+	options FetchEmailsOptions,
+	accessToken string,
+) ([]outlookGraphFetchTarget, string, error) {
+	folderNames := append([]string(nil), options.Folders...)
+	if len(folderNames) == 0 {
+		mailbox := strings.TrimSpace(options.Mailbox)
+		if mailbox == "" {
+			mailbox = "INBOX"
+		}
+		folderNames = []string{mailbox}
+	}
+
+	targets := make([]outlookGraphFetchTarget, 0, len(folderNames))
+	customFolders := false
+	seenNames := make(map[string]struct{}, len(folderNames))
+	for _, folderName := range folderNames {
+		folderName = strings.TrimSpace(folderName)
+		if folderName == "" {
+			continue
+		}
+		normalized := strings.ToLower(folderName)
+		if _, exists := seenNames[normalized]; exists {
+			continue
+		}
+		seenNames[normalized] = struct{}{}
+		if folderID := outlookGraphWellKnownFolderID(folderName); folderID != "" {
+			targets = append(targets, outlookGraphFetchTarget{FolderID: folderID, Mailbox: folderName})
+		} else {
+			customFolders = true
+			targets = append(targets, outlookGraphFetchTarget{Mailbox: folderName})
+		}
+	}
+	if len(targets) == 0 {
+		return nil, accessToken, fmt.Errorf("no Outlook folders were selected")
+	}
+	if !customFolders {
+		return targets, accessToken, nil
+	}
+
+	foldersByName, refreshedToken, err := s.loadOutlookGraphFolderIDs(ctx, account, options.Source, accessToken)
+	if err != nil {
+		return nil, accessToken, err
+	}
+	for index := range targets {
+		if targets[index].FolderID != "" {
+			continue
+		}
+		folderID := foldersByName[strings.ToLower(targets[index].Mailbox)]
+		if folderID == "" {
+			return nil, refreshedToken, fmt.Errorf("Outlook folder %q was not found", targets[index].Mailbox)
+		}
+		targets[index].FolderID = folderID
+	}
+	return targets, refreshedToken, nil
+}
+
+func outlookGraphWellKnownFolderID(folderName string) string {
+	normalized := strings.ToLower(strings.TrimSpace(folderName))
+	switch normalized {
+	case "inbox":
+		return "inbox"
+	case "archive":
+		return "archive"
+	case "drafts":
+		return "drafts"
+	case "sent", "sent items", "sentitems":
+		return "sentitems"
+	case "deleted", "deleted items", "deleteditems", "trash":
+		return "deleteditems"
+	case "junk", "junk email", "junkemail", "spam":
+		return "junkemail"
+	case "outbox":
+		return "outbox"
+	}
+	return ""
+}
+
+func (s *FetcherService) loadOutlookGraphFolderIDs(
+	ctx context.Context,
+	account models.EmailAccount,
+	source EmailIngestSource,
+	accessToken string,
+) (map[string]string, string, error) {
+	type graphFolder struct {
+		ID               string `json:"id"`
+		DisplayName      string `json:"displayName"`
+		ChildFolderCount int    `json:"childFolderCount"`
+	}
+	type graphFolderResponse struct {
+		Value    []graphFolder `json:"value"`
+		NextLink string        `json:"@odata.nextLink"`
+	}
+
+	rootQuery := url.Values{}
+	rootQuery.Set("$top", "100")
+	rootQuery.Set("$select", "id,displayName,childFolderCount")
+	rootQuery.Set("includeHiddenFolders", "true")
+	queue := []string{"https://graph.microsoft.com/v1.0/me/mailFolders?" + rootQuery.Encode()}
+	folders := make(map[string]string)
+	seenURLs := make(map[string]struct{})
+	for len(queue) > 0 {
+		requestURL := queue[0]
+		queue = queue[1:]
+		if _, exists := seenURLs[requestURL]; exists {
+			continue
+		}
+		seenURLs[requestURL] = struct{}{}
+		result, err := s.doOutlookGraphGET(ctx, account, source, "mailFolders", requestURL, accessToken, nil)
+		if err != nil {
+			return nil, accessToken, err
+		}
+		accessToken = result.AccessToken
+		if result.StatusCode != http.StatusOK {
+			return nil, accessToken, fmt.Errorf("Graph folder listing failed with status %d: %s", result.StatusCode, string(result.Body))
+		}
+		var response graphFolderResponse
+		if err := json.Unmarshal(result.Body, &response); err != nil {
+			return nil, accessToken, fmt.Errorf("failed to parse Graph folder listing: %w", err)
+		}
+		for _, folder := range response.Value {
+			name := strings.ToLower(strings.TrimSpace(folder.DisplayName))
+			if name != "" {
+				if _, exists := folders[name]; !exists {
+					folders[name] = folder.ID
+				}
+			}
+			if folder.ChildFolderCount > 0 && folder.ID != "" {
+				childQuery := url.Values{}
+				childQuery.Set("$top", "100")
+				childQuery.Set("$select", "id,displayName,childFolderCount")
+				childQuery.Set("includeHiddenFolders", "true")
+				queue = append(queue, fmt.Sprintf("https://graph.microsoft.com/v1.0/me/mailFolders/%s/childFolders?%s", url.PathEscape(folder.ID), childQuery.Encode()))
+			}
+		}
+		if response.NextLink != "" {
+			queue = append(queue, response.NextLink)
+		}
+	}
+	return folders, accessToken, nil
+}
+
+func (s *FetcherService) fetchOutlookGraphTarget(
+	ctx context.Context,
+	account models.EmailAccount,
+	options FetchEmailsOptions,
+	target outlookGraphFetchTarget,
+	accessToken string,
+) ([]models.Email, string, error) {
+	queryParams := url.Values{}
+	queryParams.Set("$select", "id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,body,hasAttachments,isRead,importance,internetMessageId")
+	queryParams.Set("$orderby", "receivedDateTime desc")
+	pageSize := outlookGraphMessagePageSize
+	if options.Limit > 0 && options.Limit < pageSize {
+		pageSize = options.Limit
+	}
+	queryParams.Set("$top", strconv.Itoa(pageSize))
+	if options.Offset > 0 {
+		queryParams.Set("$skip", strconv.Itoa(options.Offset))
+	}
+	var filters []string
+	if options.StartDate != nil {
+		filters = append(filters, fmt.Sprintf("receivedDateTime ge %s", options.StartDate.UTC().Format(time.RFC3339)))
+	}
+	if options.EndDate != nil {
+		filters = append(filters, fmt.Sprintf("receivedDateTime le %s", options.EndDate.UTC().Format(time.RFC3339)))
+	}
+	if len(filters) > 0 {
+		queryParams.Set("$filter", strings.Join(filters, " and "))
+	}
+	if options.SearchQuery != "" {
+		queryParams.Set("$search", fmt.Sprintf(`"%s"`, options.SearchQuery))
+	}
+
+	requestURL := fmt.Sprintf("https://graph.microsoft.com/v1.0/me/mailFolders/%s/messages?%s", url.PathEscape(target.FolderID), queryParams.Encode())
+	headers := map[string]string{"Prefer": "outlook.body-content-type=\"html\""}
+	if options.SearchQuery != "" {
+		headers["ConsistencyLevel"] = "eventual"
+	}
+	seenURLs := make(map[string]struct{})
+	var emails []models.Email
+	for requestURL != "" {
+		if _, exists := seenURLs[requestURL]; exists {
+			return nil, accessToken, fmt.Errorf("Graph pagination loop detected for folder %q", target.Mailbox)
+		}
+		seenURLs[requestURL] = struct{}{}
+		result, err := s.doOutlookGraphGET(ctx, account, options.Source, "messages", requestURL, accessToken, headers)
+		if err != nil {
+			return nil, accessToken, err
+		}
+		accessToken = result.AccessToken
+		if result.StatusCode != http.StatusOK {
+			return nil, accessToken, fmt.Errorf("Graph API request failed with status %d: %s", result.StatusCode, string(result.Body))
+		}
+		var response struct {
+			Value    []OutlookMessage `json:"value"`
+			NextLink string           `json:"@odata.nextLink"`
+		}
+		if err := json.Unmarshal(result.Body, &response); err != nil {
+			return nil, accessToken, fmt.Errorf("failed to parse Graph messages response: %w", err)
+		}
+		for _, message := range response.Value {
+			emails = append(emails, s.convertOutlookMessage(message, account.ID, target.Mailbox))
+			if options.Limit > 0 && len(emails) >= options.Limit {
+				return emails, accessToken, nil
+			}
+		}
+		requestURL = response.NextLink
+	}
+	return emails, accessToken, nil
 }
 
 // OutlookRESTMessage represents a message from Outlook REST API v2.0 (PascalCase)
@@ -923,7 +1061,7 @@ func (s *FetcherService) convertOutlookMessage(msg OutlookMessage, accountID uin
 	return email
 }
 
-// getOutlookMailboxes retrieves Outlook folders using Graph API or Outlook REST API v2.0
+// getOutlookMailboxes retrieves Outlook folders using Microsoft Graph.
 
 func (s *FetcherService) getOutlookMailboxes(account models.EmailAccount) ([]models.Mailbox, error) {
 	s.logger.Debug("Getting Outlook mailboxes using Graph API for account %s", account.EmailAddress)
@@ -934,42 +1072,21 @@ func (s *FetcherService) getOutlookMailboxes(account models.EmailAccount) ([]mod
 		return nil, fmt.Errorf("failed to get access token: %w", err)
 	}
 
-	// Check if token is JWT (Graph API) or not (Outlook REST API)
-	isJWT := strings.Contains(accessToken, ".")
-	if !isJWT {
-		s.logger.Info("Outlook access token is not JWT, falling back to Outlook REST API v2.0 for mailboxes")
-		return s.getOutlookRESTMailboxes(account, accessToken)
-	}
-
-	// Create HTTP client
-	httpClient := s.createOutlookHTTPClient(account.Proxy)
-
-	// Get mail folders
-	req, err := http.NewRequest("GET", "https://graph.microsoft.com/v1.0/me/mailFolders?$top=100", nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	releaseSlot, err := s.acquireOutlookRequestSlot(EmailIngestSourceManualSync, "mailFolders listing")
+	result, err := s.doOutlookGraphGET(
+		context.Background(),
+		account,
+		EmailIngestSourceManualSync,
+		"mailFolders",
+		"https://graph.microsoft.com/v1.0/me/mailFolders?$top=100",
+		accessToken,
+		nil,
+	)
 	if err != nil {
 		return nil, err
 	}
-	requestStart := time.Now()
-	resp, err := httpClient.Do(req)
-	recordOutlookHTTPRequest(EmailIngestSourceManualSync, "mailFolders", requestStart, resp, err)
-	if err != nil {
-		releaseSlot()
-		return nil, fmt.Errorf("Graph API request failed: %w", err)
-	}
-	defer releaseSlot()
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Graph API request failed with status %d: %s", resp.StatusCode, string(body))
+	if result.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Graph API request failed with status %d: %s", result.StatusCode, string(result.Body))
 	}
 
 	// Parse response
@@ -983,12 +1100,7 @@ func (s *FetcherService) getOutlookMailboxes(account models.EmailAccount) ([]mod
 		} `json:"value"`
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	if err := json.Unmarshal(body, &foldersResponse); err != nil {
+	if err := json.Unmarshal(result.Body, &foldersResponse); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 

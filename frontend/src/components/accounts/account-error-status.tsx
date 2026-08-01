@@ -73,6 +73,15 @@ function getErrorStatusInfo(status: string) {
                 severity: 'error',
                 actionText: '检查配置'
             }
+        case 'permission_denied':
+            return {
+                label: '邮件权限不足',
+                description: '当前授权不包含读取邮件所需权限',
+                color: 'text-red-600 bg-red-100 dark:text-red-400 dark:bg-red-900/30',
+                icon: <Shield className="w-4 h-4" />,
+                severity: 'error',
+                actionText: '重新授权'
+            }
         case 'quota_exceeded':
             return {
                 label: '配额超限',

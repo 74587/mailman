@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,9 +24,10 @@ type AccountRecoveryService struct {
 	logger           *utils.Logger
 
 	// 控制和生命周期
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	checkMu sync.Mutex
 
 	// 配置
 	checkInterval    time.Duration // 检查间隔，默认30分钟
@@ -106,6 +108,12 @@ func (s *AccountRecoveryService) recoveryRoutine() {
 
 // performRecoveryCheck 执行恢复检查
 func (s *AccountRecoveryService) performRecoveryCheck() {
+	if !s.checkMu.TryLock() {
+		s.logger.Debug("Skipping recovery check because another recovery batch is still running")
+		return
+	}
+	defer s.checkMu.Unlock()
+
 	s.logger.Info("Starting account recovery check")
 	start := time.Now()
 
@@ -129,8 +137,15 @@ func (s *AccountRecoveryService) performRecoveryCheck() {
 			successCount++
 		}
 
-		// 避免过于频繁的API调用
-		time.Sleep(2 * time.Second)
+		// Keep Microsoft token traffic paced and allow shutdown during a large
+		// production recovery batch.
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-s.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
 
 	duration := time.Since(start)
@@ -140,9 +155,13 @@ func (s *AccountRecoveryService) performRecoveryCheck() {
 
 // getAutoDisabledConfigs 获取被自动禁用的同步配置
 func (s *AccountRecoveryService) getAutoDisabledConfigs() ([]models.EmailAccountSyncConfig, error) {
-	// 获取所有被自动禁用的配置
-	// 条件：AutoDisabled = true 且 最后错误时间在合理范围内（避免检查太旧的错误）
-	configs, err := s.syncConfigRepo.GetAutoDisabledConfigs(time.Now().Add(-24 * time.Hour))
+	// Process a bounded batch on every pass. Old auto-disabled rows remain
+	// eligible, which lets deployments repair legacy accounts gradually.
+	configs, err := s.syncConfigRepo.GetRecoverableAutoDisabledConfigs(
+		time.Now(),
+		s.recoveryAttempts,
+		250,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query auto-disabled configs: %w", err)
 	}
@@ -179,15 +198,30 @@ func (s *AccountRecoveryService) shouldAttemptRecovery(config *models.EmailAccou
 		}
 	}
 
-	// 只尝试恢复OAuth相关的错误
+	// Only OAuth2 accounts can be recovered by refreshing a token.
 	account, err := s.emailAccountRepo.GetByID(config.AccountID)
 	if err != nil {
 		return false
 	}
+	if account.AuthType != models.AuthTypeOAuth2 {
+		return false
+	}
 
 	errorStatus := models.AccountErrorStatus(account.ErrorStatus)
-	return errorStatus == models.ErrorStatusOAuthExpired ||
-		errorStatus == models.ErrorStatusAuthRevoked
+	if errorStatus == models.ErrorStatusOAuthExpired || errorStatus == models.ErrorStatusAuthRevoked {
+		return true
+	}
+
+	// Compatibility path for rows classified by older versions, where a
+	// generic OAuth/401 failure was stored as server_error.
+	if errorStatus == models.ErrorStatusServerError {
+		message := strings.ToLower(account.ErrorMessage)
+		return strings.Contains(message, "oauth") ||
+			strings.Contains(message, "invalid_grant") ||
+			strings.Contains(message, "aadsts") ||
+			strings.Contains(message, "401")
+	}
+	return false
 }
 
 // attemptAccountRecovery 尝试账户恢复
@@ -250,10 +284,21 @@ func (s *AccountRecoveryService) attemptTokenRefresh(account *models.EmailAccoun
 		return false
 	}
 
-	// 获取OAuth2配置
+	// Resolve provider and client credentials. Per-account client IDs are
+	// treated as public clients unless that account also stores its own secret.
 	oauth2GlobalConfigRepo := repository.NewOAuth2GlobalConfigRepository(s.emailAccountRepo.GetDB())
 	var oauth2Config *models.OAuth2GlobalConfig
 	var err error
+	clientID := strings.TrimSpace(account.CustomSettings["client_id"])
+	clientSecret := strings.TrimSpace(account.CustomSettings["client_secret"])
+	providerType := models.ProviderTypeGmail
+	if account.MailProvider != nil && account.MailProvider.Type != "" {
+		providerType = account.MailProvider.Type
+	} else if strings.Contains(account.EmailAddress, "@outlook.") ||
+		strings.Contains(account.EmailAddress, "@hotmail.") ||
+		strings.Contains(account.EmailAddress, "@live.") {
+		providerType = models.ProviderTypeOutlook
+	}
 
 	if account.OAuth2ProviderID != nil && *account.OAuth2ProviderID > 0 {
 		oauth2Config, err = oauth2GlobalConfigRepo.GetByID(*account.OAuth2ProviderID)
@@ -262,15 +307,7 @@ func (s *AccountRecoveryService) attemptTokenRefresh(account *models.EmailAccoun
 		}
 	}
 
-	if oauth2Config == nil {
-		// 根据邮箱域名判断提供商类型
-		providerType := models.ProviderTypeGmail // 默认Gmail
-		if strings.Contains(account.EmailAddress, "@outlook.") ||
-			strings.Contains(account.EmailAddress, "@hotmail.") ||
-			strings.Contains(account.EmailAddress, "@live.") {
-			providerType = models.ProviderTypeOutlook
-		}
-
+	if oauth2Config == nil && clientID == "" {
 		oauth2Config, err = oauth2GlobalConfigRepo.GetByProviderType(providerType)
 		if err != nil {
 			s.logger.Error("Failed to get OAuth2 config: %v", err)
@@ -278,15 +315,25 @@ func (s *AccountRecoveryService) attemptTokenRefresh(account *models.EmailAccoun
 		}
 	}
 
+	if clientID == "" && oauth2Config != nil {
+		clientID = oauth2Config.ClientID
+		clientSecret = oauth2Config.ClientSecret
+	}
+	if clientID == "" {
+		s.logger.Debug("Account %d has no OAuth2 client ID", account.ID)
+		return false
+	}
+
 	// 尝试刷新token
 	s.logger.Debug("Attempting to refresh token for account %d", account.ID)
-	newAccessToken, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxy(
-		string(oauth2Config.ProviderType),
-		oauth2Config.ClientID,
-		oauth2Config.ClientSecret,
+	refreshResult, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxyResult(
+		string(providerType),
+		clientID,
+		clientSecret,
 		refreshToken,
 		account.ID,
 		account.Proxy,
+		OAuth2RefreshOptions{},
 	)
 
 	if err != nil {
@@ -294,22 +341,11 @@ func (s *AccountRecoveryService) attemptTokenRefresh(account *models.EmailAccoun
 		return false
 	}
 
-	// 更新账户中的access token
-	newCustomSettings := make(models.JSONMap)
-	if account.CustomSettings != nil {
-		for k, v := range account.CustomSettings {
-			newCustomSettings[k] = v
-		}
-	}
-	newCustomSettings["access_token"] = newAccessToken
-	newCustomSettings["expires_at"] = fmt.Sprintf("%d", time.Now().Add(time.Hour).Unix())
-	account.CustomSettings = newCustomSettings
-
-	// 更新账户到数据库
-	if err := s.emailAccountRepo.Update(account); err != nil {
-		s.logger.Error("Failed to update account with new token: %v", err)
-		return false
-	}
+	// Keep the in-memory account consistent because enableSyncConfig persists
+	// its status immediately after this method returns.
+	account.CustomSettings["access_token"] = refreshResult.AccessToken
+	account.CustomSettings["refresh_token"] = refreshResult.RefreshToken
+	account.CustomSettings["expires_at"] = strconv.FormatInt(refreshResult.ExpiresAt.Unix(), 10)
 
 	s.logger.Info("Successfully refreshed token for account %d", account.ID)
 	return true

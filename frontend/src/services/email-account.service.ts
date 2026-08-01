@@ -54,6 +54,17 @@ export interface RepairAccountSyncResponse {
     mailbox_result?: MailboxSyncResult;
 }
 
+export interface DetectOutlookProtocolResponse {
+    status: 'success' | 'failed';
+    account_id: number;
+    email_address?: string;
+    protocol?: 'graph' | 'imap';
+    previous_protocol?: string;
+    changed: boolean;
+    method?: 'exchange_token' | 'graph_mail_probe' | 'imap_xoauth2_probe';
+    message?: string;
+}
+
 export interface OAuth2AccountOnboardingRequest extends CreateEmailAccountRequest {
     verify?: boolean;
     run_initial_sync?: boolean;
@@ -585,13 +596,24 @@ export class EmailAccountService {
     }
 
     /**
-     * 修复 Gmail 同步状态：清理失效游标并重新同步最近一个月。
+     * 修复 Gmail 或 Outlook 同步状态：清理失效游标并重新同步最近 30 天。
      */
     async repairAccountSync(id: number): Promise<RepairAccountSyncResponse> {
         return apiClient.post<RepairAccountSyncResponse>(
             `${this.basePath}/${id}/repair-sync`,
             {},
             { timeout: 300000 }
+        );
+    }
+
+    /**
+     * Detect whether an Outlook OAuth2 account can use Graph or IMAP, then
+     * persist the capability-backed protocol choice.
+     */
+    async detectOutlookProtocol(id: number): Promise<DetectOutlookProtocolResponse> {
+        return apiClient.post<DetectOutlookProtocolResponse>(
+            `${this.basePath}/${id}/detect-outlook-protocol`,
+            {}
         );
     }
 

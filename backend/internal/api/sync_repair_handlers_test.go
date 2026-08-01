@@ -83,3 +83,52 @@ func TestRepairAccountSyncRejectsOtherOrganization(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 }
+
+func TestSupportsAccountSyncRepair(t *testing.T) {
+	tests := []struct {
+		name    string
+		account *models.EmailAccount
+		want    bool
+	}{
+		{
+			name: "Gmail OAuth2",
+			account: &models.EmailAccount{
+				AuthType:     models.AuthTypeOAuth2,
+				MailProvider: &models.MailProvider{Type: models.ProviderTypeGmail},
+			},
+			want: true,
+		},
+		{
+			name: "Outlook OAuth2",
+			account: &models.EmailAccount{
+				AuthType:     models.AuthTypeOAuth2,
+				MailProvider: &models.MailProvider{Type: models.ProviderTypeOutlook},
+			},
+			want: true,
+		},
+		{
+			name: "Gmail password",
+			account: &models.EmailAccount{
+				AuthType:     models.AuthTypePassword,
+				MailProvider: &models.MailProvider{Type: models.ProviderTypeGmail},
+			},
+		},
+		{
+			name: "custom OAuth2",
+			account: &models.EmailAccount{
+				AuthType:     models.AuthTypeOAuth2,
+				MailProvider: &models.MailProvider{Type: models.ProviderTypeCustom},
+			},
+		},
+		{name: "missing provider", account: &models.EmailAccount{AuthType: models.AuthTypeOAuth2}},
+		{name: "missing account"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := supportsAccountSyncRepair(tt.account); got != tt.want {
+				t.Fatalf("supportsAccountSyncRepair() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

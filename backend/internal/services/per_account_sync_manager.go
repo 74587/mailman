@@ -37,6 +37,10 @@ type PerAccountSyncManager struct {
 	// 账户同步器映射
 	accountSyncers map[uint]*AccountSyncer
 	mu             sync.RWMutex
+	// Stable per-account locks survive syncer replacement and serialize normal
+	// sync, pickup, repair and protocol detection without blocking the manager's
+	// global map lock during network I/O.
+	accountOperationLocks sync.Map // map[uint]*sync.Mutex
 
 	// 取件轮询临时同步覆盖（纯内存）
 	pickupOverrides   map[uint]*PickupOverride
@@ -96,7 +100,6 @@ type AccountSyncer struct {
 	// 状态
 	isRunning bool
 	mu        sync.RWMutex
-	syncMu    sync.Mutex
 
 	// 统计
 	syncCount     int64
@@ -727,34 +730,102 @@ func (m *PerAccountSyncManager) RunAccountExclusiveWithContext(ctx context.Conte
 		return err
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// Keep the map stable for the whole maintenance window. Otherwise a config
-	// refresh could remove this syncer and start a replacement while repair is
-	// still holding only the old syncer's mutex.
-	syncer := m.accountSyncers[accountID]
-	if syncer == nil {
-		return operation()
-	}
-
+	operationLock := m.accountOperationLock(accountID)
 	retry := time.NewTicker(25 * time.Millisecond)
 	defer retry.Stop()
-	for !syncer.syncMu.TryLock() {
+	for !operationLock.TryLock() {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-retry.C:
 		}
 	}
-	defer syncer.syncMu.Unlock()
+	defer operationLock.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return operation()
+	operationErr := operation()
+	m.mu.RLock()
+	syncer := m.accountSyncers[accountID]
+	m.mu.RUnlock()
+	if syncer == nil {
+		return operationErr
+	}
+	reloadCtx, cancelReload := context.WithTimeout(context.Background(), syncStateUpdateTimeout)
+	defer cancelReload()
+	if reloadErr := m.reloadAccountSyncerCheckpointState(reloadCtx, accountID, syncer); reloadErr != nil {
+		reloadErr = fmt.Errorf("failed to reload account sync state after maintenance: %w", reloadErr)
+		if operationErr != nil {
+			return errors.Join(operationErr, reloadErr)
+		}
+		return reloadErr
+	}
+	return operationErr
 }
 
-// AccountSyncerStatus 账户同步器状态
+func (m *PerAccountSyncManager) accountOperationLock(accountID uint) *sync.Mutex {
+	lock, _ := m.accountOperationLocks.LoadOrStore(accountID, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+// reloadAccountSyncerCheckpointState replaces cached runtime checkpoints after
+// an exclusive maintenance operation changes them in the database.
+func (m *PerAccountSyncManager) reloadAccountSyncerCheckpointState(ctx context.Context, accountID uint, syncer *AccountSyncer) error {
+	if m.syncConfigRepo == nil || syncer == nil {
+		return nil
+	}
+
+	var lastSyncTime, lastSyncEndTime *time.Time
+	lastHistoryID := ""
+	lastMessageID := ""
+	lastSyncError := ""
+	syncStatus := models.SyncStatusIdle
+
+	config, err := m.syncConfigRepo.GetByAccountIDWithContext(ctx, accountID)
+	if err == nil {
+		lastSyncTime = config.LastSyncTime
+		lastSyncEndTime = config.LastSyncEndTime
+		lastHistoryID = config.LastHistoryID
+		lastMessageID = config.LastSyncMessageID
+		lastSyncError = config.LastSyncError
+		syncStatus = config.SyncStatus
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	genericCursor, err := m.syncConfigRepo.GetAccountSyncCursorWithContext(ctx, accountID, models.SyncCursorProviderGeneric)
+	if err == nil {
+		lastSyncTime = genericCursor.LastSyncTime
+		lastSyncEndTime = genericCursor.LastSyncEndTime
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	gmailCursor, err := m.syncConfigRepo.GetAccountSyncCursorWithContext(ctx, accountID, models.SyncCursorProviderGmail)
+	if err == nil {
+		lastHistoryID = gmailCursor.LastHistoryID
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	syncer.mu.Lock()
+	syncer.Config.LastSyncTime = lastSyncTime
+	syncer.Config.LastSyncEndTime = lastSyncEndTime
+	syncer.Config.LastHistoryID = lastHistoryID
+	syncer.Config.LastSyncMessageID = lastMessageID
+	syncer.Config.LastSyncError = lastSyncError
+	syncer.Config.SyncStatus = syncStatus
+	if lastSyncTime != nil {
+		syncer.LastSyncTime = *lastSyncTime
+	} else {
+		syncer.LastSyncTime = time.Time{}
+	}
+	syncer.mu.Unlock()
+
+	return nil
+}
+
+// AccountSyncerStatus describes one account syncer's runtime state.
 type AccountSyncerStatus struct {
 	AccountID     uint      `json:"account_id"`
 	AccountEmail  string    `json:"account_email"`
@@ -816,8 +887,9 @@ func (as *AccountSyncer) performSync() {
 	as.logger.Debug("Preparing to perform sync")
 	start := time.Now()
 
-	as.syncMu.Lock()
-	defer as.syncMu.Unlock()
+	operationLock := as.manager.accountOperationLock(as.AccountID)
+	operationLock.Lock()
+	defer operationLock.Unlock()
 
 	as.mu.RLock()
 	recentSync := !as.LastSyncTime.IsZero() && time.Since(as.LastSyncTime) < 2*time.Second
@@ -1384,8 +1456,9 @@ func (as *AccountSyncer) SyncNowWithContext(ctx context.Context, source EmailIng
 		}, err
 	}
 
+	operationLock := as.manager.accountOperationLock(as.AccountID)
 	if source == EmailIngestSourcePickup {
-		if !as.syncMu.TryLock() {
+		if !operationLock.TryLock() {
 			err := fmt.Errorf("sync already running for account %d", as.AccountID)
 			as.logger.Debug(err.Error())
 			return &SyncResult{
@@ -1394,9 +1467,9 @@ func (as *AccountSyncer) SyncNowWithContext(ctx context.Context, source EmailIng
 			}, err
 		}
 	} else {
-		as.syncMu.Lock()
+		operationLock.Lock()
 	}
-	defer as.syncMu.Unlock()
+	defer operationLock.Unlock()
 
 	slotTimeout := 5 * time.Second
 	if source == EmailIngestSourcePickup {
@@ -1533,27 +1606,62 @@ func (as *AccountSyncer) handleSyncErrorWithContext(ctx context.Context, err err
 func (as *AccountSyncer) analyzeErrorType(errorMsg string) models.AccountErrorStatus {
 	errorMsg = strings.ToLower(errorMsg)
 
-	// OAuth2认证相关错误
-	if strings.Contains(errorMsg, "401") ||
-		strings.Contains(errorMsg, "invalid credentials") ||
-		strings.Contains(errorMsg, "unauthorized") {
-		if strings.Contains(errorMsg, "token") {
-			return models.ErrorStatusOAuthExpired
-		}
+	// Provider throttling and temporary Entra failures are not credential
+	// failures. Classify these before generic OAuth markers.
+	if strings.Contains(errorMsg, "temporarily_unavailable") ||
+		strings.Contains(errorMsg, "aadsts90055") ||
+		strings.Contains(errorMsg, "excessive request rate") ||
+		strings.Contains(errorMsg, "too many requests") ||
+		strings.Contains(errorMsg, "throttl") {
+		return models.ErrorStatusServerError
+	}
+
+	// Only explicit revocation/reauthentication signals are irreversible enough
+	// to disable immediately.
+	if strings.Contains(errorMsg, "authorization has been revoked") ||
+		strings.Contains(errorMsg, "authorization was revoked") ||
+		strings.Contains(errorMsg, "consent has been revoked") ||
+		strings.Contains(errorMsg, "token has been revoked") ||
+		strings.Contains(errorMsg, "aadsts50173") {
 		return models.ErrorStatusAuthRevoked
 	}
 
-	// API配额或权限问题
-	if strings.Contains(errorMsg, "403") ||
-		strings.Contains(errorMsg, "quota") ||
-		strings.Contains(errorMsg, "rate limit") {
-		return models.ErrorStatusQuotaExceeded
+	// A bare 401 is usually an expired access token. The request path now
+	// refreshes and retries once, so it must never be treated as proof of revoked
+	// consent by itself.
+	if strings.Contains(errorMsg, "401") ||
+		strings.Contains(errorMsg, "invalid_grant") ||
+		strings.Contains(errorMsg, "invalid credentials") ||
+		strings.Contains(errorMsg, "unauthorized") ||
+		strings.Contains(errorMsg, "oauth2 authentication failed") ||
+		strings.Contains(errorMsg, "token expired") ||
+		strings.Contains(errorMsg, "expired token") {
+		return models.ErrorStatusOAuthExpired
 	}
 
 	// API服务禁用
 	if strings.Contains(errorMsg, "api disabled") ||
 		strings.Contains(errorMsg, "service disabled") {
 		return models.ErrorStatusAPIDisabled
+	}
+
+	// Explicit provider permission failures require new consent. Keep these
+	// separate from quota-related 403 responses, which recover automatically.
+	if strings.Contains(errorMsg, "erroraccessdenied") ||
+		strings.Contains(errorMsg, "authorization_requestdenied") ||
+		strings.Contains(errorMsg, "insufficient privileges") ||
+		strings.Contains(errorMsg, "insufficient_scope") ||
+		strings.Contains(errorMsg, "invalid_scope") ||
+		strings.Contains(errorMsg, "aadsts65001") ||
+		strings.Contains(errorMsg, "consent required") {
+		return models.ErrorStatusPermissionDenied
+	}
+
+	// Remaining 403s are conservatively treated as quota/transient failures.
+	if strings.Contains(errorMsg, "403") ||
+		strings.Contains(errorMsg, "quota") ||
+		strings.Contains(errorMsg, "rate limit") {
+		return models.ErrorStatusQuotaExceeded
 	}
 
 	// 网络相关错误
@@ -1588,25 +1696,22 @@ func (as *AccountSyncer) shouldAutoDisable(errorStatus models.AccountErrorStatus
 
 	case models.ErrorStatusAPIDisabled:
 		// API禁用：立即禁用
-		return true, "Gmail API服务已被禁用，请检查配置"
+		return true, "邮件 API 服务已被禁用，请检查提供商配置"
+
+	case models.ErrorStatusPermissionDenied:
+		return true, "账户缺少邮件读取权限，需要重新授权"
 
 	case models.ErrorStatusQuotaExceeded:
-		// 配额超限：5次错误后禁用
-		if consecutiveErrors >= 5 {
-			return true, "API配额已超限，请检查使用情况"
-		}
+		// Quotas and throttling recover with time; do not disable the account.
+		return false, ""
 
 	case models.ErrorStatusNetworkError:
-		// 网络错误：10次错误后禁用
-		if consecutiveErrors >= 10 {
-			return true, "网络连接持续失败，请检查网络状况"
-		}
+		// Network failures are environmental, not account failures.
+		return false, ""
 
 	case models.ErrorStatusServerError:
-		// 服务器错误：15次错误后禁用
-		if consecutiveErrors >= 15 {
-			return true, "邮件服务器持续异常，请联系服务提供商"
-		}
+		// Provider 5xx/temporary OAuth failures must remain retryable.
+		return false, ""
 	}
 
 	return false, ""

@@ -21,7 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func (s *FetcherService) verifyGmailOAuth2Connection(account models.EmailAccount) error {
+func (s *FetcherService) verifyGmailOAuth2Connection(account *models.EmailAccount) error {
 	s.logger.Info("Verifying Gmail OAuth2 connection for %s", account.EmailAddress)
 
 	// Get OAuth2 configuration
@@ -76,13 +76,14 @@ func (s *FetcherService) verifyGmailOAuth2Connection(account models.EmailAccount
 
 	// Try to refresh token first to ensure it's valid - use cached method for better reliability
 	s.logger.Debug("Refreshing OAuth2 access token for Gmail verification")
-	newAccessToken, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxy(
+	refreshResult, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxyResult(
 		"gmail",
 		oauth2Config.ClientID,
 		oauth2Config.ClientSecret,
 		refreshToken,
 		account.ID,
 		account.Proxy, // Pass proxy settings if available
+		OAuth2RefreshOptions{},
 	)
 	if err != nil {
 		s.logger.Error("Failed to refresh token: %v", err)
@@ -90,7 +91,10 @@ func (s *FetcherService) verifyGmailOAuth2Connection(account models.EmailAccount
 	}
 
 	// Use the refreshed token
-	accessToken = newAccessToken
+	accessToken = refreshResult.AccessToken
+	account.CustomSettings["access_token"] = refreshResult.AccessToken
+	account.CustomSettings["refresh_token"] = refreshResult.RefreshToken
+	account.CustomSettings["expires_at"] = strconv.FormatInt(refreshResult.ExpiresAt.Unix(), 10)
 	s.logger.Debug("Token refreshed successfully")
 
 	// Test connection by making a direct HTTP request to Gmail API
@@ -382,40 +386,24 @@ func (s *FetcherService) createGmailService(ctx context.Context, account models.
 		s.logger.Debug("Access token is expired or about to expire, refreshing token for Gmail API")
 
 		// 使用带缓存和并发控制的token刷新方法，并传递代理配置
-		newAccessToken, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxy(
+		refreshResult, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxyResult(
 			string(models.ProviderTypeGmail),
 			oauth2Config.ClientID,
 			oauth2Config.ClientSecret,
 			refreshToken,
 			account.ID,
 			account.Proxy, // 传递代理配置
+			OAuth2RefreshOptions{},
 		)
 		if err != nil {
 			s.logger.Error("Failed to refresh access token for Gmail API: %v", err)
 			return nil, fmt.Errorf("failed to refresh access token: %w", err)
 		}
 
-		// Update access token in account - 并发安全更新
-		newCustomSettings := make(models.JSONMap)
-		if account.CustomSettings != nil {
-			for k, v := range account.CustomSettings {
-				newCustomSettings[k] = v
-			}
-		}
-		newCustomSettings["access_token"] = newAccessToken
-		newCustomSettings["expires_at"] = fmt.Sprintf("%d", time.Now().Add(time.Hour).Unix())
-		account.CustomSettings = newCustomSettings
-
-		// Update the account with new access token
-		if err := s.accountRepo.Update(&account); err != nil {
-			s.logger.Warn("Failed to update access token in database: %v", err)
-		} else {
-			s.logger.Debug("Successfully updated access token in database")
-		}
-
 		// Use new access token
-		accessToken = newAccessToken
-		tokenExpiry = time.Now().Add(time.Hour)
+		accessToken = refreshResult.AccessToken
+		refreshToken = refreshResult.RefreshToken
+		tokenExpiry = refreshResult.ExpiresAt
 	}
 
 	// Create OAuth2 config

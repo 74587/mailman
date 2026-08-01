@@ -67,13 +67,14 @@ const (
 type AccountErrorStatus string
 
 const (
-	ErrorStatusNormal        AccountErrorStatus = "normal"         // 正常状态
-	ErrorStatusOAuthExpired  AccountErrorStatus = "oauth_expired"  // OAuth Token过期
-	ErrorStatusAuthRevoked   AccountErrorStatus = "auth_revoked"   // 授权被撤销
-	ErrorStatusAPIDisabled   AccountErrorStatus = "api_disabled"   // API被禁用
-	ErrorStatusNetworkError  AccountErrorStatus = "network_error"  // 网络错误
-	ErrorStatusQuotaExceeded AccountErrorStatus = "quota_exceeded" // 配额超限
-	ErrorStatusServerError   AccountErrorStatus = "server_error"   // 服务器错误
+	ErrorStatusNormal           AccountErrorStatus = "normal"            // 正常状态
+	ErrorStatusOAuthExpired     AccountErrorStatus = "oauth_expired"     // OAuth Token过期
+	ErrorStatusAuthRevoked      AccountErrorStatus = "auth_revoked"      // 授权被撤销
+	ErrorStatusAPIDisabled      AccountErrorStatus = "api_disabled"      // API被禁用
+	ErrorStatusNetworkError     AccountErrorStatus = "network_error"     // 网络错误
+	ErrorStatusQuotaExceeded    AccountErrorStatus = "quota_exceeded"    // 配额超限
+	ErrorStatusPermissionDenied AccountErrorStatus = "permission_denied" // 缺少邮件访问权限
+	ErrorStatusServerError      AccountErrorStatus = "server_error"      // 服务器错误
 )
 
 // MailProvider stores the configuration for a specific email provider.

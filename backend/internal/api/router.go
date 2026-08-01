@@ -102,6 +102,7 @@ func NewRouter(handler *APIHandler, openAIHandler *OpenAIHandler, wsHandler *Web
 	apiRouter.HandleFunc("/accounts/{id}/last-sync-record", handler.GetLastSyncRecordHandler).Methods("GET")
 	apiRouter.HandleFunc("/accounts/{id}/sync-records", handler.DeleteIncrementalSyncRecordHandler).Methods("DELETE")
 	apiRouter.HandleFunc("/accounts/{id}/repair-sync", handler.RepairAccountSyncHandler).Methods("POST")
+	apiRouter.HandleFunc("/accounts/{id}/detect-outlook-protocol", handler.DetectOutlookProtocolHandler).Methods("POST")
 
 	// General email operations
 	apiRouter.HandleFunc("/emails/extract", handler.ExtractEmailsHandler).Methods("POST")                      // Global extract without account ID

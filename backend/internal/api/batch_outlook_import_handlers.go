@@ -777,6 +777,10 @@ func (h *APIHandler) createOrUpdateBatchOutlookAccount(input BatchOutlookImportA
 	}
 	settings["client_id"] = clientID
 	settings["refresh_token"] = refreshToken
+	// Batch Outlook credentials are authorized for Exchange IMAP/POP/SMTP
+	// scopes. Persist the protocol explicitly so they are never routed to the
+	// retired Outlook REST API or to Graph without Mail.Read consent.
+	settings["connection_protocol"] = "imap"
 	if accessToken := strings.TrimSpace(input.AccessToken); accessToken != "" {
 		settings["access_token"] = accessToken
 	}

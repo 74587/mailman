@@ -33,6 +33,7 @@ import {
     ArrowDown,
     RotateCcw,
     Wrench,
+    ScanSearch,
 } from 'lucide-react'
 import { DataTable, createSelectColumn } from '@/components/ui/data-table'
 import { Button } from '@/components/ui/button'
@@ -70,6 +71,7 @@ interface AccountsDataTableProps {
     onPickupMail: (account: EmailAccount) => void
     onSync: (account: EmailAccount) => void
     onRepairSync?: (account: EmailAccount) => void
+    onDetectOutlookProtocol?: (account: EmailAccount) => void
     onVerify: (account: EmailAccount) => void
     onEdit: (account: EmailAccount) => void
     onDelete: (id: number) => void
@@ -79,6 +81,7 @@ interface AccountsDataTableProps {
     // 状态
     syncingId?: number
     repairingId?: number
+    detectingProtocolId?: number
     verifyingId?: number
     syncStatuses?: Map<number, AccountSyncStatus>
     // 排序
@@ -106,6 +109,8 @@ const getErrorStatusDisplay = (status?: string) => {
             return { icon: XCircle, color: 'text-red-500', bgColor: 'bg-red-50 dark:bg-red-900/20', label: '授权撤销' }
         case 'api_disabled':
             return { icon: AlertCircle, color: 'text-orange-500', bgColor: 'bg-orange-50 dark:bg-orange-900/20', label: 'API禁用' }
+        case 'permission_denied':
+            return { icon: XCircle, color: 'text-red-500', bgColor: 'bg-red-50 dark:bg-red-900/20', label: '权限不足' }
         case 'network_error':
             return { icon: AlertCircle, color: 'text-gray-500', bgColor: 'bg-gray-50 dark:bg-gray-700', label: '网络错误' }
         default:
@@ -348,6 +353,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
     onPickupMail,
     onSync,
     onRepairSync,
+    onDetectOutlookProtocol,
     onVerify,
     onEdit,
     onDelete,
@@ -356,6 +362,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
     onAccountChange,
     syncingId,
     repairingId,
+    detectingProtocolId,
     verifyingId,
     syncStatuses,
     sorting,
@@ -606,7 +613,10 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                 accessorKey: 'mailProvider.name',
                 header: '提供商',
                 size: 90,
-                enableSorting: true,
+                // The paginated account API does not sort by the joined
+                // provider name. Keep this header non-sortable instead of
+                // silently falling back to created_at on the backend.
+                enableSorting: false,
                 cell: ({ row }) => {
                     const providerName = row.original.mailProvider?.name || row.original.mailProvider?.type || ''
                     const providerType = row.original.mailProvider?.type || providerName
@@ -934,8 +944,13 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                     const isSyncing = syncingId === account.id
                     const isRepairing = repairingId === account.id
                     const isAnyRepairing = repairingId !== undefined
+                    const isDetectingProtocol = detectingProtocolId === account.id
+                    const isAnyDetectingProtocol = detectingProtocolId !== undefined
                     const isVerifying = verifyingId === account.id
-                    const canRepairSync = account.authType === 'oauth2' && account.mailProvider?.type === 'gmail'
+                    const providerType = account.mailProvider?.type
+                    const canRepairSync = account.authType === 'oauth2' &&
+                        (providerType === 'gmail' || providerType === 'outlook')
+                    const canDetectOutlookProtocol = account.authType === 'oauth2' && providerType === 'outlook'
 
                     const actions: ActionItem[] = [
                         {
@@ -950,7 +965,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Download,
                             label: '取件',
                             onClick: () => onPickupMail(account),
-                            disabled: isRepairing,
+                            disabled: isRepairing || isDetectingProtocol,
                             color: 'success',
                         },
                         {
@@ -958,7 +973,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: RefreshCw,
                             label: '同步',
                             onClick: () => onSync(account),
-                            disabled: isSyncing || isRepairing,
+                            disabled: isSyncing || isRepairing || isDetectingProtocol,
                             loading: isSyncing,
                         },
                         {
@@ -966,15 +981,24 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Link2,
                             label: '验证连接',
                             onClick: () => onVerify(account),
-                            disabled: isVerifying || isRepairing,
+                            disabled: isVerifying || isRepairing || isDetectingProtocol,
                             loading: isVerifying,
                         },
+                        ...(canDetectOutlookProtocol && onDetectOutlookProtocol ? [{
+                            id: 'detect-outlook-protocol',
+                            icon: ScanSearch,
+                            label: '识别协议',
+                            onClick: () => onDetectOutlookProtocol(account),
+                            disabled: isAnyDetectingProtocol || isRepairing || isSyncing || isVerifying,
+                            loading: isDetectingProtocol,
+                            color: 'info' as const,
+                        }] : []),
                         ...(account.authType === 'oauth2' && onOAuth2Config ? [{
                             id: 'oauth2',
                             icon: Key,
                             label: 'OAuth2配置',
                             onClick: () => onOAuth2Config(account),
-                            disabled: isRepairing,
+                            disabled: isRepairing || isDetectingProtocol,
                             color: 'info' as const,
                         }] : []),
                         ...(canRepairSync && onRepairSync ? [{
@@ -982,7 +1006,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Wrench,
                             label: '修复同步',
                             onClick: () => onRepairSync(account),
-                            disabled: isAnyRepairing || isSyncing,
+                            disabled: isAnyRepairing || isSyncing || isDetectingProtocol,
                             loading: isRepairing,
                             color: 'warning' as const,
                             separator: true,
@@ -992,7 +1016,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Edit2,
                             label: '编辑',
                             onClick: () => onEdit(account),
-                            disabled: isRepairing,
+                            disabled: isRepairing || isDetectingProtocol,
                             separator: true,
                         },
                         {
@@ -1000,7 +1024,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             icon: Trash2,
                             label: '删除',
                             onClick: () => onDelete(account.id),
-                            disabled: isRepairing,
+                            disabled: isRepairing || isDetectingProtocol,
                             color: 'danger',
                         },
                     ]
@@ -1009,7 +1033,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                 },
             },
         ],
-        [syncingId, repairingId, verifyingId, syncStatuses, openNoteDialog, openConfigEditor, onViewEmails, onPickupMail, onSync, onRepairSync, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
+        [syncingId, repairingId, detectingProtocolId, verifyingId, syncStatuses, openNoteDialog, openConfigEditor, onViewEmails, onPickupMail, onSync, onRepairSync, onDetectOutlookProtocol, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
     )
 
     const columns = React.useMemo<ColumnDef<EmailAccount, unknown>[]>(() => {

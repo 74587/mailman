@@ -1,10 +1,14 @@
 package services
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
+	"strings"
+	"time"
 
 	"mailman/internal/models"
 	"mailman/internal/repository"
@@ -14,15 +18,27 @@ import (
 )
 
 func (s *FetcherService) getImapFolders(account models.EmailAccount) ([]string, error) {
+	return s.getImapFoldersWithContext(context.Background(), account)
+}
+
+func (s *FetcherService) getImapFoldersWithContext(ctx context.Context, account models.EmailAccount) ([]string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.logger.Debug("Getting IMAP folders for %s using real IMAP connection", account.EmailAddress)
 
 	// 使用真正的IMAP连接获取文件夹列表
-	c, err := s.connectAndAuthenticateIMAP(account)
+	c, err := s.connectAndAuthenticateIMAPWithContext(ctx, account)
 	if err != nil {
 		s.logger.Error("Failed to connect to IMAP server: %v", err)
 		return nil, fmt.Errorf("failed to connect to IMAP server: %w", err)
 	}
 	defer c.Logout()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = c.Terminate() })
+	defer stopCancellation()
 
 	// 使用LIST命令获取所有文件夹
 	mailboxes := make(chan *imap.MailboxInfo, 10)
@@ -49,6 +65,16 @@ func (s *FetcherService) getImapFolders(account models.EmailAccount) ([]string, 
 // connectAndAuthenticateIMAP connects to IMAP server and authenticates
 
 func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount) (*client.Client, error) {
+	return s.connectAndAuthenticateIMAPWithContext(context.Background(), account)
+}
+
+func (s *FetcherService) connectAndAuthenticateIMAPWithContext(ctx context.Context, account models.EmailAccount) (*client.Client, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var c *client.Client
 	var err error
 
@@ -77,7 +103,7 @@ func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount)
 		// For IMAP over proxy, we need to handle TLS after CONNECT
 		if account.MailProvider.IMAPPort == 993 {
 			// First establish the proxy tunnel
-			proxyConn, err := dialer.Dial("tcp", serverAddr)
+			proxyConn, err := dialProxyWithContext(ctx, dialer, "tcp", serverAddr)
 			if err != nil {
 				s.logger.Error("Failed to dial via proxy: %v", err)
 				return nil, fmt.Errorf("failed to dial via proxy: %w", err)
@@ -90,7 +116,7 @@ func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount)
 			})
 
 			// Perform TLS handshake
-			if err := tlsConn.Handshake(); err != nil {
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
 				proxyConn.Close()
 				s.logger.Error("TLS handshake failed: %v", err)
 				return nil, fmt.Errorf("TLS handshake failed: %w", err)
@@ -105,7 +131,15 @@ func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount)
 			}
 		} else {
 			// For non-TLS IMAP, use the proxy connection directly
-			c, err = client.DialWithDialer(dialer, serverAddr)
+			proxyConn, dialErr := dialProxyWithContext(ctx, dialer, "tcp", serverAddr)
+			if dialErr != nil {
+				err = dialErr
+			} else {
+				c, err = client.New(proxyConn)
+				if err != nil {
+					_ = proxyConn.Close()
+				}
+			}
 			if err != nil {
 				s.logger.Error("Failed to dial via proxy: %v", err)
 				return nil, fmt.Errorf("failed to dial via proxy: %w", err)
@@ -113,23 +147,32 @@ func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount)
 		}
 	} else {
 		// Use TLS connection for secure IMAP (port 993)
+		netDialer := &net.Dialer{Timeout: fetcherContextTimeout(ctx, 30*time.Second)}
+		rawConn, dialErr := netDialer.DialContext(ctx, "tcp", serverAddr)
+		if dialErr != nil {
+			return nil, fmt.Errorf("failed to dial: %w", dialErr)
+		}
+		applyConnectionDeadline(ctx, rawConn)
 		if account.MailProvider.IMAPPort == 993 {
 			s.logger.Debug("Using TLS connection for port 993")
-			c, err = client.DialTLS(serverAddr, &tls.Config{ServerName: account.MailProvider.IMAPServer})
-			if err != nil {
-				s.logger.Error("Failed to dial with TLS: %v", err)
-				return nil, fmt.Errorf("failed to dial with TLS: %w", err)
+			tlsConn := tls.Client(rawConn, &tls.Config{ServerName: account.MailProvider.IMAPServer})
+			if err := tlsConn.HandshakeContext(ctx); err != nil {
+				_ = rawConn.Close()
+				return nil, fmt.Errorf("failed to establish IMAP TLS: %w", err)
 			}
+			c, err = client.New(tlsConn)
 		} else {
-			// Use plain connection for non-secure IMAP (port 143)
 			s.logger.Debug("Using plain connection for port %d", account.MailProvider.IMAPPort)
-			c, err = client.Dial(serverAddr)
-			if err != nil {
-				s.logger.Error("Failed to dial: %v", err)
-				return nil, fmt.Errorf("failed to dial: %w", err)
-			}
+			c, err = client.New(rawConn)
+		}
+		if err != nil {
+			_ = rawConn.Close()
+			return nil, fmt.Errorf("failed to create IMAP client: %w", err)
 		}
 	}
+	c.Timeout = fetcherContextTimeout(ctx, 30*time.Second)
+	stopCancellation := context.AfterFunc(ctx, func() { _ = c.Terminate() })
+	defer stopCancellation()
 
 	// Login based on auth type
 	s.logger.Debug("Authenticating with auth type: %s", account.AuthType)
@@ -145,8 +188,8 @@ func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount)
 		// OAuth2 authentication
 		s.logger.Debug("Using OAuth2 authentication")
 		// Get client_id from CustomSettings, with fallback to global config
-		clientID, ok := account.CustomSettings["client_id"]
-		if !ok {
+		clientID := strings.TrimSpace(account.CustomSettings["client_id"])
+		if clientID == "" {
 			s.logger.Warn("client_id not found in custom settings, trying to get from global config")
 
 			// Try to get client_id from global OAuth2 config
@@ -181,8 +224,8 @@ func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount)
 			s.logger.Info("Using client_id from global config (ID: %d, Name: %s) for connectAndAuthenticateIMAP", tempConfig.ID, tempConfig.Name)
 		}
 
-		refreshToken, ok := account.CustomSettings["refresh_token"]
-		if !ok {
+		refreshToken := strings.TrimSpace(account.CustomSettings["refresh_token"])
+		if refreshToken == "" {
 			s.logger.Error("refresh_token not found in custom settings")
 			c.Logout()
 			return nil, fmt.Errorf("refresh_token not found in custom settings")
@@ -235,26 +278,6 @@ func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount)
 			return nil, fmt.Errorf("failed to refresh access token: %w", err)
 		}
 
-		// Update access token in account
-		if account.CustomSettings == nil {
-			account.CustomSettings = make(models.JSONMap)
-		}
-		// 并发安全的CustomSettings更新
-		newCustomSettings := make(models.JSONMap)
-		if account.CustomSettings != nil {
-			for k, v := range account.CustomSettings {
-				newCustomSettings[k] = v
-			}
-		}
-		newCustomSettings["access_token"] = accessToken
-		account.CustomSettings = newCustomSettings
-
-		// Update the account with new access token
-		updatedAccount := account
-		if err := s.accountRepo.Update(&updatedAccount); err != nil {
-			s.logger.Warn("Failed to update access token in database: %v", err)
-		}
-
 		// Authenticate with OAuth2
 		saslClient := NewOAuth2SASLClient(account.EmailAddress, accessToken)
 		if err := c.Authenticate(saslClient); err != nil {
@@ -285,6 +308,11 @@ func (s *FetcherService) connectAndAuthenticateIMAP(account models.EmailAccount)
 		s.logger.Error("Unsupported auth type: %s", account.AuthType)
 		c.Logout()
 		return nil, fmt.Errorf("unsupported auth type: %s", account.AuthType)
+	}
+	if err := initializeAuthenticatedIMAPClient(c, account); err != nil {
+		s.logger.Error("Failed to initialize authenticated IMAP client for %s: %v", account.EmailAddress, err)
+		c.Logout()
+		return nil, err
 	}
 
 	s.logger.Info("Successfully connected and logged in for %s using %s auth", account.EmailAddress, account.AuthType)
@@ -468,6 +496,10 @@ func (s *FetcherService) connectToIMAP(account models.EmailAccount) (*client.Cli
 	default:
 		c.Logout()
 		return nil, fmt.Errorf("unsupported auth type: %s", account.AuthType)
+	}
+	if err := initializeAuthenticatedIMAPClient(c, account); err != nil {
+		c.Logout()
+		return nil, err
 	}
 
 	return c, nil

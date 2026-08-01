@@ -2,7 +2,7 @@
 import { logger } from '@/lib/logger';
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Search, MoreVertical, Edit2, Trash2, RefreshCw, CheckCircle, XCircle, AlertCircle, Grid, List, Table, ChevronLeft, ChevronRight, Shield, ShieldCheck, Mail, Inbox, ChevronDown, X, Settings, Square, CheckSquare, Clock, Loader2, TableProperties, SlidersHorizontal } from 'lucide-react'
+import { Plus, Search, MoreVertical, Edit2, Trash2, RefreshCw, CheckCircle, XCircle, AlertCircle, Grid, List, Table, ChevronLeft, ChevronRight, Shield, ShieldCheck, Mail, Inbox, ChevronDown, X, Settings, Square, CheckSquare, Clock, Loader2, TableProperties, SlidersHorizontal, ScanSearch } from 'lucide-react'
 import { toast } from 'sonner'
 import { emailAccountService } from '@/services/email-account.service'
 import { oauth2Service } from '@/services/oauth2.service'
@@ -145,6 +145,8 @@ export default function AccountsTab() {
     const [syncingAccount, setSyncingAccount] = useState<EmailAccount | null>(null)
     const [syncing, setSyncing] = useState<number | null>(null)
     const [repairing, setRepairing] = useState<number | null>(null)
+    const [detectingProtocol, setDetectingProtocol] = useState<number | null>(null)
+    const detectingProtocolRef = useRef<number | null>(null)
     const [verifying, setVerifying] = useState<number | null>(null)
     const [viewType, setViewType] = useState<ViewType>('datatable')
     const [pagination, setPagination] = useState({
@@ -155,7 +157,7 @@ export default function AccountsTab() {
     })
 
     // 排序状态 (后端排序)
-    const [sortBy, setSortBy] = useState<string>('created_at')
+    const [sortBy, setSortBy] = useState<string>('createdAt')
     const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
 
     // 批量选择状态
@@ -349,6 +351,10 @@ export default function AccountsTab() {
     }, [accounts])
 
     const handleDelete = async (id: number) => {
+        if (detectingProtocolRef.current === id) {
+            toast.warning('协议识别期间不能删除该账户')
+            return
+        }
         const confirmed = await confirm({
             title: '确认删除',
             description: '确定要删除这个账户吗？',
@@ -369,12 +375,20 @@ export default function AccountsTab() {
     }
 
     const handleSyncClick = (account: EmailAccount) => {
+        if (detectingProtocolRef.current === account.id) {
+            toast.warning('协议识别期间不能启动同步')
+            return
+        }
         setSyncingAccount(account)
         setShowSyncModal(true)
     }
 
     const handleSyncConfirm = async () => {
         if (!syncingAccount) return
+        if (detectingProtocolRef.current === syncingAccount.id) {
+            toast.warning('协议识别期间不能启动同步')
+            return
+        }
 
         setSyncing(syncingAccount.id)
         setShowSyncModal(false)
@@ -393,13 +407,18 @@ export default function AccountsTab() {
     }
 
     const handleRepairSync = async (account: EmailAccount) => {
+        if (detectingProtocolRef.current === account.id) {
+            toast.warning('协议识别期间不能修复该账户')
+            return
+        }
         if (repairing !== null) {
             toast.warning('已有账户正在修复，请等待当前操作完成')
             return
         }
 
+        const providerName = account.mailProvider?.type === 'outlook' ? 'Outlook' : 'Gmail'
         const confirmed = await confirm({
-            title: '修复 Gmail 同步',
+            title: `修复 ${providerName} 同步`,
             description: `将清理 ${account.emailAddress} 的失效同步游标，并重新扫描最近 30 天邮件，耗时可能数分钟。已保存的邮件不会删除，重复邮件会自动跳过；修复期间该账户的其他同步会等待。`,
             confirmText: '开始修复',
             cancelText: '取消',
@@ -427,11 +446,19 @@ export default function AccountsTab() {
     }
 
     const handleEdit = (account: EmailAccount) => {
+        if (detectingProtocolRef.current === account.id) {
+            toast.warning('协议识别期间不能编辑该账户')
+            return
+        }
         setSelectedAccount(account)
         setShowEditModal(true)
     }
 
     const handleVerify = async (account: EmailAccount) => {
+        if (detectingProtocolRef.current === account.id) {
+            toast.warning('协议识别期间不能重复验证该账户')
+            return
+        }
         setVerifying(account.id)
 
         try {
@@ -449,6 +476,47 @@ export default function AccountsTab() {
             toast.error('验证账户时发生错误')
         } finally {
             setVerifying(null)
+        }
+    }
+
+    const handleDetectOutlookProtocol = async (account: EmailAccount) => {
+        if (account.authType !== 'oauth2' || account.mailProvider?.type !== 'outlook') {
+            toast.error('仅 Outlook OAuth2 账户支持协议识别')
+            return
+        }
+        if (detectingProtocolRef.current !== null) {
+            toast.warning('已有账户正在识别协议，请等待当前操作完成')
+            return
+        }
+        if (syncing === account.id || verifying === account.id || repairing === account.id) {
+            toast.warning('该账户正在执行其他维护操作，请稍后再识别协议')
+            return
+        }
+
+        detectingProtocolRef.current = account.id
+        setDetectingProtocol(account.id)
+        try {
+            const result = await emailAccountService.detectOutlookProtocol(account.id)
+            if (result.protocol !== 'graph' && result.protocol !== 'imap') {
+                throw new Error(result.message || '服务端未返回可用协议')
+            }
+            const protocolLabel = result.protocol === 'graph' ? 'Microsoft Graph' : 'IMAP/XOAUTH2'
+            toast.success(`协议识别完成：${protocolLabel}`)
+            try {
+                await loadAccounts()
+            } catch (reloadError) {
+                console.error('Failed to reload accounts after protocol detection:', reloadError)
+                toast.warning('协议已保存，但账户列表刷新失败，请手动刷新页面')
+            }
+        } catch (error) {
+            console.error('Failed to detect Outlook protocol:', error)
+            const message = error instanceof Error ? error.message : '请求失败'
+            toast.error(`协议识别失败：${message}`)
+        } finally {
+            if (detectingProtocolRef.current === account.id) {
+                detectingProtocolRef.current = null
+                setDetectingProtocol(null)
+            }
         }
     }
 
@@ -480,6 +548,10 @@ export default function AccountsTab() {
     // 批量删除处理函数
     const handleBatchDelete = async () => {
         if (selectedAccounts.length === 0) return
+        if (detectingProtocolRef.current !== null && selectedAccounts.includes(detectingProtocolRef.current)) {
+            toast.warning('选中的账户正在识别协议，请等待识别完成')
+            return
+        }
 
         const confirmed = await confirm({
             title: '批量删除确认',
@@ -516,6 +588,10 @@ export default function AccountsTab() {
     // 批量同步配置处理函数
     const handleBatchSyncConfig = () => {
         if (selectedAccounts.length === 0) return
+        if (detectingProtocolRef.current !== null && selectedAccounts.includes(detectingProtocolRef.current)) {
+            toast.warning('选中的账户正在识别协议，请等待识别完成')
+            return
+        }
         setShowBatchSyncConfigModal(true)
     }
 
@@ -529,6 +605,10 @@ export default function AccountsTab() {
     // 批量验证处理函数
     const handleBatchVerify = async () => {
         if (selectedAccounts.length === 0) return
+        if (detectingProtocolRef.current !== null && selectedAccounts.includes(detectingProtocolRef.current)) {
+            toast.warning('选中的账户正在识别协议，请等待识别完成')
+            return
+        }
 
         const confirmed = await confirm({
             title: '批量验证确认',
@@ -602,6 +682,10 @@ export default function AccountsTab() {
 
     // 处理OAuth2配置跳转
     const handleOAuth2Config = (account: EmailAccount) => {
+        if (detectingProtocolRef.current === account.id) {
+            toast.warning('协议识别期间不能修改 OAuth2 配置')
+            return
+        }
         logger.debug('[AccountsTab] 触发OAuth2配置跳转，账户:', account.emailAddress, 'Provider:', account.mailProvider?.type);
         // 触发切换到OAuth2配置页面，并过滤显示对应的provider
         const event = new CustomEvent('switchTab', {
@@ -636,6 +720,10 @@ export default function AccountsTab() {
     }
 
     const handlePickupMail = (account: EmailAccount) => {
+        if (detectingProtocolRef.current === account.id) {
+            toast.warning('协议识别期间不能启动取件')
+            return
+        }
         // 切换到取件tab并设置默认参数
         // 从邮箱地址中提取域名
         const emailDomain = account.emailAddress.split('@')[1]
@@ -1039,21 +1127,23 @@ export default function AccountsTab() {
                                 </span>
                                 <button
                                     onClick={handleBatchDelete}
-                                    className="flex items-center space-x-1 rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700"
+                                    disabled={detectingProtocol !== null && selectedAccounts.includes(detectingProtocol)}
+                                    className="flex items-center space-x-1 rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     <Trash2 className="h-4 w-4" />
                                     <span>批量删除</span>
                                 </button>
                                 <button
                                     onClick={handleBatchSyncConfig}
-                                    className="flex items-center space-x-1 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                                    disabled={detectingProtocol !== null && selectedAccounts.includes(detectingProtocol)}
+                                    className="flex items-center space-x-1 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     <Clock className="h-4 w-4" />
                                     <span>批量同步配置</span>
                                 </button>
                                 <button
                                     onClick={handleBatchVerify}
-                                    disabled={loading}
+                                    disabled={loading || (detectingProtocol !== null && selectedAccounts.includes(detectingProtocol))}
                                     className="flex items-center space-x-1 rounded-lg bg-green-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {loading ? (
@@ -1370,7 +1460,8 @@ export default function AccountsTab() {
                                                     </button>
                                                     <button
                                                         onClick={() => handlePickupMail(account)}
-                                                        className="flex flex-1 items-center justify-center space-x-1 rounded-lg bg-green-600 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700"
+                                                        disabled={detectingProtocol === account.id}
+                                                        className="flex flex-1 items-center justify-center space-x-1 rounded-lg bg-green-600 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                                                     >
                                                         <Inbox className="h-4 w-4" />
                                                         <span>取件</span>
@@ -1379,7 +1470,7 @@ export default function AccountsTab() {
                                                 <div className="flex space-x-2">
                                                     <button
                                                         onClick={() => handleSyncClick(account)}
-                                                        disabled={syncing === account.id}
+                                                        disabled={syncing === account.id || detectingProtocol === account.id}
                                                         className="flex flex-1 items-center justify-center space-x-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                                                     >
                                                         <RefreshCw className={cn("h-4 w-4", syncing === account.id && "animate-spin")} />
@@ -1387,7 +1478,7 @@ export default function AccountsTab() {
                                                     </button>
                                                     <button
                                                         onClick={() => handleVerify(account)}
-                                                        disabled={verifying === account.id}
+                                                        disabled={verifying === account.id || detectingProtocol === account.id}
                                                         className="flex flex-1 items-center justify-center space-x-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                                                     >
                                                         <Shield className={cn("h-4 w-4", verifying === account.id && "animate-pulse")} />
@@ -1398,9 +1489,20 @@ export default function AccountsTab() {
                                                 {/* OAuth2账户特殊按钮行 */}
                                                 {account.authType === 'oauth2' && (
                                                     <div className="flex space-x-2">
+                                                        {canRepairAccountSync && account.mailProvider?.type === 'outlook' && (
+                                                            <button
+                                                                onClick={() => handleDetectOutlookProtocol(account)}
+                                                                disabled={detectingProtocol !== null || syncing === account.id || verifying === account.id || repairing === account.id}
+                                                                className="flex flex-1 items-center justify-center space-x-1 rounded-lg border border-blue-200 bg-blue-50 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/30"
+                                                            >
+                                                                <ScanSearch className={cn("h-4 w-4", detectingProtocol === account.id && "animate-pulse")} />
+                                                                <span>{detectingProtocol === account.id ? '识别中' : '识别协议'}</span>
+                                                            </button>
+                                                        )}
                                                         <button
                                                             onClick={() => handleOAuth2Config(account)}
-                                                            className="flex flex-1 items-center justify-center space-x-1 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                                                            disabled={detectingProtocol === account.id}
+                                                            className="flex flex-1 items-center justify-center space-x-1 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                                                         >
                                                             <Settings className="h-4 w-4" />
                                                             <span>OAuth2 配置</span>
@@ -1411,14 +1513,16 @@ export default function AccountsTab() {
                                                 <div className="flex space-x-2">
                                                     <button
                                                         onClick={() => handleEdit(account)}
-                                                        className="flex flex-1 items-center justify-center space-x-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                                                        disabled={detectingProtocol === account.id}
+                                                        className="flex flex-1 items-center justify-center space-x-1 rounded-lg border border-gray-300 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                                                     >
                                                         <Edit2 className="h-4 w-4" />
                                                         <span>编辑</span>
                                                     </button>
                                                     <button
                                                         onClick={() => handleDelete(account.id)}
-                                                        className="rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+                                                        disabled={detectingProtocol === account.id}
+                                                        className="rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
                                                     >
                                                         <Trash2 className="h-4 w-4" />
                                                     </button>
@@ -1528,14 +1632,15 @@ export default function AccountsTab() {
                                                 </button>
                                                 <button
                                                     onClick={() => handlePickupMail(account)}
-                                                    className="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-700"
+                                                    disabled={detectingProtocol === account.id}
+                                                    className="rounded-lg bg-green-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                                                     title="取件"
                                                 >
                                                     <Inbox className="h-4 w-4" />
                                                 </button>
                                                 <button
                                                     onClick={() => handleSyncClick(account)}
-                                                    disabled={syncing === account.id}
+                                                    disabled={syncing === account.id || detectingProtocol === account.id}
                                                     className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                                                     title="同步"
                                                 >
@@ -1543,31 +1648,46 @@ export default function AccountsTab() {
                                                 </button>
                                                 <button
                                                     onClick={() => handleVerify(account)}
-                                                    disabled={verifying === account.id}
+                                                    disabled={verifying === account.id || detectingProtocol === account.id}
                                                     className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                                                     title="验证连接"
                                                 >
                                                     <Shield className={cn("h-4 w-4", verifying === account.id && "animate-pulse")} />
                                                 </button>
                                                 {account.authType === 'oauth2' && (
-                                                    <button
-                                                        onClick={() => handleOAuth2Config(account)}
-                                                        className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-                                                        title="OAuth2 配置"
-                                                    >
-                                                        <Settings className="h-4 w-4" />
-                                                    </button>
+                                                    <>
+                                                        {canRepairAccountSync && account.mailProvider?.type === 'outlook' && (
+                                                            <button
+                                                                onClick={() => handleDetectOutlookProtocol(account)}
+                                                                disabled={detectingProtocol !== null || syncing === account.id || verifying === account.id || repairing === account.id}
+                                                                className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300 dark:hover:bg-blue-900/30"
+                                                                title="自动识别 Outlook 协议"
+                                                            >
+                                                                <ScanSearch className={cn("h-4 w-4", detectingProtocol === account.id && "animate-pulse")} />
+                                                            </button>
+                                                        )}
+                                                        <button
+                                                            onClick={() => handleOAuth2Config(account)}
+                                                            disabled={detectingProtocol === account.id}
+                                                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                                            title="OAuth2 配置"
+                                                        >
+                                                            <Settings className="h-4 w-4" />
+                                                        </button>
+                                                    </>
                                                 )}
                                                 <button
                                                     onClick={() => handleEdit(account)}
-                                                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                                                    disabled={detectingProtocol === account.id}
+                                                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
                                                     title="编辑"
                                                 >
                                                     <Edit2 className="h-4 w-4" />
                                                 </button>
                                                 <button
                                                     onClick={() => handleDelete(account.id)}
-                                                    className="rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+                                                    disabled={detectingProtocol === account.id}
+                                                    className="rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
                                                     title="删除"
                                                 >
                                                     <Trash2 className="h-4 w-4" />
@@ -1684,14 +1804,15 @@ export default function AccountsTab() {
                                                             </button>
                                                             <button
                                                                 onClick={() => handlePickupMail(account)}
-                                                                className="rounded-lg p-1.5 text-green-600 transition-colors hover:bg-green-50 dark:text-green-400 dark:hover:bg-green-900/20"
+                                                                disabled={detectingProtocol === account.id}
+                                                                className="rounded-lg p-1.5 text-green-600 transition-colors hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-green-400 dark:hover:bg-green-900/20"
                                                                 title="取件"
                                                             >
                                                                 <Inbox className="h-4 w-4" />
                                                             </button>
                                                             <button
                                                                 onClick={() => handleSyncClick(account)}
-                                                                disabled={syncing === account.id}
+                                                                disabled={syncing === account.id || detectingProtocol === account.id}
                                                                 className="rounded-lg p-1.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-700"
                                                                 title="同步"
                                                             >
@@ -1699,31 +1820,46 @@ export default function AccountsTab() {
                                                             </button>
                                                             <button
                                                                 onClick={() => handleVerify(account)}
-                                                                disabled={verifying === account.id}
+                                                                disabled={verifying === account.id || detectingProtocol === account.id}
                                                                 className="rounded-lg p-1.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-700"
                                                                 title="验证连接"
                                                             >
                                                                 <Shield className={cn("h-4 w-4", verifying === account.id && "animate-pulse")} />
                                                             </button>
                                                             {account.authType === 'oauth2' && (
-                                                                <button
-                                                                    onClick={() => handleOAuth2Config(account)}
-                                                                    className="rounded-lg p-1.5 text-blue-600 transition-colors hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/20"
-                                                                    title="OAuth2 配置"
-                                                                >
-                                                                    <Settings className="h-4 w-4" />
-                                                                </button>
+                                                                <>
+                                                                    {canRepairAccountSync && account.mailProvider?.type === 'outlook' && (
+                                                                        <button
+                                                                            onClick={() => handleDetectOutlookProtocol(account)}
+                                                                            disabled={detectingProtocol !== null || syncing === account.id || verifying === account.id || repairing === account.id}
+                                                                            className="rounded-lg p-1.5 text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/20"
+                                                                            title="自动识别 Outlook 协议"
+                                                                        >
+                                                                            <ScanSearch className={cn("h-4 w-4", detectingProtocol === account.id && "animate-pulse")} />
+                                                                        </button>
+                                                                    )}
+                                                                    <button
+                                                                        onClick={() => handleOAuth2Config(account)}
+                                                                        disabled={detectingProtocol === account.id}
+                                                                        className="rounded-lg p-1.5 text-blue-600 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:bg-blue-900/20"
+                                                                        title="OAuth2 配置"
+                                                                    >
+                                                                        <Settings className="h-4 w-4" />
+                                                                    </button>
+                                                                </>
                                                             )}
                                                             <button
                                                                 onClick={() => handleEdit(account)}
-                                                                className="rounded-lg p-1.5 text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+                                                                disabled={detectingProtocol === account.id}
+                                                                className="rounded-lg p-1.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-700"
                                                                 title="编辑"
                                                             >
                                                                 <Edit2 className="h-4 w-4" />
                                                             </button>
                                                             <button
                                                                 onClick={() => handleDelete(account.id)}
-                                                                className="rounded-lg p-1.5 text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                                                                disabled={detectingProtocol === account.id}
+                                                                className="rounded-lg p-1.5 text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-900/20"
                                                                 title="删除"
                                                             >
                                                                 <Trash2 className="h-4 w-4" />
@@ -1746,6 +1882,7 @@ export default function AccountsTab() {
                                     onPickupMail={handlePickupMail}
                                     onSync={handleSyncClick}
                                     onRepairSync={canRepairAccountSync ? handleRepairSync : undefined}
+                                    onDetectOutlookProtocol={canRepairAccountSync ? handleDetectOutlookProtocol : undefined}
                                     onVerify={handleVerify}
                                     onEdit={handleEdit}
                                     onDelete={handleDelete}
@@ -1754,6 +1891,7 @@ export default function AccountsTab() {
                                     onAccountChange={loadAccounts}
                                     syncingId={syncing ?? undefined}
                                     repairingId={repairing ?? undefined}
+                                    detectingProtocolId={detectingProtocol ?? undefined}
                                     verifyingId={verifying ?? undefined}
                                     syncStatuses={syncStatuses}
                                     sorting={sortBy ? [{ id: sortBy, desc: sortOrder === 'desc' }] : []}
@@ -1762,7 +1900,7 @@ export default function AccountsTab() {
                                             setSortBy(newSorting[0].id)
                                             setSortOrder(newSorting[0].desc ? 'desc' : 'asc')
                                         } else {
-                                            setSortBy('created_at')
+                                            setSortBy('createdAt')
                                             setSortOrder('desc')
                                         }
                                     }}

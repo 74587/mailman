@@ -25,6 +25,7 @@ const ERROR_STATUS_OPTIONS = [
     { value: 'oauth_expired', label: '授权过期' },
     { value: 'auth_revoked', label: '授权撤销' },
     { value: 'api_disabled', label: 'API禁用' },
+    { value: 'permission_denied', label: '权限不足' },
     { value: 'network_error', label: '网络错误' },
 ]
 

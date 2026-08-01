@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,9 +32,26 @@ type OAuth2Config struct {
 
 // TokenCacheEntry represents a cached token entry
 type TokenCacheEntry struct {
-	AccessToken string
-	ExpiresAt   time.Time
-	RefreshTime time.Time
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    time.Time
+	RefreshTime  time.Time
+}
+
+// OAuth2TokenRefreshResult contains the complete token state that must be kept
+// together. Microsoft may rotate refresh tokens on every refresh, so callers
+// must never persist only the access token.
+type OAuth2TokenRefreshResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    time.Time
+}
+
+// OAuth2RefreshOptions controls exceptional refresh behaviour. Graph refreshes
+// omit scope so Microsoft preserves the scopes granted to that refresh token.
+type OAuth2RefreshOptions struct {
+	Force      bool
+	OmitScopes bool
 }
 
 // OAuth2Service handles OAuth2 authentication
@@ -44,6 +62,39 @@ type OAuth2Service struct {
 	accountLocks map[string]*sync.Mutex // 基于账户ID的锁
 	locksMutex   sync.RWMutex           // 保护 accountLocks map 的锁
 	db           *gorm.DB               // 数据库连接
+}
+
+// mergeAccountCustomSettings serializes OAuth-related JSON updates with token
+// refreshes so a protocol detection result cannot overwrite a rotated token.
+func (s *OAuth2Service) mergeAccountCustomSettings(providerType string, accountID uint, updates map[string]string) error {
+	if s.db == nil {
+		return fmt.Errorf("database is not available")
+	}
+	if accountID == 0 {
+		return fmt.Errorf("account ID is required")
+	}
+
+	accountLock := s.getAccountLock(fmt.Sprintf("%s_%d", providerType, accountID))
+	accountLock.Lock()
+	defer accountLock.Unlock()
+
+	var account models.EmailAccount
+	if err := s.db.Select("id", "custom_settings").First(&account, accountID).Error; err != nil {
+		return fmt.Errorf("failed to load account %d settings: %w", accountID, err)
+	}
+	settings := make(models.JSONMap, len(account.CustomSettings)+len(updates))
+	for key, value := range account.CustomSettings {
+		settings[key] = value
+	}
+	for key, value := range updates {
+		settings[key] = value
+	}
+	if err := s.db.Model(&models.EmailAccount{}).
+		Where("id = ?", accountID).
+		Update("custom_settings", settings).Error; err != nil {
+		return fmt.Errorf("failed to update account %d settings: %w", accountID, err)
+	}
+	return nil
 }
 
 // NewOAuth2Service creates a new OAuth2Service
@@ -61,7 +112,7 @@ func NewOAuth2Service(db *gorm.DB) *OAuth2Service {
 // createHTTPClientWithProxy creates an HTTP client with proxy support
 func (s *OAuth2Service) createHTTPClientWithProxy(proxyStr string) (*http.Client, error) {
 	if proxyStr == "" {
-		return &http.Client{Timeout: 30 * time.Second}, nil
+		return s.httpClient, nil
 	}
 
 	proxyURL, err := url.Parse(proxyStr)
@@ -137,6 +188,14 @@ func (s *OAuth2Service) getCacheKey(providerType, clientID, refreshToken string)
 	return fmt.Sprintf("%s_%s", providerType, cacheKey[:16])
 }
 
+func (s *OAuth2Service) getRefreshCacheKey(providerType, clientID, refreshToken string, omitScopes bool) string {
+	mode := "catalog-scopes"
+	if omitScopes {
+		mode = "original-scopes"
+	}
+	return s.getCacheKey(providerType+"_"+mode, clientID, refreshToken)
+}
+
 // cleanupOldCacheEntries 清理可能存在的旧缓存条目
 func (s *OAuth2Service) cleanupOldCacheEntries(providerType, clientID, newRefreshToken string) {
 	s.cacheMutex.Lock()
@@ -187,125 +246,199 @@ func (s *OAuth2Service) RefreshAccessTokenWithCache(providerType, clientID, clie
 
 // RefreshAccessTokenWithCacheAndProxy 带缓存、并发控制和代理支持的token刷新
 func (s *OAuth2Service) RefreshAccessTokenWithCacheAndProxy(providerType, clientID, clientSecret, refreshToken string, accountID uint, proxy string) (string, error) {
-	cacheKey := s.getCacheKey(providerType, clientID, refreshToken)
+	result, err := s.RefreshAccessTokenWithCacheAndProxyResult(
+		providerType, clientID, clientSecret, refreshToken, accountID, proxy, OAuth2RefreshOptions{},
+	)
+	if err != nil {
+		return "", err
+	}
+	return result.AccessToken, nil
+}
+
+// RefreshAccessTokenWithCacheAndProxyResult refreshes and atomically persists
+// access_token, a rotated refresh_token, and the provider supplied expiry.
+func (s *OAuth2Service) RefreshAccessTokenWithCacheAndProxyResult(
+	providerType, clientID, clientSecret, refreshToken string,
+	accountID uint,
+	proxy string,
+	options OAuth2RefreshOptions,
+) (OAuth2TokenRefreshResult, error) {
+	// Microsoft refresh requests should preserve the resource and scopes granted
+	// to the refresh token. Sending the built-in IMAP scopes here can break or
+	// silently downgrade a Graph-authorized account during recovery.
+	if providerType == string(models.ProviderTypeOutlook) {
+		options.OmitScopes = true
+	}
+	cacheKey := s.getRefreshCacheKey(providerType, clientID, refreshToken, options.OmitScopes)
 	accountKey := fmt.Sprintf("%s_%d", providerType, accountID)
 
-	// 先检查缓存
-	s.cacheMutex.RLock()
-	if entry, exists := s.tokenCache[cacheKey]; exists {
-		// 检查token是否还有效（提前5分钟过期）
-		if time.Now().Before(entry.ExpiresAt.Add(-5 * time.Minute)) {
-			s.cacheMutex.RUnlock()
-			if isDebugMode() {
-				debugPrintf("OAuth2: Using cached token for account %d, expires at: %v\n", accountID, entry.ExpiresAt)
+	// Account-bound refreshes must take the account lock and reload persisted
+	// state before using cache. Only account-less OAuth utility calls may return
+	// from this fast path.
+	if !options.Force && accountID == 0 {
+		s.cacheMutex.RLock()
+		if entry, exists := s.tokenCache[cacheKey]; exists {
+			// 检查token是否还有效（提前5分钟过期）
+			if time.Now().Before(entry.ExpiresAt.Add(-5 * time.Minute)) {
+				s.cacheMutex.RUnlock()
+				if isDebugMode() {
+					debugPrintf("OAuth2: Using cached token for account %d, expires at: %v\n", accountID, entry.ExpiresAt)
+				}
+				return OAuth2TokenRefreshResult{
+					AccessToken:  entry.AccessToken,
+					RefreshToken: entry.RefreshToken,
+					ExpiresAt:    entry.ExpiresAt,
+				}, nil
 			}
-			return entry.AccessToken, nil
 		}
+		s.cacheMutex.RUnlock()
 	}
-	s.cacheMutex.RUnlock()
 
 	// 获取账户特定的锁
 	accountLock := s.getAccountLock(accountKey)
 	accountLock.Lock()
 	defer accountLock.Unlock()
 
-	// 锁定后再次检查缓存（双重检查锁定模式）
-	s.cacheMutex.RLock()
-	if entry, exists := s.tokenCache[cacheKey]; exists {
-		if time.Now().Before(entry.ExpiresAt.Add(-5 * time.Minute)) {
-			s.cacheMutex.RUnlock()
-			if isDebugMode() {
-				debugPrintf("OAuth2: Using cached token after lock for account %d, expires at: %v\n", accountID, entry.ExpiresAt)
-			}
-			return entry.AccessToken, nil
+	// A previous refresh may have rotated the token while this goroutine waited.
+	// Always prefer the latest persisted token once the account lock is held.
+	if s.db != nil && accountID != 0 {
+		var current models.EmailAccount
+		if err := s.db.Select("id", "custom_settings").First(&current, accountID).Error; err != nil {
+			return OAuth2TokenRefreshResult{}, fmt.Errorf("failed to load account %d before token refresh: %w", accountID, err)
+		}
+		if persisted := strings.TrimSpace(current.CustomSettings["refresh_token"]); persisted != "" {
+			refreshToken = persisted
+			cacheKey = s.getRefreshCacheKey(providerType, clientID, refreshToken, options.OmitScopes)
+		}
+		// Per-account client IDs are commonly public clients (including the
+		// Thunderbird Outlook client used by batch imports). Never attach an
+		// unrelated global client secret to such a refresh request.
+		if storedClientID := strings.TrimSpace(current.CustomSettings["client_id"]); storedClientID != "" && storedClientID == clientID {
+			clientSecret = strings.TrimSpace(current.CustomSettings["client_secret"])
 		}
 	}
+
+	// A provider may have rotated the refresh token before a transient database
+	// write failed. Recover that cached token pair even for a forced 401 refresh;
+	// retrying the stale persisted refresh token could invalidate the account.
+	s.cacheMutex.RLock()
+	pendingRotation, hasPendingRotation := s.tokenCache[cacheKey]
+	if hasPendingRotation {
+		hasPendingRotation = pendingRotation.RefreshToken != "" &&
+			pendingRotation.RefreshToken != refreshToken &&
+			time.Now().Before(pendingRotation.ExpiresAt.Add(-5*time.Minute))
+	}
 	s.cacheMutex.RUnlock()
+	if hasPendingRotation {
+		result := OAuth2TokenRefreshResult{
+			AccessToken:  pendingRotation.AccessToken,
+			RefreshToken: pendingRotation.RefreshToken,
+			ExpiresAt:    pendingRotation.ExpiresAt,
+		}
+		if err := s.persistOAuth2RefreshResult(providerType, accountID, result); err != nil {
+			return OAuth2TokenRefreshResult{}, err
+		}
+		return result, nil
+	}
+
+	// 锁定后再次检查缓存（双重检查锁定模式）
+	if !options.Force {
+		s.cacheMutex.RLock()
+		if entry, exists := s.tokenCache[cacheKey]; exists {
+			if time.Now().Before(entry.ExpiresAt.Add(-5 * time.Minute)) {
+				s.cacheMutex.RUnlock()
+				if isDebugMode() {
+					debugPrintf("OAuth2: Using cached token after lock for account %d, expires at: %v\n", accountID, entry.ExpiresAt)
+				}
+				cachedResult := OAuth2TokenRefreshResult{
+					AccessToken:  entry.AccessToken,
+					RefreshToken: entry.RefreshToken,
+					ExpiresAt:    entry.ExpiresAt,
+				}
+				if err := s.persistOAuth2RefreshResult(providerType, accountID, cachedResult); err != nil {
+					return OAuth2TokenRefreshResult{}, err
+				}
+				return cachedResult, nil
+			}
+		}
+		s.cacheMutex.RUnlock()
+	}
 
 	// 防止频繁刷新：如果上次刷新时间在30秒内，等待一下
-	s.cacheMutex.RLock()
-	if entry, exists := s.tokenCache[cacheKey]; exists {
-		if time.Since(entry.RefreshTime) < 30*time.Second {
-			s.cacheMutex.RUnlock()
-			debugPrintf("OAuth2: Throttling refresh for account %d, last refresh: %v\n", accountID, entry.RefreshTime)
-			return "", fmt.Errorf("token refresh throttled, please wait a moment")
+	if !options.Force {
+		s.cacheMutex.RLock()
+		if entry, exists := s.tokenCache[cacheKey]; exists {
+			if time.Since(entry.RefreshTime) < 30*time.Second {
+				s.cacheMutex.RUnlock()
+				debugPrintf("OAuth2: Throttling refresh for account %d, last refresh: %v\n", accountID, entry.RefreshTime)
+				return OAuth2TokenRefreshResult{}, fmt.Errorf("token refresh throttled, please wait a moment")
+			}
 		}
+		s.cacheMutex.RUnlock()
 	}
-	s.cacheMutex.RUnlock()
 
 	debugPrintf("OAuth2: Refreshing token for account %d (provider: %s) with proxy: %s\n", accountID, providerType, proxy)
 
 	// 刷新token - 使用代理支持的方法
-	newAccessToken, newRefreshToken, err := s.RefreshAccessTokenForProviderWithProxy(providerType, clientID, clientSecret, refreshToken, proxy)
+	result, err := s.refreshAccessTokenForProviderWithProxyResult(
+		providerType, clientID, clientSecret, refreshToken, proxy, options.OmitScopes,
+	)
 	if err != nil {
-		return "", err
+		return OAuth2TokenRefreshResult{}, err
+	}
+	if result.RefreshToken == "" {
+		result.RefreshToken = refreshToken
 	}
 
-	// 如果有新的refresh token，更新到数据库
-	if newRefreshToken != "" && s.db != nil {
-		debugPrintf("OAuth2: Updating refresh token for account %d (new token length: %d)\n", accountID, len(newRefreshToken))
-
-		// 正确更新CustomSettings中的refresh_token字段
-		// 先获取当前的CustomSettings
-		var account models.EmailAccount
-		if err := s.db.Where("id = ?", accountID).First(&account).Error; err != nil {
-			debugPrintf("OAuth2: Failed to fetch account for refresh token update %d: %v\n", accountID, err)
-		} else {
-			debugPrintf("OAuth2: Retrieved account %d, current CustomSettings keys: %v\n",
-				accountID, getMapKeys(account.CustomSettings))
-
-			// 确保CustomSettings不为nil
-			if account.CustomSettings == nil {
-				account.CustomSettings = make(models.JSONMap)
-				debugPrintf("OAuth2: Initialized nil CustomSettings for account %d\n", accountID)
-			}
-
-			// 保存旧的refresh token用于日志
-			oldRefreshToken := account.CustomSettings["refresh_token"]
-
-			// 更新refresh_token
-			account.CustomSettings["refresh_token"] = newRefreshToken
-
-			// 保存更新后的CustomSettings
-			result := s.db.Model(&models.EmailAccount{}).
-				Where("id = ?", accountID).
-				Update("custom_settings", account.CustomSettings)
-
-			if result.Error != nil {
-				debugPrintf("OAuth2: Failed to update refresh token in CustomSettings for account %d: %v\n", accountID, result.Error)
-			} else {
-				debugPrintf("OAuth2: Successfully updated refresh token in CustomSettings for account %d (old: %d chars, new: %d chars)\n",
-					accountID, len(oldRefreshToken), len(newRefreshToken))
-			}
-		}
-	}
-
-	// 更新缓存
+	// Cache rotated credentials before persistence. If a transient database
+	// failure occurs, the next account-bound call can recover the rotated token
+	// from cache instead of retrying an invalidated old refresh token.
 	s.cacheMutex.Lock()
-
-	// 计算不同provider的缓存过期时间
-	var expirationTime time.Duration
-	switch providerType {
-	case "gmail":
-		expirationTime = 55 * time.Minute // Gmail access token 1小时过期
-	case "outlook":
-		expirationTime = 55 * time.Minute // Outlook access token 1小时过期
-	default:
-		expirationTime = 55 * time.Minute // 默认55分钟
-	}
-
 	s.tokenCache[cacheKey] = &TokenCacheEntry{
-		AccessToken: newAccessToken,
-		ExpiresAt:   time.Now().Add(expirationTime),
-		RefreshTime: time.Now(),
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		ExpiresAt:    result.ExpiresAt,
+		RefreshTime:  time.Now(),
+	}
+	if result.RefreshToken != refreshToken {
+		rotatedKey := s.getRefreshCacheKey(providerType, clientID, result.RefreshToken, options.OmitScopes)
+		s.tokenCache[rotatedKey] = s.tokenCache[cacheKey]
 	}
 	s.cacheMutex.Unlock()
+	s.cleanupOldCacheEntries(providerType, clientID, result.RefreshToken)
 
-	// 清理可能存在的旧缓存条目（基于旧的refresh token）
-	s.cleanupOldCacheEntries(providerType, clientID, refreshToken)
+	if err := s.persistOAuth2RefreshResult(providerType, accountID, result); err != nil {
+		return OAuth2TokenRefreshResult{}, err
+	}
 
 	debugPrintf("OAuth2: Token refreshed and cached for account %d\n", accountID)
-	return newAccessToken, nil
+	return result, nil
+}
+
+func (s *OAuth2Service) persistOAuth2RefreshResult(providerType string, accountID uint, result OAuth2TokenRefreshResult) error {
+	if s.db == nil || accountID == 0 {
+		return nil
+	}
+	var account models.EmailAccount
+	if err := s.db.Where("id = ?", accountID).First(&account).Error; err != nil {
+		return fmt.Errorf("failed to load account %d for token persistence: %w", accountID, err)
+	}
+	settings := make(models.JSONMap, len(account.CustomSettings)+3)
+	for key, value := range account.CustomSettings {
+		settings[key] = value
+	}
+	settings["access_token"] = result.AccessToken
+	settings["refresh_token"] = result.RefreshToken
+	settings["expires_at"] = strconv.FormatInt(result.ExpiresAt.Unix(), 10)
+	if providerType == string(models.ProviderTypeOutlook) && strings.HasPrefix(strings.ToUpper(result.AccessToken), "EWA") {
+		settings["connection_protocol"] = "imap"
+	}
+	if err := s.db.Model(&models.EmailAccount{}).
+		Where("id = ?", accountID).
+		Update("custom_settings", settings).Error; err != nil {
+		return fmt.Errorf("failed to persist refreshed token for account %d: %w", accountID, err)
+	}
+	return nil
 }
 
 // RefreshAccessToken refreshes the access token using refresh token (legacy method for Outlook)
@@ -411,9 +544,21 @@ func (s *OAuth2Service) RefreshAccessTokenForProvider(providerType string, clien
 // RefreshAccessTokenForProviderWithProxy refreshes the access token for a specific provider with proxy support
 // Returns new access token and new refresh token (if provided by the provider)
 func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType string, clientID, clientSecret, refreshToken, proxy string) (accessToken string, newRefreshToken string, err error) {
+	result, err := s.refreshAccessTokenForProviderWithProxyResult(providerType, clientID, clientSecret, refreshToken, proxy, false)
+	if err != nil {
+		return "", "", err
+	}
+	newRefreshToken = result.RefreshToken
+	if newRefreshToken == refreshToken {
+		newRefreshToken = ""
+	}
+	return result.AccessToken, newRefreshToken, nil
+}
+
+func (s *OAuth2Service) refreshAccessTokenForProviderWithProxyResult(providerType string, clientID, clientSecret, refreshToken, proxy string, omitScopes bool) (OAuth2TokenRefreshResult, error) {
 	provider, ok := models.GetOAuth2ProviderDefinition(models.MailProviderType(providerType))
 	if !ok {
-		return "", "", fmt.Errorf("unsupported provider type: %s", providerType)
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("unsupported provider type: %s", providerType)
 	}
 	tokenURL := provider.TokenURL
 	scope := strings.Join(provider.Scopes, " ")
@@ -426,7 +571,7 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	data.Set("client_id", clientID)
 	data.Set("grant_type", "refresh_token")
 	data.Set("refresh_token", refreshToken)
-	if scope != "" {
+	if scope != "" && !omitScopes {
 		data.Set("scope", scope)
 	}
 
@@ -441,7 +586,7 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 
 	req, err := http.NewRequest("POST", tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create request: %w", err)
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -449,18 +594,18 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	// 创建支持代理的HTTP客户端
 	client, err := s.createHTTPClientWithProxy(proxy)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create HTTP client with proxy: %w", err)
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("failed to create HTTP client with proxy: %w", err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to refresh token: %w", err)
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("failed to refresh token: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to read response: %w", err)
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	// Log response status for debugging
@@ -470,7 +615,7 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 	if err := json.Unmarshal(body, &result); err != nil {
 		// Log raw response if JSON parsing fails
 		debugPrintf("OAuth2: Failed to parse JSON. Raw response: %s\n", string(body))
-		return "", "", fmt.Errorf("failed to parse response: %w", err)
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	if errorMsg, ok := result["error"]; ok {
@@ -492,18 +637,18 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 			errInfo += "\nPossible causes: 1) Refresh token expired 2) Token already used 3) Invalid client_id 4) User revoked permissions"
 		}
 
-		return "", "", fmt.Errorf("%s", errInfo)
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("%s", errInfo)
 	}
 
-	accessToken, ok = result["access_token"].(string)
+	accessToken, ok := result["access_token"].(string)
 	if !ok {
 		// Log the entire response for debugging
 		debugPrintf("OAuth2: No access_token in response. Full response: %+v\n", result)
-		return "", "", fmt.Errorf("access_token not found in response")
+		return OAuth2TokenRefreshResult{}, fmt.Errorf("access_token not found in response")
 	}
 
 	// Check if a new refresh token was provided
-	newRefreshToken = ""
+	newRefreshToken := refreshToken
 	if newRefresh, ok := result["refresh_token"].(string); ok && newRefresh != "" {
 		newRefreshToken = newRefresh
 		debugPrintf("OAuth2: New refresh token provided (length: %d)\n", len(newRefreshToken))
@@ -513,9 +658,16 @@ func (s *OAuth2Service) RefreshAccessTokenForProviderWithProxy(providerType stri
 
 	// 获取过期时间信息
 	expiresIn, _ := result["expires_in"].(float64)
+	if expiresIn <= 0 {
+		expiresIn = 3600
+	}
 	debugPrintf("OAuth2: Successfully obtained access token (length: %d), expires in: %.0f seconds\n", len(accessToken), expiresIn)
 
-	return accessToken, newRefreshToken, nil
+	return OAuth2TokenRefreshResult{
+		AccessToken:  accessToken,
+		RefreshToken: newRefreshToken,
+		ExpiresAt:    time.Now().Add(time.Duration(expiresIn) * time.Second),
+	}, nil
 }
 
 // GenerateAuthURL generates OAuth2 authorization URL for a provider

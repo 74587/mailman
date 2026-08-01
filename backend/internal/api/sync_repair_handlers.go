@@ -14,8 +14,8 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// RepairAccountSyncRequest controls the bounded full sync used to repair a
-// Gmail account whose stored checkpoint has moved past unpersisted messages.
+// RepairAccountSyncRequest controls the bounded full sync used to repair an
+// OAuth2 account whose stored checkpoint has moved past unpersisted messages.
 type RepairAccountSyncRequest struct {
 	DefaultStartDate    *string `json:"default_start_date,omitempty"`
 	MaxEmailsPerMailbox int     `json:"max_emails_per_mailbox,omitempty"`
@@ -34,10 +34,10 @@ type RepairAccountSyncResponse struct {
 
 const repairAccountSyncMaxBodyBytes int64 = 64 << 10
 
-// RepairAccountSyncHandler clears stale Gmail checkpoints and immediately
-// performs a bounded full INBOX sync. Existing emails are preserved and dedupe
-// makes the operation safe to retry.
-// @Summary Repair Gmail account synchronization
+// RepairAccountSyncHandler clears stale Gmail or Outlook checkpoints and
+// immediately performs a bounded full INBOX sync. Existing emails are
+// preserved and dedupe makes the operation safe to retry.
+// @Summary Repair Gmail or Outlook account synchronization
 // @Tags accounts
 // @Accept json
 // @Produce json
@@ -68,11 +68,11 @@ func (h *APIHandler) RepairAccountSyncHandler(w http.ResponseWriter, r *http.Req
 		writeRepairSyncResponse(w, http.StatusForbidden, RepairAccountSyncResponse{Status: "failed", AccountID: accountID, Message: "Access denied"})
 		return
 	}
-	if account.AuthType != models.AuthTypeOAuth2 || account.MailProvider == nil || account.MailProvider.Type != models.ProviderTypeGmail {
+	if !supportsAccountSyncRepair(account) {
 		writeRepairSyncResponse(w, http.StatusBadRequest, RepairAccountSyncResponse{
 			Status:    "failed",
 			AccountID: accountID,
-			Message:   "Sync repair currently supports Gmail OAuth2 accounts only",
+			Message:   "Sync repair currently supports Gmail and Outlook OAuth2 accounts only",
 		})
 		return
 	}
@@ -92,7 +92,7 @@ func (h *APIHandler) RepairAccountSyncHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	now := time.Now()
-	defaultStartDate := now.AddDate(0, -1, 0)
+	defaultStartDate := now.Add(-30 * 24 * time.Hour)
 	if request.DefaultStartDate != nil {
 		parsed, parseErr := time.Parse(time.RFC3339, *request.DefaultStartDate)
 		if parseErr != nil {
@@ -152,6 +152,13 @@ func (h *APIHandler) RepairAccountSyncHandler(w http.ResponseWriter, r *http.Req
 			}
 			return errors.New(mailboxResult.Error)
 		}
+		if err := h.SyncConfigRepo.CommitAccountSyncRepair(accountID, mailboxResult.SyncStartTime); err != nil {
+			resetErr := h.SyncConfigRepo.ResetAccountSyncState(accountID)
+			if resetErr != nil {
+				return fmt.Errorf("failed to commit repaired sync checkpoint: %v; additionally failed to keep checkpoints reset: %v", err, resetErr)
+			}
+			return fmt.Errorf("failed to commit repaired sync checkpoint: %w", err)
+		}
 		return nil
 	}
 
@@ -184,6 +191,19 @@ func (h *APIHandler) RepairAccountSyncHandler(w http.ResponseWriter, r *http.Req
 		MailboxResult:        mailboxResult,
 		Message:              "Sync checkpoints reset and full sync completed",
 	})
+}
+
+func supportsAccountSyncRepair(account *models.EmailAccount) bool {
+	if account == nil || account.AuthType != models.AuthTypeOAuth2 || account.MailProvider == nil {
+		return false
+	}
+
+	switch account.MailProvider.Type {
+	case models.ProviderTypeGmail, models.ProviderTypeOutlook:
+		return true
+	default:
+		return false
+	}
 }
 
 func writeRepairSyncResponse(w http.ResponseWriter, statusCode int, response RepairAccountSyncResponse) {

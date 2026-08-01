@@ -197,6 +197,10 @@ func NewRouterWithAuth(
 		"/accounts/{id}/repair-sync",
 		RequirePermission(models.ResourceEmailAccount, models.ActionUpdate)(http.HandlerFunc(handler.RepairAccountSyncHandler)),
 	).Methods("POST")
+	accountRouter.Handle(
+		"/accounts/{id}/detect-outlook-protocol",
+		RequirePermission(models.ResourceEmailAccount, models.ActionUpdate)(http.HandlerFunc(handler.DetectOutlookProtocolHandler)),
+	).Methods("POST")
 
 	// --- Email resources ---
 	emailRouter := authRouter.PathPrefix("").Subrouter()

@@ -670,6 +670,36 @@ func (r *SyncConfigRepository) ResetAccountSyncState(accountID uint) error {
 	})
 }
 
+// CommitAccountSyncRepair records the safe boundary of a completed repair
+// scan. The boundary should be the scan start time so messages arriving while
+// the repair is running are included by the next buffered incremental sync.
+func (r *SyncConfigRepository) CommitAccountSyncRepair(accountID uint, checkpointTime time.Time) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.EmailAccountSyncConfig{}).
+			Where("account_id = ?", accountID).
+			Updates(map[string]interface{}{
+				"last_sync_time":     &checkpointTime,
+				"last_sync_end_time": &checkpointTime,
+				"last_sync_error":    "",
+				"sync_status":        models.SyncStatusIdle,
+			}).Error; err != nil {
+			return err
+		}
+
+		txRepo := &SyncConfigRepository{db: tx}
+		return txRepo.upsertSyncCursorFieldsWithContext(
+			context.Background(),
+			accountID,
+			models.SyncCursorProviderGeneric,
+			models.SyncCursorMailboxAccount,
+			map[string]interface{}{
+				"last_sync_time":     &checkpointTime,
+				"last_sync_end_time": &checkpointTime,
+			},
+		)
+	})
+}
+
 func (r *SyncConfigRepository) upsertSyncCursorFields(accountID uint, provider, mailboxName string, updates map[string]interface{}) error {
 	return r.upsertSyncCursorFieldsWithContext(context.Background(), accountID, provider, mailboxName, updates)
 }
@@ -1093,6 +1123,27 @@ func (r *SyncConfigRepository) GetAutoDisabledConfigs(since time.Time) ([]models
 	var configs []models.EmailAccountSyncConfig
 	err := r.db.Preload("Account").
 		Where("auto_disabled = ? AND last_error_time > ?", true, since).
+		Find(&configs).Error
+	return configs, err
+}
+
+// GetRecoverableAutoDisabledConfigs returns a bounded, fair batch of accounts
+// whose recovery cooldown has elapsed. Null/never-attempted rows are processed
+// first, then the least recently attempted rows, preventing a production
+// restart from refreshing thousands of Microsoft accounts at once.
+func (r *SyncConfigRepository) GetRecoverableAutoDisabledConfigs(now time.Time, maxAttempts, limit int) ([]models.EmailAccountSyncConfig, error) {
+	if limit <= 0 {
+		limit = 250
+	}
+	var configs []models.EmailAccountSyncConfig
+	err := r.db.Preload("Account").
+		Where("auto_disabled = ?", true).
+		Where("last_error_time IS NOT NULL AND last_error_time <= ?", now.Add(-30*time.Minute)).
+		Where("recovery_attempts < ? OR last_recovery_attempt IS NULL OR last_recovery_attempt <= ?", maxAttempts, now.Add(-24*time.Hour)).
+		Order("CASE WHEN last_recovery_attempt IS NULL THEN 0 ELSE 1 END ASC").
+		Order("last_recovery_attempt ASC").
+		Order("last_error_time ASC").
+		Limit(limit).
 		Find(&configs).Error
 	return configs, err
 }

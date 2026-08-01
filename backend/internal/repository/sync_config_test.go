@@ -112,6 +112,86 @@ func TestSyncConfigRepositoryCommitsAndResetsGmailCheckpoint(t *testing.T) {
 	if recordCount != 0 {
 		t.Fatalf("sync record count = %d, want 0", recordCount)
 	}
+
+	repairCheckpoint := now.Add(2 * time.Minute)
+	if err := repo.CommitAccountSyncRepair(account.ID, repairCheckpoint); err != nil {
+		t.Fatalf("CommitAccountSyncRepair failed: %v", err)
+	}
+	repairedConfig, err := repo.GetByAccountID(account.ID)
+	if err != nil {
+		t.Fatalf("failed to reload repaired config: %v", err)
+	}
+	if repairedConfig.LastSyncTime == nil || !repairedConfig.LastSyncTime.Equal(repairCheckpoint) ||
+		repairedConfig.LastSyncEndTime == nil || !repairedConfig.LastSyncEndTime.Equal(repairCheckpoint) {
+		t.Fatalf("repair checkpoint was not committed to sync config: %+v", repairedConfig)
+	}
+	if !repairedConfig.EnableAutoSync || repairedConfig.SyncInterval != 90 || len(repairedConfig.SyncFolders) != 1 {
+		t.Fatalf("repair commit changed user settings: %+v", repairedConfig)
+	}
+	repairedCursor, err := repo.GetAccountSyncCursor(account.ID, models.SyncCursorProviderGeneric)
+	if err != nil {
+		t.Fatalf("failed to reload repaired cursor: %v", err)
+	}
+	if repairedCursor.LastSyncTime == nil || !repairedCursor.LastSyncTime.Equal(repairCheckpoint) ||
+		repairedCursor.LastSyncEndTime == nil || !repairedCursor.LastSyncEndTime.Equal(repairCheckpoint) {
+		t.Fatalf("repair checkpoint was not committed to generic cursor: %+v", repairedCursor)
+	}
+}
+
+func TestGetRecoverableAutoDisabledConfigsIncludesLegacyRowsAndHonorsCooldown(t *testing.T) {
+	db := mustOpenRealSyncConfigTestDB(t)
+	if err := db.AutoMigrate(&models.EmailAccount{}, &models.EmailAccountSyncConfig{}); err != nil {
+		t.Fatalf("failed to migrate recovery test db: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	type recoveryCase struct {
+		email        string
+		lastError    time.Time
+		attempts     int
+		lastRecovery *time.Time
+	}
+	dueRetry := now.Add(-25 * time.Hour)
+	coolingRetry := now.Add(-time.Hour)
+	cases := []recoveryCase{
+		{email: "legacy@example.com", lastError: now.Add(-7 * 24 * time.Hour)},
+		{email: "due-retry@example.com", lastError: now.Add(-7 * 24 * time.Hour), attempts: 3, lastRecovery: &dueRetry},
+		{email: "cooling@example.com", lastError: now.Add(-7 * 24 * time.Hour), attempts: 3, lastRecovery: &coolingRetry},
+		{email: "recent-error@example.com", lastError: now.Add(-10 * time.Minute)},
+	}
+
+	for _, tc := range cases {
+		account := models.EmailAccount{OrgID: 1, EmailAddress: tc.email, AuthType: models.AuthTypeOAuth2}
+		if err := db.Create(&account).Error; err != nil {
+			t.Fatalf("create %s: %v", tc.email, err)
+		}
+		config := models.EmailAccountSyncConfig{
+			AccountID:           account.ID,
+			EnableAutoSync:      false,
+			AutoDisabled:        true,
+			LastErrorTime:       &tc.lastError,
+			RecoveryAttempts:    tc.attempts,
+			LastRecoveryAttempt: tc.lastRecovery,
+		}
+		if err := db.Create(&config).Error; err != nil {
+			t.Fatalf("create config for %s: %v", tc.email, err)
+		}
+	}
+
+	repo := NewSyncConfigRepository(db)
+	configs, err := repo.GetRecoverableAutoDisabledConfigs(now, 3, 10)
+	if err != nil {
+		t.Fatalf("query recoverable configs: %v", err)
+	}
+	if len(configs) != 2 {
+		t.Fatalf("recoverable config count = %d, want 2", len(configs))
+	}
+	if configs[0].Account.EmailAddress != "legacy@example.com" {
+		t.Fatalf("first recovery candidate = %q, want never-attempted legacy account", configs[0].Account.EmailAddress)
+	}
+	if configs[1].Account.EmailAddress != "due-retry@example.com" {
+		t.Fatalf("second recovery candidate = %q, want cooldown-expired account", configs[1].Account.EmailAddress)
+	}
 }
 
 func TestSyncConfigRepositoryRecordsSyncRun(t *testing.T) {

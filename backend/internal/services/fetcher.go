@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,13 +27,15 @@ import (
 
 // FetcherService is responsible for fetching emails from an IMAP server.
 type FetcherService struct {
-	accountRepo      *repository.EmailAccountRepository
-	emailRepo        *repository.EmailRepository
-	parserService    *ParserService
-	oauth2Service    *OAuth2Service
-	ingestService    *EmailIngestService
-	proxyPoolService *ProxyPoolService
-	logger           *utils.Logger
+	accountRepo              *repository.EmailAccountRepository
+	emailRepo                *repository.EmailRepository
+	parserService            *ParserService
+	oauth2Service            *OAuth2Service
+	ingestService            *EmailIngestService
+	proxyPoolService         *ProxyPoolService
+	outlookHTTPClientFactory func(string) *http.Client
+	outlookIMAPProtocolProbe func(context.Context, models.EmailAccount) error
+	logger                   *utils.Logger
 }
 
 // FetchEmailsOptions contains options for fetching emails
@@ -144,11 +147,21 @@ func (s *FetcherService) CommitFetchCheckpoint(accountID uint, checkpoint *Fetch
 
 // NewFetcherService creates a new FetcherService.
 func NewFetcherService(accountRepo *repository.EmailAccountRepository, emailRepo *repository.EmailRepository, db *gorm.DB) *FetcherService {
+	return NewFetcherServiceWithOAuth2Service(accountRepo, emailRepo, db, nil)
+}
+
+// NewFetcherServiceWithOAuth2Service creates a fetcher that shares the supplied
+// OAuth2 service with recovery, send and API paths. A single shared service is
+// required because its per-account locks protect refresh-token rotation.
+func NewFetcherServiceWithOAuth2Service(accountRepo *repository.EmailAccountRepository, emailRepo *repository.EmailRepository, db *gorm.DB, oauth2Service *OAuth2Service) *FetcherService {
+	if oauth2Service == nil {
+		oauth2Service = NewOAuth2Service(db)
+	}
 	return &FetcherService{
 		accountRepo:   accountRepo,
 		emailRepo:     emailRepo,
 		parserService: NewParserService(),
-		oauth2Service: NewOAuth2Service(db),
+		oauth2Service: oauth2Service,
 		logger:        utils.NewLogger("FetcherService"),
 	}
 }
@@ -542,8 +555,8 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 		// OAuth2 authentication
 		s.logger.Debug("Using OAuth2 authentication")
 		// Get client_id from CustomSettings, with fallback to global config
-		clientID, ok := account.CustomSettings["client_id"]
-		if !ok {
+		clientID := strings.TrimSpace(account.CustomSettings["client_id"])
+		if clientID == "" {
 			s.logger.Warn("client_id not found in custom settings, trying to get from global config")
 
 			// Try to get client_id from global OAuth2 config
@@ -576,8 +589,8 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 			s.logger.Info("Using client_id from global config (ID: %d, Name: %s) for fetchEmailsFromServer", config.ID, config.Name)
 		}
 
-		refreshToken, ok := account.CustomSettings["refresh_token"]
-		if !ok {
+		refreshToken := strings.TrimSpace(account.CustomSettings["refresh_token"])
+		if refreshToken == "" {
 			s.logger.Error("refresh_token not found in custom settings")
 			return nil, fmt.Errorf("refresh_token not found in custom settings")
 		}
@@ -631,23 +644,6 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 			return nil, fmt.Errorf("failed to refresh access token: %w", err)
 		}
 
-		// Update access token in account - 创建新的副本以避免并发写入问题
-		newCustomSettings := make(models.JSONMap)
-		if account.CustomSettings != nil {
-			// 复制现有设置
-			for k, v := range account.CustomSettings {
-				newCustomSettings[k] = v
-			}
-		}
-		newCustomSettings["access_token"] = accessToken
-		account.CustomSettings = newCustomSettings
-
-		// Update the account with new access token
-		updatedAccount := account
-		if err := s.accountRepo.Update(&updatedAccount); err != nil {
-			s.logger.Warn("Failed to update access token in database: %v", err)
-		}
-
 		// Authenticate with OAuth2
 		activeFetch.Stage("login")
 		recordLogin := RuntimeMetrics().BeginIMAPOperation(options.Source, "login")
@@ -663,6 +659,10 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 		recordLogin(fmt.Errorf("unsupported auth type: %s", account.AuthType))
 		s.logger.Error("Unsupported auth type: %s", account.AuthType)
 		return nil, fmt.Errorf("unsupported auth type: %s", account.AuthType)
+	}
+	if err := initializeAuthenticatedIMAPClient(c, account); err != nil {
+		s.logger.Error("Failed to initialize authenticated IMAP client for %s: %v", account.EmailAddress, err)
+		return nil, err
 	}
 
 	s.logger.Info("Successfully connected and logged in for %s using %s auth", account.EmailAddress, account.AuthType)
@@ -705,8 +705,10 @@ func (s *FetcherService) fetchEmailsFromServer(account models.EmailAccount, opti
 
 	// Calculate message range based on limit and offset
 	limit := options.Limit
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 10 // Default limit
+	} else if limit > 1000 {
+		limit = 1000
 	}
 
 	offset := options.Offset
@@ -1097,14 +1099,9 @@ func (s *FetcherService) GetMailboxes(account models.EmailAccount) ([]models.Mai
 		// OAuth2 authentication
 		s.logger.Debug("Using OAuth2 authentication")
 		// Get client_id and refresh_token from CustomSettings
-		clientID, ok := account.CustomSettings["client_id"]
-		if !ok {
-			s.logger.Error("client_id not found in custom settings")
-			return nil, fmt.Errorf("client_id not found in custom settings")
-		}
-
-		refreshToken, ok := account.CustomSettings["refresh_token"]
-		if !ok {
+		clientID := strings.TrimSpace(account.CustomSettings["client_id"])
+		refreshToken := strings.TrimSpace(account.CustomSettings["refresh_token"])
+		if refreshToken == "" {
 			s.logger.Error("refresh_token not found in custom settings")
 			return nil, fmt.Errorf("refresh_token not found in custom settings")
 		}
@@ -1139,6 +1136,12 @@ func (s *FetcherService) GetMailboxes(account models.EmailAccount) ([]models.Mai
 				s.logger.Warn("Failed to get client_secret from provider type %s for account %s: %v", account.MailProvider.Type, account.EmailAddress, err)
 			}
 		}
+		if clientID == "" && config != nil {
+			clientID = strings.TrimSpace(config.ClientID)
+		}
+		if clientID == "" {
+			return nil, fmt.Errorf("client_id not found for OAuth2 account")
+		}
 
 		// Refresh access token - use cached method with concurrency protection for better reliability
 		s.logger.Debug("Refreshing OAuth2 access token for IMAP connection with cache")
@@ -1155,26 +1158,6 @@ func (s *FetcherService) GetMailboxes(account models.EmailAccount) ([]models.Mai
 			return nil, fmt.Errorf("failed to refresh access token: %w", err)
 		}
 
-		// Update access token in account
-		if account.CustomSettings == nil {
-			account.CustomSettings = make(models.JSONMap)
-		}
-		// 并发安全的CustomSettings更新
-		newCustomSettings := make(models.JSONMap)
-		if account.CustomSettings != nil {
-			for k, v := range account.CustomSettings {
-				newCustomSettings[k] = v
-			}
-		}
-		newCustomSettings["access_token"] = accessToken
-		account.CustomSettings = newCustomSettings
-
-		// Update the account with new access token
-		updatedAccount := account
-		if err := s.accountRepo.Update(&updatedAccount); err != nil {
-			s.logger.Warn("Failed to update access token in database: %v", err)
-		}
-
 		// Authenticate with OAuth2
 		saslClient := NewOAuth2SASLClient(account.EmailAddress, accessToken)
 		if err := c.Authenticate(saslClient); err != nil {
@@ -1184,6 +1167,10 @@ func (s *FetcherService) GetMailboxes(account models.EmailAccount) ([]models.Mai
 	default:
 		s.logger.Error("Unsupported auth type: %s", account.AuthType)
 		return nil, fmt.Errorf("unsupported auth type: %s", account.AuthType)
+	}
+	if err := initializeAuthenticatedIMAPClient(c, account); err != nil {
+		s.logger.Error("Failed to initialize authenticated IMAP client for %s: %v", account.EmailAddress, err)
+		return nil, err
 	}
 
 	s.logger.Debug("Successfully authenticated, listing mailboxes")
@@ -1611,25 +1598,32 @@ func (s *FetcherService) VerifyConnectionWithSource(account *models.EmailAccount
 	// For Gmail OAuth2 accounts, use Gmail API instead of IMAP
 	if account.AuthType == models.AuthTypeOAuth2 && account.MailProvider.Type == models.ProviderTypeGmail {
 		s.logger.Debug("Using Gmail API verification for OAuth2 account")
-		err := s.verifyGmailOAuth2Connection(*account)
+		err := s.verifyGmailOAuth2Connection(account)
 		if err == nil {
 			account.CustomSettings["connection_protocol"] = "gmail_api"
 		}
 		return err
 	}
 
-	// For Outlook OAuth2 accounts, try Graph API/REST API first
+	// Outlook uses Graph only when explicitly configured with Graph scopes.
+	// Legacy and batch-imported OAuth2 accounts use IMAP/XOAUTH2.
 	if account.AuthType == models.AuthTypeOAuth2 && account.MailProvider.Type == models.ProviderTypeOutlook {
-		s.logger.Debug("Using Outlook Graph API verification for OAuth2 account")
-		err := s.verifyOutlookGraphConnectionWithSource(*account, source)
-		if err == nil {
-			s.logger.Info("Outlook verification successful via Graph/REST API")
+		if s.shouldUseOutlookGraphAPIWithSource(*account, source) {
+			s.logger.Debug("Using Microsoft Graph verification for Outlook OAuth2 account")
+			err := s.verifyOutlookGraphConnectionWithSource(*account, source)
+			if err != nil {
+				return err
+			}
+			s.logger.Info("Outlook verification successful via Microsoft Graph")
+			// Graph verification may have refreshed and rotated credentials. Reload
+			// them before the API handler persists verification metadata.
+			if latest, loadErr := s.accountRepo.GetByID(account.ID); loadErr == nil && latest.CustomSettings != nil {
+				account.CustomSettings = latest.CustomSettings
+			}
 			account.CustomSettings["connection_protocol"] = "graph"
 			return nil
 		}
-
-		s.logger.Warn("Outlook Graph/REST API verification failed, falling back to IMAP: %v", err)
-		// Fall through to general IMAP verification logic below
+		s.logger.Debug("Using IMAP/XOAUTH2 verification for Outlook OAuth2 account")
 	}
 
 	// For other accounts (or Outlook fallback), use IMAP verification
@@ -1726,8 +1720,8 @@ func (s *FetcherService) VerifyConnectionWithSource(account *models.EmailAccount
 		s.logger.Debug("Using OAuth2 authentication")
 		s.logger.Debug("CustomSettings content: %+v", account.CustomSettings)
 		// Get client_id from CustomSettings, with fallback to global config
-		clientID, ok := account.CustomSettings["client_id"]
-		if !ok {
+		clientID := strings.TrimSpace(account.CustomSettings["client_id"])
+		if clientID == "" {
 			s.logger.Warn("client_id not found in custom settings, trying to get from global config")
 			s.logger.Debug("Available keys in CustomSettings: %v", func() []string {
 				keys := make([]string, 0, len(account.CustomSettings))
@@ -1767,8 +1761,8 @@ func (s *FetcherService) VerifyConnectionWithSource(account *models.EmailAccount
 			s.logger.Info("Using client_id from global config (ID: %d, Name: %s) for account %s", tempConfig.ID, tempConfig.Name, account.EmailAddress)
 		}
 
-		refreshToken, ok := account.CustomSettings["refresh_token"]
-		if !ok {
+		refreshToken := strings.TrimSpace(account.CustomSettings["refresh_token"])
+		if refreshToken == "" {
 			s.logger.Error("refresh_token not found in custom settings")
 			return fmt.Errorf("refresh_token not found in custom settings")
 		}
@@ -1808,30 +1802,26 @@ func (s *FetcherService) VerifyConnectionWithSource(account *models.EmailAccount
 			clientSecret = config.ClientSecret
 		}
 
-		// Refresh access token - use cached method with concurrency protection for better reliability
+		// Refresh and retain the complete token set in memory because the caller
+		// persists this account after a successful verification.
 		s.logger.Debug("Refreshing OAuth2 access token for IMAP connection with cache")
-		accessToken, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxy(
+		refreshResult, err := s.oauth2Service.RefreshAccessTokenWithCacheAndProxyResult(
 			string(account.MailProvider.Type),
 			clientID,
 			clientSecret,
 			refreshToken,
 			account.ID,
 			account.Proxy, // Pass proxy settings if available
+			OAuth2RefreshOptions{},
 		)
 		if err != nil {
 			s.logger.Error("Failed to refresh access token: %v", err)
 			return fmt.Errorf("failed to refresh access token: %w", err)
 		}
-
-		// Update access token in account - 并发安全更新
-		// CustomSettings is already ensured to be non-nil at start of function
-		account.CustomSettings["access_token"] = accessToken
-
-		// Update the account with new access token in DB so it persists
-		// Note: We use a copy to avoid side effects if the update fails, although here we want the side effect
-		if err := s.accountRepo.Update(account); err != nil {
-			s.logger.Warn("Failed to update access token in database: %v", err)
-		}
+		accessToken := refreshResult.AccessToken
+		account.CustomSettings["access_token"] = refreshResult.AccessToken
+		account.CustomSettings["refresh_token"] = refreshResult.RefreshToken
+		account.CustomSettings["expires_at"] = strconv.FormatInt(refreshResult.ExpiresAt.Unix(), 10)
 
 		// Authenticate with OAuth2
 		saslClient := NewOAuth2SASLClient(account.EmailAddress, accessToken)
@@ -1842,6 +1832,10 @@ func (s *FetcherService) VerifyConnectionWithSource(account *models.EmailAccount
 	default:
 		s.logger.Error("Unsupported auth type: %s", account.AuthType)
 		return fmt.Errorf("unsupported auth type: %s", account.AuthType)
+	}
+	if err := initializeAuthenticatedIMAPClient(c, *account); err != nil {
+		s.logger.Error("Failed to initialize authenticated IMAP client for %s: %v", account.EmailAddress, err)
+		return err
 	}
 
 	// If we reach here, connection and authentication were successful
@@ -1871,9 +1865,12 @@ func (s *FetcherService) GetAllFolders(account models.EmailAccount) ([]string, e
 		return s.getGmailFolders(account)
 	}
 
-	// For Outlook OAuth2 accounts, use Graph API to get folders
+	// For explicitly Graph-scoped Outlook accounts, use Graph to get folders.
 	if account.AuthType == models.AuthTypeOAuth2 && account.MailProvider.Type == models.ProviderTypeOutlook {
-		return s.getOutlookFolders(account)
+		if s.shouldUseOutlookGraphAPI(account) {
+			return s.getOutlookFolders(account)
+		}
+		return s.getImapFolders(account)
 	}
 
 	// For IMAP accounts, use IMAP LIST command

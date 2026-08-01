@@ -1092,13 +1092,14 @@ func (h *OAuth2Handler) RefreshTokenHandler(w http.ResponseWriter, r *http.Reque
 		accountID = *request.AccountID
 	}
 
-	newAccessToken, err := h.oauth2Service.RefreshAccessTokenWithCacheAndProxy(
+	refreshResult, err := h.oauth2Service.RefreshAccessTokenWithCacheAndProxyResult(
 		request.Provider,
 		config.ClientID,
 		config.ClientSecret,
 		request.RefreshToken,
 		accountID,
 		request.Proxy,
+		services.OAuth2RefreshOptions{},
 	)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to refresh access token: %v", err), http.StatusInternalServerError)
@@ -1107,9 +1108,9 @@ func (h *OAuth2Handler) RefreshTokenHandler(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"access_token":  newAccessToken,
-		"refresh_token": request.RefreshToken, // 重用原始刷新令牌
+		"access_token":  refreshResult.AccessToken,
+		"refresh_token": refreshResult.RefreshToken,
 		"provider":      request.Provider,
-		"expires_at":    time.Now().Add(time.Hour).Unix(),
+		"expires_at":    refreshResult.ExpiresAt.Unix(),
 	})
 }
