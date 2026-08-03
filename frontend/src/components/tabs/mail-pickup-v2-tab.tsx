@@ -493,6 +493,47 @@ export default function MailPickupV2Tab() {
     }, [handleTabSwitchData])
 
     // ============ Listening Logic ============
+    // 追踪已在本次会话中执行过"识别协议+修复同步"的账户，避免同一账户重复触发。
+    const outlookProtocolPreparedRef = useRef<Set<number>>(new Set())
+
+    // 监听前的兜底：若目标账户是 Outlook OAuth2 且尚未识别出连接协议，
+    // 先执行一次协议识别，再修复同步，然后再进入监听轮询。
+    // 该行为为接口级静默兜底：任何失败都吞掉，不阻断用户的监听流程。
+    const ensureOutlookProtocolReady = useCallback(async (account?: EmailAccount) => {
+        if (!account) return
+        if (account.authType !== 'oauth2') return
+        if (account.mailProvider?.type !== 'outlook') return
+
+        const protocol = (account.customSettings?.connection_protocol || '').toString().trim()
+        if (protocol) return // 已识别过协议，无需处理
+
+        if (outlookProtocolPreparedRef.current.has(account.id)) return
+        outlookProtocolPreparedRef.current.add(account.id)
+
+        try {
+            const result = await emailAccountService.detectOutlookProtocol(account.id)
+            const detected = (result?.protocol || '').toString().trim()
+            // 识别后总是尝试修复一次同步（静默）
+            try {
+                await emailAccountService.repairAccountSync(account.id)
+            } catch (repairErr) {
+                console.warn('[Pickup V2] Outlook 修复同步失败(已忽略):', repairErr)
+            }
+            // 回写内存中的账户协议，避免同一会话重复识别
+            if (detected) {
+                setAccounts(prev => prev.map(acc =>
+                    acc.id === account.id
+                        ? { ...acc, customSettings: { ...(acc.customSettings || {}), connection_protocol: detected } }
+                        : acc
+                ))
+            }
+        } catch (detectErr) {
+            // 识别失败也吞掉，允许移除标记以便后续重试
+            outlookProtocolPreparedRef.current.delete(account.id)
+            console.warn('[Pickup V2] Outlook 协议识别失败(已忽略):', detectErr)
+        }
+    }, [])
+
     const startListening = useCallback(async (id: string) => {
         const emailToListen = monitoredEmails.find(m => m.id === id)
         if (!emailToListen) { setError('无法找到要监听的邮箱'); return }
@@ -520,6 +561,9 @@ export default function MailPickupV2Tab() {
 
         accountId = account?.id ?? (accounts.length > 0 ? accounts[0].id : 0)
 
+        // Outlook OAuth2 账户若尚未识别协议：先识别协议 + 修复同步，再进入监听（静默兜底）。
+        await ensureOutlookProtocolReady(account)
+
         const listeningStartTime = new Date()
         setMonitoredEmails(prev => prev.map(m =>
             m.id === id ? { ...m, isListening: true, connectionStatus: 'connected', checksPerformed: 0, elapsedTime: 0, startTime: listeningStartTime, showConfig: false } : m
@@ -541,7 +585,7 @@ export default function MailPickupV2Tab() {
         }, intervalSeconds * 1000)
 
         toast.success(`开始监听 ${emailToListen.email}`)
-    }, [accounts, monitoredEmails])
+    }, [accounts, monitoredEmails, ensureOutlookProtocolReady])
 
     const stopListening = (idOrEmail: string) => {
         const email = monitoredEmails.find(m => m.id === idOrEmail || m.email === idOrEmail)

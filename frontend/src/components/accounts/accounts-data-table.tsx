@@ -1,6 +1,7 @@
 'use client'
 
 import * as React from 'react'
+import { toast } from 'sonner'
 import * as HoverCard from '@radix-ui/react-hover-card'
 import { ColumnDef, RowSelectionState, SortingState } from '@tanstack/react-table'
 import {
@@ -34,6 +35,8 @@ import {
     RotateCcw,
     Wrench,
     ScanSearch,
+    Copy,
+    Check,
 } from 'lucide-react'
 import { DataTable, createSelectColumn } from '@/components/ui/data-table'
 import { Button } from '@/components/ui/button'
@@ -135,6 +138,69 @@ const getProxyLabel = (account: EmailAccount) => {
     if (account.proxy) return '手动'
     if (account.proxyId) return '代理池'
     return '未启用'
+}
+
+// 邮箱地址单元格：点击整格复制、文本可选中、hover 显示复制图标。
+function EmailAddressCell({ email }: { email: string }) {
+    const [copied, setCopied] = React.useState(false)
+    const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+
+    React.useEffect(() => () => {
+        if (timerRef.current) clearTimeout(timerRef.current)
+    }, [])
+
+    const copy = React.useCallback(async () => {
+        if (!email) return
+        try {
+            await navigator.clipboard.writeText(email)
+        } catch {
+            // 降级：clipboard 不可用时用隐藏 textarea 复制
+            try {
+                const textarea = document.createElement('textarea')
+                textarea.value = email
+                textarea.style.position = 'fixed'
+                textarea.style.opacity = '0'
+                document.body.appendChild(textarea)
+                textarea.select()
+                document.execCommand('copy')
+                document.body.removeChild(textarea)
+            } catch {
+                toast.error('复制失败')
+                return
+            }
+        }
+        setCopied(true)
+        toast.success('邮箱地址已复制')
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => setCopied(false), 1500)
+    }, [email])
+
+    return (
+        <div
+            className="group/email flex items-center gap-1 cursor-pointer"
+            title={`点击复制：${email}`}
+            onClick={copy}
+        >
+            <span className="font-medium text-gray-900 dark:text-gray-100 truncate select-text">
+                {email}
+            </span>
+            <button
+                type="button"
+                aria-label="复制邮箱地址"
+                onClick={(e) => {
+                    e.stopPropagation()
+                    void copy()
+                }}
+                className="flex-shrink-0 rounded p-0.5 text-gray-400 opacity-0 transition-opacity hover:bg-gray-100 hover:text-gray-600 group-hover/email:opacity-100 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+            >
+                {copied ? (
+                    <Check className="h-3.5 w-3.5 text-green-500" />
+                ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                )}
+            </button>
+        </div>
+    )
 }
 
 type AccountsDataTableColumnId =
@@ -381,6 +447,60 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
     React.useImperativeHandle(ref, () => ({
         openColumnSettings: () => setColumnSettingsOpen(true),
     }), [])
+    // 稳定回调引用：父组件(accounts-tab)在每次渲染都会重新创建这些回调(如 loadAccounts)。
+    // 若直接把它们放进列定义的 useMemo 依赖里，任何一次父级重渲染/数据刷新都会重建整套列对象，
+    // 导致 TanStack Table 重新创建单元格，进而卸载并重新挂载操作列里的 Radix 下拉菜单，
+    // 表现为"更多操作"下拉展开后立刻消失。这里用 ref 固定回调身份，列定义不再依赖它们。
+    const callbacksRef = React.useRef({
+        onViewEmails,
+        onPickupMail,
+        onSync,
+        onRepairSync,
+        onDetectOutlookProtocol,
+        onVerify,
+        onEdit,
+        onDelete,
+        onOAuth2Config,
+        onTagsChange,
+        onAccountChange,
+    })
+    React.useEffect(() => {
+        callbacksRef.current = {
+            onViewEmails,
+            onPickupMail,
+            onSync,
+            onRepairSync,
+            onDetectOutlookProtocol,
+            onVerify,
+            onEdit,
+            onDelete,
+            onOAuth2Config,
+            onTagsChange,
+            onAccountChange,
+        }
+    })
+
+    const stableOnViewEmails = React.useCallback((account: EmailAccount) => callbacksRef.current.onViewEmails(account), [])
+    const stableOnPickupMail = React.useCallback((account: EmailAccount) => callbacksRef.current.onPickupMail(account), [])
+    const stableOnSync = React.useCallback((account: EmailAccount) => callbacksRef.current.onSync(account), [])
+    const stableOnRepairSync = React.useCallback((account: EmailAccount) => callbacksRef.current.onRepairSync?.(account), [])
+    const stableOnDetectOutlookProtocol = React.useCallback((account: EmailAccount) => callbacksRef.current.onDetectOutlookProtocol?.(account), [])
+    const stableOnVerify = React.useCallback((account: EmailAccount) => callbacksRef.current.onVerify(account), [])
+    const stableOnEdit = React.useCallback((account: EmailAccount) => callbacksRef.current.onEdit(account), [])
+    const stableOnDelete = React.useCallback((id: number) => callbacksRef.current.onDelete(id), [])
+    const stableOnOAuth2Config = React.useCallback((account: EmailAccount) => callbacksRef.current.onOAuth2Config?.(account), [])
+    const stableOnTagsChange = React.useCallback(() => callbacksRef.current.onTagsChange?.(), [])
+    // 同步状态同样通过 ref 读取，避免每次同步状态刷新都重建列 → 卸载已展开的下拉菜单。
+    const syncStatusesRef = React.useRef(syncStatuses)
+    React.useEffect(() => {
+        syncStatusesRef.current = syncStatuses
+    })
+
+    // 用于判断某个回调是否被提供(保持 memo 依赖为布尔值，身份稳定)
+    const hasRepairSync = Boolean(onRepairSync)
+    const hasDetectOutlookProtocol = Boolean(onDetectOutlookProtocol)
+    const hasOAuth2Config = Boolean(onOAuth2Config)
+
     const [configEditor, setConfigEditor] = React.useState<{ kind: ConfigEditorKind; account: EmailAccount } | null>(null)
     const [domainEnabledDraft, setDomainEnabledDraft] = React.useState(false)
     const [domainDraft, setDomainDraft] = React.useState('')
@@ -598,12 +718,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                 size: 165,
                 enableSorting: true,
                 cell: ({ row }) => (
-                    <span
-                        className="font-medium text-gray-900 dark:text-gray-100 truncate block"
-                        title={row.original.emailAddress}
-                    >
-                        {row.original.emailAddress}
-                    </span>
+                    <EmailAddressCell email={row.original.emailAddress} />
                 ),
             },
 
@@ -646,7 +761,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                         <InlineTagSelector
                             accountId={row.original.id}
                             currentTags={row.original.tags || []}
-                            onTagsChange={onTagsChange}
+                            onTagsChange={stableOnTagsChange}
                             size="sm"
                             maxDisplayTags={3}
                             className="w-full"
@@ -854,7 +969,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                 size: 105,
                 enableSorting: false,
                 cell: ({ row }) => {
-                    const status = syncStatuses?.get(row.original.id)
+                    const status = syncStatusesRef.current?.get(row.original.id)
 
                     if (!status) {
                         return (
@@ -957,14 +1072,14 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             id: 'view',
                             icon: Eye,
                             label: '查看邮件',
-                            onClick: () => onViewEmails(account),
+                            onClick: () => stableOnViewEmails(account),
                             color: 'primary',
                         },
                         {
                             id: 'pickup',
                             icon: Download,
                             label: '取件',
-                            onClick: () => onPickupMail(account),
+                            onClick: () => stableOnPickupMail(account),
                             disabled: isRepairing || isDetectingProtocol,
                             color: 'success',
                         },
@@ -972,7 +1087,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             id: 'sync',
                             icon: RefreshCw,
                             label: '同步',
-                            onClick: () => onSync(account),
+                            onClick: () => stableOnSync(account),
                             disabled: isSyncing || isRepairing || isDetectingProtocol,
                             loading: isSyncing,
                         },
@@ -980,32 +1095,32 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             id: 'verify',
                             icon: Link2,
                             label: '验证连接',
-                            onClick: () => onVerify(account),
+                            onClick: () => stableOnVerify(account),
                             disabled: isVerifying || isRepairing || isDetectingProtocol,
                             loading: isVerifying,
                         },
-                        ...(canDetectOutlookProtocol && onDetectOutlookProtocol ? [{
+                        ...(canDetectOutlookProtocol && hasDetectOutlookProtocol ? [{
                             id: 'detect-outlook-protocol',
                             icon: ScanSearch,
                             label: '识别协议',
-                            onClick: () => onDetectOutlookProtocol(account),
+                            onClick: () => stableOnDetectOutlookProtocol(account),
                             disabled: isAnyDetectingProtocol || isRepairing || isSyncing || isVerifying,
                             loading: isDetectingProtocol,
                             color: 'info' as const,
                         }] : []),
-                        ...(account.authType === 'oauth2' && onOAuth2Config ? [{
+                        ...(account.authType === 'oauth2' && hasOAuth2Config ? [{
                             id: 'oauth2',
                             icon: Key,
                             label: 'OAuth2配置',
-                            onClick: () => onOAuth2Config(account),
+                            onClick: () => stableOnOAuth2Config(account),
                             disabled: isRepairing || isDetectingProtocol,
                             color: 'info' as const,
                         }] : []),
-                        ...(canRepairSync && onRepairSync ? [{
+                        ...(canRepairSync && hasRepairSync ? [{
                             id: 'repair-sync',
                             icon: Wrench,
                             label: '修复同步',
-                            onClick: () => onRepairSync(account),
+                            onClick: () => stableOnRepairSync(account),
                             disabled: isAnyRepairing || isSyncing || isDetectingProtocol,
                             loading: isRepairing,
                             color: 'warning' as const,
@@ -1015,7 +1130,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             id: 'edit',
                             icon: Edit2,
                             label: '编辑',
-                            onClick: () => onEdit(account),
+                            onClick: () => stableOnEdit(account),
                             disabled: isRepairing || isDetectingProtocol,
                             separator: true,
                         },
@@ -1023,7 +1138,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             id: 'delete',
                             icon: Trash2,
                             label: '删除',
-                            onClick: () => onDelete(account.id),
+                            onClick: () => stableOnDelete(account.id),
                             disabled: isRepairing || isDetectingProtocol,
                             color: 'danger',
                         },
@@ -1033,7 +1148,9 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                 },
             },
         ],
-        [syncingId, repairingId, detectingProtocolId, verifyingId, syncStatuses, openNoteDialog, openConfigEditor, onViewEmails, onPickupMail, onSync, onRepairSync, onDetectOutlookProtocol, onVerify, onEdit, onDelete, onOAuth2Config, onTagsChange]
+        // 依赖仅保留真正影响列渲染的状态与稳定引用；回调统一走 stableOn* / callbacksRef，
+        // 因此不再把易变的回调 props 放进依赖，避免每次父级重渲染都重建列 → 卸载 Radix 下拉。
+        [syncingId, repairingId, detectingProtocolId, verifyingId, openNoteDialog, openConfigEditor, stableOnViewEmails, stableOnPickupMail, stableOnSync, stableOnRepairSync, stableOnDetectOutlookProtocol, stableOnVerify, stableOnEdit, stableOnDelete, stableOnOAuth2Config, stableOnTagsChange, hasRepairSync, hasDetectOutlookProtocol, hasOAuth2Config]
     )
 
     const columns = React.useMemo<ColumnDef<EmailAccount, unknown>[]>(() => {
