@@ -1,7 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Wrench, RefreshCw } from 'lucide-react'
 import { ActionPipeline } from '@/components/action-debugger/action-pipeline'
+import { AdaptiveActions } from '@/components/ui/adaptive-actions'
+import SyncConfigModal from '@/components/modals/sync-config-modal'
 
 interface RegressionAction {
     id: string
@@ -34,6 +37,8 @@ export function ActionDropdownRegressionClient() {
             executionOrder: 1,
         },
     ])
+    const [syncConfigOpen, setSyncConfigOpen] = useState(false)
+    const [interactionCount, setInteractionCount] = useState(0)
 
     const handleAddAction = (pluginId: string) => {
         const plugin = availablePlugins.find((item) => item.id === pluginId)
@@ -74,6 +79,62 @@ export function ActionDropdownRegressionClient() {
                 onAddAction={handleAddAction}
                 onExecute={() => undefined}
                 isExecuting={false}
+            />
+
+            <section className="mt-12 rounded-lg border bg-white p-4">
+                <div className="w-16" data-testid="adaptive-actions-regression">
+                    <AdaptiveActions
+                        maxVisible={1}
+                        actions={[
+                            {
+                                id: 'refresh',
+                                icon: RefreshCw,
+                                label: '刷新',
+                                onClick: () => undefined,
+                            },
+                            {
+                                id: 'repair',
+                                icon: Wrench,
+                                label: '打开同步配置',
+                                onClick: () => setSyncConfigOpen(true),
+                            },
+                        ]}
+                    />
+                </div>
+                <button
+                    type="button"
+                    data-testid="page-interaction-target"
+                    onClick={() => setInteractionCount((count) => count + 1)}
+                >
+                    页面交互计数：{interactionCount}
+                </button>
+            </section>
+
+            <SyncConfigModal
+                isOpen={syncConfigOpen}
+                mode="create"
+                lockAccountSelection
+                config={{
+                    account_id: 1,
+                    enable_auto_sync: true,
+                    sync_interval: 300,
+                    sync_folders: ['INBOX'],
+                    account: {
+                        id: 1,
+                        emailAddress: 'regression@outlook.com',
+                        authType: 'oauth2',
+                        mailProviderId: 1,
+                        mailProvider: {
+                            id: 1,
+                            name: 'Outlook',
+                            type: 'outlook',
+                            imapServer: 'outlook.office365.com',
+                            imapPort: 993,
+                        },
+                    },
+                }}
+                onClose={() => setSyncConfigOpen(false)}
+                onSuccess={() => setSyncConfigOpen(false)}
             />
         </main>
     )

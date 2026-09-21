@@ -20,6 +20,8 @@ export class TagService {
     // 缓存 tag groups 避免重复请求
     private tagGroupsCache: TagGroupWithTags[] | null = null;
     private tagGroupsCacheTime: number = 0;
+    private tagGroupsRequest: Promise<TagGroupWithTags[]> | null = null;
+    private tagGroupsCacheGeneration = 0;
     private readonly CACHE_TTL = 30000; // 30秒缓存
 
     // ======================== TagGroup API ========================
@@ -35,10 +37,31 @@ export class TagService {
             return this.tagGroupsCache;
         }
 
-        const response = await apiClient.get<TagGroupWithTags[]>('/tag-groups');
-        this.tagGroupsCache = response;
-        this.tagGroupsCacheTime = now;
-        return response;
+        // 表格内可能同时打开多个标签组件；所有调用共享同一个在途请求，避免 N 个单元格
+        // 在首屏挂载时并发请求同一份标签目录。
+        if (this.tagGroupsRequest) {
+            return this.tagGroupsRequest;
+        }
+
+        const generation = this.tagGroupsCacheGeneration;
+        let request: Promise<TagGroupWithTags[]>;
+        request = apiClient.get<TagGroupWithTags[]>('/tag-groups').then((response) => {
+            // 请求期间若标签发生过变更，丢弃旧响应并转到当前代的共享请求。
+            if (generation !== this.tagGroupsCacheGeneration) {
+                return this.getTagGroups();
+            }
+
+            this.tagGroupsCache = response;
+            this.tagGroupsCacheTime = Date.now();
+            return response;
+        }).finally(() => {
+            if (this.tagGroupsRequest === request) {
+                this.tagGroupsRequest = null;
+            }
+        });
+
+        this.tagGroupsRequest = request;
+        return request;
     }
 
     /**
@@ -47,6 +70,8 @@ export class TagService {
     clearTagGroupsCache() {
         this.tagGroupsCache = null;
         this.tagGroupsCacheTime = 0;
+        this.tagGroupsRequest = null;
+        this.tagGroupsCacheGeneration += 1;
     }
 
     /**

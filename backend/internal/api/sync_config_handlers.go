@@ -237,12 +237,14 @@ func (h *SyncHandlers) CreateAccountSyncConfig(w http.ResponseWriter, r *http.Re
 		EnableAutoSync: req.EnableAutoSync,
 		SyncInterval:   req.SyncInterval,
 		SyncFolders:    req.SyncFolders,
-		SyncStatus:     "idle",
 	}
 
 	if err := h.syncConfigRepo.CreateOrUpdateSettings(config); err != nil {
 		http.Error(w, "Failed to create sync config: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if savedConfig, getErr := h.syncConfigRepo.GetByAccountID(uint(id)); getErr == nil {
+		config = savedConfig
 	}
 
 	w.Header().Set("Content-Type", "application/json")

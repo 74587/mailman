@@ -83,6 +83,51 @@ async function waitForMenu(page) {
     }
 }
 
+async function verifyAdaptiveSyncConfigFlow(page) {
+    await page.$eval('[data-testid="adaptive-actions-regression"]', (element) => {
+        element.scrollIntoView({ block: 'center' })
+    })
+    await page.click('[data-testid="adaptive-actions-regression"] button[aria-label^="更多操作"]')
+    await page.waitForSelector('[role="menuitem"]', { visible: true })
+    await page.evaluate(() => {
+        const item = Array.from(document.querySelectorAll('[role="menuitem"]'))
+            .find((element) => element.textContent?.includes('打开同步配置'))
+        if (!(item instanceof HTMLElement)) throw new Error('Sync config menu item was not found')
+        item.click()
+    })
+    await page.waitForSelector('[role="dialog"]', { visible: true })
+    await page.waitForFunction(() => document.body.innerText.includes('编辑 regression@outlook.com 的同步配置'))
+
+    const dialogMetrics = await page.$eval('[role="dialog"]', (dialog) => {
+        const rect = dialog.getBoundingClientRect()
+        return {
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            bottom: rect.bottom,
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+        }
+    })
+    if (dialogMetrics.left < 0 || dialogMetrics.right > dialogMetrics.viewportWidth) {
+        throw new Error(`Sync config dialog overflows horizontally: ${JSON.stringify(dialogMetrics)}`)
+    }
+    if (dialogMetrics.top < 0 || dialogMetrics.bottom > dialogMetrics.viewportHeight) {
+        throw new Error(`Sync config dialog overflows vertically: ${JSON.stringify(dialogMetrics)}`)
+    }
+
+    await page.evaluate(() => {
+        const cancelButton = Array.from(document.querySelectorAll('[role="dialog"] button'))
+            .find((button) => button.textContent?.trim() === '取消')
+        if (!(cancelButton instanceof HTMLElement)) throw new Error('Sync config cancel button was not found')
+        cancelButton.click()
+    })
+    await page.waitForSelector('[role="dialog"]', { hidden: true })
+    await page.waitForFunction(() => window.getComputedStyle(document.body).pointerEvents !== 'none')
+    await page.click('[data-testid="page-interaction-target"]')
+    await page.waitForFunction(() => document.body.innerText.includes('页面交互计数：1'))
+}
+
 function resolveChromeExecutable() {
     let bundledPath
     try {
@@ -228,6 +273,14 @@ async function run() {
         })
         await page.click('[data-testid="add-action-plugin-regression_action_24"]')
         await page.waitForFunction(() => document.body.innerText.includes('回归动作 24'), { timeout: 10_000 })
+
+        // 从 modal DropdownMenu 打开同步配置 Modal，再关闭后页面必须仍可交互。
+        await verifyAdaptiveSyncConfigFlow(page)
+
+        await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 })
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 })
+        await page.waitForSelector('[data-testid="action-dropdown-regression"][data-ready="true"]', { timeout: 60_000 })
+        await verifyAdaptiveSyncConfigFlow(page)
 
         console.log('Action dropdown scroll regression passed.')
     } catch (error) {

@@ -14,6 +14,7 @@ import AddAccountModal from '@/components/modals/add-account-modal'
 import EnhancedAddAccountModal from '@/components/modals/enhanced-add-account-modal'
 import EditAccountModal from '@/components/modals/edit-account-modal'
 import SyncAccountModal from '@/components/modals/sync-account-modal'
+import SyncConfigModal, { type SyncConfigModalConfig } from '@/components/modals/sync-config-modal'
 import BatchSyncConfigModal from '@/components/modals/batch-sync-config-modal'
 import OutlookTokenModal from '@/components/modals/outlook-token-modal'
 import OutlookThunderbirdModal from '@/components/modals/outlook-thunderbird-modal'
@@ -142,6 +143,8 @@ export default function AccountsTab() {
     const [showEditModal, setShowEditModal] = useState(false)
     const [showSyncModal, setShowSyncModal] = useState(false)
     const [showBatchSyncConfigModal, setShowBatchSyncConfigModal] = useState(false)
+    const [syncConfigEditor, setSyncConfigEditor] = useState<(SyncConfigModalConfig & { account: EmailAccount }) | null>(null)
+    const [syncConfigLoading, setSyncConfigLoading] = useState<number | null>(null)
     const [syncingAccount, setSyncingAccount] = useState<EmailAccount | null>(null)
     const [syncing, setSyncing] = useState<number | null>(null)
     const [repairing, setRepairing] = useState<number | null>(null)
@@ -443,6 +446,49 @@ export default function AccountsTab() {
         } finally {
             setRepairing(null)
         }
+    }
+
+    const handleEditSyncConfig = async (account: EmailAccount) => {
+        if (
+            detectingProtocolRef.current === account.id ||
+            repairing === account.id ||
+            syncing === account.id ||
+            verifying === account.id ||
+            syncConfigLoading !== null
+        ) {
+            toast.warning('该账户正在执行其他操作，请稍后再编辑同步配置')
+            return
+        }
+
+        let status = syncStatuses.get(account.id)
+        if (!status) {
+            setSyncConfigLoading(account.id)
+            try {
+                status = await syncConfigService.getAccountSyncStatus(account.id) ?? undefined
+                if (status) {
+                    const loadedStatus = status
+                    setSyncStatuses((current) => new Map(current).set(account.id, loadedStatus))
+                }
+            } catch (error) {
+                console.error('Failed to load account sync config:', error)
+                toast.error('同步配置加载失败，请稍后重试')
+                return
+            } finally {
+                setSyncConfigLoading(null)
+            }
+        }
+
+        setSyncConfigEditor({
+            account_id: account.id,
+            enable_auto_sync: status?.enable_auto_sync ?? true,
+            sync_interval: status?.sync_interval && status.sync_interval > 0
+                ? status.sync_interval
+                : 300,
+            sync_folders: status?.sync_folders?.length
+                ? [...status.sync_folders]
+                : ['INBOX'],
+            account,
+        })
     }
 
     const handleEdit = (account: EmailAccount) => {
@@ -1882,6 +1928,7 @@ export default function AccountsTab() {
                                     onPickupMail={handlePickupMail}
                                     onSync={handleSyncClick}
                                     onRepairSync={canRepairAccountSync ? handleRepairSync : undefined}
+                                    onEditSyncConfig={canRepairAccountSync ? handleEditSyncConfig : undefined}
                                     onDetectOutlookProtocol={canRepairAccountSync ? handleDetectOutlookProtocol : undefined}
                                     onVerify={handleVerify}
                                     onEdit={handleEdit}
@@ -1891,6 +1938,7 @@ export default function AccountsTab() {
                                     onAccountChange={loadAccounts}
                                     syncingId={syncing ?? undefined}
                                     repairingId={repairing ?? undefined}
+                                    syncConfigLoadingId={syncConfigLoading ?? undefined}
                                     detectingProtocolId={detectingProtocol ?? undefined}
                                     verifyingId={verifying ?? undefined}
                                     syncStatuses={syncStatuses}
@@ -2023,6 +2071,21 @@ export default function AccountsTab() {
                     />
                 )
             }
+
+            {/* 单账户同步配置 */}
+            {syncConfigEditor && (
+                <SyncConfigModal
+                    isOpen
+                    mode="create"
+                    lockAccountSelection
+                    config={syncConfigEditor}
+                    onClose={() => setSyncConfigEditor(null)}
+                    onSuccess={() => {
+                        setSyncConfigEditor(null)
+                        void loadSyncStatuses()
+                    }}
+                />
+            )}
 
             {/* 批量同步配置模态框 */}
             <BatchSyncConfigModal

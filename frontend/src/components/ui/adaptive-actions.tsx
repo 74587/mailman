@@ -53,6 +53,7 @@ const menuColorClasses = {
 
 export function AdaptiveActions({ actions, maxVisible = 4 }: AdaptiveActionsProps) {
     const containerRef = React.useRef<HTMLDivElement>(null)
+    const pendingOverflowActionRef = React.useRef<(() => void) | null>(null)
     const [visibleCount, setVisibleCount] = React.useState(maxVisible)
 
     // 每个按钮的预估宽度(包含padding和gap)
@@ -89,6 +90,17 @@ export function AdaptiveActions({ actions, maxVisible = 4 }: AdaptiveActionsProp
     const visibleActions = actions.slice(0, visibleCount)
     const overflowActions = actions.slice(visibleCount)
 
+    // Radix 的 modal dropdown 尚未完成关闭时立即打开 AlertDialog/Modal，可能让旧菜单的
+    // pointer-events/focus lock 残留在 body 上。先让菜单完整退出，再在下一帧执行操作。
+    const handleOverflowCloseAutoFocus = React.useCallback((event: Event) => {
+        const pendingAction = pendingOverflowActionRef.current
+        if (!pendingAction) return
+
+        event.preventDefault()
+        pendingOverflowActionRef.current = null
+        window.requestAnimationFrame(pendingAction)
+    }, [])
+
     return (
         <TooltipProvider delayDuration={100}>
             <div ref={containerRef} className="flex items-center gap-0.5 w-full">
@@ -120,7 +132,9 @@ export function AdaptiveActions({ actions, maxVisible = 4 }: AdaptiveActionsProp
                 })}
 
                 {overflowActions.length > 0 && (
-                    <DropdownMenu>
+                    <DropdownMenu onOpenChange={(open) => {
+                        if (open) pendingOverflowActionRef.current = null
+                    }}>
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <DropdownMenuTrigger asChild>
@@ -137,14 +151,20 @@ export function AdaptiveActions({ actions, maxVisible = 4 }: AdaptiveActionsProp
                                 还有 {overflowActions.length} 个操作
                             </TooltipContent>
                         </Tooltip>
-                        <DropdownMenuContent align="end" className="w-36">
+                        <DropdownMenuContent
+                            align="end"
+                            className="w-36"
+                            onCloseAutoFocus={handleOverflowCloseAutoFocus}
+                        >
                             {overflowActions.map((action, index) => {
                                 const Icon = action.icon
                                 return (
                                     <React.Fragment key={action.id}>
                                         {action.separator && index > 0 && <DropdownMenuSeparator />}
                                         <DropdownMenuItem
-                                            onClick={action.onClick}
+                                            onSelect={() => {
+                                                pendingOverflowActionRef.current = action.onClick
+                                            }}
                                             disabled={action.disabled}
                                             aria-busy={action.loading || undefined}
                                             className={menuColorClasses[action.color || 'default']}

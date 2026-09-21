@@ -3,11 +3,7 @@ import { logger } from '@/lib/logger';
 
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api-client'
 import {
@@ -33,7 +29,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-interface SyncConfig {
+export interface SyncConfigModalConfig {
     id?: number
     account_id?: number
     enable_auto_sync: boolean
@@ -41,7 +37,7 @@ interface SyncConfig {
     sync_folders: string[]
 }
 
-interface Account {
+export interface SyncConfigModalAccount {
     id: number
     emailAddress: string
     name?: string
@@ -58,28 +54,21 @@ interface Account {
 }
 
 interface PaginatedAccountsResponse {
-    data: Account[]
+    data: SyncConfigModalAccount[]
     total: number
     page: number
     limit: number
     total_pages: number
 }
 
-interface Mailbox {
-    id: number
-    name: string
-    delimiter: string
-    flags: string[]
-    is_deleted: boolean
-}
-
 interface SyncConfigModalProps {
     isOpen: boolean
     onClose: () => void
     onSuccess: () => void
-    config?: SyncConfig & { account?: Account }
+    config?: SyncConfigModalConfig & { account?: SyncConfigModalAccount }
     mode: 'create' | 'edit' | 'global'
-    accounts?: Account[]
+    accounts?: SyncConfigModalAccount[]
+    lockAccountSelection?: boolean
 }
 
 export default function SyncConfigModal({
@@ -88,23 +77,23 @@ export default function SyncConfigModal({
     onSuccess,
     config,
     mode,
-    accounts = []
+    accounts = [],
+    lockAccountSelection = false
 }: SyncConfigModalProps) {
     const [loading, setLoading] = useState(false)
-    const [formData, setFormData] = useState<SyncConfig>({
+    const [formData, setFormData] = useState<SyncConfigModalConfig>({
         enable_auto_sync: true,
         sync_interval: 300,
         sync_folders: ['INBOX']
     })
     const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null)
-    const [selectedAccount, setSelectedAccount] = useState<Account | null>(null)
+    const [selectedAccount, setSelectedAccount] = useState<SyncConfigModalAccount | null>(null)
     const [customInterval, setCustomInterval] = useState<string>('')
-    const [newFolder, setNewFolder] = useState('')
 
     // 账户搜索相关状态
     const [accountSearchQuery, setAccountSearchQuery] = useState('')
     const [showAccountDropdown, setShowAccountDropdown] = useState(false)
-    const [filteredAccounts, setFilteredAccounts] = useState<Account[]>([])
+    const [filteredAccounts, setFilteredAccounts] = useState<SyncConfigModalAccount[]>([])
     const [loadingAccounts, setLoadingAccounts] = useState(false)
     const [accountsPage, setAccountsPage] = useState(1)
     const [accountsLimit] = useState(10)
@@ -112,15 +101,8 @@ export default function SyncConfigModal({
     const [accountsTotalPages, setAccountsTotalPages] = useState(1)
     const [hasMoreAccounts, setHasMoreAccounts] = useState(false)
 
-    // 文件夹相关状态
-    const [mailboxes, setMailboxes] = useState<Mailbox[]>([])
-    const [loadingMailboxes, setLoadingMailboxes] = useState(false)
-
     // 引用用于点击外部关闭
     const accountDropdownRef = useRef<HTMLDivElement>(null)
-
-    // 预定义的文件夹选项（仅作为最后的后备，优先使用从服务器获取的文件夹）
-    const folderOptions = ['INBOX']  // 只保留 INBOX，其他文件夹应该从服务器动态获取
 
     // 预定义的同步间隔选项（标签形式）
     const intervalOptions = [
@@ -149,9 +131,7 @@ export default function SyncConfigModal({
             }
             // 如果是自定义间隔，设置自定义值
             const isCustomInterval = !intervalOptions.find(opt => typeof opt.value === 'number' && opt.value === config.sync_interval)
-            if (isCustomInterval) {
-                setCustomInterval(config.sync_interval.toString())
-            }
+            setCustomInterval(isCustomInterval ? config.sync_interval.toString() : '')
         } else {
             setFormData({
                 enable_auto_sync: true,
@@ -189,7 +169,7 @@ export default function SyncConfigModal({
 
     // 加载账户数据的函数
     const loadAccounts = async (page: number = 1, search: string = '', reset: boolean = false) => {
-        if (mode !== 'create') return;
+        if (mode !== 'create' || lockAccountSelection) return;
 
         try {
             setLoadingAccounts(true);
@@ -233,39 +213,17 @@ export default function SyncConfigModal({
         }
     };
 
-    // 加载账户文件夹
-    const loadMailboxes = async (accountId: number) => {
-        try {
-            setLoadingMailboxes(true);
-            const response = await apiClient.get(`/accounts/${accountId}/mailboxes`);
-            setMailboxes(response);
-        } catch (error) {
-            console.error('Failed to load mailboxes:', error);
-            setMailboxes([]);
-        } finally {
-            setLoadingMailboxes(false);
-        }
-    };
-
     // 初始加载账户数据 - 修改为模态框打开时就加载
     useEffect(() => {
-        if (mode === 'create' && isOpen) {
+        if (mode === 'create' && isOpen && !lockAccountSelection) {
             // 预加载账户数据，不需要等待下拉框打开
             loadAccounts(1, '', true);
         }
-    }, [mode, isOpen]);
-
-    // 当选择账户或编辑模式时加载文件夹
-    useEffect(() => {
-        const accountId = mode === 'edit' && config?.account_id ? config.account_id : selectedAccountId;
-        if (accountId && isOpen) {
-            loadMailboxes(accountId);
-        }
-    }, [selectedAccountId, config?.account_id, mode, isOpen]);
+    }, [mode, isOpen, lockAccountSelection]);
 
     // 搜索防抖处理
     useEffect(() => {
-        if (mode !== 'create') return;
+        if (mode !== 'create' || lockAccountSelection) return;
 
         const timeoutId = setTimeout(() => {
             if (showAccountDropdown) {
@@ -274,7 +232,7 @@ export default function SyncConfigModal({
         }, 300);
 
         return () => clearTimeout(timeoutId);
-    }, [accountSearchQuery, mode]);
+    }, [accountSearchQuery, mode, lockAccountSelection]);
 
     // 点击外部关闭下拉框
     useEffect(() => {
@@ -313,43 +271,12 @@ export default function SyncConfigModal({
         }
     }
 
-    const toggleFolder = (folder: string) => {
-        const folders = formData.sync_folders || []
-        if (folders.includes(folder)) {
-            setFormData({
-                ...formData,
-                sync_folders: folders.filter(f => f !== folder)
-            })
-        } else {
-            setFormData({
-                ...formData,
-                sync_folders: [...folders, folder]
-            })
-        }
-    }
-
-    const addCustomFolder = () => {
-        if (newFolder && !formData.sync_folders.includes(newFolder)) {
-            setFormData({
-                ...formData,
-                sync_folders: [...formData.sync_folders, newFolder]
-            })
-            setNewFolder('')
-        }
-    }
-
-    const removeFolder = (folder: string) => {
-        setFormData({
-            ...formData,
-            sync_folders: formData.sync_folders.filter(f => f !== folder)
-        })
-    }
-
     const handleSubmit = async () => {
         try {
             setLoading(true)
+            const targetAccountId = selectedAccountId ?? config?.account_id ?? null
 
-            if (mode === 'create' && !selectedAccountId) {
+            if (mode === 'create' && !targetAccountId) {
                 toast.error('请选择一个账户')
                 return
             }
@@ -380,7 +307,8 @@ export default function SyncConfigModal({
             let method = ''
             let body: any = {
                 enable_auto_sync: formData.enable_auto_sync,
-                sync_interval: formData.sync_interval
+                sync_interval: formData.sync_interval,
+                sync_folders: formData.sync_folders
             }
 
             if (mode === 'global') {
@@ -388,10 +316,11 @@ export default function SyncConfigModal({
                 method = 'PUT'
                 body = {
                     default_enable_sync: formData.enable_auto_sync,
-                    default_sync_interval: formData.sync_interval
+                    default_sync_interval: formData.sync_interval,
+                    default_sync_folders: formData.sync_folders
                 }
             } else if (mode === 'create') {
-                endpoint = `/accounts/${selectedAccountId}/sync-config`
+                endpoint = `/accounts/${targetAccountId}/sync-config`
                 method = 'POST'
             } else if (mode === 'edit' && config?.account_id) {
                 endpoint = `/accounts/${config.account_id}/sync-config`
@@ -408,7 +337,7 @@ export default function SyncConfigModal({
                 mode === 'global'
                     ? '全局同步配置已更新'
                     : mode === 'create'
-                        ? '同步配置已创建'
+                        ? lockAccountSelection ? '同步配置已更新' : '同步配置已创建'
                         : '同步配置已更新'
             )
 
@@ -427,7 +356,7 @@ export default function SyncConfigModal({
             case 'global':
                 return '编辑全局同步配置'
             case 'create':
-                return '新增账户同步配置'
+                return lockAccountSelection ? '编辑同步配置' : '新增账户同步配置'
             case 'edit':
                 return '编辑同步配置'
         }
@@ -438,7 +367,9 @@ export default function SyncConfigModal({
             case 'global':
                 return '配置所有新账户的默认同步行为'
             case 'create':
-                return '为指定账户创建同步配置'
+                return lockAccountSelection
+                    ? `编辑 ${config?.account?.emailAddress || '账户'} 的同步配置`
+                    : '为指定账户创建同步配置'
             case 'edit':
                 return `编辑 ${config?.account?.emailAddress || '账户'} 的同步配置`
         }
@@ -449,7 +380,9 @@ export default function SyncConfigModal({
             case 'global':
                 return <Settings className="w-5 h-5 text-gray-400" />
             case 'create':
-                return <Plus className="w-5 h-5 text-gray-400" />
+                return lockAccountSelection
+                    ? <Mail className="w-5 h-5 text-gray-400" />
+                    : <Plus className="w-5 h-5 text-gray-400" />
             case 'edit':
                 return <Mail className="w-5 h-5 text-gray-400" />
         }
@@ -458,7 +391,7 @@ export default function SyncConfigModal({
     const isCustomInterval = !intervalOptions.find(opt => opt.value === formData.sync_interval)
 
     // 检查是否是Gmail OAuth2账户
-    const isGmailOAuth2 = (account: Account | null | undefined) => {
+    const isGmailOAuth2 = (account: SyncConfigModalAccount | null | undefined) => {
         if (!account) return false
         return account.authType === 'oauth2' &&
             account.mailProvider?.name?.toLowerCase().includes('gmail')
@@ -478,7 +411,7 @@ export default function SyncConfigModal({
                 </ModalHeader>
 
                 <ModalBody className="flex-1 overflow-y-auto space-y-6">
-                    {mode === 'create' && (
+                    {mode === 'create' && !lockAccountSelection && (
                         <div className="space-y-2">
                             <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
                                 <User className="w-4 h-4 text-gray-400" />
@@ -734,7 +667,7 @@ export default function SyncConfigModal({
                                 保存中...
                             </>
                         ) : (
-                            <span>{mode === 'create' ? '创建' : '保存'}</span>
+                            <span>{mode === 'create' && !lockAccountSelection ? '创建' : '保存'}</span>
                         )}
                     </Button>
                 </ModalFooter>

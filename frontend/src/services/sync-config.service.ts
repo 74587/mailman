@@ -188,6 +188,7 @@ export interface AccountSyncStatus {
     account_email: string
     enable_auto_sync: boolean
     sync_interval: number
+    sync_folders?: string[]
     sync_status: string // idle, syncing, error
     auto_disabled: boolean
     disable_reason?: string

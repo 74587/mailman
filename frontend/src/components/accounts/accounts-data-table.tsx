@@ -74,6 +74,7 @@ interface AccountsDataTableProps {
     onPickupMail: (account: EmailAccount) => void
     onSync: (account: EmailAccount) => void
     onRepairSync?: (account: EmailAccount) => void
+    onEditSyncConfig?: (account: EmailAccount) => void
     onDetectOutlookProtocol?: (account: EmailAccount) => void
     onVerify: (account: EmailAccount) => void
     onEdit: (account: EmailAccount) => void
@@ -84,6 +85,7 @@ interface AccountsDataTableProps {
     // 状态
     syncingId?: number
     repairingId?: number
+    syncConfigLoadingId?: number
     detectingProtocolId?: number
     verifyingId?: number
     syncStatuses?: Map<number, AccountSyncStatus>
@@ -419,6 +421,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
     onPickupMail,
     onSync,
     onRepairSync,
+    onEditSyncConfig,
     onDetectOutlookProtocol,
     onVerify,
     onEdit,
@@ -428,6 +431,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
     onAccountChange,
     syncingId,
     repairingId,
+    syncConfigLoadingId,
     detectingProtocolId,
     verifyingId,
     syncStatuses,
@@ -456,6 +460,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
         onPickupMail,
         onSync,
         onRepairSync,
+        onEditSyncConfig,
         onDetectOutlookProtocol,
         onVerify,
         onEdit,
@@ -470,6 +475,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
             onPickupMail,
             onSync,
             onRepairSync,
+            onEditSyncConfig,
             onDetectOutlookProtocol,
             onVerify,
             onEdit,
@@ -484,6 +490,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
     const stableOnPickupMail = React.useCallback((account: EmailAccount) => callbacksRef.current.onPickupMail(account), [])
     const stableOnSync = React.useCallback((account: EmailAccount) => callbacksRef.current.onSync(account), [])
     const stableOnRepairSync = React.useCallback((account: EmailAccount) => callbacksRef.current.onRepairSync?.(account), [])
+    const stableOnEditSyncConfig = React.useCallback((account: EmailAccount) => callbacksRef.current.onEditSyncConfig?.(account), [])
     const stableOnDetectOutlookProtocol = React.useCallback((account: EmailAccount) => callbacksRef.current.onDetectOutlookProtocol?.(account), [])
     const stableOnVerify = React.useCallback((account: EmailAccount) => callbacksRef.current.onVerify(account), [])
     const stableOnEdit = React.useCallback((account: EmailAccount) => callbacksRef.current.onEdit(account), [])
@@ -498,6 +505,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
 
     // 用于判断某个回调是否被提供(保持 memo 依赖为布尔值，身份稳定)
     const hasRepairSync = Boolean(onRepairSync)
+    const hasEditSyncConfig = Boolean(onEditSyncConfig)
     const hasDetectOutlookProtocol = Boolean(onDetectOutlookProtocol)
     const hasOAuth2Config = Boolean(onOAuth2Config)
 
@@ -1058,6 +1066,8 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                     const account = row.original
                     const isSyncing = syncingId === account.id
                     const isRepairing = repairingId === account.id
+                    const isSyncConfigLoading = syncConfigLoadingId === account.id
+                    const isAnySyncConfigLoading = syncConfigLoadingId !== undefined
                     const isAnyRepairing = repairingId !== undefined
                     const isDetectingProtocol = detectingProtocolId === account.id
                     const isAnyDetectingProtocol = detectingProtocolId !== undefined
@@ -1116,6 +1126,15 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
                             disabled: isRepairing || isDetectingProtocol,
                             color: 'info' as const,
                         }] : []),
+                        ...(hasEditSyncConfig ? [{
+                            id: 'sync-config',
+                            icon: SlidersHorizontal,
+                            label: '同步配置',
+                            onClick: () => stableOnEditSyncConfig(account),
+                            disabled: isRepairing || isDetectingProtocol || isSyncing || isVerifying || isAnySyncConfigLoading,
+                            loading: isSyncConfigLoading,
+                            separator: true,
+                        }] : []),
                         ...(canRepairSync && hasRepairSync ? [{
                             id: 'repair-sync',
                             icon: Wrench,
@@ -1150,7 +1169,7 @@ export const AccountsDataTable = React.forwardRef<AccountsDataTableHandle, Accou
         ],
         // 依赖仅保留真正影响列渲染的状态与稳定引用；回调统一走 stableOn* / callbacksRef，
         // 因此不再把易变的回调 props 放进依赖，避免每次父级重渲染都重建列 → 卸载 Radix 下拉。
-        [syncingId, repairingId, detectingProtocolId, verifyingId, openNoteDialog, openConfigEditor, stableOnViewEmails, stableOnPickupMail, stableOnSync, stableOnRepairSync, stableOnDetectOutlookProtocol, stableOnVerify, stableOnEdit, stableOnDelete, stableOnOAuth2Config, stableOnTagsChange, hasRepairSync, hasDetectOutlookProtocol, hasOAuth2Config]
+        [syncingId, repairingId, syncConfigLoadingId, detectingProtocolId, verifyingId, openNoteDialog, openConfigEditor, stableOnViewEmails, stableOnPickupMail, stableOnSync, stableOnRepairSync, stableOnEditSyncConfig, stableOnDetectOutlookProtocol, stableOnVerify, stableOnEdit, stableOnDelete, stableOnOAuth2Config, stableOnTagsChange, hasRepairSync, hasEditSyncConfig, hasDetectOutlookProtocol, hasOAuth2Config]
     )
 
     const columns = React.useMemo<ColumnDef<EmailAccount, unknown>[]>(() => {

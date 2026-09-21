@@ -256,7 +256,8 @@ export function InlineTagSelector({
     className,
 }: InlineTagSelectorProps) {
     const [tagGroups, setTagGroups] = useState<TagGroupWithTags[]>([])
-    const [loading, setLoading] = useState(true)
+    const [tagGroupsLoaded, setTagGroupsLoaded] = useState(false)
+    const [loading, setLoading] = useState(false)
     const [saving, setSaving] = useState(false)
     const [showDropdown, setShowDropdown] = useState(false)
 
@@ -269,32 +270,41 @@ export function InlineTagSelector({
         color: t.color
     }))
 
-    useEffect(() => {
-        loadTagGroups()
+    const loadTagGroups = useCallback(async (forceRefresh = false) => {
+        try {
+            setLoading(true)
+            const groups = await tagService.getTagGroups(forceRefresh)
+            setTagGroups(groups)
+            setTagGroupsLoaded(true)
+        } catch (error) {
+            console.error('Failed to load tag groups:', error)
+            setTagGroupsLoaded(false)
+        } finally {
+            setLoading(false)
+        }
     }, [])
 
-    // 监听标签变化事件，刷新标签组列表
+    const handleDropdownOpenChange = useCallback((open: boolean) => {
+        setShowDropdown(open)
+        if (open && !tagGroupsLoaded && !loading) {
+            void loadTagGroups()
+        }
+    }, [loadTagGroups, loading, tagGroupsLoaded])
+
+    // 关闭的表格单元格只标记缓存失效；仅当前打开的编辑器需要立即重新加载。
     useEffect(() => {
         const handleTagsChanged = () => {
-            tagService.clearTagGroupsCache()
-            loadTagGroups()
+            setTagGroups([])
+            setTagGroupsLoaded(false)
+            if (showDropdown) {
+                void loadTagGroups(true)
+            }
         }
         window.addEventListener('tagsChanged', handleTagsChanged)
         return () => {
             window.removeEventListener('tagsChanged', handleTagsChanged)
         }
-    }, [])
-
-    const loadTagGroups = async () => {
-        try {
-            const groups = await tagService.getTagGroups()
-            setTagGroups(groups)
-        } catch (error) {
-            console.error('Failed to load tag groups:', error)
-        } finally {
-            setLoading(false)
-        }
-    }
+    }, [loadTagGroups, showDropdown])
 
     const handleTagToggle = async (tag: TagSimple, group: TagGroupWithTags) => {
         const currentTagIds = currentTags.map((t) => t.id)
@@ -314,7 +324,7 @@ export function InlineTagSelector({
 
         try {
             setSaving(true)
-            const updatedTags = await tagService.setAccountTags(accountId, newTagIds)
+            await tagService.setAccountTags(accountId, newTagIds)
             onTagsChange?.()
         } catch (error) {
             console.error('Failed to update account tags:', error)
@@ -323,12 +333,8 @@ export function InlineTagSelector({
         }
     }
 
-    if (loading) {
-        return <span className="text-xs text-muted-foreground">...</span>
-    }
-
     return (
-        <DropdownMenu open={showDropdown} onOpenChange={setShowDropdown}>
+        <DropdownMenu open={showDropdown} onOpenChange={handleDropdownOpenChange}>
             <DropdownMenuTrigger asChild>
                 <button
                     type="button"
@@ -336,7 +342,6 @@ export function InlineTagSelector({
                     disabled={saving}
                     onClick={(e) => {
                         e.stopPropagation()
-                        setShowDropdown(true)
                     }}
                 >
                     {displayTags.length > 0 ? (
@@ -358,7 +363,11 @@ export function InlineTagSelector({
                 </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent className="w-56 p-2 z-[100]" align="start">
-                {tagGroups.length === 0 ? (
+                {loading ? (
+                    <div className="py-2 text-center text-xs text-muted-foreground">
+                        加载中...
+                    </div>
+                ) : tagGroups.length === 0 ? (
                     <div className="py-2 text-center text-xs text-muted-foreground">
                         暂无标签
                     </div>
